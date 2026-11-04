@@ -14,6 +14,8 @@ This plan is milestone 1, internal step 1 of the design (section 8): "binarize b
 
 ## Global Constraints
 
+- **`AGENTS.md` applies to every task**: tests first, total coverage ≥ 85 %, strict lints and the safe-Rust rules, user docs (`docs/manual/`) and the `CHANGELOG.md` line in the same commit as the change, `make check` passing before every commit. Where this plan and `AGENTS.md` disagree, `AGENTS.md` wins.
+- Every parser of untrusted input gets a fuzz target in `fuzz/` whose seed corpus also runs in `make test` (Tasks 2, 3, 4, 12 name theirs).
 - Licence: **AGPL-3.0** (`LICENSE` = the GNU AGPL v3 text; every crate `license = "AGPL-3.0-or-later"`).
 - Name: product **Náves**, ASCII **`naves`** for crates, binary, PBO prefixes; "DayZ" never in a crate or binary name.
 - Rust stable 1.95, edition 2024. Add dependencies with `cargo add` (latest stable), no git dependencies.
@@ -36,19 +38,39 @@ This plan is milestone 1, internal step 1 of the design (section 8): "binarize b
 
 ---
 
-### Task 1: Workspace scaffold
+### Task 1: Workspace, tooling, docs, packaging and CI scaffold
+
+Everything `AGENTS.md` refers to exists after this task, and `make check` plus the CI workflows pass on an almost empty workspace. Five commits.
 
 **Files:**
-- Create: `Cargo.toml` (workspace), `crates/naves-formats/`, `crates/naves-core/`, `crates/naves-export/`, `crates/naves/` (each `Cargo.toml` + `src/lib.rs`, `naves` has `src/main.rs`), `LICENSE`, `README.md`, `.gitignore`, `rust-toolchain.toml`
+- Create: `Cargo.toml` (workspace), `crates/naves-formats/`, `crates/naves-core/`, `crates/naves-export/`, `crates/naves/` (each `Cargo.toml` + `src/lib.rs`, `naves` has `src/main.rs`), `crates/naves/tests/version.rs`, `LICENSE`, `LICENSES/AGPL-3.0-or-later.txt`, `REUSE.toml`, `README.md`, `.gitignore`, `rust-toolchain.toml`, `clippy.toml`
+- Create: `Makefile`, `deny.toml`, `codecov.yml`, `fuzz/Cargo.toml` (cargo-fuzz crate, excluded from the workspace)
+- Create: `docs/manual/book.toml`, `docs/manual/src/SUMMARY.md` + chapter stubs, `CHANGELOG.md`
+- Create: `debian/` (`control`, `rules`, `changelog`, `copyright`, `source/format`)
+- Create: `.github/workflows/ci.yml`, `.github/workflows/codeql.yml`, `.github/workflows/pages.yml`, `.github/workflows/release.yml`
+- Modify: the existing files under `docs/` (SPDX headers)
 
 **Interfaces:**
-- Produces: crates `naves_formats`, `naves_core`, `naves_export` (libs), binary `naves`.
+- Produces: crates `naves_formats`, `naves_core`, `naves_export` (libs), binary `naves`; the `make` targets of `AGENTS.md` ("Before pushing"); the manual skeleton that later tasks fill in.
 
-- [ ] **Step 1:** Create the workspace (`resolver = "3"`, members `crates/*`, shared `[workspace.package]` with `edition = "2024"`, `license = "AGPL-3.0-or-later"`, `repository = "https://github.com/bzed/naves"`). `rust-toolchain.toml` pins `channel = "1.95"`.
-- [ ] **Step 2:** `LICENSE` = full GNU AGPL v3 text (from https://www.gnu.org/licenses/agpl-3.0.txt). `README.md`: one paragraph with the tagline "Náves – terrain generator and editor for DayZ", status "early development", licence, link to the design. `.gitignore`: `/target`, `secrets/`, `**/build/`.
-- [ ] **Step 3:** `crates/naves/src/main.rs` prints `naves <version>` for `--version` via clap (`#[command(version)]`).
-- [ ] **Step 4:** Run `cargo build && cargo test && cargo run -p naves -- --version`. Expected: builds, 0 tests, prints `naves 0.1.0`.
-- [ ] **Step 5:** Commit `chore: cargo workspace, AGPL-3.0 licence`.
+- [ ] **Step 1: Write the failing test** `crates/naves/tests/version.rs` (`assert_cmd`): `naves --version` exits 0 and prints `naves 0.1.0`. Run `cargo test -p naves` → FAIL (no binary yet).
+- [ ] **Step 2: Workspace.** `resolver = "3"`, members `crates/*`, `exclude = ["fuzz"]`, shared `[workspace.package]` with `version = "0.1.0"`, `edition = "2024"`, `rust-version = "1.95"`, `license = "AGPL-3.0-or-later"`, `repository = "https://github.com/bzed/naves"`. `rust-toolchain.toml`: `channel = "1.95"`, `components = ["rustfmt", "clippy", "llvm-tools-preview"]`. `[profile.release] overflow-checks = true`.
+  `[workspace.lints]`: `rust.unsafe_code = "forbid"`, `rust.missing_docs = "warn"`; `clippy.all` and `clippy.pedantic` at `warn` (priority -1), plus `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`, `print_stdout`, `print_stderr`, `allow_attributes_without_reason` at `warn` (CI's `-D warnings` makes them errors). Every crate has `[lints] workspace = true`. `clippy.toml`: the `allow-unwrap-in-tests`, `allow-expect-in-tests`, `allow-panic-in-tests`, `allow-indexing-slicing-in-tests` options. Integration-test files and the binary's output module silence what remains with `#![expect(..., reason = "...")]`.
+- [ ] **Step 3: Licence and REUSE.** `LICENSE` = full GNU AGPL v3 text (https://www.gnu.org/licenses/agpl-3.0.txt), `LICENSES/AGPL-3.0-or-later.txt` via `reuse download`. SPDX headers (`SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>`, `SPDX-License-Identifier: AGPL-3.0-or-later`) on every source and doc file, including the existing ones under `docs/`; `REUSE.toml` covers files without comment syntax (`Cargo.lock`, later the binary fixtures). `README.md`: one paragraph with the tagline "Náves – terrain generator and editor for DayZ", status "early development", licence, links to the manual and the design. `.gitignore`: `/target`, `secrets/`, `**/build/`, `/vendor/`, `docs/manual/book/`.
+- [ ] **Step 4:** `crates/naves/src/main.rs` with clap `#[command(version)]`. Run `cargo test` → PASS; `cargo clippy --workspace --all-targets -- -D warnings` clean. Commit `chore: cargo workspace, AGPL-3.0 licence`.
+- [ ] **Step 5: Makefile and checks.** Targets exactly as in `AGENTS.md` ("Before pushing"): `fmt`, `fmt-check`, `lint`, `doc`, `reuse`, `deny`, `test`, `fuzz`, `cover` (`cargo llvm-cov --lcov --output-path lcov.info`), `coverage-check` (`cargo llvm-cov --fail-under-lines $(COVERAGE_MIN)`, `COVERAGE_MIN = 85`), `docs`, `miri`, `deb`, and `check` running all of them except `deb`/`miri`. The Makefile exports `TMPDIR ?= /tmp` so test temp dirs never land under `$HOME`. All cargo calls use `--locked`.
+  `deny.toml`: licence allow-list of AGPL-3.0-compatible licences (MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, BSL-1.0, CC0-1.0, LGPL-2.1-or-later, LGPL-3.0, GPL-3.0-or-later, AGPL-3.0-or-later); advisories deny; `sources.unknown-git = "deny"`, `unknown-registry = "deny"`; bans warn on duplicates.
+  `codecov.yml`: `coverage.status.project.default: {target: auto, threshold: 0%}`, `coverage.status.patch.default: {target: auto, threshold: 5%}`.
+  `fuzz/`: cargo-fuzz crate with no targets yet; `make fuzz` runs every target from `cargo +nightly fuzz list` for 10 s (`-max_total_time=10`) and succeeds with none. Seed corpora live in `fuzz/corpus/<target>/`; each crate that owns a target runs them in a `tests/fuzz_seeds.rs` (added with the first target).
+  Run `make check` → PASS. Commit `build: Makefile, cargo-deny, coverage and fuzz setup`.
+- [ ] **Step 6: Manual and changelog.** `docs/manual/` mdBook (`book.toml`: title "Náves", `[output.html] git-repository-url`), chapters as stubs: Introduction (what Náves is, status, licence), Installation (Debian package, from source), Getting started, Project file (`naves.toml`), Command line, GUI, MCP server, Troubleshooting, Credits and data licences. `make docs` = `mdbook build docs/manual` followed by `lychee --offline docs/manual/book` (broken internal links fail). `CHANGELOG.md` in Keep a Changelog format with an empty `## [Unreleased]`. Commit `docs: user manual skeleton and changelog`.
+- [ ] **Step 7: Debian packaging** (native, `3.0 (native)`, version `0.1.0`, distribution `UNRELEASED` until the first release): package `naves`, `Build-Depends: debhelper-compat (= 13)` (the toolchain comes from rustup, see `AGENTS.md`). `debian/rules` builds with `cargo build --release --locked --offline` against `vendor/` (created by `cargo vendor` before `dpkg-buildpackage`; `debian/rules` writes the matching `.cargo/config.toml` and fails with a hint if `vendor/` is missing), installs `/usr/bin/naves` and a man page generated from the clap definition (`clap_mangen`; lintian warns about binaries without one). Machine-readable `debian/copyright`. `make deb` runs `cargo vendor`, `dpkg-buildpackage -us -uc -b` and `lintian --fail-on error,warning`. Run it in a `debian:trixie` container (rustup with the pinned toolchain) → PASS. Commit `build: Debian packaging`.
+- [ ] **Step 8: CI.** Pin every third-party action to a commit SHA with the version in a comment.
+  - `ci.yml` (push and pull request to `main`): job `check` (ubuntu, toolchain from `rust-toolchain.toml`, `make check` without fuzz); job `coverage` (`make cover`, upload `lcov.info` with `codecov/codecov-action` **v7** or newer, `token: ${{ secrets.CODECOV_TOKEN }}`, `fail_ci_if_error: true`); job `fuzz` (nightly, `make fuzz`); job `windows` (`cargo build --workspace --locked` and `cargo test --workspace --locked`); job `deb` (container `debian:trixie`, rustup with the pinned toolchain, `make deb`).
+  - `codeql.yml`: languages `rust` and `actions`, on push and pull request to `main` and a weekly schedule.
+  - `pages.yml`: on push to `main`, `make docs` and deploy `docs/manual/book` to GitHub Pages.
+  - `release.yml`: on tag `v*`, fail unless the tag, `[workspace.package] version`, the top of `debian/changelog` and a `## [x.y.z] - YYYY-MM-DD` section in `CHANGELOG.md` agree; then `make check`, `make deb` and attach the `.deb` to the GitHub release.
+  Commit `ci: GitHub Actions, CodeQL, Codecov, Pages and release check`. Push, and check that all jobs are green. Repository settings the user does once: the `CODECOV_TOKEN` secret, Pages source "GitHub Actions", and branch protection on `main` requiring the CI, CodeQL and Codecov checks.
 
 ### Task 2: Editable world (8WVR) reader and writer
 
@@ -93,11 +115,15 @@ Layout (little endian; from bis-file-formats `EditableWrp.cs`): `"8WVR"`, `land_
       // buffer ends with 12 NaN floats, i32::MAX, u32 0; read() returns objects.len() == 1
   }
   #[test] fn wrong_length_is_inconsistent() { /* elevation.len() != tx*ty -> write() returns Err(InvalidInput) */ }
+  #[test] fn truncated_input_is_error() { /* every prefix of the roundtrip buffer -> Err, never a panic */ }
+  #[test] fn huge_header_is_rejected_before_allocating() { /* terrain_range 0xFFFF_FFFF x 2 -> Err(Inconsistent) */ }
   ```
+- Untrusted input (`AGENTS.md`, Safe Rust): grid sizes use `checked_mul` and must not exceed 8192 × 8192 (terrain) and the matching land grid, `material_count` and string lengths have limits (65 536 materials, 1024 bytes per string), ASCII is checked. Nothing is allocated from a header value before these checks.
 - [ ] **Step 2:** `cargo test -p naves-formats` → FAIL (types missing).
 - [ ] **Step 3:** Implement in `wrp8.rs`; little-endian helpers in `binio.rs` (`read_u32`, `read_f32s(n)`, `write_ascii32`, …). Derive `Debug, Clone, PartialEq` (NaN-free in tests).
 - [ ] **Step 4:** `cargo test -p naves-formats` → PASS.
-- [ ] **Step 5:** Commit `feat(formats): 8WVR editable world reader/writer`.
+- [ ] **Step 5: Fuzz target** `fuzz/fuzz_targets/wrp8_read.rs`: `EditableWorld::read` on arbitrary bytes returns `Ok` or `Err`, never panics. Seed corpus `fuzz/corpus/wrp8_read/` = the roundtrip test's buffer plus two truncated variants; `crates/naves-formats/tests/fuzz_seeds.rs` runs the seeds. `make fuzz` → no crash.
+- [ ] **Step 6:** `make check` → PASS. Commit `feat(formats): 8WVR editable world reader/writer`.
 
 ### Task 3: Project file
 
@@ -116,8 +142,9 @@ Layout (little endian; from bis-file-formats `EditableWrp.cs`): `"8WVR"`, `land_
   pub struct Sources { pub dem: Vec<std::path::PathBuf> }                             // relative to the project dir
   impl Project {
       pub fn new(name: &str, center_lat: f64, center_lon: f64, real_extent_m: f64) -> Project; // defaults below
-      pub fn load(dir: &Path) -> Result<Project, ProjectError>;   // reads <dir>/naves.toml
-      pub fn save(&self, dir: &Path) -> Result<(), ProjectError>;
+      pub fn load(dir: &Path) -> Result<Project, ProjectError>;   // reads <dir>/naves.toml, then parse()
+      pub fn parse(toml: &str) -> Result<Project, ProjectError>;  // deserialise + validate; fuzz entry point
+      pub fn save(&self, dir: &Path) -> Result<(), ProjectError>; // atomic: temp file in dir, then rename
       pub fn map_size_m(&self) -> f64;        // real_extent_m * scale.horizontal
       pub fn terrain_cell_m(&self) -> f64;    // map_size_m / terrain_size
   }
@@ -141,7 +168,9 @@ Layout (little endian; from bis-file-formats `EditableWrp.cs`): `"8WVR"`, `land_
 - [ ] **Step 2:** Run `cargo test -p naves-core --test project` → FAIL.
 - [ ] **Step 3:** Implement. `world_ident`: Unicode NFKD (`unicode-normalization`), drop combining marks, lowercase, runs of non-`[a-z0-9]` → `_`, trim `_`, prefix `w` if it does not start with a letter.
 - [ ] **Step 4:** Run → PASS.
-- [ ] **Step 5:** Commit `feat(core): project file`.
+- [ ] **Step 5: Fuzz target** `fuzz/fuzz_targets/project_parse.rs` (`Project::parse` on arbitrary UTF-8 → `Ok`/`Err`, never a panic); seeds: the roundtrip TOML and the invalid-grid TOML; `crates/naves-core/tests/fuzz_seeds.rs` runs them.
+- [ ] **Step 6: Docs.** `docs/manual/src/project-file.md`: every field of `naves.toml`, its default and its valid range. `CHANGELOG.md` → Added: "project file `naves.toml`".
+- [ ] **Step 7:** `make check` → PASS. Commit `feat(core): project file`.
 
 ### Task 4: DEM reader (Copernicus GLO-30 GeoTIFF)
 
@@ -153,8 +182,10 @@ Layout (little endian; from bis-file-formats `EditableWrp.cs`): `"8WVR"`, `land_
 - Produces:
   ```rust
   pub struct Dem { /* tiles */ }
+  pub struct DemTile { /* one GeoTIFF */ }
+  impl DemTile { pub fn from_reader<R: std::io::Read + std::io::Seek>(r: R) -> Result<DemTile, DemError>; } // fuzz entry point
   impl Dem {
-      pub fn open(paths: &[PathBuf]) -> Result<Dem, DemError>;
+      pub fn open(paths: &[PathBuf]) -> Result<Dem, DemError>;   // DemTile::from_reader per file
       pub fn height(&self, lat: f64, lon: f64) -> Option<f32>; // bilinear; None outside every tile
   }
   ```
@@ -189,7 +220,10 @@ Layout (little endian; from bis-file-formats `EditableWrp.cs`): `"8WVR"`, `land_
   Write the expected values of `seam_*` with `gdallocationinfo -wgs84 -valonly` before relying on the 5 m bound; adjust the bound only if the real terrain there is steeper.
 - [ ] **Step 3:** Run `cargo test -p naves-core --test dem` → FAIL.
 - [ ] **Step 4:** Implement with the `tiff` crate (decoder handles DEFLATE + floating-point predictor; verify, and if not, undo predictor 3 yourself: per row, byte-wise horizontal differencing over the shuffled byte planes, as in the TIFF Tech Note 3).
-- [ ] **Step 5:** Run → PASS. Commit `feat(core): GeoTIFF DEM reader`.
+- Untrusted input: image dimensions are checked against a limit (GLO-30 tiles are 3600 × 3600; allow up to 16 384 × 16 384) before decoding; a corrupt TIFF is an `Err`, never a panic.
+- [ ] **Step 5:** Run → PASS.
+- [ ] **Step 6: Fuzz target** `fuzz/fuzz_targets/dem_tile.rs` (`DemTile::from_reader(Cursor::new(data))`); seeds: the three fixtures; `crates/naves-core/tests/fuzz_seeds.rs` runs them. **REUSE:** a `REUSE.toml` annotation for `tests/fixtures/dem/*.tif` with `LicenseRef-Copernicus-DEM` and the attribution above, licence text in `LICENSES/LicenseRef-Copernicus-DEM.txt`. **Docs:** "Credits and data licences" chapter gets the Copernicus attribution; `docs/manual/src/project-file.md` says which DEM files `sources.dem` accepts. `CHANGELOG.md` → Added: "Copernicus GLO-30 GeoTIFF DEM input".
+- [ ] **Step 7:** `make check` → PASS. Commit `feat(core): GeoTIFF DEM reader`.
 
 ### Task 5: Projection and heightmap
 
@@ -305,7 +339,7 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
   ```rust
   #[test] fn config_names_world() { let c = world_config(&p, &hm);
       assert!(c.contains("class berchtesgaden: CAWorld")); assert!(c.contains(r#"worldName = "naves\worlds\berchtesgaden\berchtesgaden.wrp";"#)); }
-  #[test] fn config_rapifies() { /* write to tempdir, run `armake2 rapify` on it, exit status 0 (skip with a message if armake2 is missing) */ }
+  #[test] #[ignore = "needs armake2"] fn config_rapifies() { /* write to tempdir, run `armake2 rapify` on it, exit status 0 */ }
   #[test] fn mission_spawn_point() { /* fake mpmissions dir with a minimal dayzOffline.enoch (synthetic XML written by the test);
        write_mission -> cfgplayerspawnpoints.xml has exactly one <pos x="3200" z="3200"/> per section */ }
   #[test] fn mission_never_writes_source() { /* source dir made read-only; write_mission succeeds */ }
@@ -335,9 +369,10 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
       #[error("armake2 is not bzed's fork (no --proton-binarize); install https://github.com/bzed/armake2")] WrongArmake2,
       #[error("binarize failed (exit {code}); log: {log}")] Binarize { code: i32, log: PathBuf },
       #[error("binarize produced no OPRW world")] NoWorld { log: PathBuf },
+      #[error("{tool} did not finish within {secs} s; log: {log}")] Timeout { tool: &'static str, secs: u64, log: PathBuf },
   }
   ```
-- Sandbox in `/var/tmp` (`tempfile::Builder::new().prefix("naves-bin.").tempdir_in("/var/tmp")`), private Wine prefix inside it, `Z:` and `P:` confined as in the recipe; copy of DayZ Tools' `Bin/Binarize` into the sandbox; vanilla files the recipe found necessary are extracted from the install into the sandbox only. The log is kept next to the build output (`build/logs/binarize.log`); the sandbox is deleted on success and kept (path in the error) on failure. Never kill Wine processes by pattern; wait for the child and its `wineserver -w`.
+- Sandbox in `/var/tmp` (`tempfile::Builder::new().prefix("naves-bin.").tempdir_in("/var/tmp")`), private Wine prefix inside it, `Z:` and `P:` confined as in the recipe; copy of DayZ Tools' `Bin/Binarize` into the sandbox; vanilla files the recipe found necessary are extracted from the install into the sandbox only. The log is kept next to the build output (`build/logs/binarize.log`); the sandbox is deleted on success and kept (path in the error) on failure. Never kill Wine processes by pattern; wait for the child and its `wineserver -w`. Every external call goes through `Command` with an argument list (no shell) and a timeout (binarize: 30 min default, `NAVES_BINARIZE_TIMEOUT` overrides); on timeout, stop the sandbox's own prefix with `wineserver -k` (scoped by `WINEPREFIX`, never by pattern) and return `ToolError::Timeout`.
 - On non-Linux: `binarize_world` runs `binarize_x64.exe` directly (path from `DAYZ_TOOLS`); not tested in this plan.
 
 - [ ] **Step 1: Write the failing tests**
@@ -345,11 +380,13 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
   #[test] fn missing_armake2_is_named() { /* PATH and ARMAKE2 pointing at an empty dir -> Missing{tool:"armake2", env:"ARMAKE2"} */ }
   #[test] fn upstream_armake2_rejected() { /* ARMAKE2 = a test script printing help without --proton-binarize -> WrongArmake2 */ }
   #[test] fn missing_dayz_tools_is_named() { /* STEAM_ROOT = empty tempdir -> Missing{tool:"DayZ Tools", env:"DAYZ_TOOLS"} */ }
+  #[test] fn hanging_tool_times_out() { /* stub tool that never exits, timeout 1 s -> Err(Timeout{..}) */ }
   #[test] #[ignore = "needs Steam, DayZ Tools and Proton"] fn binarizes_flat_world() {
       /* the Task 6 flat world through binarize_world -> file starts with b"OPRW" and u32 32 */ }
   ```
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** `cargo test -p naves-export --test bridge` → PASS; `cargo test -p naves-export --test bridge -- --ignored` on the dev machine → PASS.
-- [ ] **Step 5:** Commit `feat(export): Proton binarize bridge for worlds`.
+- [ ] **Step 5: Docs.** `docs/manual/src/installation.md`: required external tools (bzed's armake2 fork, DayZ Tools, Proton) and the environment variables; `troubleshooting.md`: every `ToolError` message and what to do. `CHANGELOG.md` → Added: "binarize worlds with DayZ Tools under Proton".
+- [ ] **Step 6:** `make check` → PASS. Commit `feat(export): Proton binarize bridge for worlds`.
 
 ### Task 10: Build pipeline and CLI
 
@@ -382,7 +419,8 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
       /* project with the fixture DEM, extent 2000, terrain_size 256 -> mod PBO exists, `armake2 verify` OK */ }
   ```
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement (CLI with clap derive). **Step 4:** Run → PASS (`-- --ignored` on the dev machine too).
-- [ ] **Step 5:** Commit `feat: naves new/build`.
+- [ ] **Step 5: Docs.** `docs/manual/src/cli.md` (every command and option, matching `--help`), `getting-started.md` (new → add DEM → build → load on a server); the man page follows from clap. `CHANGELOG.md` → Added: "`naves new` and `naves build`".
+- [ ] **Step 6:** `make check` → PASS. Commit `feat: naves new/build`.
 
 ### Task 11: GUI basics
 
@@ -407,8 +445,10 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
   #[test] fn aspect_kept() { /* request 2000x1000 m at px 400 -> image 400x200 */ }
   #[test] fn slope_overlay_marks_steep() { /* 60° wall -> wall pixels red-dominant */ }
   ```
+- Coverage: keep `eframe` code thin. The settings form state (edit, validate, save), the build worker's message handling and the view's pan/zoom maths are plain structs with tests; widget wiring is tested with `egui_kittest` (settings field edit → `naves.toml` changes; build button → progress lines appear, using the stub `Tools` from Task 10).
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement render + GUI. **Step 4:** Run → PASS; `cargo run -p naves -- gui <fixture project>` shows the map, saving a setting changes `naves.toml`, build streams progress.
-- [ ] **Step 5:** Commit `feat: GUI basics (project, map view, build)`.
+- [ ] **Step 5: Docs.** `docs/manual/src/gui.md` with a screenshot (taken from the fixture project, committed under `docs/manual/src/images/`). `CHANGELOG.md` → Added: "GUI: project settings, map view, build".
+- [ ] **Step 6:** `make check` → PASS. Commit `feat: GUI basics (project, map view, build)`.
 
 ### Task 12: MCP server (read, render, settings, rebuild)
 
@@ -432,21 +472,24 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
   #[tokio::test] async fn set_validates() { /* project_set scale.horizontal = 3 -> tool error mentioning "horizontal"; naves.toml unchanged */ }
   #[tokio::test] async fn render_returns_png() { /* image content, mime image/png, decodes to px width */ }
   ```
+- MCP requests are untrusted input: `project_set` paths and values are validated like `Project::parse`, `render_topdown` caps `px` and rejects inverted or non-finite bounds, nothing panics. Blocking work (render, build) runs in `spawn_blocking`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5:** Commit `feat: MCP server (project, render, build)`.
+- [ ] **Step 5: Fuzz target** `fuzz/fuzz_targets/mcp_project_set.rs`: arbitrary `{path, value}` JSON applied to a sample project → `Ok`/`Err`, never a panic; seeds from the `set_validates` test.
+- [ ] **Step 6: Docs.** `docs/manual/src/mcp.md`: the tools, their arguments, and how to register `naves mcp <dir>` with an MCP client (moves out of the README, which links to it). `CHANGELOG.md` → Added: "MCP server `naves mcp`".
+- [ ] **Step 7:** `make check` → PASS. Commit `feat: MCP server (project, render, build)`.
 
 ### Task 13: Berchtesgaden end to end
 
 **Files:**
 - Create: `examples/berchtesgaden/naves.toml`, `examples/berchtesgaden/README.md` (how to fetch the DEM tiles; tiles themselves not committed, `examples/*/dem/` in `.gitignore`)
-- Modify: `README.md` (quick start)
+- Modify: `README.md` (quick start, linking to the manual), `docs/manual/src/getting-started.md` (the Berchtesgaden walkthrough)
 
 - [ ] **Step 1:** `naves new examples/berchtesgaden --name Berchtesgaden --center 47.585,12.965 --extent 12800`; download `Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif` and `…E013…` into `examples/berchtesgaden/dem/`, add them to `sources.dem`.
 - [ ] **Step 2:** `naves build examples/berchtesgaden`. Expected: mod and mission paths printed, no error.
 - [ ] **Step 3:** Boot a local server with the mod and mission (dayz-dev skill: `make-server-tree.sh`, `free-ports.sh 3`, `-mod=@naves_berchtesgaden`, `-mission=` the built mission). Expected: RPT without world/terrain errors, mission starts.
 - [ ] **Step 4:** Join with the headless client (dayz-dev `dayz-client-test.sh`/`client-testing.md`; one game at a time, stop it right after), walk a few metres, take screenshots looking at the Watzmann from the north and over the Königssee basin. Expected: terrain visible with the procedural surfaces; the player can walk. Remove the client `@mod` symlink afterwards.
 - [ ] **Step 5:** Through `naves mcp`, call `render_topdown` for the whole map with `Hillshade` and check by eye that the Königssee basin and the Watzmann are where they belong (Königssee south of the centre, Watzmann west of it).
-- [ ] **Step 6:** Record results (screenshots outside the repo; paths and RPT excerpts in `examples/berchtesgaden/README.md`). Commit `docs: Berchtesgaden walkable test map`. Push.
+- [ ] **Step 6:** Record results (screenshots outside the repo; paths and RPT excerpts in `examples/berchtesgaden/README.md`). `make check` → PASS. Commit `docs: Berchtesgaden walkable test map`. Push; CI, CodeQL and Codecov green.
 
 ---
 
