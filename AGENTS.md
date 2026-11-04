@@ -142,6 +142,12 @@ and each crate has `lints.workspace = true`.
 - Public items in library crates have rustdoc comments; `make doc` builds them with warnings as errors.
 - CLI help (`clap`) and `docs/manual/` must agree; change both together.
 
+## User interface
+
+- Every UI task (GUI layout, widgets, map view, dialogs, the manual's look, any web page) starts by
+  invoking the `/frontend-design:frontend-design` skill and follows its guidance. This applies to the
+  `egui` GUI too, not only to web pages.
+
 ## Changelogs
 
 - Every user-visible change (feature, fix, behaviour or config change, project-file format change,
