@@ -1,0 +1,51 @@
+/* SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de> */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* Náves manual: a village-green palette on top of mdBook's default theme. */
+.light, .rust {
+    --bg: #f2f5ec;
+    --fg: #1d2924;
+    --sidebar-bg: #e7ede0;
+    --sidebar-fg: #1d2924;
+    --sidebar-active: #2e6a4c;
+    --links: #2e6a4c;
+    --quote-bg: #e4ebdb;
+    --quote-border: #8c6a45;
+    --inline-code-color: #5b4528;
+}
+.navy, .coal, .ayu {
+    --bg: #17201c;
+    --fg: #dbe5dd;
+    --sidebar-bg: #121916;
+    --sidebar-fg: #c4d1c8;
+    --sidebar-active: #8fd0ae;
+    --links: #8fd0ae;
+    --quote-bg: #1f2b25;
+    --quote-border: #b89466;
+}
+
+.content main { max-width: 44rem; }
+
+.content p, .content li {
+    font-family: "Charis SIL", "Source Serif 4", Georgia, serif;
+    line-height: 1.7;
+}
+
+.content h1, .content h2, .content h3, .content h4 {
+    font-family: system-ui, "Segoe UI", "Helvetica Neue", sans-serif;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+.content h1 {
+    padding: 1.4rem 0 1.2rem;
+    border-bottom: 2px solid var(--quote-border);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='120' viewBox='0 0 640 120' fill='none' stroke='%238c6a45' stroke-opacity='.22'%3E%3Cpath d='M0 90C80 60 140 100 230 70S400 30 470 60 590 90 640 50'/%3E%3Cpath d='M0 76C80 46 140 86 230 56S400 16 470 46 590 76 640 36'/%3E%3Cpath d='M0 62C80 32 140 72 230 42S400 2 470 32 590 62 640 22'/%3E%3Cpath d='M0 104C80 74 140 114 230 84S400 44 470 74 590 104 640 64'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right bottom;
+    background-size: 100% 100%;
+}
+
+blockquote { border-inline-start: 4px solid var(--quote-border); }
+
+a:focus-visible, button:focus-visible { outline: 2px solid var(--links); outline-offset: 2px; }

@@ -3,7 +3,7 @@
 
 [package]
 name = "naves"
-description = "Náves – terrain generator and editor for DayZ"
+description = "Náves – terrain generator and map editor for DayZ"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
