@@ -31,3 +31,10 @@ path = "fuzz_targets/project_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dem_tile"
+path = "fuzz_targets/dem_tile.rs"
+test = false
+doc = false
+bench = false

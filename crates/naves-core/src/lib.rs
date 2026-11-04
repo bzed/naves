@@ -3,5 +3,6 @@
 
 //! Náves core: project, DEM, projection, heightmap and generation.
 
+pub mod dem;
 pub mod ident;
 pub mod project;

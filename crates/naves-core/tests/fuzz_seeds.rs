@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use naves_core::dem::DemTile;
 use naves_core::project::Project;
 
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
@@ -30,6 +31,14 @@ fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
             (name, std::fs::read(p).unwrap())
         })
         .collect()
+}
+
+#[test]
+fn dem_tile_seeds() {
+    for (name, data) in seeds("dem_tile") {
+        let tile = DemTile::from_reader(std::io::Cursor::new(data));
+        assert!(tile.is_ok(), "seed {name}: {:?}", tile.err());
+    }
 }
 
 #[test]

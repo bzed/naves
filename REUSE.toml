@@ -24,3 +24,9 @@ path = "fuzz/corpus/**"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "tests/fixtures/dem/*.tif"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"

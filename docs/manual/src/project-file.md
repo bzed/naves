@@ -77,5 +77,10 @@ The distance between heightmap vertices is the map width divided by `terrain_siz
 | `dem` | empty | list of paths relative to the project folder |
 
 `dem` lists the elevation files. Absolute paths and paths with `..` are rejected, so a project folder
-can be moved or shared. Náves reads single-band Float32 GeoTIFF files in EPSG:4326, for example the
-Copernicus GLO-30 tiles.
+can be moved or shared.
+
+Náves reads single-band Float32 GeoTIFF files in EPSG:4326 (latitude and longitude on WGS84), tiled or in
+strips, uncompressed or DEFLATE-compressed, such as the Copernicus GLO-30 tiles. Anything else is
+rejected with a message that says why. Files may be neighbouring tiles; heights are interpolated
+across the border between them. A spot that no file covers is an error when you build, not a hole in
+the map. The data licence is in [Credits and data licences](credits.md).

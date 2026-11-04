@@ -14,3 +14,4 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - Project file `naves.toml`.
+- Copernicus GLO-30 GeoTIFF DEM input.
