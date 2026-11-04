@@ -11,9 +11,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 
-use tiff::ColorType;
-use tiff::decoder::{Decoder, DecodingResult, Limits};
-use tiff::tags::Tag;
+use geotiff_reader::GeoTiffFile;
 
 /// Largest accepted image side in pixels (GLO-30 tiles are 3600).
 const MAX_SIDE: u32 = 16_384;
@@ -26,9 +24,9 @@ pub enum DemError {
     /// The file is not a GeoTIFF this reader supports.
     #[error("unsupported DEM file: {0}")]
     Unsupported(String),
-    /// The TIFF decoder rejected the file.
-    #[error("cannot decode TIFF: {0}")]
-    Tiff(#[from] tiff::TiffError),
+    /// The GeoTIFF decoder rejected the file.
+    #[error("cannot decode GeoTIFF: {0}")]
+    GeoTiff(geotiff_reader::Error),
     /// Reading the file failed.
     #[error("{0}")]
     Io(#[from] std::io::Error),
@@ -44,6 +42,14 @@ pub enum DemError {
 
 fn unsupported<T>(msg: impl Into<String>) -> Result<T, DemError> {
     Err(DemError::Unsupported(msg.into()))
+}
+
+/// A file without GeoTIFF metadata is unsupported input; anything else is a decoding error.
+fn geotiff_error(e: geotiff_reader::Error) -> DemError {
+    match e {
+        geotiff_reader::Error::NotGeoTiff => DemError::Unsupported(e.to_string()),
+        other => DemError::GeoTiff(other),
+    }
 }
 
 /// Largest index magnitude that is converted from floating point.
@@ -74,28 +80,27 @@ pub struct DemTile {
     data: Vec<f32>,
 }
 
-/// Reads the GeoTIFF key `key` from a `GeoKeyDirectory`, if it holds its value inline.
-fn geo_key(dir: &[u16], key: u16) -> Option<u16> {
-    // header: version, revision, minor, key count; then 4 values per key
-    let (_, entries) = dir.split_at_checked(4)?;
-    entries
-        .chunks_exact(4)
-        .find(|e| e.first() == Some(&key))
-        .and_then(|e| (e.get(1) == Some(&0)).then(|| e.get(3).copied()).flatten())
-}
+/// Largest accepted file size.
+const MAX_FILE_BYTES: u64 = 1 << 29;
 
 impl DemTile {
-    /// Decodes a GeoTIFF; the input is untrusted.
+    /// Decodes a GeoTIFF with the `geotiff-reader` crate; the input is untrusted.
     ///
     /// # Errors
     ///
     /// [`DemError::Unsupported`] for anything but a single-band Float32 GeoTIFF in EPSG:4326 within
-    /// the size limits, [`DemError::Tiff`] / [`DemError::Io`] for corrupt or truncated files.
-    pub fn from_reader<R: Read + Seek>(reader: R) -> Result<DemTile, DemError> {
-        let mut limits = Limits::default();
-        limits.decoding_buffer_size = 1 << 28;
-        let mut dec = Decoder::new(reader)?.with_limits(limits);
-        let (width, height) = dec.dimensions()?;
+    /// the size limits, [`DemError::GeoTiff`] / [`DemError::Io`] for corrupt or truncated files.
+    pub fn from_reader<R: Read + Seek>(mut reader: R) -> Result<DemTile, DemError> {
+        let mut bytes = Vec::new();
+        reader
+            .by_ref()
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if u64::try_from(bytes.len()).map_or(true, |n| n > MAX_FILE_BYTES) {
+            return unsupported("file larger than 512 MiB");
+        }
+        let file = GeoTiffFile::from_bytes(bytes).map_err(geotiff_error)?;
+        let (width, height) = (file.width(), file.height());
         if width == 0
             || height == 0
             || width > MAX_SIDE
@@ -106,48 +111,26 @@ impl DemTile {
                 "image size {width}x{height} outside the supported range"
             ));
         }
-        if dec.colortype()? != ColorType::Gray(32) {
-            return unsupported("not a single-band 32-bit image");
+        if file.band_count() != 1 {
+            return unsupported("not a single-band image");
         }
-
-        let scale = dec
-            .get_tag_f64_vec(Tag::ModelPixelScaleTag)
-            .or_else(|_| unsupported("no ModelPixelScaleTag (not a GeoTIFF)"))?;
-        let tie = dec
-            .get_tag_f64_vec(Tag::ModelTiepointTag)
-            .or_else(|_| unsupported("no ModelTiepointTag (not a GeoTIFF)"))?;
-        let keys = dec
-            .get_tag_u16_vec(Tag::GeoKeyDirectoryTag)
-            .or_else(|_| unsupported("no GeoKeyDirectory (not a GeoTIFF)"))?;
-        if geo_key(&keys, 2048) != Some(4326) {
+        if file.epsg() != Some(4326) {
             return unsupported("only geographic WGS84 (EPSG:4326) GeoTIFFs are supported");
         }
-        if geo_key(&keys, 1024).is_some_and(|m| m != 2) {
-            return unsupported("model type is not geographic");
-        }
-        let (Some(&pixel_x), Some(&pixel_y)) = (scale.first(), scale.get(1)) else {
-            return unsupported("ModelPixelScaleTag is too short");
+        let Some(transform) = file.transform() else {
+            return unsupported("no geo-referencing");
         };
-        let &[raster_i, raster_j, _, tie_lon, tie_lat, ..] = tie.as_slice() else {
-            return unsupported("ModelTiepointTag is too short");
-        };
-        if raster_i.abs() > 0.0 || raster_j.abs() > 0.0 {
-            return unsupported("the tie point is not at raster position (0, 0)");
-        }
+        let (west, north) = transform.pixel_to_geo(0.0, 0.0);
+        let (next_lon, next_lon_lat) = transform.pixel_to_geo(1.0, 0.0);
+        let (next_row_lon, next_row_lat) = transform.pixel_to_geo(0.0, 1.0);
+        let (pixel_x, pixel_y) = (next_lon - west, north - next_row_lat);
+        let rotated = (next_lon_lat - north).abs() > 1e-12 || (next_row_lon - west).abs() > 1e-12;
         let valid = |v: f64| v.is_finite() && v > 0.0;
-        if !(valid(pixel_x) && valid(pixel_y) && tie_lon.is_finite() && tie_lat.is_finite()) {
-            return unsupported("invalid pixel scale or tie point");
+        if rotated || !(valid(pixel_x) && valid(pixel_y) && west.is_finite() && north.is_finite()) {
+            return unsupported("rotated or invalid geo-transform");
         }
-        // GTRasterTypeGeoKey: 1 = PixelIsArea, 2 = PixelIsPoint (tie point is a pixel centre)
-        let (west, north) = if geo_key(&keys, 1025) == Some(2) {
-            (tie_lon - pixel_x / 2.0, tie_lat + pixel_y / 2.0)
-        } else {
-            (tie_lon, tie_lat)
-        };
-
-        let DecodingResult::F32(data) = dec.read_image()? else {
-            return unsupported("samples are not Float32");
-        };
+        let raster = file.read_band::<f32>(0).map_err(geotiff_error)?;
+        let data: Vec<f32> = raster.iter().copied().collect();
         let expected = usize::try_from(u64::from(width) * u64::from(height))
             .or_else(|_| unsupported("image too large"))?;
         if data.len() != expected {
