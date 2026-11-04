@@ -219,6 +219,44 @@ impl Dem {
         Ok(Dem { tiles })
     }
 
+    /// A synthetic DEM for tests: `f(lat, lon)` sampled at the pixel centres of a grid with
+    /// `pixel_deg` spacing that covers `west..east` and `south..north` (degrees).
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn from_fn(
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+        pixel_deg: f64,
+        f: impl Fn(f64, f64) -> f32,
+    ) -> Dem {
+        let side = |span: f64| {
+            floor_index((span / pixel_deg).round())
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0)
+        };
+        let (width, height) = (side(east - west), side(north - south));
+        let mut data = Vec::new();
+        for row in 0..height {
+            let lat = north - (f64::from(row) + 0.5) * pixel_deg;
+            for col in 0..width {
+                data.push(f(lat, west + (f64::from(col) + 0.5) * pixel_deg));
+            }
+        }
+        Dem {
+            tiles: vec![DemTile {
+                west,
+                north,
+                pixel_x: pixel_deg,
+                pixel_y: pixel_deg,
+                width,
+                height,
+                data,
+            }],
+        }
+    }
+
     /// Bilinear height at a WGS84 position; `None` if no tile covers it or a neighbouring sample
     /// is missing (NaN).
     ///
