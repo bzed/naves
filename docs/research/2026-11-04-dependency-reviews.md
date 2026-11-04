@@ -56,3 +56,10 @@ multi-tile bilinear height sampler and the heightmap grid (an `ndarray` grid wou
 |---|---|---|---|
 | `quick-xml` 0.42 | edit three mission XML files (drop elements, replace spawn positions) | `roxmltree` (read-only), `xml-rs`/`xmltree` (older, slower), plain string edits (fragile on real files) | *scan:* `#![forbid(unsafe_code)]`, no build script, MIT, about 163 M recent downloads, updated Aug 2026; malformed input returns an error (tested) |
 | `walkdir` 2.5 | copy the mission folder in a stable order | `std::fs::read_dir` recursion (more code for symlink and loop handling) | *scan:* no `unsafe`, no build script, Unlicense OR MIT (added `Unlicense` to the `deny.toml` allow-list: a public-domain dedication, AGPL-compatible), about 193 M recent downloads; last release March 2024, feature-complete |
+
+## Added with the Proton bridge (Task 9)
+
+| Crate | Purpose | Alternatives considered | Review |
+|---|---|---|---|
+| `wait-timeout` 0.2 | stop a child process after a time limit | `std` only (needs a polling loop with sleeps), `command-group`, `duct`, `subprocess` (bigger, more than needed) | *scan:* tiny, already in the tree through `assert_cmd`; one maintainer (alexcrichton, rust-lang), last release Feb 2025, MIT/Apache-2.0; its `unsafe` is the libc/Windows wait calls |
+| `which` 8 | find `armake2` on `PATH` | hand-written `PATH` search (executable bit, `PATHEXT` on Windows) | *scan:* about 80 M recent downloads, updated Aug 2026, MIT; no build script |
