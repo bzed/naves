@@ -14,12 +14,20 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 naves-formats = { path = "../crates/naves-formats" }
+naves-core = { path = "../crates/naves-core" }
 
 [workspace]
 
 [[bin]]
 name = "wrp8_read"
 path = "fuzz_targets/wrp8_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "project_parse"
+path = "fuzz_targets/project_parse.rs"
 test = false
 doc = false
 bench = false
