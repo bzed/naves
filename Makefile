@@ -37,7 +37,8 @@ test:
 fuzz:
 	@if [ -d fuzz ]; then \
 	  cd fuzz && for t in $$($(CARGO) +nightly fuzz list 2>/dev/null); do \
-	    $(CARGO) +nightly fuzz run $$t -- -max_total_time=10 || exit 1; \
+	    mkdir -p $(TMPDIR)/naves-fuzz/$$t; \
+	    $(CARGO) +nightly fuzz run $$t $(TMPDIR)/naves-fuzz/$$t corpus/$$t -- -max_total_time=10 || exit 1; \
 	  done; \
 	fi
 
