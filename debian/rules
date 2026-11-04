@@ -11,7 +11,7 @@ export CARGO_TARGET_DIR = $(CURDIR)/debian/cargo-target
 override_dh_auto_configure:
 	@test -d vendor || { echo "vendor/ is missing: run 'cargo vendor vendor' first (make deb does)" >&2; exit 1; }
 	mkdir -p $(CURDIR)/debian/cargo-home
-	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n' > $(CURDIR)/debian/cargo-home/config.toml
+	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "$(CURDIR)/vendor"\n' > $(CURDIR)/debian/cargo-home/config.toml
 
 override_dh_auto_build:
 	cargo build --release --locked --offline -p naves
