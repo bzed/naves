@@ -40,6 +40,15 @@ fn ident_is_ascii() {
 }
 
 #[test]
+fn ascii_name_keeps_the_look_of_the_name() {
+    use naves_core::ident::ascii_name;
+    assert_eq!(ascii_name("Königssee \"Test\""), "Konigssee Test");
+    assert_eq!(ascii_name("Náves"), "Naves");
+    assert_eq!(ascii_name("  a\tb  "), "a b");
+    assert_eq!(ascii_name("日本"), "");
+}
+
+#[test]
 fn roundtrip_toml() {
     let dir = tempfile::tempdir().unwrap();
     let mut p = Project::new("Berchtesgaden", 47.585, 12.965, 12800.0);

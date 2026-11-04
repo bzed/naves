@@ -49,3 +49,10 @@ unmaintained, swap back to the `tiff` crate; only `DemTile::from_reader` changes
 remains has no crate that fits: the 8WVR reader and writer (`naves-formats`; a private binary layout), the
 multi-tile bilinear height sampler and the heightmap grid (an `ndarray` grid would add a dependency for
 `Vec<f32>` plus an index).
+
+## Added with the world config and mission (Task 8)
+
+| Crate | Purpose | Alternatives considered | Review |
+|---|---|---|---|
+| `quick-xml` 0.42 | edit three mission XML files (drop elements, replace spawn positions) | `roxmltree` (read-only), `xml-rs`/`xmltree` (older, slower), plain string edits (fragile on real files) | *scan:* `#![forbid(unsafe_code)]`, no build script, MIT, about 163 M recent downloads, updated Aug 2026; malformed input returns an error (tested) |
+| `walkdir` 2.5 | copy the mission folder in a stable order | `std::fs::read_dir` recursion (more code for symlink and loop handling) | *scan:* no `unsafe`, no build script, Unlicense OR MIT (added `Unlicense` to the `deny.toml` allow-list: a public-domain dedication, AGPL-compatible), about 193 M recent downloads; last release March 2024, feature-complete |

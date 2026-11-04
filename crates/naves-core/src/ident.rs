@@ -5,6 +5,20 @@
 
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
+/// A printable ASCII version of a display name for places that only take ASCII (config strings): accents
+/// are removed (NFKD), quotes and other characters outside `[A-Za-z0-9 ._-]` are dropped, and runs of
+/// whitespace become one space. Names without any ASCII letter or digit give an empty string.
+#[must_use]
+pub fn ascii_name(name: &str) -> String {
+    let kept: String = name
+        .nfkd()
+        .filter(|c| !is_combining_mark(*c))
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'))
+        .collect();
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Turns a project name into an ASCII identifier matching `^[a-z][a-z0-9_]*$`.
 ///
 /// The name is decomposed (NFKD), combining marks are dropped, letters are lowercased, every run of
