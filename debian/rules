@@ -8,6 +8,10 @@ export CARGO_TARGET_DIR = $(CURDIR)/debian/cargo-target
 %:
 	dh $@
 
+# dh_clean would delete vendor/**/Cargo.toml.orig, which cargo's checksums list.
+override_dh_clean:
+	dh_clean -X.orig
+
 override_dh_auto_configure:
 	@test -d vendor || { echo "vendor/ is missing: run 'cargo vendor vendor' first (make deb does)" >&2; exit 1; }
 	mkdir -p $(CURDIR)/debian/cargo-home
@@ -16,6 +20,9 @@ override_dh_auto_configure:
 override_dh_auto_build:
 	cargo build --release --locked --offline -p naves
 	$(CARGO_TARGET_DIR)/release/naves man | gzip -9n > debian/naves.1.gz
+
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
 
 override_dh_auto_test:
 
