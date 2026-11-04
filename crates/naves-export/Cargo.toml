@@ -12,3 +12,9 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+naves-core = { version = "0.1.0", path = "../naves-core" }
+rayon = "1.12.0"
+

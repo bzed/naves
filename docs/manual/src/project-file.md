@@ -66,9 +66,13 @@ The map is `real_extent_m × horizontal` metres wide. With the defaults, a 12 80
 | Field | Default | Valid values |
 |---|---|---|
 | `terrain_size` | 1024 | power of two from 256 to 8192; heightmap vertices per side |
-| `land_size` | 256 | power of two that divides `terrain_size`; surface material cells per side |
+| `land_size` | 256 | power of two from 32 to 4096 that divides `terrain_size`; surface material cells per side |
 
 The distance between heightmap vertices is the map width divided by `terrain_size`.
+
+The surface images are cut into tiles of 32 × 32 material cells, so a map has `land_size / 32` tiles per side
+(8 with the defaults). Each tile gets a satellite image and a surface mask of 512 × 512 pixels with 15 pixels per
+material cell; a larger `land_size` therefore means a sharper surface and a longer build.
 
 ## `[sources]`
 

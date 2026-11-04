@@ -42,6 +42,7 @@ unmaintained, swap back to the `tiff` crate; only `DemTile::from_reader` changes
 | `thiserror`, `anyhow` | error types | `snafu`, `eyre` | *scan:* build scripts only probe the compiler |
 | `tempfile` | atomic writes, tests | `atomic-write-file` (smaller, less used) | *scan:* three small `unsafe` blocks around OS calls; the de-facto standard |
 | `clap`, `clap_mangen` | CLI, man page | `argh`, `pico-args` | *scan:* no `unsafe`, no build script |
+| `image` 0.25 (feature `png` only, pulls `png`) | PNG satellite and mask images (and later the map render) | `png` directly (lower level; the render code later needs `RgbaImage`), `tiny-skia` (a 2D renderer) | *scan:* image-rs project, about 75 M recent downloads, updated March 2026, `png` about 107 M; pure Rust decoder/encoder, we only encode our own images in memory, so untrusted-input exposure is nil in this plan |
 | `assert_cmd`, `libfuzzer-sys` | dev: CLI tests, fuzzing | none | *scan:* standard tools of their kind |
 
 `cargo deny check` (RustSec advisories, licences, sources) is clean for all of them. The hand-written code that

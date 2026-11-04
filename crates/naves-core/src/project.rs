@@ -194,12 +194,14 @@ impl Project {
         if !(256..=8192).contains(&g.terrain_size) || !g.terrain_size.is_power_of_two() {
             return invalid("grid.terrain_size must be a power of two in 256..=8192");
         }
-        if g.land_size == 0
+        if !(32..=4096).contains(&g.land_size)
             || !g.land_size.is_power_of_two()
             || g.land_size > g.terrain_size
             || !g.terrain_size.is_multiple_of(g.land_size)
         {
-            return invalid("grid.land_size must be a power of two dividing grid.terrain_size");
+            return invalid(
+                "grid.land_size must be a power of two in 32..=4096 that divides grid.terrain_size",
+            );
         }
         let s = &self.scale;
         if !(s.horizontal > 0.0 && s.horizontal <= 1.0) {

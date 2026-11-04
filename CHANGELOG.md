@@ -15,3 +15,5 @@ All notable changes to this project are documented here. The format follows
 
 - Project file `naves.toml`.
 - Copernicus GLO-30 GeoTIFF DEM input.
+- Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope) and a tile
+  material for every terrain tile. `grid.land_size` must now be 32 to 4096.

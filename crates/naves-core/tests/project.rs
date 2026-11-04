@@ -93,6 +93,13 @@ fn rejects_bad_grid() {
     invalid_field(&t, "land_size");
     let t = base().replace("land_size = 256", "land_size = 2048");
     invalid_field(&t, "land_size");
+    // a tile is 32 land cells, and tile materials must fit the 16-bit material index
+    let t = base().replace("land_size = 256", "land_size = 16");
+    invalid_field(&t, "land_size");
+    let t = base()
+        .replace("terrain_size = 1024", "terrain_size = 8192")
+        .replace("land_size = 256", "land_size = 8192");
+    invalid_field(&t, "land_size");
 }
 
 #[test]
