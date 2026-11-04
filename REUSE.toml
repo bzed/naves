@@ -1,0 +1,7 @@
+version = 1
+
+[[annotations]]
+path = ["Cargo.lock", "fuzz/Cargo.lock", ".gitignore", "debian/changelog", "debian/source/format", "LICENSE"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

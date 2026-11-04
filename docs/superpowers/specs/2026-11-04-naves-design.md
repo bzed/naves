@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # Náves: design
 
 Náves (Czech: village green, the centre a village is built around) is the tool's name. ASCII spelling
