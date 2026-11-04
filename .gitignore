@@ -11,3 +11,11 @@ docs/manual/book/
 lcov.info
 /fuzz/target
 /fuzz/artifacts
+debian/cargo-home/
+debian/cargo-target/
+debian/naves/
+debian/.debhelper/
+debian/*.substvars
+debian/files
+debian/naves.1.gz
+debian/debhelper-build-stamp
