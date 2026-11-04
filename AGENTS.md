@@ -37,6 +37,8 @@ builds with `--locked`.
   under `$HOME`.
 - Local DayZ test servers never use the default ports.
 - Linux first; everything except clearly marked platform code must also build on Windows.
+- **Reuse before you write:** check for an existing crate before implementing anything, and review it
+  (security, maintenance, our standards) before using it. See *Dependencies* below; this is mandatory.
 
 ## Tests
 
@@ -128,6 +130,21 @@ and each crate has `lints.workspace = true`.
   error messages. `secrets/` is in `.gitignore`.
 
 **Dependencies**
+- **Look for a crate first (strict).** Before implementing a feature, parser, algorithm or helper, check
+  whether an appropriate crate already exists (crates.io, lib.rs, RustSec, `cargo search`). Writing it
+  ourselves is only allowed when no suitable crate exists or every candidate fails the review below; the
+  commit message says which crates were considered and why they were rejected.
+- **Review every crate before using it (strict).** Read its source, not just its README, and check:
+  - *security*: open RustSec advisories and past CVEs, how it handles untrusted input (panics,
+    unchecked indexing, allocation from length fields, unbounded recursion), every `unsafe` block is
+    justified and sound, no build scripts or proc macros doing network access or other surprises;
+  - *maintenance*: recent releases and commits, issues and pull requests get answered, not deprecated,
+    archived or yanked, more than one maintainer or a healthy bus factor, sane release history;
+  - *our standards*: has tests (ideally fuzzing for parsers), returns errors instead of panicking, builds
+    on Linux and Windows with Rust 1.95, deterministic output, a licence on the `deny.toml` allow-list,
+    and a dependency tree that is reasonable for what it gives us.
+  A crate that fails the review is not used; if it is the only option, ask the maintainer first. The
+  review result goes into the commit message that adds the crate.
 - Add dependencies with `cargo add` (latest stable), with only the features needed. No git or path
   dependencies outside the workspace.
 - Every new dependency is justified in the commit message. `cargo deny` checks licences against the
