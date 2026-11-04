@@ -9,3 +9,5 @@ secrets/
 docs/manual/book/
 .superpowers/
 lcov.info
+/fuzz/target
+/fuzz/artifacts

@@ -5,3 +5,10 @@ path = ["Cargo.lock", "fuzz/Cargo.lock", ".gitignore", "debian/changelog", "debi
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Generated mdBook output (git-ignored; only present after `make docs`).
+[[annotations]]
+path = "docs/manual/book/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
