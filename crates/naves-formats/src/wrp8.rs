@@ -19,7 +19,10 @@ const MAX_MATERIALS: u32 = 65_536;
 /// Longest accepted string (material or model name) in bytes.
 const MAX_STRING: u32 = 1024;
 /// Object id of the terminator object.
+/// Id written into the terminator object (Terrain Builder writes an arbitrary one; readers ignore it).
 const TERMINATOR_ID: i32 = i32::MAX;
+/// Bit pattern of the NaNs in Terrain Builder's terminator object (observed in Bohemia's `Test_Terrain` sample).
+const TERMINATOR_NAN_BITS: u32 = 0x7fc8_7f88;
 
 /// An editable world: heightmap, material grid, materials and objects.
 #[derive(Debug, Clone, PartialEq)]
@@ -139,8 +142,10 @@ impl EditableWorld {
         }
         for o in &self.objects {
             check_ascii("model name", &o.model)?;
-            if o.id == TERMINATOR_ID {
-                return inconsistent("object id i32::MAX is reserved for the terminator");
+            if o.model.is_empty() {
+                return inconsistent(
+                    "an object needs a model (an empty one marks the end of the list)",
+                );
             }
         }
         Ok(())
@@ -185,7 +190,7 @@ impl EditableWorld {
             binio::write_i32(w, o.id)?;
             binio::write_ascii32(w, &o.model)?;
         }
-        binio::write_f32s(w, &[f32::NAN; 12])?;
+        binio::write_f32s(w, &[f32::from_bits(TERMINATOR_NAN_BITS); 12])?;
         binio::write_i32(w, TERMINATOR_ID)?;
         binio::write_u32(w, 0)
     }
@@ -242,7 +247,7 @@ impl EditableWorld {
                 .or_else(|_| inconsistent("transform length"))?;
             let id = binio::read_i32(r)?;
             let model = read_string(r, "model name")?;
-            if id == TERMINATOR_ID {
+            if model.is_empty() && transform.iter().all(|v| v.is_nan()) {
                 break;
             }
             objects.push(WorldObject {

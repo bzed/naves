@@ -163,3 +163,24 @@ fn oversized_string_is_rejected() {
         Err(FormatError::Inconsistent(_))
     ));
 }
+
+#[test]
+fn terrain_builders_terminator_is_accepted() {
+    // Terrain Builder writes twelve NaNs with the bit pattern 0x7fc87f88 and an arbitrary id (observed in
+    // Bohemia's Test_Terrain sample), not our i32::MAX.
+    let mut buf = encode(&sample());
+    let tail = buf.len() - (12 * 4 + 4 + 4);
+    for i in 0..12 {
+        buf[tail + i * 4..tail + i * 4 + 4].copy_from_slice(&0x7fc8_7f88_u32.to_le_bytes());
+    }
+    buf[tail + 48..tail + 52].copy_from_slice(&23_260_988_i32.to_le_bytes());
+    let world = EditableWorld::read(&mut &buf[..]).unwrap();
+    assert_eq!(world.objects.len(), 1);
+}
+
+#[test]
+fn the_writer_uses_terrain_builders_nan_pattern() {
+    let buf = encode(&sample());
+    let tail = buf.len() - (12 * 4 + 4 + 4);
+    assert_eq!(&buf[tail..tail + 4], &0x7fc8_7f88_u32.to_le_bytes());
+}

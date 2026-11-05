@@ -66,7 +66,7 @@ pub fn world_config(project: &Project, hm: &Heightmap) -> String {
     class naves_{world} {{
         units[] = {{}};
         weapons[] = {{}};
-        requiredVersion = 0.1;
+        requiredVersion = 1.14;
         requiredAddons[] = {{"DZ_Data", "DZ_Surfaces_Bliss", "DZ_Worlds_Enoch"}};
     }};
 }};

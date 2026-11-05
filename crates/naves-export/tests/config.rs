@@ -40,6 +40,10 @@ fn config_names_world() {
     assert!(c.contains("class naves_berchtesgaden"));
     assert!(c.contains("class CfgWorldList"));
     assert!(
+        c.contains("requiredVersion = 1.14;"),
+        "0.1 is reported to break worlds: {c}"
+    );
+    assert!(
         c.contains(r#"ceFiles = "naves\worlds\berchtesgaden\ce";"#),
         "{c}"
     );

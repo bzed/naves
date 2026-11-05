@@ -51,7 +51,10 @@ naves build examples/berchtesgaden
   connecting** (access violation in the renderer). A control run against a vanilla Livonia server works. With the
   same mod config but Livonia's own `enoch.wrp` as the world file the client also works, so the generated world
   config, `ce/` folder and mission are fine and the problem is inside the binarized world data. Ruled out so far:
-  the satellite/mask PAA files (Livonia's PAA files crash too), a flat 8WVR, and the 8WVR terminator object.
+  the satellite/mask images, a flat 8WVR and the terminator object. Bohemia's own Test_Terrain sample, built with
+  the same tools, crashes the client in the same way, so the cause is probably in the pipeline (rapified
+  materials, texture conversion, binarize under Proton) and not in the generator; see
+  `docs/research/2026-11-05-reference-terrains.md`.
   Open: what else the client needs from the world file (the binarize log's "Total 1 objects" for a world without
   objects, and the `OPRW` header differences to Livonia, are leads). Walking on the terrain is therefore **not yet
   verified**.
