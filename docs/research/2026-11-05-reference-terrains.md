@@ -81,3 +81,36 @@ sample with Bohemia's own Addon Builder; it could not be started under Proton he
 - the config parser panics on `1e+030` (use `1e30`) and on hexadecimal integer literals such as `0x66ff0000`
   (use decimal; values above 2³¹ − 1 as negative numbers);
 - `img2paa` reads PNG only (TGA has to be converted first) and writes no `AVGC`/`MAXC`/`GALF` tags.
+
+## AddonBuilder under Proton works (recipe)
+
+Bohemia's own packer ran headless on the sample. What it needed (all measured 2026-11-05):
+
+- a **throwaway copy of the Steam-initialised tools prefix** (`compatdata/830640`, 684 MB), not a fresh prefix;
+- `PROTON_USE_WOW64=1` (the 32-bit .NET tool otherwise stops with "Wine cannot find the FreeType font library");
+- a **display**: run it inside a headless `sway` (`WLR_BACKENDS=headless sway -c <config with an exec line>`);
+- `dosdevices/p:` → the work drive and the default `z:` → `/`; Proton deletes extra drive links such as `s:` or `t:`
+  on every start, so the tool is started by its Steam path `Z:\home\…\DayZ Tools\Bin\AddonBuilder\AddonBuilder.exe`
+  (a copy of the tools on a confined `z:` never logged and exited 255);
+- **the first start in a prefix hangs until it is killed; the second works**;
+- options (from the executable): `<source> <dest> -clear -temp=<dir> -prefix=<addon prefix> -project=P:\
+  -binarizeAllTextures [-packonly] [-include=<list>]`; the result code is in `DayZ Tools/Bin/Logs/AddonBuilder.rpt`
+  (`[ResultCode]=0`), the exit status of the process is not reliable. A wildcard list passed with `-include=`
+  failed with "Illegal characters in path".
+
+Results for the sample: `world.pbo` 1.72 MB, `data.pbo` 64 MB (BI-converted textures), `navmesh.pbo` 15.4 MB, `ce.pbo`
+empty without the include list (the XML files were not copied).
+
+| Variant (rest packed by armake2) | Server | Client |
+|---|---|---|
+| BI `world` | starts | crashes a few seconds after entering the world |
+| BI `world` + BI `data` | **segfaults** during mission start after loading `utes_global_nohq.paa` | not reached |
+| BI `navmesh`, BI `data` alone | starts | not tried |
+
+The server log also says the sample's navmesh is "version 6, desired version 9": **the 2019 sample is stale for
+1.30** and is therefore not a reliable known-good baseline. The stock Livonia mission is also wrong for a
+5 km map (contaminated areas at Livonia coordinates are "outside world coords"; the mission's `areaflags.map`
+belongs to the map size it was made for).
+
+Open: a baseline that is known to work on 1.30 (a current community terrain with its `8WVR` or its packed PBOs),
+or the maintainer's real game client on the Berchtesgaden build, to tell a pipeline problem from an environment one.
