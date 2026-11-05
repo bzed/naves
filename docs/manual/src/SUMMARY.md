@@ -10,6 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 - [Installation](installation.md)
 - [Getting started](getting-started.md)
 - [Project file (naves.toml)](project-file.md)
+- [Navigation mesh](navmesh.md)
 - [Command line](cli.md)
 - [GUI](gui.md)
 - [MCP server](mcp.md)

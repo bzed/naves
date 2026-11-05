@@ -328,6 +328,20 @@ fn pack_mod(
     )
     .map_err(io_err(&pack_dir))?;
     write_file(&pack_dir.join("$PBOPREFIX$"), layout.prefix.as_bytes())?;
+    // A navmesh made with DayZDiag (see the manual) goes where the config's navmeshName points.
+    let navmesh = layout
+        .project_dir
+        .join("navmesh")
+        .join(format!("{}.nm", layout.world));
+    if navmesh.is_file() {
+        let target = pack_dir
+            .join("navmesh")
+            .join(format!("{}.nm", layout.world));
+        if let Some(dir) = target.parent() {
+            std::fs::create_dir_all(dir).map_err(io_err(dir))?;
+        }
+        std::fs::copy(&navmesh, &target).map_err(io_err(&navmesh))?;
+    }
 
     let (private, public) = ensure_keys(
         tools,

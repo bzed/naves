@@ -23,5 +23,8 @@ All notable changes to this project are documented here. The format follows
 - World `config.cpp` and server mission generation (the player spawns in the middle of the map). The world
   inherits Livonia's sky, weather and terrain materials by reference and packs a `ce/` folder from the installed
   server mission; the game client needs both.
+- Navigation mesh support: the world config has a `Navmesh` class (inherited agent and link types, seed in the map
+  centre) and `naves build` packs `<project>/navmesh/<world>.nm` when it exists; the manual describes how to make
+  the mesh with DayZDiag and Flare Navgen.
 - Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope) and a tile
   material for every terrain tile. `grid.land_size` must now be 32 to 4096.

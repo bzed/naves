@@ -240,3 +240,23 @@ fn private_key_without_public_key_is_an_error() {
         "the private key is never touched"
     );
 }
+
+#[test]
+fn a_project_navmesh_is_packed_where_the_config_points() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    std::fs::create_dir_all(proj.join("navmesh")).unwrap();
+    std::fs::write(proj.join("navmesh/test.nm"), "NAVMESH").unwrap();
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let pbo = std::fs::read_to_string(out.mod_dir.join("addons/naves_test.pbo")).unwrap();
+    assert!(pbo.lines().any(|l| l == "./navmesh/test.nm"), "{pbo}");
+}
+
+#[test]
+fn without_a_navmesh_nothing_navmesh_is_packed() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let pbo = std::fs::read_to_string(out.mod_dir.join("addons/naves_test.pbo")).unwrap();
+    assert!(!pbo.contains("navmesh"), "{pbo}");
+}

@@ -95,7 +95,7 @@ Bohemia's own packer ran headless on the sample. What it needed (all measured 20
 - **the first start in a prefix hangs until it is killed; the second works**;
 - options (from the executable): `<source> <dest> -clear -temp=<dir> -prefix=<addon prefix> -project=P:\
   -binarizeAllTextures [-packonly] [-include=<list>]`; the result code is in `DayZ Tools/Bin/Logs/AddonBuilder.rpt`
-  (`[ResultCode]=0`), the exit status of the process is not reliable. A wildcard list passed with `-include=`
+  (`[ResultCode]=0`), the exit status of the process is not reliable. A list with one pattern per line in the include file
   failed with "Illegal characters in path".
 
 Results for the sample: `world.pbo` 1.72 MB, `data.pbo` 64 MB (BI-converted textures), `navmesh.pbo` 15.4 MB, `ce.pbo`
@@ -114,3 +114,26 @@ belongs to the map size it was made for).
 
 Open: a baseline that is known to work on 1.30 (a current community terrain with its `8WVR` or its packed PBOs),
 or the maintainer's real game client on the Berchtesgaden build, to tell a pipeline problem from an environment one.
+
+## Navmesh regenerated with DayZDiag and Flare Navgen (2026-11-05)
+
+`DayZDiag_x64.exe -server -startNavmeshDataServer` runs under Proton (headless sway, empty mission, mod symlinked into
+the install) and serves the terrain geometry on TCP 36533. Flare Navgen's `dznav generate` built the Berchtesgaden mesh
+in 747 s: 16 383 tiles (one empty), 94 513 polygons, 20.9 MB, agent height 1.5 m, radius 0.3 m. With the mesh packed to
+`navmesh\berchtesgaden.nm` the server no longer logs `Unable to load navmesh`.
+
+**The client still crashes** at the same site (access violation reading `0xffffffffffffffff`, a few seconds after the
+join). The missing navmesh was therefore not the cause. A client without the mod folder in the install is kicked with
+"Missing PBO from unknown origins", which is a different, harmless failure.
+
+## The same world packed with Bohemia's AddonBuilder (2026-11-05)
+
+The whole Berchtesgaden source tree (PNG layers, text `.rvmat`, `config.cpp`, 8WVR, `ce` XML files, `navmesh`) was packed
+in one run with AddonBuilder under Proton (`-binarizeAllTextures`, `-prefix=naves\worlds\berchtesgaden`,
+`-include=<file>`; the include file holds one line, `*.xml;*.nm`, and the option takes a file path, not the list). The
+result code was 0 and the PBO holds a binarized world, `config.bin`, `texHeaders.bin`, the XML files and the navmesh.
+Signed with the project key, the server loads it with no navmesh error, and **the client crashes at the same site**
+(access violation reading `0xffffffffffffffff`, 20-30 s after the join). Packing with armake2 is therefore not the
+cause either. Logs read: the client RPT shows nothing about our files before the crash (only vanilla noise: missing
+sound shaders, `Type 'ManType' must be inherited from class 'DayZAnimalType'`, which the server logs too), the crash
+follows the creation of the animal entity types.

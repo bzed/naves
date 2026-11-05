@@ -102,16 +102,17 @@ fn config_rapifies() {
 fn the_world_inherits_the_sky_and_weather_from_livonia() {
     // The client crashes without the sky, cloud and weather entries; they are inherited, not copied.
     let c = world_config(&project(), &heightmap(300.0));
-    assert!(c.contains("class Enoch;"), "{c}");
+    assert!(c.contains("class Enoch: CAWorld {"), "{c}");
+    assert!(
+        c.contains("class Navmesh {") && c.contains("class GenParams;"),
+        "base classes must be declared for binarize: {c}"
+    );
     assert!(
         !c.contains("skyTexture") && !c.contains("horizonObject"),
         "no copied game values"
     );
-    // Livonia's navmesh and holes must not leak into the new map
-    assert!(
-        c.contains("class Navmesh {};") && c.contains("class Holes {};"),
-        "{c}"
-    );
+    // Livonia's holes must not leak into the new map
+    assert!(c.contains("class Holes {};"), "{c}");
 }
 
 #[test]
@@ -121,4 +122,19 @@ fn the_sun_follows_the_project_location() {
         c.contains("latitude = 47.585;") && c.contains("longitude = 12.965;"),
         "{c}"
     );
+}
+
+#[test]
+fn navmesh_class_inherits_livonia_and_points_at_our_file() {
+    // The DayZDiag navmesh data server takes tile width, agent and link types from Navmesh/GenParams;
+    // they are inherited by reference, only the file name and the seed position are ours.
+    let c = world_config(&project(), &heightmap(300.0));
+    assert!(c.contains("class Navmesh: Navmesh {"), "{c}");
+    assert!(
+        c.contains(r#"navmeshName = "naves\worlds\berchtesgaden\navmesh\berchtesgaden.nm";"#),
+        "{c}"
+    );
+    assert!(c.contains("class GenParams: GenParams {"), "{c}");
+    assert!(c.contains("seedPosition[] = {500, 0, 500};"), "{c}");
+    assert!(!c.contains("class Navmesh {};"), "{c}");
 }

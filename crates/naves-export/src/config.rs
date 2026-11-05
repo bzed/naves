@@ -74,7 +74,12 @@ class CfgWorldList {{
     class {world} {{}};
 }};
 class CfgWorlds {{
-    class Enoch;
+    class CAWorld;
+    class Enoch: CAWorld {{
+        class Navmesh {{
+            class GenParams;
+        }};
+    }};
     class {world}: Enoch {{
         access = 3;
         description = "{shown}";
@@ -104,7 +109,12 @@ class CfgWorlds {{
         terrainNormalTexture = "DZ\worlds\enoch\data\enoch_global_nohq.paa";
         heightBlendingMode = 1;
         bicubicMode = 1;
-        class Navmesh {{}};
+        class Navmesh: Navmesh {{
+            navmeshName = "{path}\navmesh\{world}.nm";
+            class GenParams: GenParams {{
+                seedPosition[] = {{{half}, 0, {half}}};
+            }};
+        }};
         class Holes {{}};
         latitude = {lat};
         longitude = {lon};
