@@ -9,6 +9,8 @@ export CARGO_TARGET_DIR ?= /var/tmp/naves-target
 
 CARGO = cargo
 LOCKED = --locked
+# cargo-fuzz binaries from prebuilt releases default to a musl target, where sanitizers do not work.
+FUZZ_HOST = $(shell rustc +nightly -vV | sed -n "s/^host: //p")
 
 .PHONY: fmt fmt-check lint doc reuse deny test fuzz cover coverage-check docs miri deb check
 
@@ -38,7 +40,7 @@ fuzz:
 	@if [ -d fuzz ]; then \
 	  cd fuzz && for t in $$($(CARGO) +nightly fuzz list 2>/dev/null); do \
 	    mkdir -p $(TMPDIR)/naves-fuzz/$$t; \
-	    $(CARGO) +nightly fuzz run $$t $(TMPDIR)/naves-fuzz/$$t corpus/$$t -- -max_total_time=10 || exit 1; \
+	    $(CARGO) +nightly fuzz run --target $(FUZZ_HOST) $$t $(TMPDIR)/naves-fuzz/$$t corpus/$$t -- -max_total_time=10 || exit 1; \
 	  done; \
 	fi
 

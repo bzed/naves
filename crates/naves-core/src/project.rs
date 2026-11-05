@@ -265,9 +265,15 @@ impl Project {
             return invalid("area.real_extent_m must be positive and finite");
         }
         for p in &self.sources.dem {
+            // A rooted path ("/etc/x") is not absolute on Windows (no drive), so check the root too.
             let escapes = p.is_absolute()
-                || p.components()
-                    .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)));
+                || p.has_root()
+                || p.components().any(|c| {
+                    matches!(
+                        c,
+                        Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                    )
+                });
             if escapes || p.as_os_str().is_empty() {
                 return invalid("sources.dem entries must be relative paths inside the project");
             }
