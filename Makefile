@@ -5,7 +5,7 @@ COVERAGE_MIN = 85
 
 # Temporary and build folders never go under $HOME.
 export TMPDIR ?= /tmp
-export CARGO_TARGET_DIR ?= /tmp/naves-target
+export CARGO_TARGET_DIR ?= /var/tmp/naves-target
 
 CARGO = cargo
 LOCKED = --locked

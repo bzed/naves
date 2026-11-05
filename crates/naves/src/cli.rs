@@ -50,6 +50,11 @@ enum Command {
         /// The project folder (default: the current folder).
         dir: Option<PathBuf>,
     },
+    /// Run the MCP server for a project on standard input and output.
+    Mcp {
+        /// The project folder.
+        dir: PathBuf,
+    },
     /// Print the man page (roff) to standard output; used by the packaging.
     #[command(hide = true)]
     Man,
@@ -82,6 +87,7 @@ pub fn run(cli: Cli) -> Result<()> {
             extent,
         } => new_project(&dir, &name, center, extent),
         Command::Build { dir } => build_project(&dir),
+        Command::Mcp { dir } => run_mcp(&dir),
         Command::Gui { dir } => crate::gui::run(&dir.unwrap_or_else(|| PathBuf::from("."))),
         Command::Man => {
             let mut buf = Vec::new();
@@ -122,4 +128,14 @@ fn build_project(dir: &Path) -> Result<()> {
     output::result(&format!("Mod:     {}", out.mod_dir.display()));
     output::result(&format!("Mission: {}", out.mission_dir.display()));
     Ok(())
+}
+
+fn run_mcp(dir: &Path) -> Result<()> {
+    // Fail early and clearly if the folder is not a project; then serve until the client leaves.
+    Project::load(dir)?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("cannot start the async runtime")?
+        .block_on(crate::mcp::serve(dir))
 }

@@ -185,3 +185,59 @@ fn load_reports_missing_file() {
         Err(ProjectError::Io { .. })
     ));
 }
+
+#[test]
+fn with_value_sets_a_nested_field() {
+    let p = Project::new("x", 47.0, 12.0, 4000.0);
+    let q = p
+        .with_value("scale.height", serde_json::json!(0.75))
+        .unwrap();
+    assert!(close(q.scale.height, 0.75));
+    assert!(close(p.scale.height, 0.5), "the original is unchanged");
+    let q = p
+        .with_value("sources.dem", serde_json::json!(["dem/a.tif"]))
+        .unwrap();
+    assert_eq!(q.sources.dem, vec![std::path::PathBuf::from("dem/a.tif")]);
+    let q = p.with_value("name", serde_json::json!("Other")).unwrap();
+    assert_eq!(q.name, "Other");
+}
+
+#[test]
+fn with_value_validates_like_parse() {
+    let p = Project::new("x", 47.0, 12.0, 4000.0);
+    let err = p
+        .with_value("scale.horizontal", serde_json::json!(3))
+        .unwrap_err();
+    assert!(err.to_string().contains("horizontal"), "{err}");
+    let err = p
+        .with_value("grid.terrain_size", serde_json::json!(1000))
+        .unwrap_err();
+    assert!(err.to_string().contains("terrain_size"), "{err}");
+    let err = p
+        .with_value("sources.dem", serde_json::json!(["/etc/passwd"]))
+        .unwrap_err();
+    assert!(err.to_string().contains("sources.dem"), "{err}");
+}
+
+#[test]
+fn with_value_rejects_unknown_paths_and_wrong_types() {
+    let p = Project::new("x", 47.0, 12.0, 4000.0);
+    for (path, value) in [
+        ("", serde_json::json!(1)),
+        ("nope", serde_json::json!(1)),
+        ("scale.nope", serde_json::json!(1)),
+        ("scale.height.deeper", serde_json::json!(1)),
+        ("scale..height", serde_json::json!(1)),
+        ("scale.height", serde_json::json!("high")),
+        ("scale", serde_json::json!(5)),
+        ("scale.height", serde_json::Value::Null),
+    ] {
+        assert!(
+            matches!(
+                p.with_value(path, value.clone()),
+                Err(ProjectError::Invalid(_))
+            ),
+            "{path} = {value}"
+        );
+    }
+}

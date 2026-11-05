@@ -70,3 +70,12 @@ multi-tile bilinear height sampler and the heightmap grid (an `ndarray` grid wou
 |---|---|---|---|
 | `eframe` / `egui` 0.37 (features `glow`, `default_fonts`, `wayland`, `x11`) | the editor window | `iced`, `slint` (own toolkits, larger), `gtk4`/`qt` (system libraries), a web UI | *scan:* emilk/egui, the most used Rust immediate-mode GUI, requires Rust 1.95 like our toolchain, released this season; pure Rust except the platform windowing (`winit`, `glutin`) which load system libraries at run time. The `wgpu` backend is left out to keep the tree small. Licence: its embedded fonts (`epaint_default_fonts`: OFL-1.1 and Ubuntu-font-1.0) are covered by a **scoped** `deny.toml` exception, not a general allowance |
 | `egui_kittest` 0.37 (dev) | widget tests through the accessibility tree | screenshot tests (need a GPU), manual testing | same project as egui; found missing accessible names in our form on its first run |
+
+## Added with the MCP server (Task 12)
+
+| Crate | Purpose | Alternatives considered | Review |
+|---|---|---|---|
+| `rmcp` 3.8 (features `server`, `macros`, `transport-io`; dev: `client`, `transport-child-process`) | MCP server over stdio | `rust-mcp-sdk`, `mcpr` and other third-party SDKs; writing JSON-RPC by hand | *scan:* the official SDK (`modelcontextprotocol/rust-sdk`), Apache-2.0, about 26 M recent downloads, updated Oct 2026, needs Rust 1.88; HTTP/OAuth features stay off, so there is no network code. Logging notifications are deprecated in 3.x, so `build` returns its progress lines in the result |
+| `tokio` (`rt-multi-thread`, `macros`, `io-std`) | the async runtime that rmcp needs | `async-std`, `smol` (not supported by rmcp) | the de-facto runtime; already in the tree through rmcp |
+| `base64` | image content of `render_topdown` | hand-written encoder | maintained by the rust-lang-adjacent `marshallpierce` project; no `unsafe` needed by us |
+| `serde_json` | `project_set` values | none | the standard JSON crate |

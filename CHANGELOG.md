@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows
 
 - Project file `naves.toml`.
 - Copernicus GLO-30 GeoTIFF DEM input.
+- MCP server `naves mcp`: `project_get`, `project_set`, `heightmap_stats`, `render_topdown` and `build` for AI clients over stdio.
 - GUI (`naves gui`): project settings that save to `naves.toml`, a pannable top-down map (hillshade, slope, height) and a build button with a live log.
 - `naves new` creates a project, `naves build` builds the signed mod and the server mission.
 - Binarize worlds with DayZ Tools under Proton (sandboxed, with a timeout); the build checks for armake2,

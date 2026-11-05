@@ -189,6 +189,47 @@ impl Project {
         self.map_size_m() / f64::from(self.grid.terrain_size)
     }
 
+    /// A copy of the project with the field at the dotted `path` (for example `scale.height`) set to
+    /// `value`, validated like [`Project::parse`]. Only existing fields can be set. This is the entry
+    /// point for `project_set` requests of the MCP server, so `path` and `value` are untrusted.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectError::Invalid`] naming the path for an unknown field, a value of the wrong type or an
+    /// out-of-range value.
+    pub fn with_value(
+        &self,
+        path: &str,
+        value: serde_json::Value,
+    ) -> Result<Project, ProjectError> {
+        let bad = |why: &str| ProjectError::Invalid(format!("{path}: {why}"));
+        let mut document = serde_json::to_value(self).map_err(|e| bad(&e.to_string()))?;
+        let mut node = &mut document;
+        let mut keys = path.split('.').peekable();
+        if path.is_empty() {
+            return Err(bad("empty path"));
+        }
+        while let Some(key) = keys.next() {
+            let serde_json::Value::Object(map) = node else {
+                return Err(bad("not a section of the project"));
+            };
+            let Some(next) = map.get_mut(key) else {
+                return Err(bad(&format!("unknown field {key:?}")));
+            };
+            if keys.peek().is_none() {
+                if next.is_object() != value.is_object() {
+                    return Err(bad("a whole section cannot be replaced by a single value"));
+                }
+                *next = value;
+                break;
+            }
+            node = next;
+        }
+        let project: Project = serde_json::from_value(document).map_err(|e| bad(&e.to_string()))?;
+        project.validate()?;
+        Ok(project)
+    }
+
     fn validate(&self) -> Result<(), ProjectError> {
         let g = &self.grid;
         if !(256..=8192).contains(&g.terrain_size) || !g.terrain_size.is_power_of_two() {

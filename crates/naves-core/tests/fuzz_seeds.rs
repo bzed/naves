@@ -48,3 +48,18 @@ fn project_parse_seeds() {
         assert_eq!(result.is_ok(), name == "roundtrip", "seed {name}");
     }
 }
+
+#[test]
+fn mcp_project_set_seeds() {
+    for (name, data) in seeds("mcp_project_set") {
+        let request: serde_json::Value = serde_json::from_slice(&data).unwrap();
+        let path = request["path"].as_str().unwrap();
+        let result =
+            Project::new("Seed", 47.0, 12.0, 4000.0).with_value(path, request["value"].clone());
+        assert_eq!(
+            result.is_ok(),
+            name == "valid" || name == "list",
+            "seed {name}: {result:?}"
+        );
+    }
+}

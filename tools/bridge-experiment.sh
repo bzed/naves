@@ -53,7 +53,7 @@ stage_addon() {
   armake2 -h 2>&1 | grep -q -- --proton-binarize || die "armake2 is not bzed's fork"
   local A="$W/P/$PREFIX" L="$W/P/$PREFIX/data/layers"
   mkdir -p "$L"
-  (cd "$REPO" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/naves-target}" \
+  (cd "$REPO" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/var/tmp/naves-target}" \
     cargo run -q -p naves-formats --example flat_world -- "$A/$WORLD.wrp" "$WORLD")
   convert -size 512x512 xc:'#4a7a3a' "$L/s_000_000_lco.png"
   convert -size 512x512 xc:'#ff0000' -alpha off "$L/m_000_000_lca.png"

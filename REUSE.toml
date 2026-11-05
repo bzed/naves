@@ -30,3 +30,10 @@ path = "tests/fixtures/dem/*.tif"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
 SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
+
+# Renders of the Copernicus DEM test crop (docs/manual/src/gui.md).
+[[annotations]]
+path = "docs/manual/src/images/*.png"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"

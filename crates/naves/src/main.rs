@@ -5,6 +5,7 @@
 
 mod cli;
 mod gui;
+mod mcp;
 mod output;
 
 use std::process::ExitCode;
