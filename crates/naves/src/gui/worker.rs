@@ -94,7 +94,7 @@ impl BuildWorker {
     }
 
     /// Blocks until the next message or the end (for tests and shutdown).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn wait(&mut self, timeout: std::time::Duration) -> Vec<BuildMsg> {
         let mut all = Vec::new();
         let deadline = std::time::Instant::now() + timeout;
@@ -151,6 +151,7 @@ impl HeightmapJob {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::time::Duration;
 

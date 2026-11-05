@@ -3,6 +3,8 @@
 
 //! Widget tests with `egui_kittest`: the GUI is driven through its accessibility tree.
 
+#![cfg(unix)]
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
