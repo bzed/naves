@@ -1,0 +1,21 @@
+name = "Berchtesgaden"
+world = "berchtesgaden"
+
+[area]
+center_lat = 47.585
+center_lon = 12.965
+real_extent_m = 12800.0
+
+[scale]
+horizontal = 0.5
+height = 0.5
+
+[grid]
+terrain_size = 1024
+land_size = 256
+
+[sources]
+dem = [
+    "dem/Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif",
+    "dem/Copernicus_DSM_COG_10_N47_00_E013_00_DEM.tif",
+]

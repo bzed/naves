@@ -13,3 +13,14 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 Náves turns OpenStreetMap and elevation data into DayZ terrains. Status: **early development**.
 Licence: AGPL-3.0-or-later. See the [design](docs/superpowers/specs/2026-11-04-naves-design.md) and the
 user manual in `docs/manual/` (published to GitHub Pages).
+
+## Quick start
+
+```sh
+naves new maps/berchtesgaden --name Berchtesgaden --center 47.585,12.965 --extent 12800
+# put Copernicus GLO-30 tiles into maps/berchtesgaden/dem/ and list them in naves.toml (sources.dem)
+naves build maps/berchtesgaden
+```
+
+`examples/berchtesgaden` is a ready project; the manual's *Getting started* chapter walks through it.
+`naves gui <project>` opens the editor and `naves mcp <project>` starts the MCP server (see the manual).

@@ -362,6 +362,8 @@ pub fn build(
     progress: &dyn Fn(&str),
 ) -> Result<BuildOutput, BuildError> {
     progress("Loading the project");
+    // External tools run in other working directories, so every path they get must be absolute.
+    let project_dir = &std::path::absolute(project_dir).map_err(io_err(project_dir))?;
     let project = Project::load(project_dir)?;
     if project.sources.dem.is_empty() {
         return Err(BuildError::NoDem);

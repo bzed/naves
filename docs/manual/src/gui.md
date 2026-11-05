@@ -10,7 +10,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 naves gui [<project folder>]
 ```
 
-opens the project in the current folder (or the one you name) in a window titled *Náves – <project name>*.
+opens the project in the current folder (or the one you name) in a window titled *Náves – (project name)*.
 The window has three parts. This first version shows the project and builds it; there is no object editing yet.
 
 ![The map view: shaded relief of the Königssee area](images/map-hillshade.png)

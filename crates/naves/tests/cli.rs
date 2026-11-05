@@ -246,3 +246,22 @@ fn gui_without_a_project_says_what_is_missing() {
     let out = naves(home.path()).arg("gui").arg(&empty).assert().failure();
     assert!(stderr(&out).contains("naves.toml"), "{}", stderr(&out));
 }
+
+#[test]
+fn build_accepts_a_relative_project_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let fakes = FakeEnv::new(&home.path().join("fake")).unwrap();
+    new_project(home.path());
+    let mut cmd = naves(home.path());
+    with_fakes(&mut cmd, &fakes);
+    // run from inside the project's parent with a relative path, as a user would
+    cmd.current_dir(home.path())
+        .args(["build", "proj"])
+        .assert()
+        .success();
+    assert!(
+        home.path()
+            .join("proj/build/@naves_test/addons/naves_test.pbo")
+            .is_file()
+    );
+}

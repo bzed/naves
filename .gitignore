@@ -21,3 +21,4 @@ debian/naves.1.gz
 debian/debhelper-build-stamp
 *.profraw
 core.*
+examples/*/dem/
