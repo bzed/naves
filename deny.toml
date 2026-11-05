@@ -21,3 +21,9 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# The fonts that egui embeds (Hack, Ubuntu-Light, NotoEmoji, emoji-icon-font). Font licences cover the font
+# files only; they allow shipping them inside a program. Scoped to this crate, not allowed globally.
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]

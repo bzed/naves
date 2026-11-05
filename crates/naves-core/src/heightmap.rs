@@ -117,3 +117,71 @@ pub fn build_heightmap(project: &Project, dem: &Dem) -> Result<Heightmap, Height
         h,
     })
 }
+
+/// Height and slope of the terrain at one map position, from [`Heightmap::sample`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sample {
+    /// Height in metres.
+    pub height: f32,
+    /// Rise per metre towards the east.
+    pub dz_dx: f32,
+    /// Rise per metre towards the north.
+    pub dz_dy: f32,
+}
+
+impl Sample {
+    /// Steepest slope in degrees.
+    #[must_use]
+    pub fn slope_deg(&self) -> f32 {
+        self.dz_dx.hypot(self.dz_dy).atan().to_degrees()
+    }
+
+    /// Hillshade in 0..=1 with the sun at azimuth 315° and altitude 45°.
+    #[must_use]
+    pub fn hillshade(&self) -> f32 {
+        let slope = self.dz_dx.hypot(self.dz_dy).atan();
+        // direction the ground faces (down-slope) as a mathematical angle: 0 = east, 90 = north
+        let aspect = (-self.dz_dy).atan2(-self.dz_dx);
+        let zenith = 45.0_f32.to_radians();
+        let azimuth = 135.0_f32.to_radians(); // 315° compass in mathematical angles
+        (zenith.cos() * slope.cos() + zenith.sin() * slope.sin() * (azimuth - aspect).cos())
+            .clamp(0.0, 1.0)
+    }
+}
+
+impl Heightmap {
+    fn vertex(&self, col: i64, row: i64) -> f32 {
+        let last = i64::from(self.size) - 1;
+        let c = u32::try_from(col.clamp(0, last)).unwrap_or(0);
+        let r = u32::try_from(row.clamp(0, last)).unwrap_or(0);
+        self.at(c, r)
+    }
+
+    /// Bilinear height and the exact gradient of the bilinear patch at the map position (`x`, `y`) in
+    /// metres from the south-west corner. Positions outside the grid hold the nearest edge value.
+    #[must_use]
+    pub fn sample(&self, x: f64, y: f64) -> Sample {
+        let cell = f64::from(self.cell_m).max(f64::MIN_POSITIVE);
+        let max = f64::from(self.size.saturating_sub(1));
+        let gx = (x / cell).clamp(0.0, max);
+        let gy = (y / cell).clamp(0.0, max);
+        let (c0, r0) = (gx.floor(), gy.floor());
+        let (fx, fy) = (narrow(gx - c0), narrow(gy - r0));
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "c0 and r0 are in 0..=8191 after the clamp"
+        )]
+        let (c0, r0) = (c0 as i64, r0 as i64);
+        let h00 = self.vertex(c0, r0);
+        let h10 = self.vertex(c0 + 1, r0);
+        let h01 = self.vertex(c0, r0 + 1);
+        let h11 = self.vertex(c0 + 1, r0 + 1);
+        let south = h00 + (h10 - h00) * fx;
+        let north = h01 + (h11 - h01) * fx;
+        Sample {
+            height: south + (north - south) * fy,
+            dz_dx: ((h10 - h00) * (1.0 - fy) + (h11 - h01) * fy) / self.cell_m,
+            dz_dy: ((h01 - h00) * (1.0 - fx) + (h11 - h10) * fx) / self.cell_m,
+        }
+    }
+}

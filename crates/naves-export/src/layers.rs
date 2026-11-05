@@ -10,7 +10,7 @@
 use std::io::Cursor;
 
 use image::{ImageFormat, RgbImage, RgbaImage};
-use naves_core::heightmap::Heightmap;
+use naves_core::heightmap::{Heightmap, Sample};
 use rayon::prelude::*;
 
 use crate::rvmat::tile_material;
@@ -119,56 +119,9 @@ pub const SURFACES: &[Surface] = &[
     },
 ];
 
-fn vertex(hm: &Heightmap, col: i64, row: i64) -> f32 {
-    let last = i64::from(hm.size) - 1;
-    let c = u32::try_from(col.clamp(0, last)).unwrap_or(0);
-    let r = u32::try_from(row.clamp(0, last)).unwrap_or(0);
-    hm.at(c, r)
-}
-
-/// Height and gradient (dz/dx east, dz/dy north) at the map position (`x`, `y`) in metres.
-fn height_and_gradient(hm: &Heightmap, x: f64, y: f64) -> (f32, f32, f32) {
-    let cell = f64::from(hm.cell_m).max(f64::MIN_POSITIVE);
-    let max = f64::from(hm.size.saturating_sub(1));
-    let gx = (x / cell).clamp(0.0, max);
-    let gy = (y / cell).clamp(0.0, max);
-    let (c0, r0) = (gx.floor(), gy.floor());
-    let (fx, fy) = (narrow(gx - c0), narrow(gy - r0));
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "c0 and r0 are in 0..=8191 after the clamp"
-    )]
-    let (c0, r0) = (c0 as i64, r0 as i64);
-    let h00 = vertex(hm, c0, r0);
-    let h10 = vertex(hm, c0 + 1, r0);
-    let h01 = vertex(hm, c0, r0 + 1);
-    let h11 = vertex(hm, c0 + 1, r0 + 1);
-    let south = h00 + (h10 - h00) * fx;
-    let north = h01 + (h11 - h01) * fx;
-    let height = south + (north - south) * fy;
-    // exact gradient of the bilinear patch
-    let dx = ((h10 - h00) * (1.0 - fy) + (h11 - h01) * fy) / hm.cell_m;
-    let dy = ((h01 - h00) * (1.0 - fx) + (h11 - h10) * fx) / hm.cell_m;
-    (height, dx, dy)
-}
-
-fn slope_deg(dx: f32, dy: f32) -> f32 {
-    dx.hypot(dy).atan().to_degrees()
-}
-
-/// Hillshade in 0..=1 for the gradient, sun at azimuth 315° and altitude 45°.
-fn hillshade(dx: f32, dy: f32) -> f32 {
-    let slope = dx.hypot(dy).atan();
-    let aspect = dy.atan2(-dx);
-    let zenith = 45.0_f32.to_radians();
-    let azimuth = 135.0_f32.to_radians(); // 315° compass in mathematical angles
-    (zenith.cos() * slope.cos() + zenith.sin() * slope.sin() * (azimuth - aspect).cos())
-        .clamp(0.0, 1.0)
-}
-
-/// Index into [`SURFACES`] for ground with the gradient (`dx`, `dy`).
-fn surface_index(dx: f32, dy: f32) -> u8 {
-    u8::from(slope_deg(dx, dy) > ROCK_SLOPE_DEG)
+/// Index into [`SURFACES`] for ground with this slope.
+fn surface_index(s: &Sample) -> u8 {
+    u8::from(s.slope_deg() > ROCK_SLOPE_DEG)
 }
 
 /// The surface of every heightmap vertex: an index into [`SURFACES`] (rock on slopes above 35°, else grass).
@@ -180,10 +133,14 @@ pub fn classify(hm: &Heightmap) -> Vec<u8> {
         for col in 0..i64::from(hm.size) {
             #[expect(clippy::cast_precision_loss, reason = "vertex indices are below 2^13")]
             let (x, y) = (col as f64 * cell, row as f64 * cell);
-            let (_, dx, dy) = height_and_gradient(hm, x, y);
+            let here = hm.sample(x, y);
             // The bilinear gradient inside a cell is one-sided at a vertex; average both sides.
-            let (_, ex, ey) = height_and_gradient(hm, x - cell * 0.5, y - cell * 0.5);
-            out.push(surface_index(f32::midpoint(dx, ex), f32::midpoint(dy, ey)));
+            let there = hm.sample(x - cell * 0.5, y - cell * 0.5);
+            out.push(surface_index(&Sample {
+                height: here.height,
+                dz_dx: f32::midpoint(here.dz_dx, there.dz_dx),
+                dz_dy: f32::midpoint(here.dz_dy, there.dz_dy),
+            }));
         }
     }
     out
@@ -224,9 +181,9 @@ fn render_tile(hm: &Heightmap, grid: &TileGrid, map_size_m: f64, tx: u32, ty: u3
         let y = north - (f64::from(py) - overlap + 0.5) * grid.px_m;
         for px in 0..size {
             let x = west + (f64::from(px) - overlap + 0.5) * grid.px_m;
-            let (_, dx, dy) = height_and_gradient(hm, x, y);
-            let surface = surface_index(dx, dy);
-            let shade = 0.35 + 0.65 * hillshade(dx, dy);
+            let here = hm.sample(x, y);
+            let surface = surface_index(&here);
+            let shade = 0.35 + 0.65 * here.hillshade();
             let rgb = SURFACES
                 .get(usize::from(surface))
                 .map_or([0; 3], |s| s.sat_rgb);

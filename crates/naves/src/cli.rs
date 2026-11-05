@@ -45,6 +45,11 @@ enum Command {
         /// The project folder (the one with `naves.toml`).
         dir: PathBuf,
     },
+    /// Open the graphical editor on a project.
+    Gui {
+        /// The project folder (default: the current folder).
+        dir: Option<PathBuf>,
+    },
     /// Print the man page (roff) to standard output; used by the packaging.
     #[command(hide = true)]
     Man,
@@ -77,6 +82,7 @@ pub fn run(cli: Cli) -> Result<()> {
             extent,
         } => new_project(&dir, &name, center, extent),
         Command::Build { dir } => build_project(&dir),
+        Command::Gui { dir } => crate::gui::run(&dir.unwrap_or_else(|| PathBuf::from("."))),
         Command::Man => {
             let mut buf = Vec::new();
             clap_mangen::Man::new(Cli::command()).render(&mut buf)?;

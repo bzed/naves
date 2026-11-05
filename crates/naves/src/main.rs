@@ -4,6 +4,7 @@
 //! Náves – terrain generator and map editor for DayZ.
 
 mod cli;
+mod gui;
 mod output;
 
 use std::process::ExitCode;

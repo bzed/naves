@@ -19,3 +19,4 @@ debian/*.substvars
 debian/files
 debian/naves.1.gz
 debian/debhelper-build-stamp
+*.profraw

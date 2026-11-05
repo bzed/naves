@@ -118,3 +118,27 @@ fn nan_in_the_dem_is_an_error_not_a_hole() {
         Err(HeightmapError::MissingDem { .. })
     ));
 }
+
+#[test]
+fn sample_interpolates_and_reports_the_gradient() {
+    use naves_core::heightmap::Heightmap;
+    // heights rise 2 m per 4 m eastwards and 1 m per 4 m northwards
+    let h: Vec<f32> = (0..8_u8)
+        .flat_map(|row| (0..8_u8).map(move |col| f32::from(col) * 2.0 + f32::from(row)))
+        .collect();
+    let hm = Heightmap {
+        size: 8,
+        cell_m: 4.0,
+        h,
+    };
+    assert!((hm.sample(8.0, 4.0).height - hm.at(2, 1)).abs() < 1e-5);
+    let mid = hm.sample(6.0, 2.0);
+    assert!((mid.height - 3.5).abs() < 1e-5, "{mid:?}");
+    assert!(
+        (mid.dz_dx - 0.5).abs() < 1e-5 && (mid.dz_dy - 0.25).abs() < 1e-5,
+        "{mid:?}"
+    );
+    // outside the grid the edge value is held
+    assert!((hm.sample(-100.0, -100.0).height - hm.at(0, 0)).abs() < 1e-5);
+    assert!((hm.sample(1e6, 1e6).height - hm.at(7, 7)).abs() < 1e-5);
+}

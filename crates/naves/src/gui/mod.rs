@@ -1,0 +1,449 @@
+// SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! The graphical editor: project settings, a top-down map and the build.
+//!
+//! The widget code is thin; the logic lives in plain structs (`settings`, `map_view`, `worker`).
+//! Look: the manual's palette. A lichen-green ground, ink text, village-green accents, and the map as the
+//! one loud thing on the screen.
+
+mod map_view;
+mod settings;
+mod worker;
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use eframe::egui::{self, Color32, RichText};
+use naves_core::heightmap::Heightmap;
+use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_export::build::BuildOutput;
+use naves_export::tools::Tools;
+
+use map_view::MapView;
+use settings::SettingsForm;
+use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
+
+const GREEN: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
+const BROWN: Color32 = Color32::from_rgb(0x8c, 0x6a, 0x45);
+const ERROR: Color32 = Color32::from_rgb(0xb0, 0x3a, 0x2e);
+const INK: Color32 = Color32::from_rgb(0x1d, 0x29, 0x24);
+const LICHEN: Color32 = Color32::from_rgb(0xf2, 0xf5, 0xec);
+const PANEL: Color32 = Color32::from_rgb(0xe7, 0xed, 0xe0);
+/// Widest picture the map view renders; larger windows scale it up.
+const MAX_RENDER_WIDTH: f32 = 1024.0;
+const SETTINGS_WIDTH: f32 = 300.0;
+
+type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
+
+enum Line {
+    Info(String),
+    Error(String),
+    Result(String),
+}
+
+/// The application state.
+pub struct NavesApp {
+    form: SettingsForm,
+    view: Option<MapView>,
+    overlay: Overlay,
+    heightmap: HeightmapState,
+    job: Option<HeightmapJob>,
+    texture: Option<(RenderRequest, egui::TextureHandle)>,
+    worker: Option<BuildWorker>,
+    log: Vec<Line>,
+    locate_tools: ToolLocator,
+}
+
+fn to_px(v: f32) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 1..=8192 first"
+    )]
+    let px = v.round().clamp(1.0, 8192.0) as u32;
+    px
+}
+
+/// The look of the editor: the manual's palette on egui's light theme.
+pub fn apply_theme(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = LICHEN;
+    visuals.window_fill = LICHEN;
+    visuals.extreme_bg_color = Color32::WHITE;
+    visuals.override_text_color = Some(INK);
+    visuals.selection.bg_fill = GREEN;
+    visuals.selection.stroke.color = Color32::WHITE;
+    visuals.hyperlink_color = GREEN;
+    visuals.widgets.hovered.bg_stroke.color = GREEN;
+    visuals.widgets.active.bg_fill = GREEN;
+    ctx.set_visuals(visuals);
+}
+
+impl NavesApp {
+    /// Opens the project in `dir`; `locate_tools` is called when a build starts.
+    ///
+    /// # Errors
+    ///
+    /// The project file cannot be loaded.
+    pub fn open(
+        dir: &Path,
+        locate_tools: ToolLocator,
+    ) -> Result<Self, naves_core::project::ProjectError> {
+        let form = SettingsForm::load(dir)?;
+        let mut app = Self {
+            form,
+            view: None,
+            overlay: Overlay::Hillshade,
+            heightmap: HeightmapState::NoDem,
+            job: None,
+            texture: None,
+            worker: None,
+            log: Vec::new(),
+            locate_tools,
+        };
+        app.reload_heightmap();
+        Ok(app)
+    }
+
+    /// The window title.
+    pub fn title(&self) -> String {
+        format!("Náves – {}", self.form.project.name)
+    }
+
+    fn reload_heightmap(&mut self) {
+        self.texture = None;
+        self.view = None;
+        if self.form.project.sources.dem.is_empty() {
+            self.heightmap = HeightmapState::NoDem;
+            self.job = None;
+        } else {
+            self.heightmap = HeightmapState::Loading;
+            self.job = Some(HeightmapJob::start(self.form.dir()));
+        }
+    }
+
+    fn poll_background(&mut self) {
+        if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
+            self.job = None;
+            self.heightmap = match result {
+                Ok(hm) => HeightmapState::Ready(Arc::new(hm)),
+                Err(error) => HeightmapState::Failed(error),
+            };
+        }
+        if let Some(worker) = self.worker.as_mut() {
+            for msg in worker.poll() {
+                self.log.push(match msg {
+                    BuildMsg::Progress(line) => Line::Info(line),
+                    BuildMsg::Failed(error) => Line::Error(error),
+                    BuildMsg::Done(BuildOutput {
+                        mod_dir,
+                        mission_dir,
+                        ..
+                    }) => Line::Result(format!(
+                        "Mod: {}\nMission: {}",
+                        mod_dir.display(),
+                        mission_dir.display()
+                    )),
+                });
+            }
+            if worker.is_finished() {
+                self.worker = None;
+            }
+        }
+    }
+
+    fn building(&self) -> bool {
+        self.worker.is_some()
+    }
+
+    /// Draws the whole window into `ui`.
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.poll_background();
+        if self.building() || self.job.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        egui::Panel::left("settings")
+            .resizable(false)
+            .exact_size(SETTINGS_WIDTH)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
+            .show(ui, |ui| self.settings_ui(ui));
+        egui::Panel::bottom("build")
+            .resizable(true)
+            .default_size(150.0)
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
+            .show(ui, |ui| self.build_ui(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(LICHEN))
+            .show(ui, |ui| self.map_ui(ui));
+    }
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        let p = &mut self.form.project;
+        ui.heading("Project");
+        ui.add_space(6.0);
+        egui::Grid::new("settings-grid")
+            .num_columns(2)
+            .spacing([10.0, 6.0])
+            .show(ui, |ui| {
+                changed |= field(ui, "Name", |ui| ui.text_edit_singleline(&mut p.name));
+                changed |= field(ui, "Latitude", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.area.center_lat)
+                            .speed(0.001)
+                            .suffix("°"),
+                    )
+                });
+                changed |= field(ui, "Longitude", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.area.center_lon)
+                            .speed(0.001)
+                            .suffix("°"),
+                    )
+                });
+                changed |= field(ui, "Real extent", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.area.real_extent_m)
+                            .speed(50.0)
+                            .suffix(" m"),
+                    )
+                });
+                changed |= field(ui, "Horizontal scale", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.scale.horizontal)
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
+                });
+                changed |= field(ui, "Height scale", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.scale.height)
+                            .speed(0.01)
+                            .range(0.0..=2.0),
+                    )
+                });
+                changed |= field(ui, "Terrain grid", |ui| {
+                    power_of_two(ui, "terrain", &mut p.grid.terrain_size, 256, 8192)
+                });
+                changed |= field(ui, "Material grid", |ui| {
+                    power_of_two(ui, "land", &mut p.grid.land_size, 32, 4096)
+                });
+            });
+        ui.add_space(8.0);
+        let map = p.map_size_m();
+        ui.label(
+            RichText::new(format!(
+                "Map: {map:.0} m, vertex every {:.2} m",
+                p.terrain_cell_m()
+            ))
+            .color(BROWN),
+        );
+        ui.add_space(8.0);
+        ui.label(RichText::new("Elevation files").strong());
+        if p.sources.dem.is_empty() {
+            ui.label(
+                "None yet. Add DEM files to sources.dem in naves.toml, then reopen the project.",
+            );
+        }
+        for file in &p.sources.dem {
+            ui.label(file.display().to_string());
+        }
+        if let Some(error) = &self.form.error {
+            ui.add_space(8.0);
+            ui.colored_label(ERROR, format!("Not saved: {error}"));
+        }
+        if changed && self.form.commit() {
+            self.reload_heightmap();
+        }
+    }
+
+    fn build_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let can_build = !self.building() && self.form.error.is_none();
+            let button = egui::Button::new(RichText::new("Build").color(Color32::WHITE).strong())
+                .fill(GREEN);
+            if ui.add_enabled(can_build, button).clicked() {
+                self.log.clear();
+                self.log.push(Line::Info("Starting the build".to_string()));
+                self.worker = Some(BuildWorker::start(self.form.dir(), (self.locate_tools)()));
+            }
+            if self.building() {
+                ui.spinner();
+            }
+        });
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for line in &self.log {
+                    match line {
+                        Line::Info(text) => ui.label(RichText::new(text).monospace()),
+                        Line::Error(text) => ui.colored_label(
+                            ERROR,
+                            RichText::new(format!("Failed: {text}")).monospace(),
+                        ),
+                        Line::Result(text) => {
+                            ui.colored_label(GREEN, RichText::new(text).monospace())
+                        }
+                    };
+                }
+            });
+    }
+
+    fn map_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.overlay, Overlay::Hillshade, "Hillshade");
+            ui.selectable_value(&mut self.overlay, Overlay::Slope, "Slope");
+            ui.selectable_value(&mut self.overlay, Overlay::Height, "Height");
+        });
+        let heightmap = match &self.heightmap {
+            HeightmapState::Ready(hm) => Arc::clone(hm),
+            HeightmapState::NoDem => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Add elevation files to see the map.");
+                });
+                return;
+            }
+            HeightmapState::Loading => {
+                ui.centered_and_justified(|ui| {
+                    ui.spinner();
+                });
+                return;
+            }
+            HeightmapState::Failed(error) => {
+                ui.colored_label(ERROR, format!("The map cannot be drawn: {error}"));
+                return;
+            }
+        };
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        let (w, h) = (f64::from(rect.width()), f64::from(rect.height()));
+        let map_size = self.form.project.map_size_m();
+        let view = self
+            .view
+            .get_or_insert_with(|| MapView::fit(map_size, w, h));
+        if response.dragged() {
+            let d = response.drag_delta();
+            view.pan_px(f64::from(d.x), f64::from(d.y));
+        }
+        if let Some(pos) = response.hover_pos() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll != 0.0 {
+                let factor = (-f64::from(scroll) * 0.002).exp();
+                view.zoom_at(
+                    f64::from(pos.x - rect.left()),
+                    f64::from(pos.y - rect.top()),
+                    w,
+                    h,
+                    factor,
+                );
+            }
+        }
+        let view = *view;
+        self.draw_map(ui, &heightmap, view, rect);
+    }
+
+    fn draw_map(&mut self, ui: &mut egui::Ui, hm: &Heightmap, view: MapView, rect: egui::Rect) {
+        let (x0, y0, x1, y1) = view.bounds(f64::from(rect.width()), f64::from(rect.height()));
+        let request = RenderRequest {
+            x0,
+            y0,
+            x1,
+            y1,
+            px: to_px(rect.width().min(MAX_RENDER_WIDTH)),
+            overlay: self.overlay,
+        };
+        if self.texture.as_ref().is_none_or(|(r, _)| *r != request)
+            && let Ok(image) = render_topdown(hm, &request)
+        {
+            let size = [image.width() as usize, image.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+            let handle = ui
+                .ctx()
+                .load_texture("map", color, egui::TextureOptions::LINEAR);
+            self.texture = Some((request, handle));
+        }
+        if let Some((_, texture)) = &self.texture {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter()
+                .with_clip_rect(rect)
+                .image(texture.id(), rect, uv, Color32::WHITE);
+        }
+    }
+}
+
+/// One labelled row of the settings grid; the label is also the widget's accessible name.
+/// Returns whether the widget changed the value.
+fn field(
+    ui: &mut egui::Ui,
+    label: &str,
+    widget: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> bool {
+    let name = ui.label(label);
+    let response = widget(ui).labelled_by(name.id);
+    ui.end_row();
+    response.changed()
+}
+
+/// A drop-down with the powers of two from `min` to `max`; the response is marked changed when the value is.
+fn power_of_two(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut u32,
+    min: u32,
+    max: u32,
+) -> egui::Response {
+    let before = *value;
+    let mut response = egui::ComboBox::from_id_salt(id)
+        .selected_text(value.to_string())
+        .show_ui(ui, |ui| {
+            let mut v = min;
+            while v <= max {
+                ui.selectable_value(value, v, v.to_string());
+                v *= 2;
+            }
+        })
+        .response;
+    if *value != before {
+        response.mark_changed();
+    }
+    response
+}
+
+/// Opens the window for the project in `dir`.
+///
+/// # Errors
+///
+/// The project cannot be loaded or the window cannot be created.
+pub fn run(dir: &Path) -> anyhow::Result<()> {
+    let app = NavesApp::open(dir, Box::new(|| Tools::locate().map_err(|e| e.to_string())))?;
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1180.0, 760.0])
+            .with_title(app.title()),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "naves",
+        options,
+        Box::new(move |cc| {
+            apply_theme(&cc.egui_ctx);
+            Ok(Box::new(Shell(app)))
+        }),
+    )
+    .map_err(|e| anyhow::anyhow!("cannot open the window: {e}"))
+}
+
+struct Shell(NavesApp);
+
+impl eframe::App for Shell {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.0.show(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests;

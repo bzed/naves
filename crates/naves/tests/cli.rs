@@ -23,6 +23,10 @@ fn naves(home: &Path) -> Command {
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("PATH", home.join("no-bin"));
+    // keep coverage runs from writing profile data into the working directory
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        cmd.env("LLVM_PROFILE_FILE", profile);
+    }
     cmd
 }
 
@@ -232,4 +236,13 @@ fn builds_koenigssee_fixture() {
         .output()
         .unwrap();
     assert!(verify.status.success());
+}
+
+#[test]
+fn gui_without_a_project_says_what_is_missing() {
+    let home = tempfile::tempdir().unwrap();
+    let empty = home.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = naves(home.path()).arg("gui").arg(&empty).assert().failure();
+    assert!(stderr(&out).contains("naves.toml"), "{}", stderr(&out));
 }

@@ -8,3 +8,4 @@ pub mod heightmap;
 pub mod ident;
 pub mod project;
 pub mod projection;
+pub mod render;
