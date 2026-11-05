@@ -12,7 +12,7 @@ height = 0.5
 
 [grid]
 terrain_size = 1024
-land_size = 256
+land_size = 128
 
 [sources]
 dem = [

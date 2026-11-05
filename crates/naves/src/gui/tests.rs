@@ -117,3 +117,20 @@ fn a_project_without_dem_says_what_to_do() {
             .is_some()
     );
 }
+
+#[test]
+fn the_land_grid_follows_the_terrain_grid() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("32 × 32 land cells").is_some());
+    harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+    harness.run_steps(4);
+    harness.get_by_label("512").click();
+    harness.run_steps(8);
+    let saved = Project::load(&dir).unwrap();
+    assert_eq!((saved.grid.terrain_size, saved.grid.land_size), (512, 64));
+    assert!(harness.query_by_label("64 × 64 land cells").is_some());
+}

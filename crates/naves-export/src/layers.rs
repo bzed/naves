@@ -15,10 +15,12 @@ use rayon::prelude::*;
 
 use crate::rvmat::tile_material;
 
-/// Land cells per tile side.
-const CELLS_PER_TILE: u32 = 32;
-/// Image pixels per land cell.
-const PX_PER_CELL: f64 = 15.0;
+/// Land cells per tile side, as on Livonia. The game client sizes its land segments from this (the
+/// land cells that share one satellite texture); with bigger tiles it overflows a fixed 128-height buffer
+/// and crashes.
+const CELLS_PER_TILE: u32 = 8;
+/// Image pixels per land cell (Livonia: 50 m cells, 0.83 m per pixel).
+const PX_PER_CELL: f64 = 60.0;
 /// Tile image side in pixels.
 const TILE_PX: u32 = 512;
 /// Overlap on every side of a tile image in pixels.
@@ -43,7 +45,7 @@ pub struct TileGrid {
 
 /// The tile grid for a square map of `map_size_m` metres with `land_size` × `land_size` land cells.
 ///
-/// A tile is 32 × 32 land cells with 15 image pixels per cell, so `px_m = cell / 15`.
+/// A tile is 8 × 8 land cells with 60 image pixels per cell, so `px_m = cell / 60`.
 #[must_use]
 pub fn tile_grid(map_size_m: f64, land_size: u32) -> TileGrid {
     let tiles = (land_size / CELLS_PER_TILE).max(1);
@@ -242,7 +244,7 @@ pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str) -> LayerSet {
     }
 
     let land = usize::try_from(land_size).unwrap_or(0);
-    let cells = usize::try_from(CELLS_PER_TILE).unwrap_or(32);
+    let cells = usize::try_from(CELLS_PER_TILE).unwrap_or(8);
     let tiles_x = usize::try_from(grid.tiles_x).unwrap_or(1);
     let tiles_y = usize::try_from(grid.tiles_y).unwrap_or(1);
     let mut material_index = Vec::with_capacity(land * land);

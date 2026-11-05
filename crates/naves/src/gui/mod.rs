@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use naves_core::heightmap::Heightmap;
+use naves_core::project::LAND_RATIO;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_export::build::BuildOutput;
 use naves_export::tools::Tools;
@@ -224,11 +225,16 @@ impl NavesApp {
                             .range(0.0..=2.0),
                     )
                 });
-                changed |= field(ui, "Terrain grid", |ui| {
+                let terrain = field(ui, "Terrain grid", |ui| {
                     power_of_two(ui, "terrain", &mut p.grid.terrain_size, 256, 8192)
                 });
-                changed |= field(ui, "Material grid", |ui| {
-                    power_of_two(ui, "land", &mut p.grid.land_size, 32, 4096)
+                if terrain {
+                    // DayZ needs 8 terrain cells per land cell, so the land grid is not a choice.
+                    p.grid.land_size = p.grid.terrain_size / LAND_RATIO;
+                }
+                changed |= terrain;
+                field(ui, "Material grid", |ui| {
+                    ui.label(format!("{0} × {0} land cells", p.grid.land_size))
                 });
             });
         ui.add_space(8.0);

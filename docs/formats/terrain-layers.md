@@ -8,7 +8,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 Observed on Livonia (`worlds_enoch_data.pbo`, read-only, files extracted to a temporary folder and not kept) and
 checked against Náves' own output in the binarize experiment (`binarize-world.md`). Livonia is a 12 800 m map
-with a land grid of 1024 × 1024 cells (12.5 m per cell).
+with a terrain grid of 2048 × 2048 vertices (6.25 m) and a land grid of 256 × 256 cells (50 m per cell), read from
+the header of the binarized `enoch.wrp`; Chernarus has the same grids with 60 m land cells.
 
 ## What a tile is
 
@@ -51,11 +52,20 @@ Check: `pos.y(0) = 0.03125 + 32 · 0.9375 = 30.03125`, `pos.y(1) = 29.09375`, `p
 
 ## Relation to the land grid
 
-Livonia's land cells are 12.5 m, 32 cells per tile and 15 px per cell. Náves uses the same ratios:
+Livonia's land cells are 50 m, 8 cells per tile and 60 px per cell, with 8 terrain cells per land cell. Náves
+uses the same ratios:
 
-- `cell_m = map_size / land_size`
-- `tile_m = 32 · cell_m`, `n = land_size / 32` tiles per side (`land_size` is a power of two ≥ 32)
-- `px_m = cell_m / 15`; images are always 512 × 512 with 16 px overlap
+- `land_size = terrain_size / 8`, `cell_m = map_size / land_size`
+- `tile_m = 8 · cell_m`, `n = land_size / 8` tiles per side
+- `px_m = cell_m / 60`; images are always 512 × 512 with 16 px overlap
+
+These ratios are not a matter of taste. The game client takes the land cells that share one satellite texture (the
+tile) as the size of its land segments and asks for (segment + 4) × (terrain cells per land cell) heights per
+segment edge, which must fit a fixed buffer of 128 heights: Livonia needs (8 + 4) × 8 = 96. A map with 32-cell
+tiles and 4 terrain cells per land cell needs 144, overflows that buffer and crashes the client a few seconds after
+it enters the world; with 4 terrain cells per land cell the client also renders a terrain level whose texture was
+never created and crashes. Both were found with a debugger on the client, see
+`docs/research/2026-11-05-reference-terrains.md`.
 
 ## Tile material (`.rvmat`)
 

@@ -79,7 +79,7 @@ fn new_uses_documented_defaults() {
     let p = Project::new("Königssee Test", 1.0, 2.0, 4000.0);
     assert_eq!(p.world, "konigssee_test");
     assert!(close(p.scale.horizontal, 0.5) && close(p.scale.height, 0.5));
-    assert_eq!((p.grid.terrain_size, p.grid.land_size), (1024, 256));
+    assert_eq!((p.grid.terrain_size, p.grid.land_size), (1024, 128));
     assert!(p.sources.dem.is_empty());
 }
 
@@ -98,17 +98,35 @@ fn rejects_bad_grid() {
     invalid_field(&t, "terrain_size");
     let t = base().replace("terrain_size = 1024", "terrain_size = 16384");
     invalid_field(&t, "terrain_size");
-    let t = base().replace("land_size = 256", "land_size = 300");
+    let t = base().replace("land_size = 128", "land_size = 300");
     invalid_field(&t, "land_size");
-    let t = base().replace("land_size = 256", "land_size = 2048");
-    invalid_field(&t, "land_size");
-    // a tile is 32 land cells, and tile materials must fit the 16-bit material index
-    let t = base().replace("land_size = 256", "land_size = 16");
-    invalid_field(&t, "land_size");
-    let t = base()
-        .replace("terrain_size = 1024", "terrain_size = 8192")
-        .replace("land_size = 256", "land_size = 8192");
-    invalid_field(&t, "land_size");
+}
+
+/// The game client needs 8 terrain cells per land cell (as Livonia and Chernarus have): with fewer it
+/// overflows a fixed 128-height buffer when it builds the land segments and crashes.
+#[test]
+fn land_grid_must_be_an_eighth_of_the_terrain_grid() {
+    for (terrain, land) in [(256, 32), (1024, 128), (8192, 1024)] {
+        let t = base()
+            .replace("terrain_size = 1024", &format!("terrain_size = {terrain}"))
+            .replace("land_size = 128", &format!("land_size = {land}"));
+        let p = Project::parse(&t).unwrap();
+        assert_eq!((p.grid.terrain_size, p.grid.land_size), (terrain, land));
+    }
+    for land in [256, 64, 1024] {
+        let t = base().replace("land_size = 128", &format!("land_size = {land}"));
+        match Project::parse(&t) {
+            Err(ProjectError::Invalid(msg)) => {
+                assert!(msg.contains("land_size"), "{msg}");
+                assert!(msg.contains("terrain_size / 8"), "{msg}");
+                assert!(
+                    msg.contains("128"),
+                    "the message suggests the right value: {msg}"
+                );
+            }
+            other => panic!("land_size = {land}: expected Invalid, got {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -240,4 +258,18 @@ fn with_value_rejects_unknown_paths_and_wrong_types() {
             "{path} = {value}"
         );
     }
+}
+
+#[test]
+fn setting_the_terrain_grid_sets_the_land_grid() {
+    let p = Project::new("x", 0.0, 0.0, 12800.0);
+    let q = p
+        .with_value("grid.terrain_size", serde_json::json!(2048))
+        .unwrap();
+    assert_eq!((q.grid.terrain_size, q.grid.land_size), (2048, 256));
+    // the land grid alone can only be set to the one value that fits
+    let err = p
+        .with_value("grid.land_size", serde_json::json!(256))
+        .unwrap_err();
+    assert!(err.to_string().contains("terrain_size / 8"), "{err}");
 }

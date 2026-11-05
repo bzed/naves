@@ -33,8 +33,9 @@ fn file<'a>(files: &'a [(String, Vec<u8>)], name: &str) -> &'a [u8] {
 
 #[test]
 fn livonia_tile_geometry() {
-    // Values observed in Livonia's tile materials (docs/formats/terrain-layers.md).
-    let g = tile_grid(12800.0, 1024);
+    // Values observed in Livonia's tile materials and world (docs/formats/terrain-layers.md): 256 land
+    // cells of 50 m, 8 cells per tile, 60 image pixels per cell.
+    let g = tile_grid(12800.0, 256);
     assert_eq!((g.tiles_x, g.tiles_y), (32, 32));
     assert_eq!((g.tile_px, g.overlap_px), (512, 16));
     assert!((g.px_m - 400.0 / 480.0).abs() < 1e-9);
@@ -50,17 +51,17 @@ fn livonia_tile_geometry() {
 #[test]
 fn grid_follows_the_land_size() {
     let g = tile_grid(1600.0, 64);
-    assert_eq!((g.tiles_x, g.tiles_y), (2, 2));
-    // 25 m cells, 15 px per cell
-    assert!((g.px_m - 25.0 / 15.0).abs() < 1e-9);
+    assert_eq!((g.tiles_x, g.tiles_y), (8, 8));
+    // 25 m cells, 60 px per cell
+    assert!((g.px_m - 25.0 / 60.0).abs() < 1e-9);
 }
 
 #[test]
 fn every_land_cell_has_material() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
-    assert_eq!(set.material_index.len(), 64 * 64);
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    assert_eq!(set.material_index.len(), 32 * 32);
     assert_eq!(set.materials[0], "");
-    assert_eq!(set.materials.len(), 1 + 4);
+    assert_eq!(set.materials.len(), 1 + 16);
     assert!(
         set.material_index
             .iter()
@@ -70,21 +71,21 @@ fn every_land_cell_has_material() {
 
 #[test]
 fn tiles_are_numbered_from_the_north() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
-    // land rows are south first: row 0 is the southern tile row, which is tile row 1 (from the north)
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    // land rows are south first: row 0 is the southern tile row, which is tile row 3 (from the north)
     let south_west = set.material_index[0];
-    let north_west = set.material_index[63 * 64];
+    let north_west = set.material_index[31 * 32];
     assert_eq!(
         set.materials[usize::from(south_west)],
-        format!("{PREFIX}\\data\\layers\\p_000-001.rvmat")
+        format!("{PREFIX}\\data\\layers\\p_000-003.rvmat")
     );
     assert_eq!(
         set.materials[usize::from(north_west)],
         format!("{PREFIX}\\data\\layers\\p_000-000.rvmat")
     );
-    // all cells of one tile share one material
-    assert_eq!(set.material_index[31], south_west);
-    assert_ne!(set.material_index[32], south_west);
+    // all cells of one tile (8 x 8 land cells) share one material
+    assert_eq!(set.material_index[7], south_west);
+    assert_ne!(set.material_index[8], south_west);
 }
 
 #[test]
@@ -105,8 +106,8 @@ fn steep_is_rock() {
 
 #[test]
 fn files_cover_every_tile() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
-    for (tx, ty) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    for (tx, ty) in [(0, 0), (3, 0), (0, 3), (3, 3)] {
         for name in [
             format!("data/layers/s_{tx:03}_{ty:03}_lco.png"),
             format!("data/layers/m_{tx:03}_{ty:03}_lca.png"),
@@ -115,7 +116,7 @@ fn files_cover_every_tile() {
             assert!(set.files.iter().any(|(n, _)| *n == name), "missing {name}");
         }
     }
-    assert_eq!(set.files.len(), 12);
+    assert_eq!(set.files.len(), 3 * 16);
 }
 
 #[test]

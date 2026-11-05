@@ -25,7 +25,7 @@ height = 0.5
 
 [grid]
 terrain_size = 1024
-land_size = 256
+land_size = 128
 
 [sources]
 dem = ["dem/Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif"]
@@ -66,13 +66,17 @@ The map is `real_extent_m × horizontal` metres wide. With the defaults, a 12 80
 | Field | Default | Valid values |
 |---|---|---|
 | `terrain_size` | 1024 | power of two from 256 to 8192; heightmap vertices per side |
-| `land_size` | 256 | power of two from 32 to 4096 that divides `terrain_size`; surface material cells per side |
+| `land_size` | 128 | exactly `terrain_size / 8`; surface material cells per side |
 
 The distance between heightmap vertices is the map width divided by `terrain_size`.
 
-The surface images are cut into tiles of 32 × 32 material cells, so a map has `land_size / 32` tiles per side
-(8 with the defaults). Each tile gets a satellite image and a surface mask of 512 × 512 pixels with 15 pixels per
-material cell; a larger `land_size` therefore means a sharper surface and a longer build.
+`land_size` is not a free choice: the game needs 8 heightmap cells per material cell, as on Livonia and
+Chernarus, and the game client crashes on other ratios. Náves rejects any other value and names the right one;
+the GUI and `project_set` of `grid.terrain_size` set it for you.
+
+The surface images are cut into tiles of 8 × 8 material cells, so a map has `land_size / 8` tiles per side
+(16 with the defaults). Each tile gets a satellite image and a surface mask of 512 × 512 pixels with 60 pixels per
+material cell; a larger `terrain_size` therefore means a sharper surface and a longer build.
 
 ## `[sources]`
 

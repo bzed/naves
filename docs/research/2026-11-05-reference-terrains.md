@@ -137,3 +137,25 @@ Signed with the project key, the server loads it with no navmesh error, and **th
 cause either. Logs read: the client RPT shows nothing about our files before the crash (only vanilla noise: missing
 sound shaders, `Type 'ManType' must be inherited from class 'DayZAnimalType'`, which the server logs too), the crash
 follows the creation of the animal entity types.
+
+## Root cause of the client crash (2026-11-05)
+
+Found with `winedbg` attached to the running client (registers, memory dumps, a hardware watchpoint) and the
+disassembly of `DayZ_x64.exe` 1.30.164289.
+
+1. **Heap overflow in the land segments.** The client picks the size of its land segments from the number of land
+   cells that share one satellite texture (the surface tile) and fills, per segment, a rectangle of
+   (segment + 4) × (terrain cells per land cell) heights into a work buffer of a fixed 128 heights. Livonia: tiles of
+   8 land cells, 8 terrain cells per land cell, 96 heights (measured at the same code in a Livonia session). The
+   generated world: tiles of 32 land cells, 4 terrain cells per land cell, 144 heights. The 16 extra heights landed
+   in the land-segment pointer array next to the buffer, and the client crashed when it used one of them as a
+   pointer (the "access violation reading `0xffffffffffffffff`": the bad pointer was two of our own height values).
+   With 8-cell tiles the player joins and gets a real height.
+2. **Missing terrain level texture.** With 8-cell tiles but still 4 terrain cells per land cell, a terrain render
+   job read the texture of a land level that had never been created (null read at `+0xa0`). With 8 terrain cells per
+   land cell (`land_size = terrain_size / 8`) it does not happen.
+
+With both (Livonia's geometry) the headless client stays in the Berchtesgaden world. The earlier claim in
+`terrain-layers.md` that Livonia has 1024 land cells of 12.5 m and 32-cell tiles was wrong; the binarized
+`enoch.wrp` header says 256 land cells of 50 m and a 2048 terrain grid. Bohemia's sample has 4 terrain cells per land
+cell too.

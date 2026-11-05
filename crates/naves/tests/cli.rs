@@ -68,7 +68,7 @@ fn new_project(home: &Path) -> PathBuf {
     let toml = toml
         .replace("dem = []", "dem = [\"dem/koenigssee.tif\"]")
         .replace("terrain_size = 1024", "terrain_size = 256")
-        .replace("land_size = 256", "land_size = 32");
+        .replace("land_size = 128", "land_size = 32");
     std::fs::write(proj.join("naves.toml"), toml).unwrap();
     proj
 }

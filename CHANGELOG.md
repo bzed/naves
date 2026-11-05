@@ -27,4 +27,12 @@ All notable changes to this project are documented here. The format follows
   centre) and `naves build` packs `<project>/navmesh/<world>.nm` when it exists; the manual describes how to make
   the mesh with DayZDiag and Flare Navgen.
 - Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope) and a tile
-  material for every terrain tile. `grid.land_size` must now be 32 to 4096.
+  material for every terrain tile.
+
+### Fixed
+
+- The game client no longer crashes a few seconds after entering a generated world. The world now uses
+  Livonia's grid geometry: `grid.land_size` must be exactly `grid.terrain_size / 8` (default 128; other values
+  are rejected with the right value named) and the surface tiles are 8 × 8 land cells at 60 pixels per cell. The
+  GUI and `project_set` derive the land grid from the terrain grid. Existing projects need `land_size` changed and
+  their navigation mesh regenerated.

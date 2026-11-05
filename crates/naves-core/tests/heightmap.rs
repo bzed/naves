@@ -19,7 +19,7 @@ const LON: f64 = 12.965;
 fn project() -> Project {
     let mut p = Project::new("t", LAT, LON, 2000.0);
     p.grid.terrain_size = 256;
-    p.grid.land_size = 64;
+    p.grid.land_size = 32;
     p.scale.height = 1.0;
     p
 }

@@ -50,12 +50,16 @@ pub struct Scale {
     pub height: f64,
 }
 
+/// Terrain cells per land cell. The game client needs 8 (Livonia and Chernarus have it): with fewer it
+/// overflows a fixed 128-height buffer while it builds the land segments and crashes.
+pub const LAND_RATIO: u32 = 8;
+
 /// Grid sizes.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Grid {
     /// Heightmap vertices per side (power of two, 256..=8192).
     pub terrain_size: u32,
-    /// Material grid cells per side (power of two dividing `terrain_size`).
+    /// Land (material) grid cells per side: always `terrain_size / LAND_RATIO`, as on Livonia.
     pub land_size: u32,
 }
 
@@ -125,7 +129,7 @@ impl Project {
             },
             grid: Grid {
                 terrain_size: 1024,
-                land_size: 256,
+                land_size: 1024 / LAND_RATIO,
             },
             sources: Sources { dem: Vec::new() },
         }
@@ -225,7 +229,12 @@ impl Project {
             }
             node = next;
         }
-        let project: Project = serde_json::from_value(document).map_err(|e| bad(&e.to_string()))?;
+        let mut project: Project =
+            serde_json::from_value(document).map_err(|e| bad(&e.to_string()))?;
+        if path == "grid.terrain_size" {
+            // the land grid is not a free choice, it follows the terrain grid
+            project.grid.land_size = project.grid.terrain_size / LAND_RATIO;
+        }
         project.validate()?;
         Ok(project)
     }
@@ -235,14 +244,13 @@ impl Project {
         if !(256..=8192).contains(&g.terrain_size) || !g.terrain_size.is_power_of_two() {
             return invalid("grid.terrain_size must be a power of two in 256..=8192");
         }
-        if !(32..=4096).contains(&g.land_size)
-            || !g.land_size.is_power_of_two()
-            || g.land_size > g.terrain_size
-            || !g.terrain_size.is_multiple_of(g.land_size)
-        {
-            return invalid(
-                "grid.land_size must be a power of two in 32..=4096 that divides grid.terrain_size",
-            );
+        if g.land_size.checked_mul(LAND_RATIO) != Some(g.terrain_size) {
+            return Err(ProjectError::Invalid(format!(
+                "grid.land_size must be grid.terrain_size / {LAND_RATIO} (DayZ needs {LAND_RATIO} terrain cells per \
+                 land cell); for terrain_size = {} use land_size = {}",
+                g.terrain_size,
+                g.terrain_size / LAND_RATIO
+            )));
         }
         let s = &self.scale;
         if !(s.horizontal > 0.0 && s.horizontal <= 1.0) {
