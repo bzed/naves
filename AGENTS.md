@@ -30,7 +30,11 @@ builds with `--locked`.
 
 - **No game data in the repo**, not even in test fixtures. Tests use synthetic data and openly licensed
   data (attribution in `tests/fixtures/README.md`). Game files are read from the user's install at run time.
-- **Never write into Steam directories.** The DayZ, DayZ Server and DayZ Tools installs are read-only.
+- **Using the DayZ client, DayZ Server and DayZ Tools is allowed in every way** for development and manual
+  testing: run them, read from them, start servers and clients, link a mod into an install when a test needs
+  it. Prefer your own folders (a server tree, a mod folder passed with `-mod=`) over changes inside an
+  install, never edit or delete game files, and remove what you linked when you are done. The `naves`
+  program and the automated tests only read the installs (see *Tests*).
 - **Clean-room:** no code from BI tools. Formats come from public documentation and from observing game
   files and tool output on our own inputs.
 - Temporary and build folders go under `/tmp` or `/var/tmp` (`tempfile` crate or `mktemp -d`), never
