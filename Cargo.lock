@@ -536,6 +536,9 @@ dependencies = [
  "assert_cmd",
  "clap",
  "clap_mangen",
+ "naves-core",
+ "naves-export",
+ "tempfile",
 ]
 
 [[package]]
@@ -560,6 +563,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "naves-core",
+ "naves-export",
  "naves-formats",
  "quick-xml",
  "rayon",

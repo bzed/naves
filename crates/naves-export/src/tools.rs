@@ -91,6 +91,8 @@ pub struct Tools {
     pub armake2: PathBuf,
     /// `binarize.exe` through Proton.
     pub binarize: BinarizeBridge,
+    /// The DayZ Server install (read-only); the mission is built from its `mpmissions`.
+    pub dayz_server: PathBuf,
 }
 
 /// Where DayZ Tools and Proton live, and how binarize is run.
@@ -160,11 +162,20 @@ impl Tools {
                 "install Proton Hotfix or Proton Experimental from Steam, or point PROTON at a `proton` script",
             ));
         }
+        let dayz_server = var("DAYZ_SERVER").unwrap_or_else(|| common.join("DayZServer"));
+        if !dayz_server.join("mpmissions").is_dir() {
+            return Err(missing(
+                "DayZ Server",
+                "DAYZ_SERVER",
+                "install DayZ Server from Steam (Library, Tools); the mission is built from its dayzOffline.enoch",
+            ));
+        }
         let timeout = env("NAVES_BINARIZE_TIMEOUT")
             .and_then(|v| v.to_str().and_then(|s| s.parse::<u64>().ok()))
             .map_or(DEFAULT_BINARIZE_TIMEOUT, Duration::from_secs);
         Ok(Tools {
             armake2,
+            dayz_server,
             binarize: BinarizeBridge {
                 dayz: var("DAYZ").unwrap_or_else(|| common.join("DayZ")),
                 dayz_tools,

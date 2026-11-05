@@ -24,13 +24,17 @@ const DAYZ_TOOLS_APP_ID: &str = "830640";
 const WINESERVER_WAIT: Duration = Duration::from_mins(1);
 
 /// The outcome of a supervised process.
-enum Finished {
+pub(crate) enum Finished {
     Exited(ExitStatus),
     TimedOut,
 }
 
 /// Runs `cmd` with its output in `log`, stopping it after `timeout`.
-fn run_supervised(cmd: &mut Command, log: &Path, timeout: Duration) -> Result<Finished, ToolError> {
+pub(crate) fn run_supervised(
+    cmd: &mut Command,
+    log: &Path,
+    timeout: Duration,
+) -> Result<Finished, ToolError> {
     let out = File::create(log).map_err(ToolError::io(log))?;
     let err = out.try_clone().map_err(ToolError::io(log))?;
     let mut child: Child = cmd
@@ -79,7 +83,7 @@ fn link(_target: &Path, _link: &Path) -> std::io::Result<()> {
     ))
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<(), ToolError> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<(), ToolError> {
     for entry in WalkDir::new(from).sort_by_file_name() {
         let entry = entry.map_err(|e| ToolError::Io {
             path: from.to_path_buf(),

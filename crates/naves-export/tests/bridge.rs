@@ -38,6 +38,7 @@ fn fake_steam(root: &Path, proton_body: &str) -> PathBuf {
     std::fs::create_dir_all(common.join("DayZ Tools/Bin/Binarize")).unwrap();
     std::fs::write(common.join("DayZ Tools/Bin/Binarize/binarize.exe"), "MZ").unwrap();
     std::fs::create_dir_all(common.join("DayZ")).unwrap();
+    std::fs::create_dir_all(common.join("DayZServer/mpmissions")).unwrap();
     script(&common.join("Proton Hotfix/proton"), proton_body);
     script(&common.join("Proton Hotfix/files/bin/wineserver"), "exit 0");
     steam
@@ -117,6 +118,34 @@ fn locates_everything_from_the_environment() {
         tools.binarize.proton,
         steam.join("steamapps/common/Proton Hotfix/proton")
     );
+    assert_eq!(tools.dayz_server, steam.join("steamapps/common/DayZServer"));
+}
+
+#[test]
+fn dayz_server_variable_wins_and_missing_server_is_named() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let steam = fake_steam(dir.path(), "exit 0");
+    let armake2 = fork_armake2(dir.path());
+    let server = dir.path().join("my server");
+    std::fs::create_dir_all(server.join("mpmissions")).unwrap();
+    let env = env_of(vec![
+        ("ARMAKE2", armake2.clone()),
+        ("STEAM_ROOT", steam.clone()),
+        ("DAYZ_SERVER", server.clone()),
+    ]);
+    assert_eq!(
+        Tools::locate_with(&env, None, None).unwrap().dayz_server,
+        server
+    );
+    std::fs::remove_dir_all(steam.join("steamapps/common/DayZServer")).unwrap();
+    let env = env_of(vec![("ARMAKE2", armake2), ("STEAM_ROOT", steam)]);
+    match Tools::locate_with(&env, None, None) {
+        Err(ToolError::Missing { tool, env, .. }) => {
+            assert_eq!((tool, env), ("DayZ Server", "DAYZ_SERVER"));
+        }
+        other => panic!("expected Missing DayZ Server, got {other:?}"),
+    }
 }
 
 #[test]

@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows
 
 - Project file `naves.toml`.
 - Copernicus GLO-30 GeoTIFF DEM input.
+- `naves new` creates a project, `naves build` builds the signed mod and the server mission.
 - Binarize worlds with DayZ Tools under Proton (sandboxed, with a timeout); the build checks for armake2,
   DayZ Tools and Proton up front and names the variable to set.
 - World `config.cpp` and server mission generation (the player spawns in the middle of the map).
