@@ -66,6 +66,8 @@ fn builds_mod_keys_and_mission() {
         "./data/layers/p_000-000.rvmat",
         "./data/layers/s_000_000_lco.paa",
         "./data/layers/m_000_000_lca.paa",
+        "./ce/cfgenvironment.xml",
+        "./ce/env/bear_territories.xml",
     ] {
         assert!(
             pbo.lines().any(|l| l == wanted),

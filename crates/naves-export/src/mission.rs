@@ -86,7 +86,15 @@ fn xml_edit(text: &str, edit: &Edit) -> Result<Vec<u8>, String> {
         match (&event, edit) {
             // inside an element that is being dropped
             (Event::Start(_), _) if skip_depth > 0 => skip_depth += 1,
-            (Event::End(_), _) if skip_depth > 0 => skip_depth -= 1,
+            (Event::End(_), _) if skip_depth > 0 => {
+                skip_depth -= 1;
+                // The spawn-point edit keeps the element it fills: its end tag closes it again.
+                if skip_depth == 0 && matches!(edit, Edit::SpawnPoint(_)) {
+                    writer
+                        .write_event(event.borrow())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             (_, _) if skip_depth > 0 => {}
             (Event::Start(e), Edit::Drop(names)) if has_name(e, names) => skip_depth = 1,
             (Event::Empty(e), Edit::Drop(names)) if has_name(e, names) => {}
@@ -96,7 +104,9 @@ fn xml_edit(text: &str, edit: &Edit) -> Result<Vec<u8>, String> {
                 writer
                     .write_event(event.borrow())
                     .map_err(|e| e.to_string())?;
-                let pos = format!("\n            <pos x=\"{x}\" z=\"{z}\" />\n        ");
+                let pos = format!(
+                    "\n            <group name=\"naves\">\n                <pos x=\"{x}\" z=\"{z}\" />\n            </group>\n        "
+                );
                 writer
                     .get_mut()
                     .write_all(pos.as_bytes())

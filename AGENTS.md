@@ -63,6 +63,29 @@ builds with `--locked`.
 - Parsers for untrusted input (every file format, OSM, DEM, project files, MCP requests) get a fuzz
   target (see `make fuzz`). The fuzz corpus seeds also run as ordinary tests in `make test`.
 
+## Testing a built map in the game
+
+Automated tests use fakes. To check a real build, run a local server and the headless client (the `dayz-dev`
+skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`). What was learned doing this:
+
+- **Server:** build a server tree outside Steam with its own ports, `verifySignatures = 2`, the mod's `.bikey` in
+  `keys/`, `BattlEye = 0;` for the headless client, the built mission copied into `mpmissions/` and
+  `template="dayzOffline.<world>";`. Start it with `-mod=@naves_<world>` (a symlink to the build's mod folder in
+  the tree; paths must be relative to the tree).
+- **Client mod folder:** a `-mod=` path that points outside the install does **not** work: the client resolves it
+  relative to its install folder and then fails with "Cannot open file ...\addons\<name>", also for a folder under
+  `$HOME`. Symlink the build's mod folder into the DayZ install (`<Steam>/steamapps/common/DayZ/@naves_<world>`)
+  and start the client with `-mod=@naves_<world>`; **remove that symlink when you are done**.
+- **One game at a time**, and stop it as soon as you have what you need (`dayz-client-headless.sh stop`).
+- **A control run** (the same client against a vanilla Livonia server, no mod) tells a broken setup from a broken
+  map; do it before suspecting the map.
+- The client log is in the Wine prefix: `<Steam>/steamapps/compatdata/221100/pfx/drive_c/users/steamuser/AppData/Local/DayZ/`
+  (`crash_*.log`, `DayZ_x64_*.RPT`); the server's `profiles/` has the RPT and the `.ADM` log.
+- **Findings about worlds** (all verified): the world config needs `ceFiles` (the client reads
+  `cfgenvironment.xml` from it) and the sky, cloud and weather entries, which the generated config gets by
+  inheriting `Enoch` by reference; the server rejects a `cfgplayerspawnpoints.xml` whose points are not inside a
+  `<group>` in `generator_posbubbles`; the mission's `areaflags.map` belongs to the map size it was made for.
+
 ## Coverage
 
 - Total line coverage stays **at or above 85 %** (`COVERAGE_MIN` in the `Makefile`, measured with

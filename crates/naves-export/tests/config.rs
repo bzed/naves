@@ -35,11 +35,17 @@ fn prefix_is_the_in_game_path() {
 #[test]
 fn config_names_world() {
     let c = world_config(&project(), &heightmap(300.0));
-    assert!(c.contains("class berchtesgaden: CAWorld"), "{c}");
+    assert!(c.contains("class berchtesgaden: Enoch"), "{c}");
     assert!(c.contains(r#"worldName = "naves\worlds\berchtesgaden\berchtesgaden.wrp";"#));
     assert!(c.contains("class naves_berchtesgaden"));
     assert!(c.contains("class CfgWorldList"));
-    assert!(c.contains("requiredAddons[] = {\"DZ_Data\", \"DZ_Surfaces_Bliss\"};"));
+    assert!(
+        c.contains(r#"ceFiles = "naves\worlds\berchtesgaden\ce";"#),
+        "{c}"
+    );
+    assert!(
+        c.contains("requiredAddons[] = {\"DZ_Data\", \"DZ_Surfaces_Bliss\", \"DZ_Worlds_Enoch\"};")
+    );
 }
 
 #[test]
@@ -62,7 +68,7 @@ fn everything_is_ascii_for_non_ascii_names() {
     let p = Project::new("Königssee \"Test\"", 47.55, 12.97, 2000.0);
     let c = world_config(&p, &heightmap(300.0));
     assert!(c.is_ascii(), "non-ASCII text in the config");
-    assert!(c.contains("class konigssee_test: CAWorld"));
+    assert!(c.contains("class konigssee_test: Enoch"));
     assert!(c.contains("name = \"Konigssee Test\";"), "{c}");
 }
 
@@ -86,4 +92,29 @@ fn config_rapifies() {
         .status()
         .unwrap();
     assert!(status.success());
+}
+
+#[test]
+fn the_world_inherits_the_sky_and_weather_from_livonia() {
+    // The client crashes without the sky, cloud and weather entries; they are inherited, not copied.
+    let c = world_config(&project(), &heightmap(300.0));
+    assert!(c.contains("class Enoch;"), "{c}");
+    assert!(
+        !c.contains("skyTexture") && !c.contains("horizonObject"),
+        "no copied game values"
+    );
+    // Livonia's navmesh and holes must not leak into the new map
+    assert!(
+        c.contains("class Navmesh {};") && c.contains("class Holes {};"),
+        "{c}"
+    );
+}
+
+#[test]
+fn the_sun_follows_the_project_location() {
+    let c = world_config(&project(), &heightmap(300.0));
+    assert!(
+        c.contains("latitude = 47.585;") && c.contains("longitude = 12.965;"),
+        "{c}"
+    );
 }

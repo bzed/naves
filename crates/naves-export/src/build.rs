@@ -297,7 +297,12 @@ fn stage_world(
 }
 
 /// Packs the binarized world with its config and images and signs the PBO; returns nothing but writes the mod.
-fn pack_mod(layout: &Layout, tools: &Tools, binarized_world: &Path) -> Result<(), BuildError> {
+fn pack_mod(
+    layout: &Layout,
+    tools: &Tools,
+    binarized_world: &Path,
+    mission_dir: &Path,
+) -> Result<(), BuildError> {
     let pack_dir = layout
         .staging
         .join("pack")
@@ -305,6 +310,13 @@ fn pack_mod(layout: &Layout, tools: &Tools, binarized_world: &Path) -> Result<()
         .join("worlds")
         .join(&layout.world);
     copy_tree(&layout.world_dir.join("data"), &pack_dir.join("data"))?;
+    // The client reads the environment config from the world's ceFiles folder; it comes from the
+    // installed server mission (read at build time, never committed).
+    let ce_dir = pack_dir.join("ce");
+    std::fs::create_dir_all(&ce_dir).map_err(io_err(&ce_dir))?;
+    let env_file = mission_dir.join("cfgenvironment.xml");
+    std::fs::copy(&env_file, ce_dir.join("cfgenvironment.xml")).map_err(io_err(&env_file))?;
+    copy_tree(&mission_dir.join("env"), &ce_dir.join("env"))?;
     std::fs::copy(
         layout.world_dir.join("config.cpp"),
         pack_dir.join("config.cpp"),
@@ -398,9 +410,6 @@ pub fn build(
     let log = layout.logs.join("binarize.log");
     std::fs::copy(binarized.join("binarize.log"), &log).map_err(io_err(&log))?;
 
-    progress("Packing and signing the mod");
-    pack_mod(&layout, tools, &oprw)?;
-
     progress("Assembling the server mission");
     let half = narrow(project.map_size_m() / 2.0);
     let mission_dir = write_mission(
@@ -409,7 +418,9 @@ pub fn build(
         &layout.world,
         (half, half),
     )?;
-    progress("Done");
+
+    progress("Packing and signing the mod");
+    pack_mod(&layout, tools, &oprw, &mission_dir)?;
     Ok(BuildOutput {
         mod_dir: layout.mod_dir,
         mission_dir,

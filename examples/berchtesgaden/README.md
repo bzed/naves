@@ -46,6 +46,12 @@ naves build examples/berchtesgaden
 - Top-down render of the whole map (`render_topdown`, hillshade): the Königssee runs south from just below the
   centre, the Watzmann ridge lies west of it, the flat Berchtesgaden basin north of the lake, and the terrain is
   continuous across the 13.0 °E tile seam.
-- **Not done:** joining with a game client and looking at the terrain. The recipe for a headless client links
-  the mod into the Steam `DayZ` folder, which the project rules forbid. Whether the procedural surfaces look
-  right in game, and whether a player can walk on the terrain, is therefore still to be checked by hand.
+- **Game client (headless, 1.30, 2026-11-05):** the client loads the mod (through a symlink in the DayZ install, see
+  `AGENTS.md`), connects and the server spawns the player on the map, but the client **crashes a few seconds after
+  connecting** (access violation in the renderer). A control run against a vanilla Livonia server works. With the
+  same mod config but Livonia's own `enoch.wrp` as the world file the client also works, so the generated world
+  config, `ce/` folder and mission are fine and the problem is inside the binarized world data. Ruled out so far:
+  the satellite/mask PAA files (Livonia's PAA files crash too), a flat 8WVR, and the 8WVR terminator object.
+  Open: what else the client needs from the world file (the binarize log's "Total 1 objects" for a world without
+  objects, and the `OPRW` header differences to Livonia, are leads). Walking on the terrain is therefore **not yet
+  verified**.

@@ -79,6 +79,10 @@ fn mission_spawn_point() {
         let body = &spawns[start..end];
         assert_eq!(body.matches("<pos ").count(), 1, "{section}: {body}");
         assert!(
+            body.contains("<group name=\"naves\">"),
+            "points live in a group: {section}: {body}"
+        );
+        assert!(
             body.contains(r#"<pos x="3200" z="3200" />"#),
             "{section}: {body}"
         );
@@ -217,4 +221,46 @@ fn malformed_xml_is_an_error_naming_the_file() {
     .unwrap();
     let err = write_mission(&src, &dir.path().join("out"), "x", (0.0, 0.0)).unwrap_err();
     assert!(err.to_string().contains("mapgrouppos.xml"), "{err}");
+}
+
+/// Reads every event of `xml`; a mismatched or unclosed tag is an error.
+fn assert_well_formed(name: &str, xml: &str) {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut failure = None;
+    while failure.is_none() {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => failure = Some(e.to_string()),
+        }
+    }
+    assert!(
+        failure.is_none(),
+        "{name} is not well-formed: {failure:?}\n{xml}"
+    );
+}
+
+#[test]
+fn edited_files_stay_well_formed() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = fake_install(dir.path());
+    let mission = write_mission(&src, &dir.path().join("out"), "x", (3200.0, 3200.0)).unwrap();
+    for name in [
+        "cfgplayerspawnpoints.xml",
+        "mapgrouppos.xml",
+        "cfgeventspawns.xml",
+    ] {
+        let xml = std::fs::read_to_string(mission.join(name)).unwrap();
+        assert_well_formed(name, &xml);
+    }
+    let spawns = std::fs::read_to_string(mission.join("cfgplayerspawnpoints.xml")).unwrap();
+    assert_eq!(
+        spawns.matches("</generator_posbubbles>").count(),
+        3,
+        "{spawns}"
+    );
+    assert!(
+        spawns.trim_end().ends_with("</playerspawnpoints>"),
+        "{spawns}"
+    );
 }

@@ -111,6 +111,12 @@ impl FakeEnv {
         )?;
         std::fs::write(enoch.join("cfgeventspawns.xml"), "<eventposdef/>\n")?;
         std::fs::write(enoch.join("init.c"), "void main() {}\n")?;
+        std::fs::write(enoch.join("cfgenvironment.xml"), "<env/>\n")?;
+        std::fs::create_dir_all(enoch.join("env"))?;
+        std::fs::write(
+            enoch.join("env/bear_territories.xml"),
+            "<territory-type/>\n",
+        )?;
         std::fs::write(enoch.join("db/types.xml"), "<types/>\n")?;
         std::fs::create_dir_all(root.join("sandboxes"))?;
         Ok(FakeEnv {

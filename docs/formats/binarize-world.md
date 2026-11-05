@@ -98,3 +98,18 @@ The 8WVR material list holds the in-game path of every tile material, here
 - Mission files missing from our copy: `cfgundergroundtriggers.json` and `cfgeffectarea.json` give warnings.
   Copying them from the source mission silences these.
 - Binarize prints many `No entry '/CfgWorlds/DefaultWorld.*'` lines: values that the game's base config provides.
+
+## Client requirements found later (2026-11-05)
+
+The minimal config above is enough for binarize and for a server, but not for a game client:
+
+- the config needs `ceFiles` pointing at a folder in the PBO that holds `cfgenvironment.xml` (and `env/`); without it
+  the client logs `File "\cfgenvironment.xml" does not exist` and crashes;
+- it also needs the sky, cloud, horizon and weather entries. Náves gets them by inheriting Livonia's world class
+  (`class <world>: Enoch`, `requiredAddons` with `DZ_Worlds_Enoch`) and replaces `Navmesh`, `Holes` and `Names`;
+- the player spawn points in `cfgplayerspawnpoints.xml` must be inside a `<group>` below `generator_posbubbles`,
+  or the server logs `No points given inside <fresh> configuration` and the player cannot spawn.
+
+Status: with these, a headless client connects and the player is placed on the map, but it still crashes a few
+seconds later. The same config with Livonia's own world file works, so the open problem is in the binarized
+world; see `examples/berchtesgaden/README.md`.
