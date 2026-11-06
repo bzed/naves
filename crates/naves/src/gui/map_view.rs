@@ -6,6 +6,8 @@
 //! Screen coordinates are pixels from the top-left corner of the view with y down; map coordinates are
 //! metres from the south-west corner with y up.
 
+use super::viewport::ViewFocus;
+
 /// Smallest and largest zoom: metres per screen pixel.
 const MIN_MPP: f64 = 0.05;
 const MAX_MPP: f64 = 2000.0;
@@ -35,6 +37,33 @@ impl MapView {
             self.center.0 + (sx - width / 2.0) * self.metres_per_px,
             self.center.1 - (sy - height / 2.0) * self.metres_per_px,
         )
+    }
+
+    /// The screen position (pixels from the top-left corner) of the map position (`x`, `y`).
+    pub fn map_to_screen(&self, x: f64, y: f64, width: f64, height: f64) -> (f64, f64) {
+        (
+            (x - self.center.0) / self.metres_per_px + width / 2.0,
+            -(y - self.center.1) / self.metres_per_px + height / 2.0,
+        )
+    }
+
+    /// A view that shows `focus`: the shorter side of the viewport covers `span_m` metres.
+    pub fn from_focus(focus: ViewFocus, width: f64, height: f64) -> Self {
+        let side = width.min(height).max(1.0);
+        let mpp = focus.span_m / side;
+        Self {
+            center: (focus.center.x, focus.center.y),
+            metres_per_px: if mpp.is_finite() {
+                mpp.clamp(MIN_MPP, MAX_MPP)
+            } else {
+                MAX_MPP
+            },
+        }
+    }
+
+    /// How many metres the shorter side of a viewport of `width` × `height` pixels covers.
+    pub fn span_m(&self, width: f64, height: f64) -> f64 {
+        self.metres_per_px * width.min(height).max(1.0)
     }
 
     /// Moves the map with the pointer by (`dx`, `dy`) screen pixels.
@@ -72,6 +101,7 @@ impl MapView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::viewport::WorldPoint;
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
@@ -137,5 +167,56 @@ mod tests {
         v.zoom_at(0.0, 0.0, 100.0, 100.0, f64::NAN);
         v.zoom_at(0.0, 0.0, 100.0, 100.0, -1.0);
         assert_eq!(v, before);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn map_to_screen_inverts_screen_to_map(
+            cx in 0.0..20000.0f64, cy in 0.0..20000.0f64, mpp in 0.05..2000.0f64,
+            sx in 0.0..3000.0f64, sy in 0.0..3000.0f64, w in 1.0..3000.0f64, h in 1.0..3000.0f64,
+        ) {
+            let v = MapView { center: (cx, cy), metres_per_px: mpp };
+            let (mx, my) = v.screen_to_map(sx, sy, w, h);
+            let (bx, by) = v.map_to_screen(mx, my, w, h);
+            proptest::prop_assert!((bx - sx).abs() < 1e-6 && (by - sy).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn focus_round_trips() {
+        let focus = ViewFocus {
+            center: WorldPoint {
+                x: 1234.5,
+                y: 678.9,
+            },
+            span_m: 900.0,
+        };
+        let v = MapView::from_focus(focus, 800.0, 600.0);
+        assert!(close(v.span_m(800.0, 600.0), 900.0));
+        assert!(close(v.center.0, 1234.5) && close(v.center.1, 678.9));
+    }
+
+    #[test]
+    fn span_stays_within_the_zoom_limits() {
+        let tiny = ViewFocus {
+            center: WorldPoint { x: 0.0, y: 0.0 },
+            span_m: 1e-9,
+        };
+        let huge = ViewFocus {
+            center: WorldPoint { x: 0.0, y: 0.0 },
+            span_m: 1e12,
+        };
+        let a = MapView::from_focus(tiny, 800.0, 600.0);
+        let b = MapView::from_focus(huge, 800.0, 600.0);
+        assert!(close(a.metres_per_px, MIN_MPP) && close(b.metres_per_px, MAX_MPP));
+        let nan = ViewFocus {
+            center: WorldPoint { x: 0.0, y: 0.0 },
+            span_m: f64::NAN,
+        };
+        assert!(
+            MapView::from_focus(nan, 800.0, 600.0)
+                .metres_per_px
+                .is_finite()
+        );
     }
 }

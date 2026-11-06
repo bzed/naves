@@ -1815,6 +1815,7 @@ dependencies = [
  "image",
  "naves-core",
  "naves-export",
+ "proptest",
  "rmcp",
  "serde",
  "serde_json",

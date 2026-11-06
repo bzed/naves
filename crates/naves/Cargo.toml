@@ -35,3 +35,4 @@ egui_kittest = "0.37.0"
 rmcp = { version = "3.8.0", features = ["client", "transport-child-process"] }
 tokio = { version = "1.54.1", features = ["process"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+proptest = "1.12.0"

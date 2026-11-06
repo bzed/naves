@@ -11,7 +11,10 @@ mod imagery;
 mod levels;
 mod map_view;
 mod settings;
+#[cfg(test)]
+mod testing;
 mod theme;
+mod viewport;
 mod worker;
 
 use std::path::{Path, PathBuf};
@@ -19,23 +22,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use naves_core::imagery::TileImagery;
 use naves_core::imagery::catalog::ImageryOption;
 use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
-use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_core::render::Overlay;
 use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
 use naves_export::imagery_fetch::Http;
 use naves_export::tools::Tools;
 
 use imagery::{FetchJob, OwnFile};
-use map_view::MapView;
 use settings::SettingsForm;
-use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, MapData};
+use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
+use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
 
 use theme::{ERROR, GREEN, GROUND, INK, PANEL};
-/// Widest picture the map view renders; larger windows scale it up.
-const MAX_RENDER_WIDTH: f32 = 1024.0;
 const SETTINGS_WIDTH: f32 = 300.0;
 
 type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
@@ -50,7 +50,9 @@ enum Line {
 /// The application state.
 pub struct NavesApp {
     form: SettingsForm,
-    view: Option<MapView>,
+    views: ViewportSet,
+    /// Counts up with every new `MapData` and every change of what the pictures show.
+    generation: u64,
     overlay: Overlay,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
@@ -58,7 +60,12 @@ pub struct NavesApp {
     reload_wanted: bool,
     /// The project values the current heightmap depends on.
     heightmap_inputs: HeightmapInputs,
-    texture: Option<(RenderRequest, egui::TextureHandle)>,
+    /// What the views reported in the last frames (for tests).
+    #[cfg(test)]
+    seen_events: Vec<ViewEvent>,
+    /// The rectangle the active view was given (for tests).
+    #[cfg(test)]
+    seen_rect: egui::Rect,
     worker: Option<BuildWorker>,
     log: Vec<Line>,
     locate_tools: ToolLocator,
@@ -79,16 +86,6 @@ pub struct NavesApp {
     own_imagery_error: Option<String>,
 }
 
-fn to_px(v: f32) -> u32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 1..=8192 first"
-    )]
-    let px = v.round().clamp(1.0, 8192.0) as u32;
-    px
-}
-
 impl NavesApp {
     /// Opens the project in `dir`; `locate_tools` is called when a build starts.
     ///
@@ -103,13 +100,17 @@ impl NavesApp {
         let inputs = heightmap_inputs(&form.project);
         let mut app = Self {
             form,
-            view: None,
+            views: ViewportSet::new(default_views()),
+            generation: 0,
             overlay: Overlay::Hillshade,
             heightmap: HeightmapState::NoDem,
             job: None,
             reload_wanted: false,
             heightmap_inputs: inputs,
-            texture: None,
+            #[cfg(test)]
+            seen_events: Vec::new(),
+            #[cfg(test)]
+            seen_rect: egui::Rect::NOTHING,
             worker: None,
             log: Vec::new(),
             locate_tools,
@@ -134,8 +135,7 @@ impl NavesApp {
     }
 
     fn reload_heightmap(&mut self) {
-        self.texture = None;
-        self.view = None;
+        self.views.reset_all();
         if self.form.project.sources.dem.is_empty() {
             self.heightmap = HeightmapState::NoDem;
             self.job = None;
@@ -154,7 +154,8 @@ impl NavesApp {
     fn settings_changed(&mut self) {
         if self.form.commit() {
             // a setting can change how the map looks (the imagery brightness) without changing its data
-            self.texture = None;
+            self.generation += 1;
+            self.views.invalidate_all();
             self.refresh_imagery_options();
             let inputs = heightmap_inputs(&self.form.project);
             if inputs != self.heightmap_inputs {
@@ -177,6 +178,7 @@ impl NavesApp {
                             self.log
                                 .extend(imagery.warnings.iter().cloned().map(Line::Warning));
                         }
+                        self.generation += 1;
                         HeightmapState::Ready(Arc::new(data))
                     }
                     Err(error) => HeightmapState::Failed(error),
@@ -396,36 +398,6 @@ impl NavesApp {
                 return;
             }
         };
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
-        let (w, h) = (f64::from(rect.width()), f64::from(rect.height()));
-        let map_size = self.form.project.map_size_m();
-        let view = self
-            .view
-            .get_or_insert_with(|| MapView::fit(map_size, w, h));
-        if response.dragged() {
-            let d = response.drag_delta();
-            view.pan_px(f64::from(d.x), f64::from(d.y));
-        }
-        if let Some(pos) = response.hover_pos() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                let factor = (-f64::from(scroll) * 0.002).exp();
-                view.zoom_at(
-                    f64::from(pos.x - rect.left()),
-                    f64::from(pos.y - rect.top()),
-                    w,
-                    h,
-                    factor,
-                );
-            }
-        }
-        let view = *view;
-        self.draw_map(ui, &data, view, rect);
-    }
-
-    fn draw_map(&mut self, ui: &mut egui::Ui, data: &MapData, view: MapView, rect: egui::Rect) {
-        let (x0, y0, x1, y1) = view.bounds(f64::from(rect.width()), f64::from(rect.height()));
         if self.overlay == Overlay::Imagery && data.imagery.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
@@ -434,41 +406,38 @@ impl NavesApp {
             });
             return;
         }
-        let request = RenderRequest {
-            x0,
-            y0,
-            x1,
-            y1,
-            px: to_px(rect.width().min(MAX_RENDER_WIDTH)),
-            overlay: self.overlay,
+        let rect = ui.available_rect_before_wrap();
+        let frame = ViewFrame {
+            data: &data,
+            project: &self.form.project,
+            base: self.overlay,
+            generation: self.generation,
         };
-        if self.texture.as_ref().is_none_or(|(r, _)| *r != request)
-            && let Ok(image) = render_topdown(
-                &data.heightmap,
-                &request,
-                Some(&data.surfaces),
-                data.imagery
-                    .as_ref()
-                    .map(|loaded| TileImagery {
-                        composite: &loaded.composite,
-                        project: &self.form.project,
-                    })
-                    .as_ref(),
-            )
+        let events = self.views.active_mut().show(ui, rect, &frame);
+        self.handle_events(events, rect);
+    }
+
+    fn handle_events(&mut self, events: Vec<ViewEvent>, rect: egui::Rect) {
+        #[cfg(test)]
         {
-            let size = [image.width() as usize, image.height() as usize];
-            let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-            let handle = ui
-                .ctx()
-                .load_texture("map", color, egui::TextureOptions::LINEAR);
-            self.texture = Some((request, handle));
+            self.seen_events.extend(events);
+            self.seen_rect = rect;
         }
-        if let Some((_, texture)) = &self.texture {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter()
-                .with_clip_rect(rect)
-                .image(texture.id(), rect, uv, Color32::WHITE);
+        #[cfg(not(test))]
+        {
+            let _ = (events, rect); // tools and selection arrive with the tasks that read them
         }
+    }
+
+    #[cfg(test)]
+    fn map_texture_is_empty(&self) -> bool {
+        !self.views.active().holds_picture()
+    }
+
+    #[cfg(test)]
+    fn with_views(mut self, views: Vec<Box<dyn viewport::Viewport>>) -> Self {
+        self.views = ViewportSet::new(views);
+        self
     }
 }
 

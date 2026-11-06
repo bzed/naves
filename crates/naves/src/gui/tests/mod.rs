@@ -16,6 +16,7 @@ use naves_export::testing::FakeEnv;
 use super::*;
 
 mod levels;
+mod viewport;
 
 /// A project with the Königssee DEM below `root`.
 fn project(root: &Path) -> PathBuf {
@@ -372,7 +373,7 @@ fn the_imagery_brightness_is_set_in_the_panel() {
     app.settings_changed();
     assert!((Project::load(&dir).unwrap().imagery.brightness - 2.0).abs() < 1e-9);
     assert!(
-        app.texture.is_none(),
+        app.map_texture_is_empty(),
         "the map is drawn again with the new brightness"
     );
     assert!(app.job.is_none(), "no data is read again for a brightness");
