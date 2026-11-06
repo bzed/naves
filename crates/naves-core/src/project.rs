@@ -15,6 +15,7 @@ pub const PROJECT_FILE: &str = "naves.toml";
 
 /// A Náves project.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
     /// Display name.
     pub name: String,
@@ -38,6 +39,7 @@ pub const DEFAULT_BRIGHTNESS: f64 = 1.3;
 
 /// How imagery is drawn into the satellite images.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ImagerySettings {
     /// Factor on the image colours, `0.25..=4`. Satellite images are dark for a terrain.
     #[serde(default = "default_brightness")]
@@ -64,6 +66,7 @@ impl ImagerySettings {
 
 /// One imagery GeoTIFF of the project and the terms it comes with.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ImageryFile {
     /// The file, relative to the project directory.
     pub path: PathBuf,
@@ -78,6 +81,7 @@ pub struct ImageryFile {
 
 /// A square real-world area.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Area {
     /// Centre latitude in degrees (WGS84).
     pub center_lat: f64,
@@ -89,6 +93,7 @@ pub struct Area {
 
 /// Scale factors.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Scale {
     /// Map metres per real metre, `0 < horizontal <= 1`.
     pub horizontal: f64,
@@ -102,6 +107,7 @@ pub const LAND_RATIO: u32 = 8;
 
 /// Grid sizes.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Grid {
     /// Heightmap vertices per side (power of two, 256..=8192).
     pub terrain_size: u32,
@@ -111,6 +117,7 @@ pub struct Grid {
 
 /// Input data files.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Sources {
     /// DEM GeoTIFF files, relative to the project directory.
     pub dem: Vec<PathBuf>,

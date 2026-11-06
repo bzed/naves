@@ -441,6 +441,48 @@ fn imagery_is_brighter_by_default_and_a_project_keeps_its_own_value() {
 }
 
 #[test]
+fn unknown_options_are_rejected_and_named() {
+    // a typo, or an option of a newer Náves: reading it and saving the file again would drop it silently
+    for (text, name) in [
+        (format!("colour = 1\n{}", base()), "colour"),
+        (base().replace("[area]", "[area]\ncolor = 1"), "color"),
+        (
+            base().replace("[scale]", "[scale]\nvertical = 0.5"),
+            "vertical",
+        ),
+        (
+            base().replace("[grid]", "[grid]\ntile_size = 8"),
+            "tile_size",
+        ),
+        (
+            base().replace("[sources]", "[sources]\nroads = []"),
+            "roads",
+        ),
+        (
+            format!("{}\n[imagery]\nbrightnes = 1.0\n", base()),
+            "brightnes",
+        ),
+        (
+            format!(
+                "{}\n[[sources.imagery]]\npath = \"a.tif\"\nattribution = \"A\"\nlicence = \"CC BY 4.0\"\nlicense = \"x\"\n",
+                base()
+            ),
+            "license",
+        ),
+    ] {
+        match Project::parse(&text) {
+            Err(ProjectError::Parse(e)) => {
+                assert!(e.to_string().contains(name), "{name}: {e}");
+                assert!(e.to_string().contains("unknown field"), "{name}: {e}");
+            }
+            other => panic!("{name}: expected a parse error, got {other:?}"),
+        }
+    }
+    // the complete file is still accepted
+    assert!(Project::parse(&with_imagery("")).is_ok());
+}
+
+#[test]
 fn imagery_can_be_set_over_project_set() {
     let p = Project::new("x", 47.0, 12.0, 4000.0);
     let q = p
