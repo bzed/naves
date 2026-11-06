@@ -36,3 +36,5 @@ All notable changes to this project are documented here. The format follows
   are rejected with the right value named) and the surface tiles are 8 × 8 land cells at 60 pixels per cell. The
   GUI and `project_set` derive the land grid from the terrain grid. Existing projects need `land_size` changed and
   their navigation mesh regenerated.
+- The terrain no longer looks dark red in the game: the satellite and mask textures get the `AVGC`/`MAXC` (and,
+  on masks, `FLAG`) tags that armake2's `img2paa` leaves out.

@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use naves_formats::paa::{ColourTags, with_colour_tags};
 use naves_formats::wrp8::EditableWorld;
 
 fn seeds(target: &str) -> Vec<Vec<u8>> {
@@ -35,4 +36,17 @@ fn wrp8_read_seeds() {
         }
     }
     assert_eq!(ok, 1, "only the roundtrip seed is a valid file");
+}
+
+#[test]
+fn paa_tags_seeds() {
+    let tags = ColourTags {
+        average: [1, 2, 3, 4],
+        flag: Some(1),
+    };
+    let ok = seeds("paa_tags")
+        .iter()
+        .filter(|data| with_colour_tags(data, &tags).is_ok())
+        .count();
+    assert_eq!(ok, 1, "only the dxt1 seed is a valid file");
 }

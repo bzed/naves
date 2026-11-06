@@ -24,6 +24,7 @@ use std::time::Duration;
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
 use naves_core::project::{Project, ProjectError};
+use naves_formats::paa::{ColourTags, PaaError, with_colour_tags};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
 
@@ -94,6 +95,14 @@ pub enum BuildError {
         /// The expected public key.
         public: PathBuf,
     },
+    /// A texture `img2paa` wrote cannot be completed with the colour tags the game needs.
+    #[error("{}: {source}", path.display())]
+    Paa {
+        /// The PAA file.
+        path: PathBuf,
+        /// What is wrong with it.
+        source: PaaError,
+    },
     /// A file operation failed.
     #[error("{}: {source}", path.display())]
     Io {
@@ -151,6 +160,23 @@ fn armake2(tools: &Tools, args: &[&OsStr], cwd: &Path, log: &Path) -> Result<(),
         status,
         output: text.chars().skip(skip).collect(),
     })
+}
+
+/// The average colour (red, green, blue, alpha) of the PNG `name`.
+fn average_colour(name: &Path, png: &[u8]) -> Result<[u8; 4], BuildError> {
+    let img = image::load_from_memory(png).map_err(|e| BuildError::Io {
+        path: name.to_path_buf(),
+        source: std::io::Error::other(e),
+    })?;
+    let rgba = img.to_rgba8();
+    let mut sum = [0u64; 4];
+    for px in rgba.pixels() {
+        for (s, c) in sum.iter_mut().zip(px.0) {
+            *s += u64::from(c);
+        }
+    }
+    let n = u64::from(rgba.width()) * u64::from(rgba.height());
+    Ok(sum.map(|s| u8::try_from(s.checked_div(n).unwrap_or(0)).unwrap_or(u8::MAX)))
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), BuildError> {
@@ -290,7 +316,23 @@ fn stage_world(
                 source.as_os_str(),
                 target.as_os_str(),
             ];
-            armake2(tools, &args, &layout.staging, &log)
+            armake2(tools, &args, &layout.staging, &log)?;
+            let png = layers
+                .files
+                .iter()
+                .find(|(n, _)| n == *name)
+                .map_or(&[][..], |(_, b)| b.as_slice());
+            let tags = ColourTags {
+                average: average_colour(&source, png)?,
+                // Livonia's masks carry FLAG 1, its satellite images no FLAG
+                flag: (kind == "dxt5").then_some(1),
+            };
+            let paa = std::fs::read(&target).map_err(io_err(&target))?;
+            let tagged = with_colour_tags(&paa, &tags).map_err(|source| BuildError::Paa {
+                path: target.clone(),
+                source,
+            })?;
+            write_file(&target, &tagged)
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(())

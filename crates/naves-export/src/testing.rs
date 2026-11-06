@@ -17,7 +17,11 @@ const ARMAKE2: &str = r#"case "$1" in
   -h) echo "armake2 build [--proton-binarize] <source>" ;;
   img2paa)
     shift; [ "$1" = "-f" ] && shift
-    { printf 'PAA:%s\n' "$2"; cat "$3"; } > "$4" ;;
+    # a PAA header like the real tool writes (type, an OFFS tag pointing at the first mipmap, no palette),
+    # then the request as a stand-in for the mipmap data
+    { printf '\001\377GGATSFFO\100\000\000\000\120\000\000\000'
+      head -c 60 /dev/zero; printf '\000\000'
+      printf 'PAA:%s\n' "$2"; cat "$3"; } > "$4" ;;
   keygen)
     shift; [ "$1" = "-f" ] && shift
     : > "$1.biprivatekey"; : > "$1.bikey" ;;

@@ -6,6 +6,7 @@
 #![cfg(unix)]
 #![expect(
     clippy::unwrap_used,
+    clippy::indexing_slicing,
     reason = "test helper code; failing loudly is the point"
 )]
 
@@ -259,4 +260,41 @@ fn without_a_navmesh_nothing_navmesh_is_packed() {
     let out = build(&proj, &env.tools(), &quiet).unwrap();
     let pbo = std::fs::read_to_string(out.mod_dir.join("addons/naves_test.pbo")).unwrap();
     assert!(!pbo.contains("navmesh"), "{pbo}");
+}
+
+/// The tags of a PAA file in order, with their payloads.
+fn paa_tags(d: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut o = 2;
+    let mut out = Vec::new();
+    while d.get(o..o + 4) == Some(b"GGAT".as_slice()) {
+        let name: String = d[o + 4..o + 8]
+            .iter()
+            .rev()
+            .map(|&b| char::from(b))
+            .collect();
+        let len = u32::from_le_bytes(d[o + 8..o + 12].try_into().unwrap()) as usize;
+        out.push((name, d[o + 12..o + 12 + len].to_vec()));
+        o += 12 + len;
+    }
+    out
+}
+
+#[test]
+fn terrain_images_get_livonias_colour_tags() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let layers = proj.join("build/staging/P/naves/worlds/test/data/layers");
+    let sat = std::fs::read(layers.join("s_000_000_lco.paa")).unwrap();
+    let names: Vec<String> = paa_tags(&sat).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["AVGC", "MAXC", "OFFS"], "satellite");
+    let avgc = &paa_tags(&sat)[0].1;
+    assert_eq!(avgc[3], 255, "the satellite image is opaque");
+    assert!(
+        avgc[..3].iter().any(|&c| c > 0),
+        "a real average colour: {avgc:?}"
+    );
+    let mask = std::fs::read(layers.join("m_000_000_lca.paa")).unwrap();
+    let names: Vec<String> = paa_tags(&mask).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["AVGC", "MAXC", "FLAG", "OFFS"], "mask");
 }

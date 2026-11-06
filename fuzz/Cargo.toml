@@ -46,3 +46,10 @@ path = "fuzz_targets/mcp_project_set.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "paa_tags"
+path = "fuzz_targets/paa_tags.rs"
+test = false
+doc = false
+bench = false

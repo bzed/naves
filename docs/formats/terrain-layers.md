@@ -67,6 +67,13 @@ it enters the world; with 4 terrain cells per land cell the client also renders 
 never created and crashes. Both were found with a debugger on the client, see
 `docs/research/2026-11-05-reference-terrains.md`.
 
+## PAA tags
+
+Livonia's satellite images carry the PAA tags `AVGC` (average colour, stored blue, green, red, alpha; `25 44 3f ff`
+on `S_010_010_lco.paa`) and `MAXC` (`ff ff ff ff`) before `OFFS`; its masks also carry `FLAG` = 1. armake2's
+`img2paa` writes only `OFFS`. Without the colour tags the game draws the terrain from far away in dark red; Náves
+adds them after the conversion (`naves_formats::paa`), with the average colour of the source image.
+
 ## Tile material (`.rvmat`)
 
 Livonia's tile materials have `PixelShaderID = "TerrainX"`, `VertexShaderID = "Terrain"` and
