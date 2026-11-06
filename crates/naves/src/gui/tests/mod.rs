@@ -15,6 +15,8 @@ use naves_export::testing::FakeEnv;
 
 use super::*;
 
+mod levels;
+
 /// A project with the Königssee DEM below `root`.
 fn project(root: &Path) -> PathBuf {
     let dir = root.join("proj");

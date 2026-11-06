@@ -4,12 +4,14 @@
 //! The graphical editor: project settings, a top-down map and the build.
 //!
 //! The widget code is thin; the logic lives in plain structs (`settings`, `map_view`, `worker`).
-//! Look: the manual's palette. A lichen-green ground, ink text, village-green accents, and the map as the
+//! Look: the manual's palette. A pale green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
 mod imagery;
+mod levels;
 mod map_view;
 mod settings;
+mod theme;
 mod worker;
 
 use std::path::{Path, PathBuf};
@@ -31,12 +33,7 @@ use map_view::MapView;
 use settings::SettingsForm;
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, MapData};
 
-const GREEN: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
-const BROWN: Color32 = Color32::from_rgb(0x8c, 0x6a, 0x45);
-const ERROR: Color32 = Color32::from_rgb(0xb0, 0x3a, 0x2e);
-const INK: Color32 = Color32::from_rgb(0x1d, 0x29, 0x24);
-const LICHEN: Color32 = Color32::from_rgb(0xf2, 0xf5, 0xec);
-const PANEL: Color32 = Color32::from_rgb(0xe7, 0xed, 0xe0);
+use theme::{ERROR, GREEN, GROUND, INK, PANEL};
 /// Widest picture the map view renders; larger windows scale it up.
 const MAX_RENDER_WIDTH: f32 = 1024.0;
 const SETTINGS_WIDTH: f32 = 300.0;
@@ -90,21 +87,6 @@ fn to_px(v: f32) -> u32 {
     )]
     let px = v.round().clamp(1.0, 8192.0) as u32;
     px
-}
-
-/// The look of the editor: the manual's palette on egui's light theme.
-pub fn apply_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = LICHEN;
-    visuals.window_fill = LICHEN;
-    visuals.extreme_bg_color = Color32::WHITE;
-    visuals.override_text_color = Some(INK);
-    visuals.selection.bg_fill = GREEN;
-    visuals.selection.stroke.color = Color32::WHITE;
-    visuals.hyperlink_color = GREEN;
-    visuals.widgets.hovered.bg_stroke.color = GREEN;
-    visuals.widgets.active.bg_fill = GREEN;
-    ctx.set_visuals(visuals);
 }
 
 impl NavesApp {
@@ -251,7 +233,7 @@ impl NavesApp {
             .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
             .show(ui, |ui| self.build_ui(ui));
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(LICHEN))
+            .frame(egui::Frame::new().fill(GROUND))
             .show(ui, |ui| self.map_ui(ui));
     }
 
@@ -326,7 +308,7 @@ impl NavesApp {
                 "Map: {map:.0} m, vertex every {:.2} m",
                 p.terrain_cell_m()
             ))
-            .color(BROWN),
+            .color(INK),
         );
         ui.add_space(8.0);
         elevation_and_ground_files_ui(ui, p);
@@ -364,7 +346,7 @@ impl NavesApp {
                     match line {
                         Line::Info(text) => ui.label(RichText::new(text).monospace()),
                         Line::Warning(text) => ui.colored_label(
-                            BROWN,
+                            INK,
                             RichText::new(format!("Warning: {text}")).monospace(),
                         ),
                         Line::Error(text) => ui.colored_label(
@@ -612,7 +594,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
         "naves",
         options,
         Box::new(move |cc| {
-            apply_theme(&cc.egui_ctx);
+            theme::apply_theme(&cc.egui_ctx);
             Ok(Box::new(Shell(app)))
         }),
     )

@@ -101,7 +101,7 @@ Everywhere:
 |---|---|
 | 0 to 9 | Go to a level |
 | H, Shift+H | Hide the active level; other levels faded or in full |
-| Tab | Switch between map and 3D view |
+| Ctrl+Tab | Switch between map and 3D view |
 | F, Shift+F | Frame the selection; frame the whole map |
 | Space + drag, middle button | Pan (wheel zooms) |
 | X, Shift+T | World or local axes; follow the ground |
@@ -202,8 +202,9 @@ The window scales down by folding the bottom dock, then the left panel. The map 
 
 | Plan | Adds |
 |---|---|
-| Roads (plan 3) | The settings window with Keyboard, Map and External tools; the stack with levels 0, 1, 2 and 4; the map's band and status line; base maps and layers; Select to inspect (no editing); bottom dock with Build and Problems; the shortcut table with what exists by then; F1 |
-| Houses | Level 6, Tab and the 3D view, History and undo |
+| Editor shell (this plan) | The stack with levels 0 to 2; the band and status line; base maps; the layer mechanism with Too steep to walk; Select to read a point; the dock with Build and Problems; the whole shortcut table; F1; the settings window with Keyboard, Map and External tools; the rail and the items panel (hidden until a level has more than one tool or any item); the `Viewport` seam |
+| Roads (plan 3) | Level 4's content and its layers |
+| Houses | Level 6, the 3D view (a `Viewport`), History and undo |
 | Water, Railways, Scaling | Their layers in levels 3, 4 and 6 |
 | Vegetation | Level 5 and level 7's layers, view only |
 | Milestone 2 (editor) | The tool rail, the items panel, all editing tools, properties you can change, AI proposals, the AI tab in the settings, brush defaults |
@@ -252,7 +253,7 @@ Brush defaults join Map when there are brushes. A dark theme would be a line her
 - **A key already in use is never silently taken.** "R is Scale in every level." with Replace and Cancel. Replace leaves the
   other action with no key, and that row says "no key". The same key in two different levels is no conflict, but a key
   used everywhere conflicts with all levels.
-- Esc, Enter and F1 cannot be changed, so that a cancel and the way to the help always work. Digit keys and all others can.
+- Esc, Enter and F1 cannot be changed, so that a cancel and the way to the help always work. Tab and Shift+Tab cannot be assigned, so that the way through the panels always works. Digit keys and all others can.
 - Any key the keyboard can produce is allowed: the QWERTZ rule of section 4 is for the defaults.
 
 **The file.** Shortcuts are stored by a stable id (`tool.move`, `level.terrain`) and only when they differ from the default,

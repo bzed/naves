@@ -16,6 +16,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 **Spec:** `docs/superpowers/specs/2026-11-04-naves-design.md`, sections 2 (goal 2), 3, 4, 5.1, 5.2, 5.3 (stages 3 to 5 and 9), 5.7 (last point), 5.8, 8 (step 3). Background: `docs/research/2026-11-03-dayz-osm-terrain-research.md` sections 3 and 5. Interface: `docs/superpowers/specs/2026-11-06-naves-editor-ui.md`. Evidence: `docs/research/2026-11-06-road-pieces.md`. Read that note first: it contradicts the spec's research on one point (see below).
 
+**Starts after the editor's shell** (`docs/superpowers/plans/2026-11-06-naves-editor-shell.md`).
+
 **Starts from:** `main` after plan 2 (`docs/superpowers/plans/2026-11-06-naves-land-cover.md`, branch `m1-land-cover-plan`) is merged. This plan uses its `Sources.osm`, `naves_core::osm`, `GeoWindow`, `SurfaceGrid`, `build_surfaces` and `BuildOutput.warnings` and the `surface` base map.
 
 **The finding that shapes this plan.** The research note assumed rigid pieces pitched per object. In Bohemia's sample all 549 road pieces and in Livonia 97.9 % of 35 730 road records have a vertical up axis, on a hilly map. So the engine very probably fits road pieces to the terrain itself. If Task 1 confirms that, a piece's transform has a yaw and a height and nothing else, and **the road's vertical alignment is the terrain under it**: smooth profile, flat cross-section, and straight between piece joints, because a 25 m piece is probably one quad. If Task 1 refutes it, only `piece_transform` (Task 9) changes.
@@ -421,9 +423,9 @@ The file order of objects in the 8WVR is sorted by `ObjectId`; the object's `id`
 - [ ] **Step 4: Run** `cargo test --workspace`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat: roads and paths in the build`. The manual says what is generated, what is not (tunnels, junction angles), and that the navigation mesh has to be regenerated after a terrain change.
 
-### Task 12: The editor's shell, with switchable layers
+### Task 12: Level 4 in the editor's shell
 
-Start with the `/frontend-design:frontend-design` skill (`AGENTS.md`, *User interface*), then read `docs/superpowers/specs/2026-11-06-naves-editor-ui.md`: this task builds its first part (its section 7). **Build what the final layout needs to be in its place: levels, the stack, the left panel by level, the shortcut table, the bottom dock.** The tool rail and the item panel come with milestone 2, when there is something to place.
+The shell (stack, levels, band and status line, layers mechanism, Select, dock, shortcuts, settings) is built by `docs/superpowers/plans/2026-11-06-naves-editor-shell.md`, which runs before this plan. This task only adds level 4 to it. Start with the `/frontend-design:frontend-design` skill (`AGENTS.md`, *User interface*) and read the shell plan's *How later plans extend it*.
 
 Layers of this plan, in the design's stack:
 
@@ -432,86 +434,35 @@ Layers of this plan, in the design's stack:
 | 4 Roads and paths | Roads | `roads` | true width, min. 1.5 px, with a 1 px white casing so it reads on any base | ink `1d2924` |
 | 4 Roads and paths | Paths | `paths` | dashed, min. 1 px | brown `8c6a45` |
 | 4 Roads and paths | Drivable | `drivable` | over the road's line. Not drivable is twice as wide with cross ticks | fine `2e6a4c`, steep `d08a1e`, not drivable `b03a2e`, walk only `5a6660` |
-| 1 Terrain | Too steep to walk | `too_steep_to_walk` | diagonal hatching, ink at 55 %, 6 px apart in screen space, over ground above `WALK_LIMIT_DEG` | ink |
-| 1 Terrain | Terrain changes | `terrain_changes` | tint by `new − base`, full (50 %) at ±5 m, none below 0.25 m | cut `8c6a45`, fill `3f6f9e` |
-| above the stack | Problems | `problems` | diamond with a white edge, constant size at any zoom | error `b03a2e` |
+| 1 Terrain | Terrain changes | `terrain_changes` | tint by `new - base`, full (50 %) at +-5 m, none below 0.25 m | cut `8c6a45`, fill `3f6f9e` |
 
-Switching a layer on unfolds its key under its row, with the symbol as drawn on the map, from the same constants. Base maps above the stack: Relief, Slope, Height, Ground ("Hillshade" becomes "Relief" in the GUI; MCP keeps `hillshade`). Defaults: Relief, level 0 active, Roads and Problems on. Level state is per session: toggling or switching must not change `naves.toml`.
-
-Left panel by level: 0 the project settings as today; 1 largest cut and fill, source files; 2 land-cover and OSM files; 4 `RoadStats` as a table. Clicking with Select (Q, the only tool so far, so no rail) picks a road piece in the active level, Alt+click in any: the properties under the stack show model, family, grade, cross fall, miss and where it came from, read-only (spec 5.9, "inspect objects and features"). A 3 px band in the level's colour on top of the map, and a status line at its bottom.
-
-Copy: a tooltip says what a row means, with the number from the constant: "Ground steeper than 52°. Players cannot walk up it." Rows that have nothing to draw say how to fix that, in the row: "Add an .osm.pbf file to sources.osm to see roads." If tools are missing: "Roads need armake2: <the error>". While generating: a spinner and "Placing roads", and the road layers are hidden because the terrain under them has changed. Problems say what is wrong and where: "Not drivable: 22 % over 80 m".
-
-Shortcuts of this plan, a subset of the design's table with the same keys: 0, 1, 2, 4 go to a level; H and Shift+H; Q and Esc; F and Shift+F; Ctrl+B; F8 and Shift+F8; F1. Task 13 makes them changeable and adds F2.
+Too steep to walk (`too_steep_to_walk`) and the Problems layer exist already from the shell plan.
 
 **Files:**
-- Create: `crates/naves/src/gui/levels.rs`, `crates/naves/src/gui/layers.rs`, `crates/naves/src/gui/shortcuts.rs`, `docs/manual/src/shortcuts.md`, `docs/manual/src/images/map-layers.png`
-- Modify: `crates/naves-core/src/render.rs`, `crates/naves/src/mcp.rs`, `crates/naves/src/gui/mod.rs`, `crates/naves/src/gui/worker.rs`, `crates/naves/src/gui/tests.rs`, `docs/manual/src/SUMMARY.md`, `docs/manual/src/gui.md`, `docs/manual/src/mcp.md`, `CHANGELOG.md`
-- Test: `crates/naves-core/tests/render.rs`, `crates/naves/tests/mcp.rs`, `crates/naves/src/gui/tests.rs`
+- Create: `crates/naves/src/gui/levels/roads.rs`
+- Modify: `crates/naves-core/src/render.rs`, `crates/naves/src/mcp.rs`, `crates/naves/src/gui/levels/mod.rs` (one line in `BUILT`), `crates/naves/src/gui/worker.rs`, `docs/manual/src/gui.md`, `docs/manual/src/mcp.md`, `CHANGELOG.md`
+- Test: `crates/naves-core/tests/render.rs`, `crates/naves/tests/mcp.rs`, `crates/naves/src/gui/tests/`
 
 **Interfaces:**
-- Consumes: `generate`, `Generated`, `PieceCheck`, `Violation`.
-- Produces, in `naves_core::render`:
-  - `pub enum MapLayer { Roads, Paths, Drivable, TooSteepToWalk, TerrainChanges, Problems }`, with `pub const ALL` (the drawing order, bottom first: terrain changes, too steep to walk, paths, roads, drivable, problems) and `pub fn id(self) -> &'static str`.
-  - `pub struct LayerData<'a> { pub base: &'a Heightmap, pub heightmap: &'a Heightmap, pub pieces: &'a [PieceCheck], pub features: &'a [Feature], pub violations: &'a [Violation] }`.
-  - `pub fn render_layer(layer: MapLayer, data: &LayerData<'_>, req: &RenderRequest) -> Result<RgbaImage, RenderError>`: transparent everywhere it draws nothing.
-  - `pub fn composite(under: &mut RgbaImage, over: &RgbaImage)`.
-  - `pub fn fade(image: &mut RgbaImage, factor: f32)`, for the levels that are not active. Lines as coverage from the distance to each segment, no new dependency.
-- Produces, in `naves::gui`:
-  - `levels::Level` with all ten of the design: `Project`, `Terrain`, `Ground`, `Water`, `Roads`, `Vegetation`, `Buildings`, `Objects`, `Life`, `Economy`; `digit(self) -> u8`, `name(self) -> &'static str`, `colour(self) -> Color32`, `layers(self) -> &'static [MapLayer]`, `is_built(self) -> bool`.
-  - `layers::LayerPanel { pub base: Overlay, pub active: Level, pub on: BTreeSet<MapLayer>, pub hidden: BTreeSet<Level>, pub show_others_in_full: bool }`, with `Default`; `pub fn available(layer: MapLayer, state: &GenerationState) -> Result<(), String>`, the text in the row when it is not.
-  - `shortcuts::Shortcut { key: Key, modifiers: Modifiers, action: Action, label: &'static str, scope: Scope }`; `SHORTCUTS: &[Shortcut]`, the one table of defaults; `pub fn action_for(input: &egui::InputState, level: Level, typing: bool) -> Option<Action>`.
-- MCP (spec 5.10: read and see): `render_topdown` gets an optional `layers` list of the ids above, so the AI sees what the user sees, composited by the same code; without it, no generation runs and the result is as today. `roads_stats` returns `RoadStats`. `validation_list` returns violations with rule, position and message, with an optional `rule` filter.
-- GUI: each active layer is its own texture, keyed by `(RenderRequest, generation)`, painted in `ALL` order, so that **switching a layer or a level renders nothing**. Generation runs in a job like `HeightmapJob`, once per input change. The bottom dock has the tabs Build and Problems.
+- Consumes: `generate`, `Generated`, `PieceCheck`, `Violation`; from the shell plan `LevelDef`, `MapLayer`, `LayerDef`, `Problem`, `pick`.
+- Produces: `roads::DEF` (panel with `RoadStats` as a table, `layers`, `pick` for a road piece with model, family, grade, cross fall, miss and where it came from), new `MapLayer` variants `Roads`, `Paths`, `Drivable`, `TerrainChanges` (the compiler lists the arms in `render_layer`), `LayerData` gains `base`, `pieces`, `features`, `violations`; `render::composite` and `render::fade` if the MCP needs them; a generation job like `HeightmapJob`, once per input change, road layers hidden while it runs; `Violation` to `Problem` with positions.
+- MCP (spec 5.10: read and see): `render_topdown` gets an optional `layers` list of the ids above (the shell plan does not add it); `roads_stats` returns `RoadStats`; `validation_list` returns violations with rule, position and message, with an optional `rule` filter.
+
+Copy: rows with nothing to draw say how to fix that: "Add an .osm.pbf file to sources.osm to see roads." If tools are missing: "Roads need armake2: <the error>", with a button "Open settings" (External tools). While generating: a spinner and "Placing roads". Problems say what is wrong and where: "Not drivable: 22 % over 80 m".
 
 - [ ] **Step 1: Write the failing tests.**
-  - `render.rs`: `each_layer_is_transparent_where_it_draws_nothing`; `a_road_is_drawn_at_its_width` (a known pixel on it, one off it, at two zooms); `not_drivable_is_wider_than_fine`; `walk_only_is_not_coloured_as_a_problem`; `hatching_marks_only_ground_above_the_limit`; `terrain_changes_tint_cut_and_fill_differently`, and none on unchanged ground; `a_problem_marker_has_the_same_size_at_any_zoom`; `composite_keeps_what_is_below_transparent_pixels`; `fade_changes_only_alpha`; `drawing_order_is_stable`.
+  - `render.rs`: `a_road_is_drawn_at_its_width` (a known pixel on it, one off it, at two zooms); `not_drivable_is_wider_than_fine`; `walk_only_is_not_coloured_as_a_problem`; `terrain_changes_tint_cut_and_fill_differently`, and none on unchanged ground; `composite_keeps_what_is_below_transparent_pixels`; `fade_changes_only_alpha`; the shell's `each_layer_is_transparent_where_it_draws_nothing` and `drawing_order_is_stable` cover the new variants.
   - MCP: `render_topdown_without_layers_does_not_generate`, `render_topdown_with_layers_matches_composited_layers`; `an_unknown_layer_is_a_tool_error`; `roads_stats_counts_the_network`, `validation_list_filters_by_rule`; `a_project_without_osm_has_empty_stats` (not an error).
-  - GUI, through the accessibility tree:
-    - Levels: `only_built_levels_are_shown`, and in the stack's order, bottom up; `digits_never_change` (the table for all ten is fixed; a test pins it to the design); `a_digit_makes_a_level_active`; `a_level_that_is_not_built_ignores_its_digit`; `making_a_hidden_level_active_shows_it`; `the_left_panel_follows_the_level`; `level_0_keeps_the_settings_working`.
-    - Shortcuts: `no_key_is_assigned_twice_in_a_scope` (over the whole table, and no level's key repeats a global one); `no_shortcut_needs_shift_or_altgr_on_qwertz` (not `[`, `]`, `/`, `?`, and no `Y` or `Z` as a tool); `typing_in_a_field_fires_no_shortcut` (typing "4" in the Name field keeps the level and changes the name); `f1_shows_every_shortcut_of_the_level`; `the_manual_lists_every_shortcut` (reads `docs/manual/src/shortcuts.md`); `tooltips_show_the_key`.
-    - Layers: `base_maps_are_exclusive`; `layers_are_checkboxes_with_their_names` (each exposes its name and state, and Space toggles it); `defaults_are_level_0_relief_roads_and_problems`; `switching_renders_nothing` (the render counter stays put, for a layer and for a level); `switching_does_not_touch_the_project_file`; `key_entries_show_only_when_the_layer_is_on`; `without_osm_the_row_says_what_to_add`; `missing_tools_are_named_in_the_row`; `road_layers_hide_while_generating`.
-    - Selection and problems: `a_click_selects_only_in_the_active_level`; `alt_click_switches_to_the_level_it_hit`; `the_properties_show_where_a_piece_came_from`; `esc_clears_the_selection`; `f8_goes_to_the_next_problem_and_centres_the_map`; `the_problem_count_matches_the_list`.
+  - GUI: `without_osm_the_row_says_what_to_add`; `missing_tools_are_named_in_the_row`; `road_layers_hide_while_generating`; `the_properties_show_where_a_piece_came_from`; `a_violation_is_a_problem_with_a_position`.
 - [ ] **Step 2: Run them to see them fail.** Run: `cargo test -p naves -p naves-core`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `gui/mod.rs` stays thin, as its header says: logic goes in `levels.rs`, `layers.rs` and `shortcuts.rs`.
+- [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `cargo test -p naves -p naves-core`. Expected: PASS.
-- [ ] **Step 5: Look at it.** Run `naves gui` on the example in a headless sway with `grim`: each layer alone and all on, over each base map, each level active. Fix what does not read: roads on Slope, hatching on Ground, a problem marker on a road, the column at the smallest window size. Save a view as `docs/manual/src/images/map-layers.png`. If an element says nothing, remove it.
-- [ ] **Step 6: Commit** `feat: the editor's levels, switchable map layers and shortcuts`.
+- [ ] **Step 5: Look at it.** Run `naves gui` on the example in a headless sway with `grim`: each layer alone and all on, over each base map. Fix what does not read: roads on Slope, a problem marker on a road. Save a view as `docs/manual/src/images/map-layers.png`. If an element says nothing, remove it.
+- [ ] **Step 6: Commit** `feat: level 4 in the editor, with its map layers and MCP tools`.
 
-### Task 13: Settings: keyboard, map and external tools
+### Task 13: `naves build` uses the settings
 
-Start with the `/frontend-design:frontend-design` skill, then read section 8 of `docs/superpowers/specs/2026-11-06-naves-editor-ui.md`, which fixes the window, the Keyboard tab and the file.
-
-**Files:**
-- Create: `crates/naves-core/src/prefs.rs`, `crates/naves/src/gui/prefs_window.rs`, `fuzz/fuzz_targets/prefs_parse.rs`, `fuzz/corpus/prefs_parse/*`, `docs/manual/src/settings.md`
-- Modify: `crates/naves-core/src/lib.rs`, `crates/naves-export/src/tools.rs`, `crates/naves/src/cli.rs`, `crates/naves/src/mcp.rs` (they call `Tools::locate`), `crates/naves/src/gui/mod.rs`, `crates/naves/src/gui/shortcuts.rs`, `crates/naves/src/gui/layers.rs`, `crates/naves/src/gui/map_view.rs`, `fuzz/Cargo.toml`, `docs/manual/src/SUMMARY.md`, `docs/manual/src/shortcuts.md`, `docs/manual/src/installation.md`, `docs/manual/src/troubleshooting.md`, `CHANGELOG.md`
-- Test: `crates/naves-core/tests/prefs.rs`, `crates/naves-core/tests/fuzz_seeds.rs`, `crates/naves-export/tests/` (tool lookup), `crates/naves/src/gui/tests.rs`, `crates/naves/tests/cli.rs`
-
-The code calls them `Preferences`, because `gui/settings.rs` is already the project's form. The window says "Settings".
-
-**Interfaces:**
-- Consumes: `SHORTCUTS`, `Action`, `action_for`, `LayerPanel` (Task 12); `Tools::locate_with`.
-- Produces, in `naves_core::prefs` (no egui, so that it can be fuzzed; the crate `naves` has no library):
-  - `pub struct Preferences { pub shortcuts: BTreeMap<String, String>, pub map: MapPrefs, pub tools: ToolPaths }`: `shortcuts` maps an action id to a key such as `"Ctrl+B"`, or `""` for no key, only where it differs from the default.
-  - `pub struct MapPrefs { pub invert_zoom: bool, pub fade_percent: u8, pub interface_scale: f32, pub start_base: String, pub start_layers: Vec<String> }`; `pub struct ToolPaths { pub armake2: Option<PathBuf>, pub steam_root: Option<PathBuf>, pub dayz_tools: Option<PathBuf>, pub dayz: Option<PathBuf>, pub proton: Option<PathBuf> }`.
-  - `pub fn default_path(config_home: &Path) -> PathBuf`; `Preferences::load(path: &Path) -> Result<Preferences, PrefsError>`: a missing file gives the defaults; `Preferences::parse(text: &str)`; `save(&self, path: &Path)` atomically, and keeping the file's unknown keys.
-- Produces, in `naves_export::tools`: `pub fn locate_preferring(paths: &ToolPaths) -> Result<Tools, ToolError>`, `Tools::locate` with a settings layer in the `env` closure: environment, then settings, then the search. Also `pub fn tool_origins(paths: &ToolPaths) -> Vec<ToolOrigin>`, for the window: tool, path in use and "Environment", "Settings" or "Found".
-- Changes in `naves::gui::shortcuts`: `Action::id(self) -> &'static str`, stable forever, pinned by a test; `pub struct Bindings`, built from `SHORTCUTS` and the preferences; `Bindings::key_for(Action)`, `Bindings::conflict(new: Binding, action: Action) -> Option<Action>`, which knows the scopes; `action_for(input, bindings: &Bindings, level, typing)`. The tooltips and the F1 sheet read `Bindings`.
-- Produces, in `naves::gui::prefs_window`: `pub struct PrefsWindow`, a modal with the tabs Keyboard, Map, External tools. A capture state that stops `action_for` while the window is open. `NavesApp::open` gets the preferences' path as a parameter, so that tests never touch the user's config (`AGENTS.md`, *Tests*).
-
-- [ ] **Step 1: Write the failing tests.**
-  - `prefs.rs`: `a_missing_file_gives_the_defaults`; `values_round_trip`; `unknown_keys_survive_a_save`; `a_damaged_file_is_an_error_and_is_not_overwritten`; `saving_is_atomic`; `out_of_range_values_are_clamped` (fade above 100, a scale of 0 or NaN). Seeds for `prefs_parse`, also run from `fuzz_seeds.rs`.
-  - Tool lookup: `the_environment_beats_the_settings`; `the_settings_beat_the_search`; `a_path_in_the_settings_that_does_not_exist_names_the_setting`; `origins_say_where_each_path_came_from`.
-  - CLI: `naves_build_uses_the_settings` (`XDG_CONFIG_HOME` in a temp dir, a fake armake2 named only there).
-  - GUI, through the accessibility tree:
-    - `the_button_and_f2_open_the_window`; `esc_closes_it`; `shortcuts_do_not_fire_while_it_is_open`; `no_setting_changes_the_project_file`.
-    - `pressing_a_key_rebinds_and_saves`; `the_new_key_works_and_the_old_one_does_not`; `esc_cancels_a_capture`; `esc_enter_and_f1_cannot_be_changed`; `a_used_key_asks_before_replacing`; `cancel_changes_nothing`; `replace_leaves_the_other_action_with_no_key`; `the_same_key_in_two_levels_is_no_conflict`; `a_global_key_conflicts_with_every_level`; `reset_restores_one_and_reset_all_restores_all`; `search_filters_the_rows`; `tooltips_and_f1_show_the_new_key`; `action_ids_are_pinned`; `a_new_default_reaches_a_file_that_does_not_mention_it`.
-    - `invert_zoom_inverts_the_wheel` (on `MapView`, as a plain-number test); `fade_percent_changes_the_other_levels`; `start_layers_are_used_when_a_project_opens`; `a_damaged_file_shows_its_error_in_the_window`.
-- [ ] **Step 2: Run them to see them fail.** Run: `cargo test -p naves -p naves-core -p naves-export`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The row "Roads need armake2: <the error>" of Task 12 gets a button "Open settings", which opens External tools. `docs/manual/src/shortcuts.md` keeps listing the defaults and links to `settings.md`.
-- [ ] **Step 4: Run** `cargo test -p naves -p naves-core -p naves-export`, `make fuzz`. Expected: PASS.
-- [ ] **Step 5: Look at it.** Run `naves gui` in a headless sway with `grim`, with a rebound key, a conflict showing and a damaged file. Fix what does not read.
-- [ ] **Step 6: Commit** `feat: settings for shortcuts, the map and external tools`.
+The settings window, the preferences file and the tool lookup (`locate_preferring`) are built by the shell plan (its Tasks 9 and 10). Nothing is left here but to check that `naves build` and the MCP server take the paths from the settings, which the shell plan's `naves_build_uses_the_settings` test covers. If that is so by the time this plan runs, this task is done; commit nothing.
 
 ### Task 14: Driving through Berchtesgaden
 
