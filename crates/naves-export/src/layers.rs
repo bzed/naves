@@ -11,7 +11,7 @@ use std::io::Cursor;
 
 use image::{ImageFormat, RgbImage, RgbaImage};
 use naves_core::heightmap::Heightmap;
-use naves_core::surface::SurfaceGrid;
+use naves_core::surface::{SurfaceClass, SurfaceGrid};
 use rayon::prelude::*;
 
 use crate::rvmat::tile_material;
@@ -109,25 +109,25 @@ pub const SURFACES: &[Surface] = &[
         name: "grass",
         nopx: "dz\\surfaces_bliss\\data\\terrain\\en_grass1_nopx.paa",
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_grass1_ca.paa",
-        sat_rgb: [0x4a, 0x7a, 0x3a],
+        sat_rgb: SurfaceClass::Grass.rgb(),
     },
     Surface {
         name: "rock",
         nopx: "dz\\surfaces_bliss\\data\\terrain\\en_stones_nopx.paa",
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_stones_ca.paa",
-        sat_rgb: [0x8a, 0x87, 0x80],
+        sat_rgb: SurfaceClass::Rock.rgb(),
     },
     Surface {
         name: "forest",
         nopx: "dz\\surfaces_bliss\\data\\terrain\\en_forest_con_nopx.paa",
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_forest_con_ca.paa",
-        sat_rgb: [0x2e, 0x4d, 0x2a],
+        sat_rgb: SurfaceClass::Forest.rgb(),
     },
     Surface {
         name: "soil",
         nopx: "dz\\surfaces_bliss\\data\\terrain\\en_soil_nopx.paa",
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_soil_ca.paa",
-        sat_rgb: [0x7a, 0x68, 0x4e],
+        sat_rgb: SurfaceClass::Soil.rgb(),
     },
 ];
 

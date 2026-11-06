@@ -11,6 +11,7 @@
 use rayon::prelude::*;
 
 use crate::dem::Dem;
+use crate::landcover::GeoWindow;
 use crate::project::Project;
 use crate::projection::{LocalProjection, ProjectionError};
 
@@ -111,6 +112,29 @@ impl MapGeo {
         let east = self.center_e + (x - self.half) / self.horizontal;
         let north = self.center_n + (y - self.half) / self.horizontal;
         self.proj.to_geo(east, north)
+    }
+
+    /// The latitude and longitude window of the whole map plus `margin_m` metres on every side.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError`] if a corner cannot be projected.
+    pub fn window(&self, margin_m: f64) -> Result<GeoWindow, ProjectionError> {
+        let (low, high) = (-margin_m, self.half * 2.0 + margin_m);
+        let mut window = GeoWindow {
+            south: f64::INFINITY,
+            west: f64::INFINITY,
+            north: f64::NEG_INFINITY,
+            east: f64::NEG_INFINITY,
+        };
+        for (x, y) in [(low, low), (high, low), (low, high), (high, high)] {
+            let (lat, lon) = self.to_geo(x, y)?;
+            window.south = window.south.min(lat);
+            window.north = window.north.max(lat);
+            window.west = window.west.min(lon);
+            window.east = window.east.max(lon);
+        }
+        Ok(window)
     }
 
     /// The map position in metres of a latitude and longitude.

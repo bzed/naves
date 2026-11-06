@@ -49,7 +49,9 @@ heightmap is dropped.
 
 **`render_topdown`** takes the rectangle in map metres from the south-west corner (`x0,y0` south-west,
 `x1,y1` north-east), a width `px` in pixels (larger values are reduced to 2048; the height follows from the
-rectangle) and an `overlay`: `hillshade`, `slope` or `height`. Inverted, empty or non-finite rectangles are
+rectangle) and an `overlay`: `hillshade`, `slope`, `height` or `surface` (the ground classes in the colours of the satellite
+image, decided as the build does it; the first `surface` render reads the project's land cover and OpenStreetMap
+files and is cached until the project changes). Inverted, empty or non-finite rectangles are
 errors. The map's size is in `heightmap_stats` as `map_size_m`.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the

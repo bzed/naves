@@ -7,6 +7,7 @@ use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 
 use crate::heightmap::Heightmap;
+use crate::surface::SurfaceGrid;
 
 /// Largest accepted output width in pixels.
 pub const MAX_WIDTH: u32 = 4096;
@@ -22,6 +23,8 @@ pub enum Overlay {
     Slope,
     /// Grey by height, white is the highest point of the map.
     Height,
+    /// The ground class of every cell, in the colours of the satellite image.
+    Surface,
 }
 
 /// A rectangle of the map and the output width.
@@ -53,6 +56,9 @@ pub enum RenderError {
     /// The rectangle is so elongated that the image would be too tall or have no rows.
     #[error("the aspect ratio of the rectangle gives an image of unsupported height")]
     Aspect,
+    /// The surface overlay was asked for without surfaces.
+    #[error("the surface overlay needs the ground surfaces")]
+    NoSurfaces,
 }
 
 fn narrow(v: f64) -> f32 {
@@ -124,11 +130,21 @@ fn mix(from: [f32; 3], to: [f32; 3], amount: f32) -> [u8; 4] {
 
 /// Renders the rectangle of the heightmap, north up.
 ///
+/// `surfaces` is only used by [`Overlay::Surface`].
+///
 /// # Errors
 ///
-/// [`RenderError`] if the request is invalid, see [`RenderRequest::size`].
-pub fn render_topdown(hm: &Heightmap, req: &RenderRequest) -> Result<RgbaImage, RenderError> {
+/// [`RenderError`] if the request is invalid, see [`RenderRequest::size`], or if the surface overlay is
+/// asked for without `surfaces`.
+pub fn render_topdown(
+    hm: &Heightmap,
+    req: &RenderRequest,
+    surfaces: Option<&SurfaceGrid>,
+) -> Result<RgbaImage, RenderError> {
     let (width, height) = req.size()?;
+    if req.overlay == Overlay::Surface && surfaces.is_none() {
+        return Err(RenderError::NoSurfaces);
+    }
     let (low, high) = hm.min_max();
     let span = if high > low { high - low } else { 1.0 };
     let step_x = (req.x1 - req.x0) / f64::from(width);
@@ -136,17 +152,23 @@ pub fn render_topdown(hm: &Heightmap, req: &RenderRequest) -> Result<RgbaImage, 
     let mut rows: Vec<Vec<[u8; 4]>> = (0..height)
         .into_par_iter()
         .map(|row| {
-            let y = req.y1 - (f64::from(row) + 0.5) * step_y;
+            let north = req.y1 - (f64::from(row) + 0.5) * step_y;
             (0..width)
                 .map(|col| {
-                    let s = hm.sample(req.x0 + (f64::from(col) + 0.5) * step_x, y);
+                    let east = req.x0 + (f64::from(col) + 0.5) * step_x;
+                    let ground = hm.sample(east, north);
                     match req.overlay {
-                        Overlay::Hillshade => grey(255.0 * s.hillshade()),
-                        Overlay::Height => grey(40.0 + 190.0 * (s.height - low) / span),
+                        Overlay::Surface => {
+                            let [red, green, blue] =
+                                surfaces.map_or([0; 3], |grid| grid.at(east, north).rgb());
+                            [red, green, blue, 255]
+                        }
+                        Overlay::Hillshade => grey(255.0 * ground.hillshade()),
+                        Overlay::Height => grey(40.0 + 190.0 * (ground.height - low) / span),
                         Overlay::Slope => mix(
                             [70.0, 140.0, 70.0],
                             [220.0, 40.0, 40.0],
-                            (s.slope_deg() / 45.0).min(1.0),
+                            (ground.slope_deg() / 45.0).min(1.0),
                         ),
                     }
                 })

@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::project::Project;
+use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::{BuildOutput, build};
 use naves_export::tools::Tools;
 
@@ -110,6 +111,14 @@ impl BuildWorker {
     }
 }
 
+/// What the map view draws: the heightmap and the ground surfaces decided from it and the sources.
+pub struct MapData {
+    /// The heights.
+    pub heightmap: Heightmap,
+    /// The ground class of every map cell.
+    pub surfaces: SurfaceGrid,
+}
+
 /// The state of the heightmap behind the map view.
 pub enum HeightmapState {
     /// The project has no DEM files yet.
@@ -117,18 +126,18 @@ pub enum HeightmapState {
     /// Being computed.
     Loading,
     /// Ready to draw.
-    Ready(std::sync::Arc<Heightmap>),
+    Ready(std::sync::Arc<MapData>),
     /// Could not be computed; the text says why.
     Failed(String),
 }
 
 /// A heightmap computation on its own thread.
 pub struct HeightmapJob {
-    rx: Receiver<Result<Heightmap, String>>,
+    rx: Receiver<Result<MapData, String>>,
 }
 
 impl HeightmapJob {
-    /// Computes the heightmap of the project in `dir` as saved on disk.
+    /// Computes the heightmap and the ground surfaces of the project in `dir` as saved on disk, in one go.
     pub fn start(dir: &Path) -> Self {
         let (tx, rx) = channel();
         let dir = dir.to_path_buf();
@@ -137,7 +146,13 @@ impl HeightmapJob {
                 let project = Project::load(&dir).map_err(|e| e.to_string())?;
                 let files: Vec<PathBuf> = project.sources.dem.iter().map(|p| dir.join(p)).collect();
                 let dem = Dem::open(&files).map_err(|e| e.to_string())?;
-                build_heightmap(&project, &dem).map_err(|e| e.to_string())
+                let heightmap = build_heightmap(&project, &dem).map_err(|e| e.to_string())?;
+                let surfaces =
+                    project_surfaces(&project, &dir, &heightmap).map_err(|e| e.to_string())?;
+                Ok(MapData {
+                    heightmap,
+                    surfaces,
+                })
             })();
             tx.send(result).ok(); // the window may be gone already
         });
@@ -145,7 +160,7 @@ impl HeightmapJob {
     }
 
     /// The result, once it is there.
-    pub fn poll(&self) -> Option<Result<Heightmap, String>> {
+    pub fn poll(&self) -> Option<Result<MapData, String>> {
         self.rx.try_recv().ok()
     }
 }
@@ -234,6 +249,6 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "timed out");
             std::thread::yield_now();
         };
-        assert_eq!(result.unwrap().size, 256);
+        assert_eq!(result.unwrap().heightmap.size, 256);
     }
 }

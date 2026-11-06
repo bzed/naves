@@ -22,12 +22,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use naves_core::dem::{Dem, DemError};
-use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::landcover::{GeoWindow, LandCover, LandCoverError};
-use naves_core::osm::{OsmError, read_land};
+use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
 use naves_core::project::{Project, ProjectError};
-use naves_core::projection::ProjectionError;
-use naves_core::surface::{SurfaceError, SurfaceGrid, SurfaceSources, build_surfaces};
+use naves_core::surface::{LoadedSources, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
@@ -69,18 +66,9 @@ pub enum BuildError {
     /// The DEM does not cover the area.
     #[error(transparent)]
     Heightmap(#[from] HeightmapError),
-    /// A land cover file cannot be read.
-    #[error(transparent)]
-    LandCover(#[from] LandCoverError),
-    /// An OpenStreetMap file cannot be read.
-    #[error(transparent)]
-    Osm(#[from] OsmError),
     /// The ground cannot be decided.
     #[error(transparent)]
     Surface(#[from] SurfaceError),
-    /// A position of the map cannot be converted to latitude and longitude.
-    #[error(transparent)]
-    Projection(#[from] ProjectionError),
     /// An external tool is missing or failed.
     #[error(transparent)]
     Tool(#[from] ToolError),
@@ -449,32 +437,8 @@ fn pack_mod(
     Ok(())
 }
 
-/// Margin around the map in metres in which land cover and OSM data are read.
-const SOURCE_MARGIN_M: f64 = 100.0;
-
 /// Land cover shares of the map above this get a warning.
 const UNCOVERED_WARN_SHARE: f64 = 0.01;
-
-/// The latitude and longitude window of the whole map plus a margin.
-fn map_window(project: &Project) -> Result<GeoWindow, ProjectionError> {
-    let geo = MapGeo::new(project)?;
-    let size = project.map_size_m();
-    let (low, high) = (-SOURCE_MARGIN_M, size + SOURCE_MARGIN_M);
-    let mut window = GeoWindow {
-        south: f64::INFINITY,
-        west: f64::INFINITY,
-        north: f64::NEG_INFINITY,
-        east: f64::NEG_INFINITY,
-    };
-    for (x, y) in [(low, low), (high, low), (low, high), (high, high)] {
-        let (lat, lon) = geo.to_geo(x, y)?;
-        window.south = window.south.min(lat);
-        window.north = window.north.max(lat);
-        window.west = window.west.min(lon);
-        window.east = window.east.max(lon);
-    }
-    Ok(window)
-}
 
 /// The text of `ATTRIBUTION.txt`: only the sources this build used.
 fn attribution(land_cover: bool, osm: bool) -> String {
@@ -516,34 +480,10 @@ fn decide_ground(
     heightmap: &Heightmap,
     progress: &dyn Fn(&str),
 ) -> Result<Ground, BuildError> {
-    let window = map_window(project)?;
-    let resolve =
-        |files: &[PathBuf]| -> Vec<PathBuf> { files.iter().map(|p| project_dir.join(p)).collect() };
-    let land_cover = if project.sources.land_cover.is_empty() {
-        None
-    } else {
-        progress("Reading the land cover");
-        Some(LandCover::open(
-            &resolve(&project.sources.land_cover),
-            window,
-        )?)
-    };
-    let osm = if project.sources.osm.is_empty() {
-        None
-    } else {
-        progress("Reading the OpenStreetMap data");
-        Some(read_land(&resolve(&project.sources.osm), window)?)
-    };
-
+    let sources = LoadedSources::open(project, project_dir, progress)?;
     progress("Deciding the ground");
-    let decided = build_surfaces(
-        project,
-        heightmap,
-        &SurfaceSources {
-            land_cover: land_cover.as_ref(),
-            osm: osm.as_ref(),
-        },
-    )?;
+    let decided = build_surfaces(project, heightmap, &sources.as_sources())?;
+    let (land_cover, osm) = (sources.land_cover, sources.osm);
     let mut warnings = Vec::new();
     if land_cover.is_some() && decided.uncovered_share > UNCOVERED_WARN_SHARE {
         warnings.push(format!(

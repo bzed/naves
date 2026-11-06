@@ -17,6 +17,7 @@ use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::build;
 use naves_export::tools::Tools;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -52,6 +53,8 @@ pub enum OverlayArg {
     Slope,
     /// Grey by height.
     Height,
+    /// The ground class of every cell.
+    Surface,
 }
 
 impl From<OverlayArg> for Overlay {
@@ -60,6 +63,7 @@ impl From<OverlayArg> for Overlay {
             OverlayArg::Hillshade => Overlay::Hillshade,
             OverlayArg::Slope => Overlay::Slope,
             OverlayArg::Height => Overlay::Height,
+            OverlayArg::Surface => Overlay::Surface,
         }
     }
 }
@@ -81,8 +85,14 @@ pub struct RenderParams {
     overlay: OverlayArg,
 }
 
-/// A heightmap and the project it was made from.
-type CachedHeightmap = Option<(Project, Arc<Heightmap>)>;
+/// A heightmap, the ground surfaces once they were asked for, and the project they were made from.
+struct Cached {
+    project: Project,
+    heightmap: Arc<Heightmap>,
+    surfaces: Option<Arc<SurfaceGrid>>,
+}
+
+type CachedHeightmap = Option<Cached>;
 
 /// The server state.
 #[derive(Clone)]
@@ -140,19 +150,40 @@ impl NavesMcp {
 
     /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
+        Ok(self.map(false).await?.0)
+    }
+
+    /// The heightmap and, when `with_surfaces` is set, the ground surfaces of the saved project. Both are
+    /// computed again only when the project file has changed; the surfaces are only made when asked for.
+    async fn map(
+        &self,
+        with_surfaces: bool,
+    ) -> Result<(Arc<Heightmap>, Option<Arc<SurfaceGrid>>), String> {
         let mut cache = self.heightmap.lock().await;
         let dir = self.dir.clone();
         let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
-        if let Some((made_from, hm)) = cache.as_ref()
-            && *made_from == project
-        {
-            return Ok(Arc::clone(hm));
+        if cache.as_ref().is_none_or(|c| c.project != project) {
+            let dir = self.dir.clone();
+            let input = project.clone();
+            let hm = Arc::new(blocking(move || compute_heightmap(&dir, &input)).await??);
+            *cache = Some(Cached {
+                project: project.clone(),
+                heightmap: hm,
+                surfaces: None,
+            });
         }
-        let dir = self.dir.clone();
-        let input = project.clone();
-        let hm = Arc::new(blocking(move || compute_heightmap(&dir, &input)).await??);
-        *cache = Some((project, Arc::clone(&hm)));
-        Ok(hm)
+        let Some(cached) = cache.as_mut() else {
+            return Err("internal error: no cached map".to_string());
+        };
+        if with_surfaces && cached.surfaces.is_none() {
+            let dir = self.dir.clone();
+            let hm = Arc::clone(&cached.heightmap);
+            let grid =
+                blocking(move || project_surfaces(&project, &dir, &hm).map_err(|e| e.to_string()))
+                    .await??;
+            cached.surfaces = Some(Arc::new(grid));
+        }
+        Ok((Arc::clone(&cached.heightmap), cached.surfaces.clone()))
     }
 
     #[tool(
@@ -217,14 +248,15 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope or height."
+        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope, height or surface (the ground classes grass, rock, forest and soil in their satellite colours)."
     )]
     async fn render_topdown(
         &self,
         Parameters(params): Parameters<RenderParams>,
     ) -> Result<CallToolResult, McpError> {
-        let hm = match self.heightmap().await {
-            Ok(hm) => hm,
+        let wants_surfaces = matches!(params.overlay, OverlayArg::Surface);
+        let (hm, surfaces) = match self.map(wants_surfaces).await {
+            Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
         let request = RenderRequest {
@@ -236,7 +268,8 @@ impl NavesMcp {
             overlay: params.overlay.into(),
         };
         let png = blocking(move || -> Result<Vec<u8>, String> {
-            let image = render_topdown(&hm, &request).map_err(|e| e.to_string())?;
+            let image =
+                render_topdown(&hm, &request, surfaces.as_deref()).map_err(|e| e.to_string())?;
             let mut bytes = Cursor::new(Vec::new());
             image
                 .write_to(&mut bytes, image::ImageFormat::Png)

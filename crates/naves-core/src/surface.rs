@@ -3,11 +3,13 @@
 
 //! The ground class of every map cell. This module decides; `naves-export` only draws the result.
 
+use std::path::{Path, PathBuf};
+
 use rayon::prelude::*;
 
 use crate::heightmap::{Heightmap, MapGeo, Sample};
-use crate::landcover::{LandCover, surface_of};
-use crate::osm::{LandPolygon, OsmLand};
+use crate::landcover::{LandCover, LandCoverError, surface_of};
+use crate::osm::{LandPolygon, OsmError, OsmLand, read_land};
 use crate::project::Project;
 use crate::projection::ProjectionError;
 
@@ -35,6 +37,36 @@ pub enum SurfaceClass {
 }
 
 impl SurfaceClass {
+    /// Every class, in slot order.
+    pub const ALL: [SurfaceClass; 4] = [
+        SurfaceClass::Grass,
+        SurfaceClass::Rock,
+        SurfaceClass::Forest,
+        SurfaceClass::Soil,
+    ];
+
+    /// The colour the class has on the satellite image and in the surface overlay.
+    #[must_use]
+    pub const fn rgb(self) -> [u8; 3] {
+        match self {
+            SurfaceClass::Grass => [0x4a, 0x7a, 0x3a],
+            SurfaceClass::Rock => [0x8a, 0x87, 0x80],
+            SurfaceClass::Forest => [0x2e, 0x4d, 0x2a],
+            SurfaceClass::Soil => [0x7a, 0x68, 0x4e],
+        }
+    }
+
+    /// A short name for legends.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            SurfaceClass::Grass => "Grass",
+            SurfaceClass::Rock => "Rock",
+            SurfaceClass::Forest => "Forest",
+            SurfaceClass::Soil => "Soil",
+        }
+    }
+
     /// The layer slot, 0 to 3.
     #[must_use]
     pub fn slot(self) -> usize {
@@ -161,6 +193,12 @@ pub fn procedural_grid(hm: &Heightmap, grass_limit: f32) -> SurfaceGrid {
 /// Errors deciding the ground.
 #[derive(Debug, thiserror::Error)]
 pub enum SurfaceError {
+    /// A land cover file cannot be read.
+    #[error(transparent)]
+    LandCover(#[from] LandCoverError),
+    /// An OpenStreetMap file cannot be read.
+    #[error(transparent)]
+    Osm(#[from] OsmError),
     /// A map position or an OSM point cannot be converted to or from latitude and longitude.
     #[error(transparent)]
     Projection(#[from] ProjectionError),
@@ -430,4 +468,74 @@ pub fn build_surfaces(
         },
         uncovered_share,
     })
+}
+
+/// The land cover and OSM data of a project, read for the window of its map.
+#[derive(Debug, Clone, Default)]
+pub struct LoadedSources {
+    /// The land cover, if the project lists files.
+    pub land_cover: Option<LandCover>,
+    /// The OSM areas, if the project lists files.
+    pub osm: Option<OsmLand>,
+}
+
+impl LoadedSources {
+    /// Reads the land cover and OSM files of `project` (relative to `project_dir`) for the window of the
+    /// whole map plus a margin of 100 m. `progress` gets a short line before each file group.
+    ///
+    /// # Errors
+    ///
+    /// [`SurfaceError::LandCover`] or [`SurfaceError::Osm`], naming the first file that cannot be read.
+    pub fn open(
+        project: &Project,
+        project_dir: &Path,
+        progress: &dyn Fn(&str),
+    ) -> Result<LoadedSources, SurfaceError> {
+        let window = MapGeo::new(project)?.window(SOURCE_MARGIN_M)?;
+        let resolve = |files: &[PathBuf]| -> Vec<PathBuf> {
+            files.iter().map(|p| project_dir.join(p)).collect()
+        };
+        let land_cover = if project.sources.land_cover.is_empty() {
+            None
+        } else {
+            progress("Reading the land cover");
+            Some(LandCover::open(
+                &resolve(&project.sources.land_cover),
+                window,
+            )?)
+        };
+        let osm = if project.sources.osm.is_empty() {
+            None
+        } else {
+            progress("Reading the OpenStreetMap data");
+            Some(read_land(&resolve(&project.sources.osm), window)?)
+        };
+        Ok(LoadedSources { land_cover, osm })
+    }
+
+    /// The sources as [`build_surfaces`] takes them.
+    #[must_use]
+    pub fn as_sources(&self) -> SurfaceSources<'_> {
+        SurfaceSources {
+            land_cover: self.land_cover.as_ref(),
+            osm: self.osm.as_ref(),
+        }
+    }
+}
+
+/// Margin around the map in metres in which land cover and OSM data are read.
+const SOURCE_MARGIN_M: f64 = 100.0;
+
+/// Reads the sources of `project` and decides the ground: what the map views need.
+///
+/// # Errors
+///
+/// As [`LoadedSources::open`] and [`build_surfaces`].
+pub fn project_surfaces(
+    project: &Project,
+    project_dir: &Path,
+    hm: &Heightmap,
+) -> Result<SurfaceGrid, SurfaceError> {
+    let sources = LoadedSources::open(project, project_dir, &|_| {})?;
+    Ok(build_surfaces(project, hm, &sources.as_sources())?.grid)
 }

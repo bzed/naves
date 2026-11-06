@@ -176,7 +176,7 @@ fn only_one_heightmap_job_runs_and_the_last_setting_wins() {
     }
     wait_for_the_job(&mut app);
     assert!(!app.reload_wanted);
-    let HeightmapState::Ready(hm) = &app.heightmap else {
+    let HeightmapState::Ready(data) = &app.heightmap else {
         panic!("no heightmap");
     };
     // a fresh computation with the saved project gives the same map
@@ -185,5 +185,80 @@ fn only_one_heightmap_job_runs_and_the_last_setting_wins() {
     let files = [dir.join("dem/koenigssee.tif")];
     let dem = naves_core::dem::Dem::open(&files).unwrap();
     let expected = naves_core::heightmap::build_heightmap(&saved, &dem).unwrap();
-    assert_eq!(hm.min_max(), expected.min_max());
+    assert_eq!(data.heightmap.min_max(), expected.min_max());
+}
+
+/// Adds the land cover and OSM crops to the project in `dir` and lists them as sources.
+fn add_sources(dir: &Path) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut p = Project::load(dir).unwrap();
+    for (sub, name) in [
+        ("landcover", "koenigssee.tif"),
+        ("osm", "koenigssee.osm.pbf"),
+    ] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        std::fs::copy(fixtures.join(sub).join(name), dir.join(sub).join(name)).unwrap();
+    }
+    p.sources.land_cover = vec!["landcover/koenigssee.tif".into()];
+    p.sources.osm = vec!["osm/koenigssee.osm.pbf".into()];
+    p.save(dir).unwrap();
+}
+
+#[test]
+fn land_cover_files_are_listed() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_sources(&dir);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Land cover files").is_some());
+    assert!(harness.query_by_label("landcover/koenigssee.tif").is_some());
+    assert!(harness.query_by_label("OpenStreetMap files").is_some());
+    assert!(harness.query_by_label("osm/koenigssee.osm.pbf").is_some());
+}
+
+#[test]
+fn a_project_without_sources_says_what_the_ground_follows() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(
+        harness
+            .query_by_label_contains("slope and altitude")
+            .is_some()
+    );
+}
+
+#[test]
+fn changing_a_source_list_reloads_the_map() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    add_sources(&dir);
+    app.form.project.sources.land_cover = vec!["landcover/koenigssee.tif".into()];
+    app.settings_changed();
+    assert!(
+        app.job.is_some(),
+        "the ground depends on the land cover files"
+    );
+}
+
+#[test]
+fn the_surface_overlay_draws_once_the_map_is_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_sources(&dir);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Surface").click();
+    step_until(&mut harness, |h| h.query_by_label("Soil").is_some());
+    assert!(
+        harness.query_by_label("Forest").is_some(),
+        "the legend names the classes"
+    );
 }
