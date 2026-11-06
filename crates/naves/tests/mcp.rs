@@ -244,3 +244,48 @@ async fn build_runs_and_reports_the_paths() {
             .is_file()
     );
 }
+
+async fn highest(f: &Fixture) -> f64 {
+    let stats = call(f, "heightmap_stats", json!({})).await;
+    let stats: Value = serde_json::from_str(&text(&stats)).unwrap();
+    stats.get("max").unwrap().as_f64().unwrap()
+}
+
+#[tokio::test]
+async fn a_project_edited_outside_mcp_is_noticed() {
+    let f = start().await;
+    let before = highest(&f).await;
+    let mut project = naves_core::project::Project::load(&f.proj).unwrap();
+    project.scale.height *= 2.0;
+    project.save(&f.proj).unwrap();
+    let after = highest(&f).await;
+    assert!((after - before * 2.0).abs() < 1.0, "{before} then {after}");
+}
+
+#[tokio::test]
+async fn parallel_changes_all_arrive() {
+    let f = start().await;
+    for round in 1..=20_u32 {
+        let value = 0.5 + f64::from(round) / 100.0;
+        let (a, b) = tokio::join!(
+            call(
+                &f,
+                "project_set",
+                json!({"path": "scale.height", "value": value})
+            ),
+            call(
+                &f,
+                "project_set",
+                json!({"path": "scale.horizontal", "value": value})
+            ),
+        );
+        assert_ne!(a.is_error, Some(true));
+        assert_ne!(b.is_error, Some(true));
+        let saved = naves_core::project::Project::load(&f.proj).unwrap();
+        assert!((saved.scale.height - value).abs() < 1e-9, "round {round}");
+        assert!(
+            (saved.scale.horizontal - value).abs() < 1e-9,
+            "round {round}"
+        );
+    }
+}

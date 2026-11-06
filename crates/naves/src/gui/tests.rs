@@ -134,3 +134,56 @@ fn the_land_grid_follows_the_terrain_grid() {
     assert_eq!((saved.grid.terrain_size, saved.grid.land_size), (512, 64));
     assert!(harness.query_by_label("64 × 64 land cells").is_some());
 }
+
+/// Steps the app without a window until its heightmap job has ended.
+fn wait_for_the_job(app: &mut NavesApp) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while app.job.is_some() {
+        assert!(Instant::now() < deadline, "timed out waiting for the job");
+        app.poll_background();
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn renaming_does_not_reload_the_elevation_data() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    app.form.project.name = "Renamed".to_string();
+    app.settings_changed();
+    assert!(app.job.is_none(), "the name has nothing to do with the map");
+    assert!(matches!(app.heightmap, HeightmapState::Ready(_)));
+    assert_eq!(Project::load(&dir).unwrap().name, "Renamed");
+}
+
+#[test]
+fn only_one_heightmap_job_runs_and_the_last_setting_wins() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    for (i, height) in [0.6, 0.7, 0.8].into_iter().enumerate() {
+        app.form.project.scale.height = height;
+        app.settings_changed();
+        assert!(app.job.is_some());
+        assert_eq!(
+            app.reload_wanted,
+            i > 0,
+            "later changes wait for the running job"
+        );
+    }
+    wait_for_the_job(&mut app);
+    assert!(!app.reload_wanted);
+    let HeightmapState::Ready(hm) = &app.heightmap else {
+        panic!("no heightmap");
+    };
+    // a fresh computation with the saved project gives the same map
+    let saved = Project::load(&dir).unwrap();
+    assert!((saved.scale.height - 0.8).abs() < 1e-9);
+    let files = [dir.join("dem/koenigssee.tif")];
+    let dem = naves_core::dem::Dem::open(&files).unwrap();
+    let expected = naves_core::heightmap::build_heightmap(&saved, &dem).unwrap();
+    assert_eq!(hm.min_max(), expected.min_max());
+}

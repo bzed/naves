@@ -11,13 +11,13 @@ mod map_view;
 mod settings;
 mod worker;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use naves_core::heightmap::Heightmap;
-use naves_core::project::LAND_RATIO;
+use naves_core::project::{Area, Grid, LAND_RATIO, Project, Scale};
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_export::build::BuildOutput;
 use naves_export::tools::Tools;
@@ -51,6 +51,10 @@ pub struct NavesApp {
     overlay: Overlay,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
+    /// The settings changed while `job` was running, so its result is out of date.
+    reload_wanted: bool,
+    /// The project values the current heightmap depends on.
+    heightmap_inputs: HeightmapInputs,
     texture: Option<(RenderRequest, egui::TextureHandle)>,
     worker: Option<BuildWorker>,
     log: Vec<Line>,
@@ -93,12 +97,15 @@ impl NavesApp {
         locate_tools: ToolLocator,
     ) -> Result<Self, naves_core::project::ProjectError> {
         let form = SettingsForm::load(dir)?;
+        let inputs = heightmap_inputs(&form.project);
         let mut app = Self {
             form,
             view: None,
             overlay: Overlay::Hillshade,
             heightmap: HeightmapState::NoDem,
             job: None,
+            reload_wanted: false,
+            heightmap_inputs: inputs,
             texture: None,
             worker: None,
             log: Vec::new(),
@@ -121,17 +128,37 @@ impl NavesApp {
             self.job = None;
         } else {
             self.heightmap = HeightmapState::Loading;
-            self.job = Some(HeightmapJob::start(self.form.dir()));
+            if self.job.is_some() {
+                // One job at a time: the next one starts when this one ends, with what is saved by then.
+                self.reload_wanted = true;
+            } else {
+                self.job = Some(HeightmapJob::start(self.form.dir()));
+            }
+        }
+    }
+
+    /// Saves changed settings; only what the heightmap depends on makes it load again.
+    fn settings_changed(&mut self) {
+        if self.form.commit() {
+            let inputs = heightmap_inputs(&self.form.project);
+            if inputs != self.heightmap_inputs {
+                self.heightmap_inputs = inputs;
+                self.reload_heightmap();
+            }
         }
     }
 
     fn poll_background(&mut self) {
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
-            self.heightmap = match result {
-                Ok(hm) => HeightmapState::Ready(Arc::new(hm)),
-                Err(error) => HeightmapState::Failed(error),
-            };
+            if std::mem::take(&mut self.reload_wanted) {
+                self.job = Some(HeightmapJob::start(self.form.dir()));
+            } else {
+                self.heightmap = match result {
+                    Ok(hm) => HeightmapState::Ready(Arc::new(hm)),
+                    Err(error) => HeightmapState::Failed(error),
+                };
+            }
         }
         if let Some(worker) = self.worker.as_mut() {
             for msg in worker.poll() {
@@ -260,8 +287,8 @@ impl NavesApp {
             ui.add_space(8.0);
             ui.colored_label(ERROR, format!("Not saved: {error}"));
         }
-        if changed && self.form.commit() {
-            self.reload_heightmap();
+        if changed {
+            self.settings_changed();
         }
     }
 
@@ -392,6 +419,18 @@ fn field(
     let response = widget(ui).labelled_by(name.id);
     ui.end_row();
     response.changed()
+}
+
+/// The project values the heightmap depends on.
+type HeightmapInputs = (Area, Scale, Grid, Vec<PathBuf>);
+
+fn heightmap_inputs(project: &Project) -> HeightmapInputs {
+    (
+        project.area.clone(),
+        project.scale.clone(),
+        project.grid.clone(),
+        project.sources.dem.clone(),
+    )
 }
 
 /// A drop-down with the powers of two from `min` to `max`; the response is marked changed when the value is.

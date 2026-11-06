@@ -81,12 +81,17 @@ pub struct RenderParams {
     overlay: OverlayArg,
 }
 
+/// A heightmap and the project it was made from.
+type CachedHeightmap = Option<(Project, Arc<Heightmap>)>;
+
 /// The server state.
 #[derive(Clone)]
 pub struct NavesMcp {
     dir: PathBuf,
     locate_tools: ToolLocator,
-    heightmap: Arc<Mutex<Option<Arc<Heightmap>>>>,
+    heightmap: Arc<tokio::sync::Mutex<CachedHeightmap>>,
+    /// Held by what changes the project or its build folder, so that these run one at a time.
+    writes: Arc<tokio::sync::Mutex<()>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -111,14 +116,13 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("internal error: {e}"))
 }
 
-fn compute_heightmap(dir: &Path) -> Result<Heightmap, String> {
-    let project = Project::load(dir).map_err(|e| e.to_string())?;
+fn compute_heightmap(dir: &Path, project: &Project) -> Result<Heightmap, String> {
     if project.sources.dem.is_empty() {
         return Err("the project has no elevation data: add DEM files to sources.dem".to_string());
     }
     let files: Vec<PathBuf> = project.sources.dem.iter().map(|p| dir.join(p)).collect();
     let dem = Dem::open(&files).map_err(|e| e.to_string())?;
-    build_heightmap(&project, &dem).map_err(|e| e.to_string())
+    build_heightmap(project, &dem).map_err(|e| e.to_string())
 }
 
 #[tool_router]
@@ -128,23 +132,26 @@ impl NavesMcp {
         Self {
             dir: dir.to_path_buf(),
             locate_tools,
-            heightmap: Arc::new(Mutex::new(None)),
+            heightmap: Arc::new(tokio::sync::Mutex::new(None)),
+            writes: Arc::new(tokio::sync::Mutex::new(())),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// The heightmap of the saved project, computed once and cached until the project changes.
+    /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
-        if let Ok(cache) = self.heightmap.lock()
-            && let Some(hm) = cache.as_ref()
+        let mut cache = self.heightmap.lock().await;
+        let dir = self.dir.clone();
+        let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
+        if let Some((made_from, hm)) = cache.as_ref()
+            && *made_from == project
         {
             return Ok(Arc::clone(hm));
         }
         let dir = self.dir.clone();
-        let hm = Arc::new(blocking(move || compute_heightmap(&dir)).await??);
-        if let Ok(mut cache) = self.heightmap.lock() {
-            *cache = Some(Arc::clone(&hm));
-        }
+        let input = project.clone();
+        let hm = Arc::new(blocking(move || compute_heightmap(&dir, &input)).await??);
+        *cache = Some((project, Arc::clone(&hm)));
         Ok(hm)
     }
 
@@ -170,6 +177,7 @@ impl NavesMcp {
         &self,
         Parameters(params): Parameters<SetParams>,
     ) -> Result<CallToolResult, McpError> {
+        let _writing = self.writes.lock().await;
         let dir = self.dir.clone();
         let result = blocking(move || -> Result<Project, String> {
             let project = Project::load(&dir).map_err(|e| e.to_string())?;
@@ -181,15 +189,10 @@ impl NavesMcp {
         })
         .await;
         Ok(match result.and_then(|r| r) {
-            Ok(project) => {
-                if let Ok(mut cache) = self.heightmap.lock() {
-                    *cache = None;
-                }
-                match serde_json::to_value(&project) {
-                    Ok(value) => json_text(&value),
-                    Err(e) => failure(e.to_string()),
-                }
-            }
+            Ok(project) => match serde_json::to_value(&project) {
+                Ok(value) => json_text(&value),
+                Err(e) => failure(e.to_string()),
+            },
             Err(e) => failure(e),
         })
     }
@@ -254,6 +257,7 @@ impl NavesMcp {
         description = "Build the mod and the server mission of the project (takes a while). Returns the mod and mission folders, warnings and the progress lines. Needs armake2, DayZ Tools and Proton, see the manual."
     )]
     async fn build(&self) -> Result<CallToolResult, McpError> {
+        let _writing = self.writes.lock().await;
         let dir = self.dir.clone();
         let locate = Arc::clone(&self.locate_tools);
         let result = blocking(move || {

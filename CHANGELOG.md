@@ -47,6 +47,8 @@ All notable changes to this project are documented here. The format follows
   the protocol stream under `naves mcp`. On Windows, Proton is not required and Steam is found in its program folder.
 - The generated mission has no gas zones at Livonia's positions. Still from Livonia: `areaflags.map` and the wildlife
   territories.
+- `naves mcp`: `project_set` and `build` run one at a time, and the heightmap follows edits of `naves.toml` from
+  outside. The GUI runs one heightmap job at a time and does not reload the elevation data when the name changes.
 - The sun is in the right part of the sky: the world config writes the latitude with the game's sign (positive to
   the south).
 - Surface masks select the right layers: grass is black and rock red at full alpha. Before, grass showed the rock
