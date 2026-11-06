@@ -35,26 +35,25 @@ Data licence and attribution: see "Credits and data licences" in the manual.
 naves build examples/berchtesgaden
 ```
 
-## Results (2026-11-05)
+## Navigation mesh
 
-- `naves build`: 6 s on the development machine, no error. Mod `build/@naves_berchtesgaden`, mission
-  `build/missions/dayzOffline.berchtesgaden`.
-- Local DayZ Server 1.30 (own tree, non-default ports, `verifySignatures = 2`, key from `keys/`): the RPT shows
-  `Loading landscape 'berchtesgaden'`, `Loading landscape took: 91.758000 ms`, `[CE][Hive] :: Init sequence finished.`
-  and `Player connect enabled`. Not working yet, as expected: `AI (F): Unable to load navmesh for 'berchtesgaden'`
-  (no navigation mesh, so infected and animals cannot path).
+The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
+for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
+
+## Results (2026-11-06)
+
+- `naves build`: no error. Mod `build/@naves_berchtesgaden`, mission `build/missions/dayzOffline.berchtesgaden`.
+- Grids: 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
+- Local DayZ Server 1.30 (own tree, non-default ports, `verifySignatures = 2`, key from `keys/`): loads the mod and
+  the mission, `Player connect enabled`, no `Unable to load navmesh`.
+- Navigation mesh: `dznav generate`, 16 383 tiles in 749 s, 93 377 reachable polygons.
+- Headless game client 1.30: the player connects and stays in the world at a real ground height, for example at
+  x 3962, z 1400, height 371.9 m on the east shore of the Königssee. Looking west across the basin shows the Watzmann
+  massif with rock above 2100 m and on steep slopes. Near the player the ground has its grass texture and clutter.
 - Top-down render of the whole map (`render_topdown`, hillshade): the Königssee runs south from just below the
   centre, the Watzmann ridge lies west of it, the flat Berchtesgaden basin north of the lake, and the terrain is
   continuous across the 13.0 °E tile seam.
-- **Game client (headless, 1.30, 2026-11-05):** the client loads the mod (through a symlink in the DayZ install, see
-  `AGENTS.md`), connects and the server spawns the player on the map, but the client **crashes a few seconds after
-  connecting** (access violation in the renderer). A control run against a vanilla Livonia server works. With the
-  same mod config but Livonia's own `enoch.wrp` as the world file the client also works, so the generated world
-  config, `ce/` folder and mission are fine and the problem is inside the binarized world data. Ruled out so far:
-  the satellite/mask images, a flat 8WVR and the terminator object. Bohemia's own Test_Terrain sample, built with
-  the same tools, crashes the client in the same way, so the cause is probably in the pipeline (rapified
-  materials, texture conversion, binarize under Proton) and not in the generator; see
-  `docs/research/2026-11-05-reference-terrains.md`.
-  Open: what else the client needs from the world file (the binarize log's "Total 1 objects" for a world without
-  objects, and the `OPRW` header differences to Livonia, are leads). Walking on the terrain is therefore **not yet
-  verified**.
+- Not tested: walking. A player who spawns at the right height on the terrain is taken as enough for now.
+- Not in this milestone step: water (the Königssee is a flat green basin), roads, buildings, trees.
+
+How the client crashes and wrong colours on the way to this were found: `docs/research/2026-11-05-reference-terrains.md`.
