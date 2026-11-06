@@ -54,6 +54,7 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
   centre, the Watzmann ridge lies west of it, the flat Berchtesgaden basin north of the lake, and the terrain is
   continuous across the 13.0 °E tile seam.
 - Not tested: walking. A player who spawns at the right height on the terrain is taken as enough for now.
+- Still made for Livonia in the mission: `areaflags.map` (no generator yet) and the wildlife territories in `env/`.
 - Not in this milestone step: water (the Königssee is a flat green basin), roads, buildings, trees.
 
 How the client crashes and wrong colours on the way to this were found: `docs/research/2026-11-05-reference-terrains.md`.
