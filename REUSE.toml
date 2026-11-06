@@ -41,7 +41,7 @@ SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
 # Example projects: files that `naves new` and `naves build` generate (build output, keys and downloaded DEM
 # tiles are git-ignored and only present after a build).
 [[annotations]]
-path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**", "examples/*/secrets/**", "examples/*/dem/**"]
+path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**", "examples/*/secrets/**", "examples/*/dem/**", "examples/*/landcover/**", "examples/*/osm/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"

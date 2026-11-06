@@ -14,6 +14,7 @@ The reference project of milestone 1: a 12.8 km square of the Berchtesgaden Alps
 | Area | about 47.527–47.643 °N and 12.880–13.050 °E |
 | In it | the Königssee, the Watzmann massif (west of the lake), the Hochkalter group, Berchtesgaden town |
 | Elevation data | Copernicus GLO-30, two tiles that meet at 13.0 °E, so it also tests the tile seam |
+| Ground | ESA WorldCover (one tile) and OpenStreetMap (Oberbayern and Austria: the south and east of the map are Austrian) |
 
 ## Fetch the elevation data
 
@@ -27,7 +28,27 @@ for e in E012 E013; do
 done
 ```
 
-Data licence and attribution: see "Credits and data licences" in the manual.
+## Fetch the land cover and OpenStreetMap data
+
+Not in the repository either. Run this in `examples/berchtesgaden/landcover/` (85 MB):
+
+```sh
+curl -fO https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif
+```
+
+and this in `examples/berchtesgaden/osm/` (260 MB and 815 MB; the build reads only what the map needs, but needs
+about 1.2 GiB of memory with both):
+
+```sh
+curl -fLO https://download.geofabrik.de/europe/germany/bayern/oberbayern-latest.osm.pbf
+curl -fLO https://download.geofabrik.de/europe/austria-latest.osm.pbf
+```
+
+Without these two folders, remove `land_cover` and `osm` from `naves.toml`: the ground then follows slope and
+altitude only.
+
+Data licences and attribution: see "Credits and data licences" in the manual. A map built from these files contains
+OpenStreetMap data under the ODbL.
 
 ## Build
 
@@ -40,7 +61,16 @@ naves build examples/berchtesgaden
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
 
-## Results (2026-11-06)
+## Results with land cover and OpenStreetMap (2026-11-06)
+
+- `naves build`: 15 s, peak memory 1.2 GiB, PBO 50.9 MB, warning that 49 OSM rings were skipped (the extracts cut
+  polygons at their borders). `ATTRIBUTION.txt` in the mod folder names Copernicus, WorldCover and OpenStreetMap.
+- Ground (share of the map): forest 57.9 %, grass 16.8 %, rock 16.8 %, soil 8.5 %. The Königssee and the
+  Berchtesgaden basin are soil, the massifs rock. Comparison of the sources: `docs/research/2026-11-05-reference-terrains.md`.
+- Headless game client 1.30: the player connects at the east shore (x 3962, z 1400, on the soil-coloured lake bed),
+  at x 1500, z 2800 and at x 3600, z 3800; no crash, no navmesh error, and the ground textures match the overlay.
+
+## Results of the first version, procedural ground only (2026-11-06)
 
 - `naves build`: no error. Mod `build/@naves_berchtesgaden`, mission `build/missions/dayzOffline.berchtesgaden`.
 - Grids: 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
@@ -55,6 +85,6 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
   continuous across the 13.0 °E tile seam.
 - Not tested: walking. A player who spawns at the right height on the terrain is taken as enough for now.
 - Still made for Livonia in the mission: `areaflags.map` (no generator yet) and the wildlife territories in `env/`.
-- Not in this milestone step: water (the Königssee is a flat green basin), roads, buildings, trees.
+- Not in this milestone step: water (the Königssee is a flat basin; with OSM it is soil-coloured), roads, buildings, trees.
 
 How the client crashes and wrong colours on the way to this were found: `docs/research/2026-11-05-reference-terrains.md`.

@@ -19,3 +19,5 @@ dem = [
     "dem/Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif",
     "dem/Copernicus_DSM_COG_10_N47_00_E013_00_DEM.tif",
 ]
+land_cover = ["landcover/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif"]
+osm = ["osm/oberbayern-latest.osm.pbf", "osm/austria-latest.osm.pbf"]
