@@ -48,7 +48,6 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The GUI map moves with Space + drag or the middle mouse button; the left button no longer pans.
-
 - `naves.toml` with an option that Náves does not know (a typo, or an option of a newer Náves) is rejected with the option named, in the CLI, the GUI and over MCP, instead of being read and dropped when the file is saved again.
 - Lighter baked shading on the satellite images: rock faces were nearly black.
 
