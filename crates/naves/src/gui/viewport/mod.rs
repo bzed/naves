@@ -79,6 +79,21 @@ pub struct VisibleLayer {
     pub opacity: f32,
 }
 
+/// The zoom factor for a wheel turn of `scroll` (positive scrolls up): below 1 zooms in. `invert` is the setting that turns
+/// the wheel around. Every view takes its wheel zoom from here, so that the setting holds in all of them.
+#[must_use]
+pub fn zoom_factor(scroll: f64, invert: bool) -> f64 {
+    let scroll = if invert { -scroll } else { scroll };
+    (-scroll * 0.002).exp()
+}
+
+/// Whether a drag with `button` moves the camera: the middle button, or the left button with Space held. A plain
+/// left drag belongs to the tools. Every view uses this rule.
+#[must_use]
+pub fn pans(button: egui::PointerButton, space_down: bool) -> bool {
+    button == egui::PointerButton::Middle || (space_down && button == egui::PointerButton::Primary)
+}
+
 /// What the shell hands to a view each frame.
 pub struct ViewFrame<'a> {
     /// The data of the map.

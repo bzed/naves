@@ -71,8 +71,9 @@ impl Viewport for MapViewport {
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         // Space + drag and the middle button pan; a plain left drag belongs to the tools
         let space = ui.input(|i| i.key_down(egui::Key::Space));
-        let panning = response.dragged_by(egui::PointerButton::Middle)
-            || (space && response.dragged_by(egui::PointerButton::Primary));
+        let panning = [egui::PointerButton::Middle, egui::PointerButton::Primary]
+            .into_iter()
+            .any(|button| response.dragged_by(button) && super::pans(button, space));
         if panning {
             let d = response.drag_delta();
             view.pan_px(f64::from(d.x), f64::from(d.y));
@@ -80,7 +81,7 @@ impl Viewport for MapViewport {
         if let Some(pos) = response.hover_pos() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
-                let factor = MapView::wheel_factor(f64::from(scroll), frame.invert_zoom);
+                let factor = super::zoom_factor(f64::from(scroll), frame.invert_zoom);
                 view.zoom_at(
                     f64::from(pos.x - rect.left()),
                     f64::from(pos.y - rect.top()),

@@ -66,12 +66,6 @@ impl MapView {
         self.metres_per_px * width.min(height).max(1.0)
     }
 
-    /// The zoom factor for a wheel turn of `scroll` (positive scrolls up): below 1 zooms in. `invert` turns it around.
-    pub fn wheel_factor(scroll: f64, invert: bool) -> f64 {
-        let scroll = if invert { -scroll } else { scroll };
-        (-scroll * 0.002).exp()
-    }
-
     /// Moves the map with the pointer by (`dx`, `dy`) screen pixels.
     pub fn pan_px(&mut self, dx: f64, dy: f64) {
         self.center.0 -= dx * self.metres_per_px;

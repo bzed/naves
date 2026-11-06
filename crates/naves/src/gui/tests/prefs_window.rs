@@ -15,7 +15,6 @@ use naves_export::tools::{Origin, ToolOrigin};
 
 use super::*;
 use crate::gui::levels::Level;
-use crate::gui::map_view::MapView;
 use crate::gui::shortcuts::{Action, Binding, Bindings, SHORTCUTS, ToolId};
 use crate::gui::testing::{FAKE_LEVEL, FakeViewport};
 use crate::gui::viewport::Viewport;
@@ -460,8 +459,8 @@ fn bindings_survive_text_and_back() {
 
 #[test]
 fn invert_zoom_inverts_the_wheel() {
-    let normal = MapView::wheel_factor(10.0, false);
-    let inverted = MapView::wheel_factor(10.0, true);
+    let normal = crate::gui::viewport::zoom_factor(10.0, false);
+    let inverted = crate::gui::viewport::zoom_factor(10.0, true);
     assert!(normal < 1.0 && inverted > 1.0, "{normal} {inverted}");
     assert!((normal * inverted - 1.0).abs() < 1e-12);
 }

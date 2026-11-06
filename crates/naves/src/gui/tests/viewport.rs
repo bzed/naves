@@ -170,3 +170,25 @@ fn reloading_resets_every_view() {
     app.settings_changed();
     assert_eq!(fake.borrow().resets, 1);
 }
+
+#[test]
+fn the_wheel_zoom_is_one_rule_for_every_view() {
+    use crate::gui::viewport::zoom_factor;
+    let (normal, inverted) = (zoom_factor(10.0, false), zoom_factor(10.0, true));
+    assert!(normal < 1.0 && inverted > 1.0, "{normal} {inverted}");
+    assert!((normal * inverted - 1.0).abs() < 1e-12);
+    assert!((zoom_factor(0.0, true) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn space_with_the_left_button_or_the_middle_button_pans() {
+    use crate::gui::viewport::pans;
+    use egui::PointerButton::{Middle, Primary, Secondary};
+    assert!(pans(Middle, false) && pans(Middle, true));
+    assert!(pans(Primary, true));
+    assert!(
+        !pans(Primary, false),
+        "a plain left drag belongs to the tools"
+    );
+    assert!(!pans(Secondary, true));
+}
