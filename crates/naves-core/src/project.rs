@@ -68,6 +68,12 @@ pub struct Grid {
 pub struct Sources {
     /// DEM GeoTIFF files, relative to the project directory.
     pub dem: Vec<PathBuf>,
+    /// ESA `WorldCover` GeoTIFF files (land cover classes), relative to the project directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub land_cover: Vec<PathBuf>,
+    /// OpenStreetMap `.osm.pbf` extracts, relative to the project directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub osm: Vec<PathBuf>,
 }
 
 /// Errors loading, validating or saving a project.
@@ -147,7 +153,11 @@ impl Project {
                 terrain_size: 1024,
                 land_size: 1024 / LAND_RATIO,
             },
-            sources: Sources { dem: Vec::new() },
+            sources: Sources {
+                dem: Vec::new(),
+                land_cover: Vec::new(),
+                osm: Vec::new(),
+            },
         }
     }
 
@@ -290,18 +300,27 @@ impl Project {
         if !(a.real_extent_m.is_finite() && a.real_extent_m > 0.0) {
             return invalid("area.real_extent_m must be positive and finite");
         }
-        for p in &self.sources.dem {
-            // A rooted path ("/etc/x") is not absolute on Windows (no drive), so check the root too.
-            let escapes = p.is_absolute()
-                || p.has_root()
-                || p.components().any(|c| {
-                    matches!(
-                        c,
-                        Component::ParentDir | Component::Prefix(_) | Component::RootDir
-                    )
-                });
-            if escapes || p.as_os_str().is_empty() {
-                return invalid("sources.dem entries must be relative paths inside the project");
+        let src = &self.sources;
+        for (name, list) in [
+            ("dem", &src.dem),
+            ("land_cover", &src.land_cover),
+            ("osm", &src.osm),
+        ] {
+            for p in list {
+                // A rooted path ("/etc/x") is not absolute on Windows (no drive), so check the root too.
+                let escapes = p.is_absolute()
+                    || p.has_root()
+                    || p.components().any(|c| {
+                        matches!(
+                            c,
+                            Component::ParentDir | Component::Prefix(_) | Component::RootDir
+                        )
+                    });
+                if escapes || p.as_os_str().is_empty() {
+                    return invalid(format!(
+                        "sources.{name} entries must be relative paths inside the project"
+                    ));
+                }
             }
         }
         Ok(())

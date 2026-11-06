@@ -288,3 +288,33 @@ fn saving_keeps_the_file_mode_and_a_new_file_is_readable() {
     p.save(dir.path()).unwrap();
     assert_eq!(mode(&file), 0o640, "saving keeps what the user set");
 }
+
+#[test]
+fn old_project_files_still_load() {
+    let seed = include_str!("../../../fuzz/corpus/project_parse/roundtrip");
+    let p = Project::parse(seed).unwrap();
+    assert!(p.sources.land_cover.is_empty() && p.sources.osm.is_empty());
+    let saved = toml::to_string(&p).unwrap();
+    assert!(
+        !saved.contains("land_cover") && !saved.contains("osm"),
+        "{saved}"
+    );
+}
+
+#[test]
+fn land_cover_and_osm_paths_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = Project::new("Berchtesgaden", 47.585, 12.965, 12800.0);
+    p.sources.land_cover = vec!["landcover/a.tif".into()];
+    p.sources.osm = vec!["osm/b.osm.pbf".into(), "osm/c.osm.pbf".into()];
+    p.save(dir.path()).unwrap();
+    assert_eq!(Project::load(dir.path()).unwrap(), p);
+}
+
+#[test]
+fn rejects_absolute_or_escaping_land_cover_and_osm_paths() {
+    let t = base().replace("[sources]", "[sources]\nland_cover = [\"/etc/passwd\"]");
+    invalid_field(&t, "sources.land_cover");
+    let t = base().replace("[sources]", "[sources]\nosm = [\"../x.pbf\"]");
+    invalid_field(&t, "sources.osm");
+}
