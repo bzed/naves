@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[toolchain]
+channel = "1.95"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]

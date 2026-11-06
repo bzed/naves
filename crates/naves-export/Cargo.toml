@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "naves-export"
+description = "Náves: naves-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+naves-core = { version = "0.1.0", path = "../naves-core" }
+naves-formats = { version = "0.1.0", path = "../naves-formats" }
+quick-xml = "0.42.0"
+rayon = "1.12.0"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+wait-timeout = "0.2.1"
+walkdir = "2.5.0"
+which = "8.0.6"
+
+
+[features]
+# Fake external tools for tests (Unix only); also used by the CLI tests of the naves crate.
+test-util = []
+
+[dev-dependencies]
+naves-export = { path = ".", features = ["test-util"] }
+naves-core = { path = "../naves-core", features = ["test-util"] }

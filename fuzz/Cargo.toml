@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "naves-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+naves-formats = { path = "../crates/naves-formats" }
+naves-core = { path = "../crates/naves-core" }
+
+[workspace]
+
+[[bin]]
+name = "wrp8_read"
+path = "fuzz_targets/wrp8_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "project_parse"
+path = "fuzz_targets/project_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dem_tile"
+path = "fuzz_targets/dem_tile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_project_set"
+path = "fuzz_targets/mcp_project_set.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "paa_tags"
+path = "fuzz_targets/paa_tags.rs"
+test = false
+doc = false
+bench = false

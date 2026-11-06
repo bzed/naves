@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # DayZ terrains from OpenStreetMap: research notes
 
 Date: 2026-11-03. Status: research, not a design. Nothing here is decided except what the

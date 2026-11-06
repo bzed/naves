@@ -1,8 +1,14 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # Náves: design
 
 Náves (Czech: village green, the centre a village is built around) is the tool's name. ASCII spelling
 `naves` for the crate, binary and repo; "DayZ" stays out of the name (Bohemia's trademark) and goes into the
-tagline: *Náves – terrain generator and editor for DayZ*. Working title before: DayzMapCreator.
+tagline: *Náves – terrain generator and map editor for DayZ*. Working title before: DayzMapCreator.
 
 Date: 2026-11-04. Status: draft for approval (builder check done, answers merged). Covers milestones 1 and 2 in detail; milestone 3 is only outlined
 and gets its own design later.

@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tag, workspace version, debian/changelog and CHANGELOG.md must agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          ws=$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          deb=$(head -n1 debian/changelog | sed 's/^naves (\(.*\)) .*/\1/')
+          grep -Eq "^## \[${version//./\\.}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || { echo "CHANGELOG.md has no section for ${version}"; exit 1; }
+          [ "$ws" = "$version" ] || { echo "Cargo.toml version ${ws} != tag ${version}"; exit 1; }
+          [ "$deb" = "$version" ] || { echo "debian/changelog ${deb} != tag ${version}"; exit 1; }
+
+  build:
+    needs: consistency
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    permissions:
+      contents: write
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential debhelper dpkg-dev lintian curl ca-certificates git make
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+      - run: . "$HOME/.cargo/env" && make deb
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: ../naves_*.deb

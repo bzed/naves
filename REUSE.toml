@@ -1,0 +1,47 @@
+version = 1
+
+[[annotations]]
+path = ["Cargo.lock", "fuzz/Cargo.lock", ".gitignore", "debian/changelog", "debian/source/format", "LICENSE"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# Generated mdBook output (git-ignored; only present after `make docs`).
+[[annotations]]
+path = "docs/manual/book/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = ["debian/control", "debian/copyright", "debian/source/format"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "fuzz/corpus/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "tests/fixtures/dem/*.tif"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
+
+# Renders of the Copernicus DEM test crop (docs/manual/src/gui.md).
+[[annotations]]
+path = "docs/manual/src/images/*.png"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
+
+# Example projects: files that `naves new` and `naves build` generate (build output, keys and downloaded DEM
+# tiles are git-ignored and only present after a build).
+[[annotations]]
+path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**", "examples/*/secrets/**", "examples/*/dem/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

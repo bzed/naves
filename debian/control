@@ -1,0 +1,19 @@
+Source: naves
+Section: utils
+Priority: optional
+Maintainer: Bernd Zeimetz <bernd@bzed.de>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/bzed/naves
+Vcs-Git: https://github.com/bzed/naves.git
+
+Package: naves
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: terrain generator and map editor for DayZ
+ Náves turns OpenStreetMap and elevation data into DayZ terrains: it builds
+ the heightmap and surface layers and packs a signed mod that a DayZ server
+ can load.
+ .
+ Building terrains needs bzed's armake2 fork and DayZ Tools under Proton.

@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+doc-valid-idents = ["DayZ", "OpenStreetMap", "GeoTIFF", "GeoTiff", ".."]

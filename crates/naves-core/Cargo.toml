@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "naves-core"
+description = "Náves: naves-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.2.0"
+unicode-normalization = "0.1.26"
+tempfile = "3.27.0"
+proj4rs = "0.3.0"
+rayon = "1.12.0"
+geotiff-reader = { version = "0.11.0", default-features = false, features = ["local"] }
+image = { version = "0.25.10", default-features = false }
+serde_json = "1.0.154"
+
+[features]
+# Test-only constructors (Dem::from_fn); used by the tests of the other crates too.
+test-util = []
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+naves-core = { path = ".", features = ["test-util"] }
+tiff = { version = "0.11.3", default-features = false, features = ["deflate"] }

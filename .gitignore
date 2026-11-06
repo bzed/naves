@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+/target
+secrets/
+**/build/
+/vendor/
+docs/manual/book/
+.superpowers/
+lcov.info
+/fuzz/target
+/fuzz/artifacts
+debian/cargo-home/
+debian/cargo-target/
+debian/naves/
+debian/.debhelper/
+debian/*.substvars
+debian/files
+debian/naves.1.gz
+debian/debhelper-build-stamp
+*.profraw
+core.*
+examples/*/dem/
