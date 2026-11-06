@@ -318,3 +318,133 @@ fn rejects_absolute_or_escaping_land_cover_and_osm_paths() {
     let t = base().replace("[sources]", "[sources]\nosm = [\"../x.pbf\"]");
     invalid_field(&t, "sources.osm");
 }
+
+fn with_imagery(extra: &str) -> String {
+    format!(
+        "{}\n[[sources.imagery]]\npath = \"imagery/a.tif\"\nattribution = \"Contains modified Copernicus Sentinel data 2025\"\nlicence = \"Copernicus Sentinel data, free and open\"\n{extra}",
+        base()
+    )
+}
+
+#[test]
+fn old_project_has_no_imagery() {
+    let p = Project::parse(&base()).unwrap();
+    assert!(p.sources.imagery.is_empty());
+    let saved = toml::to_string(&p).unwrap();
+    assert!(
+        !saved.contains("imagery"),
+        "saving must not add the keys:\n{saved}"
+    );
+}
+
+#[test]
+fn imagery_round_trips() {
+    use naves_core::project::ImageryFile;
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = Project::new("Berchtesgaden", 47.585, 12.965, 12800.0);
+    p.sources.imagery = vec![
+        ImageryFile {
+            path: "imagery/a.tif".into(),
+            attribution: "Contains modified Copernicus Sentinel data 2025".into(),
+            licence: "Copernicus Sentinel data, free and open".into(),
+            non_commercial: false,
+        },
+        ImageryFile {
+            path: "imagery/b.tif".into(),
+            attribution: "EOxCloudless".into(),
+            licence: "CC BY-NC-SA 4.0".into(),
+            non_commercial: true,
+        },
+    ];
+    p.imagery.brightness = 1.25;
+    p.save(dir.path()).unwrap();
+    assert_eq!(Project::load(dir.path()).unwrap(), p);
+}
+
+#[test]
+fn imagery_paths_stay_inside_the_project() {
+    for bad in ["/etc/x.tif", "../x.tif", ""] {
+        let t = with_imagery("").replace("imagery/a.tif", bad);
+        invalid_field(&t, "sources.imagery");
+    }
+    assert!(Project::parse(&with_imagery("")).is_ok());
+}
+
+#[test]
+fn attribution_and_licence_are_required() {
+    let t = with_imagery("").replace(
+        "attribution = \"Contains modified Copernicus Sentinel data 2025\"",
+        "attribution = \"\"",
+    );
+    invalid_field(&t, "attribution");
+    let t = with_imagery("").replace(
+        "licence = \"Copernicus Sentinel data, free and open\"",
+        "licence = \" \"",
+    );
+    invalid_field(&t, "licence");
+}
+
+#[test]
+fn attribution_is_one_short_line() {
+    let t = with_imagery("").replace("Sentinel data 2025", "Sentinel\\ndata 2025");
+    invalid_field(&t, "attribution");
+    let long = "x".repeat(501);
+    let t = with_imagery("").replace("Sentinel data 2025", &long);
+    invalid_field(&t, "attribution");
+    let ok = "x".repeat(470);
+    let t = with_imagery("").replace("Sentinel data 2025", &ok);
+    assert!(Project::parse(&t).is_ok());
+}
+
+#[test]
+fn nc_licence_must_be_marked() {
+    let nc = with_imagery("").replace("Copernicus Sentinel data, free and open", "CC BY-NC-SA 4.0");
+    invalid_field(&nc, "non_commercial");
+    let marked = format!("{nc}non_commercial = true\n");
+    assert!(Project::parse(&marked).is_ok());
+    // "Licence" and "Sync" contain the letters but not the token
+    let t = with_imagery("").replace(
+        "Copernicus Sentinel data, free and open",
+        "Licence NCA Sync",
+    );
+    assert!(Project::parse(&t).is_ok());
+    let lower = with_imagery("").replace("Copernicus Sentinel data, free and open", "cc by-nc 4.0");
+    invalid_field(&lower, "non_commercial");
+}
+
+#[test]
+fn brightness_range() {
+    let mut p = Project::new("x", 47.0, 12.0, 4000.0);
+    for ok in [0.25, 1.0, 4.0] {
+        p.imagery.brightness = ok;
+        let dir = tempfile::tempdir().unwrap();
+        p.save(dir.path()).unwrap();
+    }
+    for bad in [0.0, 0.24, 4.01, f64::NAN, f64::INFINITY] {
+        p.imagery.brightness = bad;
+        let dir = tempfile::tempdir().unwrap();
+        let err = p.save(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("imagery.brightness"), "{err}");
+    }
+}
+
+#[test]
+fn imagery_can_be_set_over_project_set() {
+    let p = Project::new("x", 47.0, 12.0, 4000.0);
+    let q = p
+        .with_value(
+            "sources.imagery",
+            serde_json::json!([{
+                "path": "imagery/a.tif",
+                "attribution": "A",
+                "licence": "CC BY 4.0"
+            }]),
+        )
+        .unwrap();
+    assert_eq!(q.sources.imagery.len(), 1);
+    assert!(!q.sources.imagery[0].non_commercial);
+    let q = q
+        .with_value("imagery.brightness", serde_json::json!(1.5))
+        .unwrap();
+    assert!((q.imagery.brightness - 1.5).abs() < 1e-9);
+}
