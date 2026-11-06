@@ -254,7 +254,8 @@ building on too-steep ground, too-shallow lake, missing assets (mod not loaded).
 
 Rust native GUI. **[my call]**: egui + wgpu (the same stack STAG.vision uses; proven to handle 3.6 M objects).
 Layout ideas from STAG.vision (research doc 6.7 has a description of its screenshots): outliner with layers, 3D
-view, asset browser, properties panel, tool panel, warnings list.
+view, asset browser, properties panel, tool panel, warnings list. The interface as a whole (levels, items, tools,
+shortcuts) is designed in `2026-11-06-naves-editor-ui.md`.
 
 - **Milestone 1 (basics):** create a project (area, scales, sources), run generation, view the result in 2D (map) and
   3D (heightmap + satmap + objects as boxes or real models), inspect objects and features, see the scaling preview
