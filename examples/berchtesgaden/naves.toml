@@ -2,9 +2,9 @@ name = "Berchtesgaden"
 world = "berchtesgaden"
 
 [area]
-center_lat = 47.585
-center_lon = 12.965
-real_extent_m = 12800.0
+center_lat = 47.553
+center_lon = 12.972
+real_extent_m = 3000.0
 
 [scale]
 horizontal = 0.5
@@ -20,14 +20,19 @@ dem = [
     "dem/Copernicus_DSM_COG_10_N47_00_E013_00_DEM.tif",
 ]
 land_cover = ["landcover/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif"]
-osm = ["osm/oberbayern-latest.osm.pbf", "osm/austria-latest.osm.pbf"]
+osm = [
+    "osm/oberbayern-latest.osm.pbf",
+    "osm/austria-latest.osm.pbf",
+]
 
 [[sources.imagery]]
 path = "imagery/sentinel2-scenes-S2C_T32TQT_20250919T101514_L2A.tif"
 attribution = "Contains modified Copernicus Sentinel data 2025"
 licence = "Copernicus Sentinel data, free and open"
+non_commercial = false
 
 [[sources.imagery]]
 path = "imagery/bayern-dop40.tif"
 attribution = "Bayerische Vermessungsverwaltung, https://geoservices.bayern.de (DOP40)"
 licence = "CC BY 4.0"
+non_commercial = false

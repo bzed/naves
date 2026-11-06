@@ -8,7 +8,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 A Náves project is a folder with a `naves.toml` in it. `naves new` creates the file; you can edit it by
 hand or in the GUI. Náves checks every value when it loads the file and names the field that is out of
-range. It saves the file atomically, so a crash never leaves half a file behind.
+range. It also rejects options it does not know (a typo, or an option of a newer Náves) and names them, instead of
+reading the file and dropping them when it saves it again. It saves the file atomically, so a crash never leaves half a file behind.
 
 ```toml
 name = "Berchtesgaden"

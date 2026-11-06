@@ -6,16 +6,18 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Berchtesgaden test map
 
-The reference project of milestone 1: a 12.8 km square of the Berchtesgaden Alps at half scale (a 6.4 km map).
+A small, fast project: a 3 km square at half scale (a 1.5 km map) around the east face of the Watzmann, St. Bartholomä
+and the Königssee. It builds in seconds; fetching its imagery takes a few minutes, once. It is the one to try things on. The first versions of milestone 1 used a 12.8 km square (centre 47.585 °N, 12.965 °E, a 6.4 km map): the same data
+files cover both, change `[area]` in `naves.toml` to go back; the results further down were made with that one.
 
 | | |
 |---|---|
-| Centre | 47.585 °N, 12.965 °E |
-| Area | about 47.527–47.643 °N and 12.880–13.050 °E |
-| In it | the Königssee, the Watzmann massif (west of the lake), the Hochkalter group, Berchtesgaden town |
-| Elevation data | Copernicus GLO-30, two tiles that meet at 13.0 °E, so it also tests the tile seam |
-| Ground | ESA WorldCover (one tile) and OpenStreetMap (Oberbayern and Austria: the south and east of the map are Austrian) |
-| Satellite image | Sentinel-2, one clear scene of 2025-09-19 (10 m), which covers the whole map |
+| Centre | 47.553 °N, 12.972 °E |
+| Area | about 47.540–47.567 °N and 12.951–12.993 °E |
+| In it | the Königssee with St. Bartholomä, the east face of the Watzmann, forest and alpine meadows |
+| Elevation data | Copernicus GLO-30, tile `N47_00_E012_00` (a map near 13.0 °E also needs the tile `E013`) |
+| Ground | ESA WorldCover (one tile) and OpenStreetMap (Oberbayern; the whole map is in Bavaria) |
+| Satellite image | the Bavarian aerial photographs (0.4 m: the map's own pixel is 0.39 m) over a Sentinel-2 scene (10 m) |
 
 ## Fetch the elevation data
 
@@ -51,24 +53,25 @@ altitude only.
 ## Fetch the satellite image
 
 The satellite image of the terrain is merged from two sources: Sentinel-2 (10 m, one clear scene of 2025-09-19 that
-covers the whole map; Austria and Bavaria) and the aerial photographs of Bavaria (DOP40, 0.4 m, used at the
-resolution of the map; the south and east of the map are Austrian, where the service answers blank and the Sentinel-2
-image shows). Both are free to use, commercial use included. Náves fetches them into `imagery/`:
+covers the whole map) and the aerial photographs of Bavaria (DOP40, 0.4 m, which the map uses at its own pixel size).
+Both are free to use, commercial use included. Náves fetches them into `imagery/`:
 
 ```sh
-naves imagery fetch sentinel2-scenes examples/berchtesgaden   # 100 s, a 4 MB crop of a 340 MB scene
-naves imagery fetch bayern-dop40 examples/berchtesgaden       # 5 min, 20 requests, a 160 MB file
+naves imagery fetch sentinel2-scenes examples/berchtesgaden   # 160 s: downloads a 340 MB scene, keeps a 0.2 MB crop
+naves imagery fetch bayern-dop40 examples/berchtesgaden       # 230 s: 25 requests, a 140 MB file (0.4 m pixels)
 ```
+
+You can also choose and fetch the sources in the GUI (`naves gui examples/berchtesgaden`, the project panel).
 
 The scene is dark for a terrain; the build makes the imagery 30 % brighter, and `[imagery] brightness` in `naves.toml`
 changes that. Náves evens out the colours of the photographs and the scene where they overlap; the photographs are
-much brighter than the scene, and where the kind of ground differs (forest is nearly black in the scene) a soft band
-of colour remains at the border to Austria. Without the files, remove the `[[sources.imagery]]` blocks from
-`naves.toml`: the satellite image is then painted from the ground classes. With only Sentinel-2, the map is built
-from a smaller file and has no band. For a non-commercial map, `eox-cloudless-2025` is the newest cloud-free
-mosaic; the map then says that it is non-commercial.
+much brighter than the scene, and where the kind of ground differs (forest is nearly black in the scene) the colours
+of the two do not match everywhere. Without the files, remove the `[[sources.imagery]]` blocks from `naves.toml`: the
+satellite image is then painted from the ground classes. For a non-commercial map, `eox-cloudless-2025` is the newest
+cloud-free mosaic; the map then says that it is non-commercial.
 
-Cost of the satellite image (release binary, `naves build`; same map without imagery in brackets):
+Cost of the satellite image on the 12.8 km area of the first versions (release binary, `naves build`; same map without
+imagery in brackets):
 
 | `terrain_size` | Build time | Peak memory | PBO |
 |---|---|---|---|

@@ -57,6 +57,7 @@ The project panel has a section **Satellite imagery files**:
   with **Up**, **Down** and **Remove**. Remove only takes a file off the list; it stays in the project folder, and the
   GUI says so. Under the list, one line per file tells what the merge found: how much of the map it covers, how much of
   that other images cover as well, and the colour correction applied (or that its colours are kept).
+- **Imagery brightness**, in the settings above, sets `[imagery] brightness`; the Imagery map shows the result at once.
 - **Add your own file** takes a path inside the project folder, a credit and a licence; the file is accepted only when
   all are there, and a licence with `NC` in it needs the box *The licence does not allow commercial use*.
 
