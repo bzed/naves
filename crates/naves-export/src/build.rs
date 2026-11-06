@@ -22,9 +22,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use naves_core::dem::{Dem, DemError};
-use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
+use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
+use naves_core::landcover::{GeoWindow, LandCover, LandCoverError};
+use naves_core::osm::{OsmError, read_land};
 use naves_core::project::{Project, ProjectError};
-use naves_core::surface::{grass_limit_m, procedural_grid};
+use naves_core::projection::ProjectionError;
+use naves_core::surface::{SurfaceError, SurfaceGrid, SurfaceSources, build_surfaces};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
@@ -66,6 +69,18 @@ pub enum BuildError {
     /// The DEM does not cover the area.
     #[error(transparent)]
     Heightmap(#[from] HeightmapError),
+    /// A land cover file cannot be read.
+    #[error(transparent)]
+    LandCover(#[from] LandCoverError),
+    /// An OpenStreetMap file cannot be read.
+    #[error(transparent)]
+    Osm(#[from] OsmError),
+    /// The ground cannot be decided.
+    #[error(transparent)]
+    Surface(#[from] SurfaceError),
+    /// A position of the map cannot be converted to latitude and longitude.
+    #[error(transparent)]
+    Projection(#[from] ProjectionError),
     /// An external tool is missing or failed.
     #[error(transparent)]
     Tool(#[from] ToolError),
@@ -434,6 +449,124 @@ fn pack_mod(
     Ok(())
 }
 
+/// Margin around the map in metres in which land cover and OSM data are read.
+const SOURCE_MARGIN_M: f64 = 100.0;
+
+/// Land cover shares of the map above this get a warning.
+const UNCOVERED_WARN_SHARE: f64 = 0.01;
+
+/// The latitude and longitude window of the whole map plus a margin.
+fn map_window(project: &Project) -> Result<GeoWindow, ProjectionError> {
+    let geo = MapGeo::new(project)?;
+    let size = project.map_size_m();
+    let (low, high) = (-SOURCE_MARGIN_M, size + SOURCE_MARGIN_M);
+    let mut window = GeoWindow {
+        south: f64::INFINITY,
+        west: f64::INFINITY,
+        north: f64::NEG_INFINITY,
+        east: f64::NEG_INFINITY,
+    };
+    for (x, y) in [(low, low), (high, low), (low, high), (high, high)] {
+        let (lat, lon) = geo.to_geo(x, y)?;
+        window.south = window.south.min(lat);
+        window.north = window.north.max(lat);
+        window.west = window.west.min(lon);
+        window.east = window.east.max(lon);
+    }
+    Ok(window)
+}
+
+/// The text of `ATTRIBUTION.txt`: only the sources this build used.
+fn attribution(land_cover: bool, osm: bool) -> String {
+    let mut text = String::from(
+        "This map was made with Náves from the following data. Keep this attribution with the map.\n\n\
+         Elevation: Copernicus DEM GLO-30\n\
+         (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the\n\
+         European Union and ESA; all rights reserved\n",
+    );
+    if land_cover {
+        text.push_str(
+            "\nLand cover: ESA WorldCover, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\n\
+             © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA\n\
+             WorldCover consortium\n",
+        );
+    }
+    if osm {
+        text.push_str(
+            "\nMap data: © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright\n\
+             This map contains OSM-derived data. The Open Database Licence requires that the derived database is\n\
+             shared alike.\n",
+        );
+    }
+    text
+}
+
+/// The decided ground and what the build has to say about it.
+struct Ground {
+    grid: SurfaceGrid,
+    warnings: Vec<String>,
+    used_land_cover: bool,
+    used_osm: bool,
+}
+
+/// Reads the land cover and OSM files of the project and decides the ground of every map cell.
+fn decide_ground(
+    project: &Project,
+    project_dir: &Path,
+    heightmap: &Heightmap,
+    progress: &dyn Fn(&str),
+) -> Result<Ground, BuildError> {
+    let window = map_window(project)?;
+    let resolve =
+        |files: &[PathBuf]| -> Vec<PathBuf> { files.iter().map(|p| project_dir.join(p)).collect() };
+    let land_cover = if project.sources.land_cover.is_empty() {
+        None
+    } else {
+        progress("Reading the land cover");
+        Some(LandCover::open(
+            &resolve(&project.sources.land_cover),
+            window,
+        )?)
+    };
+    let osm = if project.sources.osm.is_empty() {
+        None
+    } else {
+        progress("Reading the OpenStreetMap data");
+        Some(read_land(&resolve(&project.sources.osm), window)?)
+    };
+
+    progress("Deciding the ground");
+    let decided = build_surfaces(
+        project,
+        heightmap,
+        &SurfaceSources {
+            land_cover: land_cover.as_ref(),
+            osm: osm.as_ref(),
+        },
+    )?;
+    let mut warnings = Vec::new();
+    if land_cover.is_some() && decided.uncovered_share > UNCOVERED_WARN_SHARE {
+        warnings.push(format!(
+            "{:.0} % of the map is not covered by the land cover files; the slope and altitude rules decide the \
+             ground there",
+            decided.uncovered_share * 100.0
+        ));
+    }
+    if let Some(osm) = osm.as_ref().filter(|o| o.skipped_rings > 0) {
+        warnings.push(format!(
+            "{} OpenStreetMap ring(s) were skipped because the extract cuts them or lacks nodes; the land cover \
+             or the rules decide there",
+            osm.skipped_rings
+        ));
+    }
+    Ok(Ground {
+        grid: decided.grid,
+        warnings,
+        used_land_cover: land_cover.is_some(),
+        used_osm: osm.is_some(),
+    })
+}
+
 /// Builds the mod and the mission of the project in `project_dir`.
 ///
 /// `progress` is called with a short line before every step.
@@ -465,14 +598,16 @@ pub fn build(
     progress("Sampling the heightmap");
     let heightmap = build_heightmap(&project, &dem)?;
 
+    // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
+    let ground = decide_ground(&project, project_dir, &heightmap, progress)?;
+
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);
-    let surfaces = procedural_grid(&heightmap, grass_limit_m(project.scale.height));
     let layers = build_layers(
         &heightmap,
         project.grid.land_size,
         &layout.prefix,
-        &surfaces,
+        &ground.grid,
     );
     layout.clean()?;
 
@@ -501,6 +636,10 @@ pub fn build(
 
     progress("Packing and signing the mod");
     pack_mod(&layout, tools, &oprw, &new_mission)?;
+    write_file(
+        &layout.new_mod.join("ATTRIBUTION.txt"),
+        attribution(ground.used_land_cover, ground.used_osm).as_bytes(),
+    )?;
     layout.install()?;
     let mission_dir = layout
         .missions
@@ -508,6 +647,6 @@ pub fn build(
     Ok(BuildOutput {
         mod_dir: layout.mod_dir,
         mission_dir,
-        warnings: Vec::new(),
+        warnings: ground.warnings,
     })
 }

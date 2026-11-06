@@ -7,7 +7,10 @@
 #![expect(
     clippy::unwrap_used,
     clippy::indexing_slicing,
-    reason = "test helper code; failing loudly is the point"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::panic,
+    reason = "test helper code; failing loudly is the point, and the pixel positions are small and positive"
 )]
 
 use std::cell::RefCell;
@@ -321,5 +324,208 @@ fn a_failed_build_keeps_the_last_good_output() {
     assert!(
         good.mission_dir.join("init.c").is_file(),
         "so is the mission"
+    );
+}
+
+// ---- ground from land cover and OSM ----
+
+use naves_core::heightmap::MapGeo;
+use naves_core::landcover::{GeoWindow, LandCover};
+use naves_export::layers::tile_grid;
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(name)
+}
+
+/// Copies the fixtures into the project and lists them as sources.
+fn with_sources(proj: &Path, land_cover: &[&str], osm: &[&str]) -> Project {
+    let mut p = Project::load(proj).unwrap();
+    for (dir, names, list) in [
+        ("landcover", land_cover, &mut p.sources.land_cover),
+        ("osm", osm, &mut p.sources.osm),
+    ] {
+        std::fs::create_dir_all(proj.join(dir)).unwrap();
+        for name in names {
+            std::fs::copy(fixture(&format!("{dir}/{name}")), proj.join(dir).join(name)).unwrap();
+            list.push(PathBuf::from(dir).join(name));
+        }
+    }
+    p.save(proj).unwrap();
+    p
+}
+
+/// The pixel of the tile mask at a latitude and longitude, read from the PNG that the fake `img2paa` embeds.
+fn mask_at(proj: &Path, p: &Project, lat: f64, lon: f64) -> [u8; 4] {
+    let (x, y) = MapGeo::new(p).unwrap().to_map(lat, lon).unwrap();
+    let grid = tile_grid(p.map_size_m(), p.grid.land_size);
+    let overlap = f64::from(grid.overlap_px);
+    let tile_m = f64::from(grid.tile_px - 2 * grid.overlap_px) * grid.px_m;
+    let tx = (x / tile_m).floor();
+    let ty_from_south = (y / tile_m).floor();
+    let ty = f64::from(grid.tiles_y) - 1.0 - ty_from_south;
+    let px = (x - tx * tile_m) / grid.px_m + overlap;
+    let py = ((ty_from_south + 1.0) * tile_m - y) / grid.px_m + overlap;
+    let name = format!("m_{:03}_{:03}_lca.paa", tx as u32, ty as u32);
+    let paa = std::fs::read(
+        proj.join("build/staging/P/naves/worlds/test/data/layers")
+            .join(name),
+    )
+    .unwrap();
+    let start = paa
+        .windows(8)
+        .position(|w| w == b"\x89PNG\r\n\x1a\n")
+        .unwrap();
+    let image = image::load_from_memory(&paa[start..]).unwrap().to_rgba8();
+    image.get_pixel(px as u32, py as u32).0
+}
+
+/// The latitude and longitude of a spot inside the project's area where the land cover is `code` all
+/// around (so that the mask pixel cannot sit on a class boundary).
+fn spot_with_code(p: &Project, code: u8) -> (f64, f64) {
+    let geo = MapGeo::new(p).unwrap();
+    let (south_west, north_east) = (
+        geo.to_geo(30.0, 30.0).unwrap(),
+        geo.to_geo(p.map_size_m() - 30.0, p.map_size_m() - 30.0)
+            .unwrap(),
+    );
+    let window = GeoWindow {
+        south: south_west.0 - 0.001,
+        west: south_west.1 - 0.001,
+        north: north_east.0 + 0.001,
+        east: north_east.1 + 0.001,
+    };
+    let lc = LandCover::open(&[fixture("landcover/koenigssee.tif")], window).unwrap();
+    let step = 0.0001;
+    let mut lat = south_west.0;
+    while lat < north_east.0 {
+        let mut lon = south_west.1;
+        while lon < north_east.1 {
+            let around = [(0.0, 0.0), (2.0, 0.0), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0)];
+            if around.iter().all(|(dlat, dlon)| {
+                lc.class_code(lat + dlat * step, lon + dlon * step) == Some(code)
+            }) {
+                return (lat, lon);
+            }
+            lon += step;
+        }
+        lat += step;
+    }
+    panic!("no spot with class {code} in the area");
+}
+
+#[test]
+fn land_cover_reaches_the_mask() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    let p = with_sources(&proj, &["koenigssee.tif"], &[]);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let (lat, lon) = spot_with_code(&p, 10);
+    assert_eq!(
+        mask_at(&proj, &p, lat, lon),
+        [0, 255, 0, 255],
+        "trees: forest, green"
+    );
+    let (lat, lon) = spot_with_code(&p, 30);
+    assert_eq!(
+        mask_at(&proj, &p, lat, lon),
+        [0, 0, 0, 255],
+        "grassland: black"
+    );
+}
+
+#[test]
+fn osm_reaches_the_mask() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    let p = with_sources(&proj, &[], &["koenigssee.osm.pbf"]);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    // the Königssee: soil, blue
+    assert_eq!(mask_at(&proj, &p, 47.5534, 12.9765), [0, 0, 255, 255]);
+}
+
+#[test]
+fn attribution_names_the_sources_used() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let text = std::fs::read_to_string(out.mod_dir.join("ATTRIBUTION.txt")).unwrap();
+    assert!(text.contains("COPERNICUS"), "{text}");
+    assert!(
+        !text.contains("OpenStreetMap") && !text.contains("WorldCover"),
+        "{text}"
+    );
+
+    with_sources(&proj, &["koenigssee.tif"], &["koenigssee.osm.pbf"]);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let text = std::fs::read_to_string(out.mod_dir.join("ATTRIBUTION.txt")).unwrap();
+    assert!(text.contains("COPERNICUS"), "{text}");
+    assert!(
+        text.contains("© OpenStreetMap contributors") && text.contains("ODbL"),
+        "{text}"
+    );
+    assert!(
+        text.contains("© ESA WorldCover project 2021") && text.contains("CC BY 4.0"),
+        "{text}"
+    );
+}
+
+#[test]
+fn missing_source_file_names_the_file() {
+    let (_dir, env, proj) = setup();
+    let mut p = project(&proj, INSIDE);
+    p.sources.land_cover = vec!["landcover/nope.tif".into()];
+    p.save(&proj).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("nope.tif"), "{err}");
+    assert!(!proj.join("build/staging").exists(), "no tool ran");
+
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.land_cover.clear();
+    p.sources.osm = vec!["osm/nope.osm.pbf".into()];
+    p.save(&proj).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("nope.osm.pbf"), "{err}");
+}
+
+#[test]
+fn partial_coverage_warns() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    // the western half of the crop: the map's eastern half has no land cover
+    with_sources(&proj, &["koenigssee_west.tif"], &[]);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.contains("land cover") && w.contains("50 %")),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn full_coverage_does_not_warn() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    with_sources(&proj, &["koenigssee.tif"], &["koenigssee.osm.pbf"]);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn cut_osm_polygons_are_reported() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    // an extract that cuts the lake: its rings do not close
+    with_sources(&proj, &[], &["koenigssee_cut.osm.pbf"]);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.contains("OpenStreetMap") && w.contains("skipped")),
+        "{:?}",
+        out.warnings
     );
 }

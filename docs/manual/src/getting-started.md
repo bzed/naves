@@ -55,6 +55,29 @@ Mission: berchtesgaden/build/missions/dayzOffline.berchtesgaden
    or a game is running.
 
 The server log shows `Loading landscape 'berchtesgaden'` when the map loads. New characters spawn in the middle
-of the map. The first version has procedural surfaces only (grass, and rock on steep slopes and above 2100 m real
-altitude), no roads, houses or water. Infected and animals only move once the project has a
-[navigation mesh](navmesh.md).
+of the map. Without land cover or OpenStreetMap data the ground is procedural (grass, and rock on steep slopes and
+above 2100 m real altitude); see [Ground from real data](#ground-from-real-data). There are no roads, houses,
+trees or water planes yet (a lake is only soil-coloured ground). Infected and animals only move once the project
+has a [navigation mesh](navmesh.md).
+
+## Ground from real data
+
+Add ESA WorldCover tiles and OpenStreetMap extracts to the `[sources]` table
+(see [the project file](project-file.md#sources)) and `naves build` paints the ground from them. For every cell
+of the map the first answer wins:
+
+1. an OpenStreetMap area: water and reservoirs (soil), bare rock, scree, shingle and glaciers (rock), and
+   residential, industrial, commercial, farmyard and military land (soil); where areas overlap, water beats rock
+   beats built-up land;
+2. the WorldCover class: tree cover is forest, grassland, shrubland and wetland are grass, cropland, built-up
+   land and water are soil, and bare ground, snow and moss are rock;
+3. the slope and altitude rules of the first version.
+
+Real data is never overridden by the rules: grassland on a steep slope stays grass. If the files do not cover
+the whole map, the build says how much of it the rules decided and does not fail. Náves reads only the part of
+a file that the map needs, so a whole WorldCover tile or a regional extract is fine.
+
+A map made from OpenStreetMap contains OSM-derived data under the ODbL: if you publish it, keep the attribution
+that `naves build` writes to `ATTRIBUTION.txt` in the mod folder, and share the derived database alike. The same
+file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only the sources the build used. See
+[Credits and data licences](credits.md).
