@@ -5,7 +5,9 @@
 
 #![expect(
     clippy::cast_precision_loss,
-    reason = "test helper code; indices are tiny"
+    clippy::cast_possible_truncation,
+    clippy::unwrap_used,
+    reason = "test helper code; failing loudly is the point and the numbers are tiny"
 )]
 
 use naves_core::heightmap::Heightmap;
@@ -128,4 +130,259 @@ fn the_grass_limit_is_a_real_altitude() {
     // measured with ESA WorldCover around Berchtesgaden; map heights are real heights times scale.height
     assert!((grass_limit_m(1.0) - 2100.0).abs() < 1e-3);
     assert!((grass_limit_m(0.5) - 1050.0).abs() < 1e-3);
+}
+
+// ---- build_surfaces ----
+
+use naves_core::heightmap::MapGeo;
+use naves_core::landcover::LandCover;
+use naves_core::osm::{LandPolygon, OsmLand};
+use naves_core::project::Project;
+use naves_core::projection::LocalProjection;
+use naves_core::surface::{SurfaceSources, build_surfaces};
+
+const LAT: f64 = 47.585;
+const LON: f64 = 12.965;
+
+/// 2000 m real extent at half scale: a 1000 m map of 256 vertices (3.9 m) with 1024 surface cells.
+fn project() -> Project {
+    let mut p = Project::new("t", LAT, LON, 2000.0);
+    p.grid.terrain_size = 256;
+    p.grid.land_size = 32;
+    p.scale.height = 1.0;
+    p
+}
+
+fn heightmap(f: impl Fn(f64, f64) -> f32) -> Heightmap {
+    let size = 256_u32;
+    let cell = 1000.0 / f64::from(size);
+    let mut h = Vec::new();
+    for row in 0..size {
+        for col in 0..size {
+            h.push(f(f64::from(col) * cell, f64::from(row) * cell));
+        }
+    }
+    Heightmap {
+        size,
+        cell_m: cell as f32,
+        h,
+    }
+}
+
+/// Flat ground at 100 m: the rules say grass.
+fn flat_map() -> Heightmap {
+    heightmap(|_, _| 100.0)
+}
+
+/// A square polygon around the map position (`x`, `y`), `half` map metres to each side.
+fn square_at(
+    p: &Project,
+    x: f64,
+    y: f64,
+    half: f64,
+    class: SurfaceClass,
+    priority: u8,
+) -> LandPolygon {
+    let geo = MapGeo::new(p).unwrap();
+    let corner = |dx: f64, dy: f64| geo.to_geo(x + dx, y + dy).unwrap();
+    LandPolygon {
+        class,
+        priority,
+        outer: vec![
+            corner(-half, -half),
+            corner(half, -half),
+            corner(half, half),
+            corner(-half, half),
+            corner(-half, -half),
+        ],
+        holes: Vec::new(),
+    }
+}
+
+fn osm(polygons: Vec<LandPolygon>) -> OsmLand {
+    OsmLand {
+        polygons,
+        skipped_rings: 0,
+    }
+}
+
+/// Land cover that says `code(lat, lon)` over a window that covers the whole map.
+fn land_cover(code: impl Fn(f64, f64) -> u8) -> LandCover {
+    LandCover::from_fn(LON - 0.05, LAT - 0.05, LON + 0.05, LAT + 0.05, 0.0001, code)
+}
+
+fn sources<'a>(lc: Option<&'a LandCover>, osm: Option<&'a OsmLand>) -> SurfaceSources<'a> {
+    SurfaceSources {
+        land_cover: lc,
+        osm,
+    }
+}
+
+#[test]
+fn osm_beats_land_cover() {
+    let p = project();
+    let lc = land_cover(|_, _| 10); // forest everywhere
+    let lake = osm(vec![square_at(
+        &p,
+        500.0,
+        500.0,
+        100.0,
+        SurfaceClass::Soil,
+        3,
+    )]);
+    let built = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&lake))).unwrap();
+    assert_eq!(built.grid.at(500.0, 500.0), SurfaceClass::Soil);
+    assert_eq!(built.grid.at(100.0, 100.0), SurfaceClass::Forest);
+}
+
+#[test]
+fn higher_priority_polygon_wins() {
+    let p = project();
+    // overlapping squares: the big one is rock (priority 2), the small one built-up (priority 1), listed first
+    let land = osm(vec![
+        square_at(&p, 500.0, 500.0, 50.0, SurfaceClass::Soil, 1),
+        square_at(&p, 500.0, 500.0, 200.0, SurfaceClass::Rock, 2),
+    ]);
+    let built = build_surfaces(&p, &flat_map(), &sources(None, Some(&land))).unwrap();
+    assert_eq!(
+        built.grid.at(500.0, 500.0),
+        SurfaceClass::Rock,
+        "centre: both, rock wins"
+    );
+    assert_eq!(
+        built.grid.at(500.0, 650.0),
+        SurfaceClass::Rock,
+        "only the big square"
+    );
+}
+
+#[test]
+fn a_hole_lets_the_land_cover_through() {
+    let p = project();
+    let mut lake = square_at(&p, 500.0, 500.0, 200.0, SurfaceClass::Soil, 3);
+    lake.holes
+        .push(square_at(&p, 500.0, 500.0, 50.0, SurfaceClass::Soil, 3).outer);
+    let lc = land_cover(|_, _| 30); // grassland
+    let land = osm(vec![lake]);
+    let built = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&land))).unwrap();
+    assert_eq!(
+        built.grid.at(500.0, 500.0),
+        SurfaceClass::Grass,
+        "the island"
+    );
+    assert_eq!(built.grid.at(500.0, 650.0), SurfaceClass::Soil, "the water");
+}
+
+#[test]
+fn land_cover_beats_the_rules() {
+    let p = project();
+    // a 60 degree wall everywhere: the rules say rock, WorldCover says grassland
+    let wall = heightmap(|x, _| (x * 3.0_f64.sqrt()) as f32);
+    let lc = land_cover(|_, _| 30);
+    let built = build_surfaces(&p, &wall, &sources(Some(&lc), None)).unwrap();
+    assert_eq!(built.grid.at(500.0, 500.0), SurfaceClass::Grass);
+    assert!(built.uncovered_share < 1e-9);
+}
+
+#[test]
+fn without_any_source_it_is_the_procedural_grid() {
+    let p = project();
+    let wall = heightmap(|x, _| {
+        if x < 500.0 {
+            100.0
+        } else {
+            ((x - 500.0) * 3.0_f64.sqrt()) as f32 + 100.0
+        }
+    });
+    let built = build_surfaces(&p, &wall, &sources(None, None)).unwrap();
+    assert_eq!(
+        built.grid,
+        procedural_grid(&wall, grass_limit_m(p.scale.height))
+    );
+    assert!(
+        built.uncovered_share.abs() < 1e-12,
+        "nothing to be uncovered by"
+    );
+}
+
+#[test]
+fn uncovered_part_uses_the_rules_and_is_reported() {
+    let p = project();
+    // the land cover covers the western half of the map only (forest); the eastern half is high ground
+    let geo = MapGeo::new(&p).unwrap();
+    let (_, mid_lon) = geo.to_geo(500.0, 500.0).unwrap();
+    let lc = LandCover::from_fn(
+        LON - 0.05,
+        LAT - 0.05,
+        mid_lon,
+        LAT + 0.05,
+        0.0001,
+        |_, _| 10,
+    );
+    let map = heightmap(|x, _| if x < 500.0 { 100.0 } else { 5000.0 });
+    let built = build_surfaces(&p, &map, &sources(Some(&lc), None)).unwrap();
+    assert_eq!(built.grid.at(250.0, 500.0), SurfaceClass::Forest, "covered");
+    assert_eq!(
+        built.grid.at(750.0, 500.0),
+        SurfaceClass::Rock,
+        "uncovered: the rules"
+    );
+    assert!(
+        (built.uncovered_share - 0.5).abs() < 0.02,
+        "share {}",
+        built.uncovered_share
+    );
+}
+
+#[test]
+fn position_uses_the_map_scale() {
+    // at scale.horizontal 0.5 a spot 500 real metres east of the centre is 250 map metres east of the map centre
+    let p = project();
+    let proj = LocalProjection::for_center(LAT, LON).unwrap();
+    let (e, n) = proj.to_utm(LAT, LON).unwrap();
+    let corner = |de: f64, dn: f64| proj.to_geo(e + 500.0 + de, n + dn).unwrap();
+    let lake = LandPolygon {
+        class: SurfaceClass::Soil,
+        priority: 3,
+        outer: vec![
+            corner(-20.0, -20.0),
+            corner(20.0, -20.0),
+            corner(20.0, 20.0),
+            corner(-20.0, 20.0),
+            corner(-20.0, -20.0),
+        ],
+        holes: Vec::new(),
+    };
+    let land = osm(vec![lake]);
+    let built = build_surfaces(&p, &flat_map(), &sources(None, Some(&land))).unwrap();
+    assert_eq!(
+        built.grid.at(750.0, 500.0),
+        SurfaceClass::Soil,
+        "250 m east of the map centre"
+    );
+    assert_eq!(built.grid.at(500.0, 500.0), SurfaceClass::Grass);
+    assert_eq!(
+        built.grid.at(990.0, 500.0),
+        SurfaceClass::Grass,
+        "where an unscaled position would land"
+    );
+}
+
+#[test]
+fn surfaces_are_deterministic() {
+    let p = project();
+    let lc = land_cover(|lat, lon| {
+        if (lat * 1000.0 + lon * 1000.0) as i64 % 2 == 0 {
+            10
+        } else {
+            40
+        }
+    });
+    let land = osm(vec![
+        square_at(&p, 300.0, 300.0, 80.0, SurfaceClass::Soil, 1),
+        square_at(&p, 320.0, 320.0, 80.0, SurfaceClass::Rock, 2),
+    ]);
+    let a = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&land))).unwrap();
+    let b = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&land))).unwrap();
+    assert_eq!(a.grid, b.grid);
 }

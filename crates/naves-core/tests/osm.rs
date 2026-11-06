@@ -230,9 +230,4 @@ fn a_regional_extract_is_read() {
     let path = PathBuf::from(std::env::var("NAVES_BIG_OSM").unwrap());
     let land = read_land(&[path], koenigssee_window()).unwrap();
     assert!(land.polygons.iter().any(|p| contains(p, 47.5534, 12.9765)));
-    eprintln!(
-        "{} polygons, {} skipped rings",
-        land.polygons.len(),
-        land.skipped_rings
-    );
 }

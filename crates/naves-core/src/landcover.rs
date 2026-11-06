@@ -149,6 +149,42 @@ impl LandCover {
         })
     }
 
+    /// Synthetic land cover for tests: `f(lat, lon)` is the class code at the pixel centres of a grid with
+    /// `pixel_deg` spacing that covers `west..east` and `south..north` (degrees).
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn from_fn(
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+        pixel_deg: f64,
+        f: impl Fn(f64, f64) -> u8,
+    ) -> LandCover {
+        let side = |span: f64| index((span / pixel_deg).round()).unwrap_or(0);
+        let (cols, rows) = (side(east - west), side(north - south));
+        let mut data = Vec::new();
+        for row in 0..rows {
+            let lat = north - (f64::from(row) + 0.5) * pixel_deg;
+            for col in 0..cols {
+                data.push(f(lat, west + (f64::from(col) + 0.5) * pixel_deg));
+            }
+        }
+        LandCover {
+            tiles: vec![Tile {
+                west,
+                north,
+                pixel_x: pixel_deg,
+                pixel_y: pixel_deg,
+                col0: 0,
+                row0: 0,
+                cols,
+                rows,
+                data,
+            }],
+        }
+    }
+
     /// The `WorldCover` code of the pixel that contains (`lat`, `lon`): `None` outside the window and the
     /// files, for code 0 (no data) and for non-finite input.
     #[must_use]
