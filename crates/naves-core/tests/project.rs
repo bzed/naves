@@ -273,3 +273,18 @@ fn setting_the_terrain_grid_sets_the_land_grid() {
         .unwrap_err();
     assert!(err.to_string().contains("terrain_size / 8"), "{err}");
 }
+
+#[cfg(unix)]
+#[test]
+fn saving_keeps_the_file_mode_and_a_new_file_is_readable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("naves.toml");
+    let mode = |f: &std::path::Path| std::fs::metadata(f).unwrap().permissions().mode() & 0o777;
+    let p = Project::new("x", 0.0, 0.0, 12800.0);
+    p.save(dir.path()).unwrap();
+    assert_eq!(mode(&file), 0o644, "a new project file is not private");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+    p.save(dir.path()).unwrap();
+    assert_eq!(mode(&file), 0o640, "saving keeps what the user set");
+}

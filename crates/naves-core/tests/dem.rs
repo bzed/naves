@@ -30,6 +30,16 @@ struct Geo {
 }
 
 fn geotiff_f32(width: u32, height: u32, geo: &Geo, data: &[f32]) -> Vec<u8> {
+    geotiff_f32_nodata(width, height, geo, data, None)
+}
+
+fn geotiff_f32_nodata(
+    width: u32,
+    height: u32,
+    geo: &Geo,
+    data: &[f32],
+    nodata: Option<&str>,
+) -> Vec<u8> {
     let mut cur = Cursor::new(Vec::new());
     {
         let mut enc = TiffEncoder::new(&mut cur).unwrap();
@@ -50,6 +60,11 @@ fn geotiff_f32(width: u32, height: u32, geo: &Geo, data: &[f32]) -> Vec<u8> {
         img.encoder()
             .write_tag(Tag::GeoKeyDirectoryTag, &keys[..])
             .unwrap();
+        if let Some(nodata) = nodata {
+            img.encoder()
+                .write_tag(Tag::Unknown(42113), nodata)
+                .unwrap();
+        }
         img.write_data(data).unwrap();
     }
     cur.into_inner()
@@ -196,4 +211,24 @@ fn open_names_the_failing_file() {
     assert!(err.to_string().contains("bad.tif"), "{err}");
     let err = Dem::open(&[dir.path().join("missing.tif")]).unwrap_err();
     assert!(err.to_string().contains("missing.tif"), "{err}");
+}
+
+#[test]
+fn the_files_no_data_value_is_not_a_height() {
+    for nodata in ["-9999", "-32767.0"] {
+        let sentinel: f32 = nodata.parse().unwrap();
+        let bytes = geotiff_f32_nodata(
+            2,
+            2,
+            &geo(10.0, 50.0),
+            &[1.0, sentinel, 3.0, 4.0],
+            Some(nodata),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_tmp(&dir, "t.tif", &bytes);
+        let d = Dem::open(&[path]).unwrap();
+        // pixel (0, 1) and its neighbours are real heights, the centre of pixel (1, 0) has none
+        assert!((d.height(49.985, 10.005).unwrap() - 3.0).abs() < 1e-4);
+        assert_eq!(d.height(49.995, 10.015), None, "no-data value {nodata}");
+    }
 }

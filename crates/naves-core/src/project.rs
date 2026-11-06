@@ -101,6 +101,22 @@ impl ProjectError {
     }
 }
 
+/// Gives the temporary file (private by default) the mode of the file it replaces, or an ordinary mode for a new one.
+#[cfg(unix)]
+fn keep_file_mode(tmp: &std::fs::File, path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = match std::fs::metadata(path) {
+        Ok(old) => old.permissions(),
+        Err(_) => std::fs::Permissions::from_mode(0o644), // no old file: nothing to keep
+    };
+    tmp.set_permissions(permissions)
+}
+
+#[cfg(not(unix))]
+fn keep_file_mode(_tmp: &std::fs::File, _path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ProjectError> {
     Err(ProjectError::Invalid(msg.into()))
 }
@@ -175,6 +191,8 @@ impl Project {
             .map_err(|e| ProjectError::io(dir, e))?;
         tmp.write_all(text.as_bytes())
             .and_then(|()| tmp.flush())
+            .and_then(|()| keep_file_mode(tmp.as_file(), &path))
+            .and_then(|()| tmp.as_file().sync_all())
             .map_err(|e| ProjectError::io(tmp.path(), e))?;
         tmp.persist(&path)
             .map_err(|e| ProjectError::io(&path, e.error))?;

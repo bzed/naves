@@ -40,6 +40,8 @@ All notable changes to this project are documented here. The format follows
   on masks, `FLAG`) tags that armake2's `img2paa` leaves out.
 - The terrain shows its satellite images instead of a flat colour per tile with straight edges: the build removes
   the byte armake2's `img2paa` appends to LZO-compressed mipmaps, which the game cannot read.
+- The no-data value of a GeoTIFF (for example -9999) counts as a gap in the elevation data, not as a height.
+- Saving `naves.toml` keeps the file's permissions and syncs it to disk before it replaces the old file.
 - The sun is in the right part of the sky: the world config writes the latitude with the game's sign (positive to
   the south).
 - Surface masks select the right layers: grass is black and rock red at full alpha. Before, grass showed the rock

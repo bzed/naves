@@ -130,7 +130,15 @@ impl DemTile {
             return unsupported("rotated or invalid geo-transform");
         }
         let raster = file.read_band::<f32>(0).map_err(geotiff_error)?;
-        let data: Vec<f32> = raster.iter().copied().collect();
+        // A sentinel such as -9999 is not a height: from here on, "no data" is NaN.
+        let nodata = file.nodata().and_then(|s| s.trim().parse::<f64>().ok());
+        let data: Vec<f32> = raster
+            .iter()
+            .map(|&v| {
+                let void = nodata.is_some_and(|n| (f64::from(v) - n).abs() <= n.abs() * 1e-6);
+                if void { f32::NAN } else { v }
+            })
+            .collect();
         let expected = usize::try_from(u64::from(width) * u64::from(height))
             .or_else(|_| unsupported("image too large"))?;
         if data.len() != expected {
