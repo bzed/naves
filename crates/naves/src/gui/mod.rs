@@ -7,6 +7,7 @@
 //! Look: the manual's palette. A lichen-green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
+mod imagery;
 mod map_view;
 mod settings;
 mod worker;
@@ -17,12 +18,15 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use naves_core::imagery::TileImagery;
+use naves_core::imagery::catalog::ImageryOption;
 use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
+use naves_export::imagery_fetch::Http;
 use naves_export::tools::Tools;
 
+use imagery::{FetchJob, OwnFile};
 use map_view::MapView;
 use settings::SettingsForm;
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, MapData};
@@ -61,6 +65,21 @@ pub struct NavesApp {
     worker: Option<BuildWorker>,
     log: Vec<Line>,
     locate_tools: ToolLocator,
+    /// A fetch of imagery, running in the background.
+    fetch: Option<FetchJob>,
+    /// The network that fetches use.
+    http: Arc<dyn Http + Send + Sync>,
+    /// The user's own catalogue of imagery sources.
+    user_catalog: Option<PathBuf>,
+    /// The sources that have imagery for the area of the project.
+    imagery_options: Vec<ImageryOption>,
+    imagery_options_error: Option<String>,
+    /// The dates typed for a search for scenes.
+    fetch_from: String,
+    fetch_to: String,
+    /// The file of your own that is being filled in, and why it was not added.
+    own_imagery: OwnFile,
+    own_imagery_error: Option<String>,
 }
 
 fn to_px(v: f32) -> u32 {
@@ -112,7 +131,17 @@ impl NavesApp {
             worker: None,
             log: Vec::new(),
             locate_tools,
+            fetch: None,
+            http: imagery::real_http(),
+            user_catalog: imagery::user_catalog(),
+            imagery_options: Vec::new(),
+            imagery_options_error: None,
+            fetch_from: String::new(),
+            fetch_to: String::new(),
+            own_imagery: OwnFile::default(),
+            own_imagery_error: None,
         };
+        app.refresh_imagery_options();
         app.reload_heightmap();
         Ok(app)
     }
@@ -142,6 +171,7 @@ impl NavesApp {
     /// Saves changed settings; only what the heightmap depends on makes it load again.
     fn settings_changed(&mut self) {
         if self.form.commit() {
+            self.refresh_imagery_options();
             let inputs = heightmap_inputs(&self.form.project);
             if inputs != self.heightmap_inputs {
                 self.heightmap_inputs = inputs;
@@ -151,6 +181,7 @@ impl NavesApp {
     }
 
     fn poll_background(&mut self) {
+        self.poll_fetch();
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
             if std::mem::take(&mut self.reload_wanted) {
@@ -200,14 +231,18 @@ impl NavesApp {
     /// Draws the whole window into `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.poll_background();
-        if self.building() || self.job.is_some() {
+        if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         egui::Panel::left("settings")
             .resizable(false)
             .exact_size(SETTINGS_WIDTH)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
-            .show(ui, |ui| self.settings_ui(ui));
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.settings_ui(ui));
+            });
         egui::Panel::bottom("build")
             .resizable(true)
             .default_size(150.0)
@@ -298,12 +333,6 @@ impl NavesApp {
         source_list(ui, "Land cover files", &p.sources.land_cover);
         ui.add_space(8.0);
         source_list(ui, "OpenStreetMap files", &p.sources.osm);
-        ui.add_space(8.0);
-        let used = match &self.heightmap {
-            HeightmapState::Ready(data) => data.imagery.as_ref().map(|i| i.used.as_slice()),
-            _ => None,
-        };
-        imagery_list(ui, &p.sources.imagery, used);
         if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
             ui.add_space(4.0);
             ui.label(
@@ -311,12 +340,14 @@ impl NavesApp {
                  sources.osm in naves.toml, then reopen the project.",
             );
         }
+        if changed {
+            self.settings_changed();
+        }
+        ui.add_space(8.0);
+        self.imagery_section(ui);
         if let Some(error) = &self.form.error {
             ui.add_space(8.0);
             ui.colored_label(ERROR, format!("Not saved: {error}"));
-        }
-        if changed {
-            self.settings_changed();
         }
     }
 
@@ -477,33 +508,6 @@ fn source_list(ui: &mut egui::Ui, title: &str, files: &[PathBuf]) {
     }
     for file in files {
         ui.label(file.display().to_string());
-    }
-}
-
-/// The imagery files with their licences; `used` are the files that touch the map once it is loaded. A line
-/// "Non-commercial map" warns when a file that is used does not allow commercial use.
-fn imagery_list(ui: &mut egui::Ui, files: &[ImageryFile], used: Option<&[ImageryFile]>) {
-    ui.label(RichText::new("Satellite imagery files").strong());
-    if files.is_empty() {
-        ui.label(
-            "None. The satellite image is painted from the ground classes. List GeoTIFF files in \
-             sources.imagery in naves.toml, then reopen the project.",
-        );
-        return;
-    }
-    for file in files {
-        ui.label(file.path.display().to_string());
-        let licence = if file.non_commercial {
-            format!("{}, non-commercial", file.licence)
-        } else {
-            file.licence.clone()
-        };
-        ui.label(RichText::new(licence).small().color(BROWN));
-    }
-    let relevant = used.unwrap_or(files);
-    if relevant.iter().any(|f| f.non_commercial) {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Non-commercial map").strong().color(BROWN));
     }
 }
 

@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The GUI lists the imagery sources for the area of the project and fetches them in the background (with progress and cancel), shows the files in their order with up, down and remove, accepts files of your own once they have a credit and a licence, and shows what the merge found out about each file.
 - `naves imagery fetch <id>` (and the MCP tool `imagery_fetch`) downloads imagery from a catalogue source for the area of a project into its `imagery` folder and lists the files with their licence in `naves.toml`: mosaics from a WMS in tiles, Sentinel-2 scenes from a STAC search (the clearest ones of the last two summers, or of the dates given), cropped to the map. `naves build` still never uses the network. `make ca-bundle` (CI weekly and at every release) checks that the bundled CA list is the newest.
 - `naves imagery list` (and the MCP tool `imagery_options`) shows which imagery sources exist for the area of a project, with pixel size, licence and a NON-COMMERCIAL mark; a user file `imagery-sources.toml` in the configuration folder can add sources. New manual chapter "Imagery".
 - An **Imagery** overlay in the GUI map and in the MCP `render_topdown` tool shows the merged imagery (ground without imagery is checkered). The GUI lists the imagery files with their licences, says "Non-commercial map" when a file that touches the map is non-commercial, and shows the merge's notes in the log.

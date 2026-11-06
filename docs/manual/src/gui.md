@@ -45,6 +45,21 @@ A top-down view of the heightmap, north up.
 
 ![The slope overlay](images/map-slope.png)
 
+The project panel has a section **Satellite imagery files**:
+
+- **Available for this area** lists the sources of the [imagery catalogue](imagery.md) that have something for the
+  area, best first, each with how much of the map it covers, its pixel size and its licence. A source that does not
+  allow commercial use says **non-commercial** in words. **Fetch** downloads it into the project in the background:
+  the log shows the steps, **Cancel** stops it and leaves no half-written file, and one fetch runs at a time. For a
+  source of scenes you can type the dates (`YYYY-MM-DD`) of the search next to *Dates for scenes*; without them the
+  last two summers are searched. The files appear in the list below and the Imagery map updates.
+- The **files of the project**, in the order that decides among equally sharp images (the first is drawn on top),
+  with **Up**, **Down** and **Remove**. Remove only takes a file off the list; it stays in the project folder, and the
+  GUI says so. Under the list, one line per file tells what the merge found: how much of the map it covers, how much of
+  that other images cover as well, and the colour correction applied (or that its colours are kept).
+- **Add your own file** takes a path inside the project folder, a credit and a licence; the file is accepted only when
+  all are there, and a licence with `NC` in it needs the box *The licence does not allow commercial use*.
+
 The project panel lists the **satellite imagery files** with their licences. A file whose licence does not allow
 commercial use says so in words, and a line **Non-commercial map** appears when such a file touches the map.
 Notes of the merge (a file that overlaps no other image, so its colours are not matched) appear in the log.
