@@ -286,6 +286,12 @@ shading.
   nothing crashes. The photographs show the forest as single trees and the meadows and the rock face as they are; with
   the gain per channel the rock face was green, with one gain it is grey and white like the scene's. No seam between
   tiles can be seen. The soft colour band at the end of the photographs was not looked for at ground level.
+- **After the review.** A small real change (a field 1.5 times as bright, not aligned to the cells) left a darker ring
+  of 4 levels around it, because only changes of more than a factor of 2 were recognised and the gain was then
+  blurred. A cell is now also compared with the median gain of its 13 x 13 neighbours (more than 15 % away is a
+  change, and takes that median): sensor differences vary over large areas, real changes from cell to cell. On the
+  real map the mean difference from the satellite colours went from 16.8 to **13.4** levels, 15.7 % to **10.8** %
+  of the cells more than 25 off (`a_small_real_change_leaves_no_halo`).
 - **Non-commercial.** The same map with `eox-cloudless-2025`: `ATTRIBUTION.txt` in the mod and in the mission opens
   with the notice and the share-alike line, `mod.cpp` says "Non-commercial use only", the build warns on the command
   line (the GUI shows the line "Non-commercial map"; the launcher's own display of `overview` was not looked at).

@@ -19,7 +19,9 @@ use naves_core::imagery::catalog::{CatalogSource, parse_sources};
 use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
 use naves_export::geotiff_write::{RgbMosaic, write_rgb};
-use naves_export::imagery_fetch::{FetchError, FetchRequest, Http, default_range, fetch};
+use naves_export::imagery_fetch::{
+    FetchError, FetchRequest, Http, default_range, describe_fetch, fetch, picture_grid,
+};
 
 /// One request the fake saw: (method, URL, body).
 type Seen = (String, String, String);
@@ -320,6 +322,37 @@ fn tiles_cover_the_window_without_gap_or_overlap() {
             (b[0] - south).abs() < 1e-12 || boxes.iter().any(|o| (o[2] - b[0]).abs() < 1e-12);
         assert!(shares_west && shares_south, "{b:?} has a gap next to it");
     }
+}
+
+#[test]
+fn a_large_map_is_fetched_coarser() {
+    // terrain 4096 means 512 land cells: at the map's own pixel the picture would be 33 000 pixels across,
+    // more than the 16 000 that are accepted; a service can draw at any scale, so the pixel gets larger
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = project(dir.path());
+    p.grid.terrain_size = 4096;
+    p.grid.land_size = 512;
+    p.area.real_extent_m = 12_800.0;
+    p.save(dir.path()).unwrap();
+    let sharp = parse_sources(
+        "[[source]]\nid = \"sharp\"\nname = \"Sharp\"\nkind = \"wms\"\nurl = \"https://example.org/wms\"\n\
+         layer = \"l\"\nnative_m = 0.4\nlicence = \"CC BY 4.0\"\nattribution = \"A\"\n",
+    )
+    .unwrap()
+    .remove(0);
+    let (cols, rows, pixel_m) = picture_grid(&p, &sharp).unwrap();
+    assert!(cols <= 16_000 && rows <= 16_000, "{cols} x {rows}");
+    assert!(cols > 15_000, "as sharp as is allowed: {cols}");
+    assert!(
+        pixel_m > 0.8,
+        "coarser than the map's own 0.42 m: {pixel_m}"
+    );
+    let said = describe_fetch(&p, &sharp).unwrap();
+    assert!(said.contains("coarser"), "the user is told: {said}");
+    // a small map is fetched at the sharper of the source's and the map's pixel, as before
+    let small = project(dir.path());
+    let (_, _, pixel_m) = picture_grid(&small, &sharp).unwrap();
+    assert!((pixel_m - 0.4).abs() < 0.3, "{pixel_m}");
 }
 
 #[test]

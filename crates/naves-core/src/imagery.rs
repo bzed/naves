@@ -49,10 +49,16 @@ pub enum ImageryError {
     #[error("{0}")]
     Unsupported(String),
     /// The GeoTIFF decoder rejected the file.
-    #[error(
-        "cannot decode GeoTIFF: {0} (a file with JPEG compression can be converted with `gdal_translate -co COMPRESS=DEFLATE in.tif out.tif`)"
-    )]
+    #[error("cannot decode GeoTIFF: {0}")]
     GeoTiff(geotiff_reader::Error),
+    /// A file of the project is not there; when a fetch wrote it, the message says how to get it again.
+    #[error("{}: the file is missing{hint}", path.display())]
+    Missing {
+        /// The file, as the project folder has it.
+        path: PathBuf,
+        /// What to do about it: empty, or " (fetch it again with `naves imagery fetch <id>`)".
+        hint: String,
+    },
     /// The coordinates of the map cannot be converted.
     #[error(transparent)]
     Projection(#[from] ProjectionError),
@@ -73,8 +79,38 @@ fn unsupported<T>(msg: impl Into<String>) -> Result<T, ImageryError> {
 fn geotiff_error(e: geotiff_reader::Error) -> ImageryError {
     match e {
         geotiff_reader::Error::NotGeoTiff => ImageryError::Unsupported(e.to_string()),
-        other => ImageryError::GeoTiff(other),
+        other => {
+            let text = other.to_string();
+            if text.to_lowercase().contains("compress") {
+                // the usual cause: JPEG inside the TIFF, which the decoder does not read
+                ImageryError::Unsupported(format!(
+                    "cannot decode GeoTIFF: {text} (a file with JPEG compression can be converted with \
+                     `gdal_translate -co COMPRESS=DEFLATE in.tif out.tif`)"
+                ))
+            } else {
+                ImageryError::GeoTiff(other)
+            }
+        }
     }
+}
+
+/// " (fetch it again with `naves imagery fetch <id>`)" if the file name is one that a fetch of a catalogue source
+/// writes (`<id>.tif` or `<id>-<scene>.tif`), otherwise nothing.
+fn fetch_hint(path: &Path) -> String {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return String::new();
+    };
+    // the user's own catalogue counts too; a broken one is not this error's business
+    let sources = catalog::catalog(catalog::user_catalog_path().as_deref())
+        .or_else(|_| catalog::catalog(None))
+        .unwrap_or_default();
+    sources
+        .iter()
+        .filter(|s| stem == s.id || stem.strip_prefix(&s.id).is_some_and(|r| r.starts_with('-')))
+        .max_by_key(|s| s.id.len())
+        .map_or_else(String::new, |s| {
+            format!(" (fetch it again with `naves imagery fetch {}`)", s.id)
+        })
 }
 
 /// The imagery files of a project, read and merged.
@@ -110,6 +146,12 @@ pub fn load_imagery(
     let (mut rasters, mut used) = (Vec::new(), Vec::new());
     for file in &project.sources.imagery {
         let path = project_dir.join(&file.path);
+        if !path.is_file() {
+            return Err(ImageryError::Missing {
+                path: file.path.clone(),
+                hint: fetch_hint(&file.path),
+            });
+        }
         if let Some(raster) = ImageryRaster::open(&path, project, target_m)? {
             rasters.push(raster.with_label(file.path.display().to_string()));
             used.push(file.clone());

@@ -46,6 +46,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A small real change in one of several overlapping images (a field, snow on a slope) no longer leaves a halo in the merged satellite image: cells are also compared with their neighbourhood.
+- A missing imagery file is reported as missing (not as a decoding problem with a JPEG hint), with the `naves imagery fetch` command to get it again when a fetch wrote it; imagery of a large map is fetched coarser instead of failing above 16 000 pixels.
 - Imagery of very different brightness (aerial photographs next to a satellite scene) is matched in brightness: the gain limits were too narrow, the change threshold could not recognise darker cells, and a gain per colour channel tinted rock green; the merge now uses one gain for all channels and keeps the colours of the sharper image.
 - `naves imagery fetch` names the clearest scene and suggests other dates when every scene of the default dates is cloudy, and writes the files with the usual mode instead of a private one.
 - Terrain images with real detail (photographs) no longer make `binarize` stop: `img2paa` of armake2 marked mipmaps as LZO that it had stored uncompressed, and Náves now clears the mark (armake2 itself is fixed too).

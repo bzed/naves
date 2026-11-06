@@ -352,12 +352,9 @@ fn service<T>(source: &CatalogSource, why: impl Into<String>) -> Result<T, Fetch
     })
 }
 
-/// The pixel grid of a picture of `window` with `pixel_m` real metres per pixel: (columns, rows).
-fn grid_of(
-    window: GeoWindow,
-    pixel_m: f64,
-    source: &CatalogSource,
-) -> Result<(u32, u32), FetchError> {
+/// The number of pixels across (columns) and down (rows) of a picture of `window` with `pixel_m` real metres per
+/// pixel.
+fn counts(window: GeoWindow, pixel_m: f64) -> (u64, u64) {
     let mid = f64::midpoint(window.south, window.north).to_radians();
     let width_m = (window.east - window.west) * METRES_PER_DEGREE * mid.cos().abs().max(1e-6);
     let height_m = (window.north - window.south) * METRES_PER_DEGREE;
@@ -371,7 +368,16 @@ fn grid_of(
         let pixels = pixels.min(1e9) as u64;
         pixels
     };
-    let (cols, rows) = (count(width_m), count(height_m));
+    (count(width_m), count(height_m))
+}
+
+/// The pixel grid of a picture of `window` with `pixel_m` real metres per pixel: (columns, rows).
+fn grid_of(
+    window: GeoWindow,
+    pixel_m: f64,
+    source: &CatalogSource,
+) -> Result<(u32, u32), FetchError> {
+    let (cols, rows) = counts(window, pixel_m);
     let side = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
     if cols > u64::from(MAX_SIDE_PX) || rows > u64::from(MAX_SIDE_PX) {
         return service(
@@ -385,6 +391,34 @@ fn grid_of(
     Ok((side(cols), side(rows)))
 }
 
+/// The picture a WMS fetch makes of the map: (columns, rows, real metres per pixel). The pixel is the sharper of the
+/// source's and the map's own; where the picture would be wider than 16 000 pixels (a large map) the pixel is made
+/// larger until it fits, because a service can draw at any scale.
+///
+/// # Errors
+///
+/// [`FetchError`] if the map cannot be converted into degrees.
+pub fn picture_grid(
+    project: &Project,
+    source: &CatalogSource,
+) -> Result<(u32, u32, f64), FetchError> {
+    let window = window_of(project)?;
+    let mut pixel_m = source.native_m.max(real_px_m(project));
+    for _ in 0..4 {
+        let (cols, rows) = counts(window, pixel_m);
+        let longest = cols.max(rows);
+        if longest <= u64::from(MAX_SIDE_PX) {
+            break;
+        }
+        // one step is enough but for rounding up: a little extra so that the next count fits
+        #[expect(clippy::cast_precision_loss, reason = "pixel counts are below 1e9")]
+        let factor = longest as f64 / f64::from(MAX_SIDE_PX);
+        pixel_m *= factor * 1.001;
+    }
+    let (cols, rows) = grid_of(window, pixel_m, source)?;
+    Ok((cols, rows, pixel_m))
+}
+
 /// What a fetch of `source` will do for the map of `project`, in a sentence: the size of the picture or the
 /// number and size of scenes. For the user to read before anything is downloaded.
 ///
@@ -392,16 +426,22 @@ fn grid_of(
 ///
 /// [`FetchError`] if the map cannot be converted or the area is too large for the source.
 pub fn describe_fetch(project: &Project, source: &CatalogSource) -> Result<String, FetchError> {
-    let window = window_of(project)?;
     match &source.kind {
         SourceKind::Wms { max_px, .. } => {
-            let pixel_m = source.native_m.max(real_px_m(project));
-            let (cols, rows) = grid_of(window, pixel_m, source)?;
+            let (cols, rows, pixel_m) = picture_grid(project, source)?;
+            let wanted = source.native_m.max(real_px_m(project));
             let tile = (*max_px).clamp(1, MAX_TILE_PX);
             let requests = cols.div_ceil(tile) * rows.div_ceil(tile);
             let megabytes = u64::from(cols) * u64::from(rows) / 1_000_000;
+            let coarser = if pixel_m > wanted * 1.01 {
+                format!(
+                    "; the map is too large for {wanted:.2} m per pixel, so it is fetched coarser, at {pixel_m:.2} m"
+                )
+            } else {
+                String::new()
+            };
             Ok(format!(
-                "a picture of {cols} x {rows} pixels in {requests} request(s), about {} MB before it is compressed",
+                "a picture of {cols} x {rows} pixels in {requests} request(s), about {} MB before it is compressed{coarser}",
                 megabytes * 3
             ))
         }
@@ -594,9 +634,14 @@ fn mosaic_colour(pixel: image::Rgba<u8>, blank: Option<[u8; 3]>) -> [u8; 3] {
 
 fn fetch_wms(cx: &Context<'_>, wms: &WmsParams<'_>) -> Result<Vec<ImageryFile>, FetchError> {
     let source = cx.source;
-    let pixel_m = source.native_m.max(real_px_m(cx.project));
     let window = cx.window;
-    let (cols, rows) = grid_of(window, pixel_m, source)?;
+    let (cols, rows, pixel_m) = picture_grid(cx.project, source)?;
+    let wanted = source.native_m.max(real_px_m(cx.project));
+    if pixel_m > wanted * 1.01 {
+        (cx.progress)(&format!(
+            "warning: the map is too large for {wanted:.2} m per pixel; fetching coarser, at {pixel_m:.2} m"
+        ));
+    }
     let tile = wms.max_px.clamp(1, MAX_TILE_PX);
     let (dx, dy) = (
         (window.east - window.west) / f64::from(cols),

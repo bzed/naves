@@ -534,6 +534,52 @@ fn changed_content_leaves_no_stamp() {
     }
 }
 
+/// A block of 5.3 cells that does not follow the grid of cells.
+fn off_grid_block(lat: f64, lon: f64, p: &Project) -> bool {
+    let (x0, y0) = (MAP * 0.5 + 0.4 * CELL, MAP * 0.5 + 0.6 * CELL);
+    let (blat0, blon0) = lat_lon(p, x0, y0);
+    let (blat1, blon1) = lat_lon(p, x0 + 5.3 * CELL, y0 + 5.3 * CELL);
+    (blat0..blat1).contains(&lat) && (blon0..blon1).contains(&lon)
+}
+
+#[test]
+fn a_small_real_change_leaves_no_halo() {
+    // a field that is 1.5 times as bright in the second flight and not aligned to the cells: within the factor of
+    // two that colour differences between sensors need, but small against its surroundings
+    let p = project();
+    let reference = raster(&p, ALL, COARSE, |lat, lon| Some(scene(lat, lon)));
+    let second = |with_block: bool| {
+        raster(&p, (0.1, 0.1, 0.9, 0.9), 3e-5, |lat, lon| {
+            let gain = if with_block && off_grid_block(lat, lon, &p) {
+                1.8
+            } else {
+                1.2
+            };
+            Some(scaled(scene(lat, lon), gain))
+        })
+    };
+    let (with, _) = merge(vec![reference.clone(), second(true)], &p).unwrap();
+    let (without, _) = merge(vec![reference, second(false)], &p).unwrap();
+    // a ring one to two cells outside the block
+    let (lo, hi) = (
+        MAP * 0.5 + 0.4 * CELL - 1.5 * CELL,
+        MAP * 0.5 + 0.4 * CELL + 5.3 * CELL + 1.5 * CELL,
+    );
+    let (lo_y, hi_y) = (lo + 0.2 * CELL, hi + 0.2 * CELL);
+    for i in 0..=20 {
+        let t = f64::from(i) / 20.0;
+        let (tx, ty) = (lo + (hi - lo) * t, lo_y + (hi_y - lo_y) * t);
+        for (x, y) in [(tx, lo_y), (tx, hi_y), (lo, ty), (hi, ty)] {
+            let got = paint_f(&with, &p, x, y).unwrap();
+            let want = paint_f(&without, &p, x, y).unwrap();
+            assert!(
+                close(got, want, 3.0),
+                "({x}, {y}): {got:?} against {want:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn chain_of_flights_is_matched() {
     let p = project();

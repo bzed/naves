@@ -40,7 +40,8 @@ line where that applies) and how much it will download before it starts. The sam
 
 - A **mosaic** source (`eox-cloudless-*`, `bayern-dop40`, and any `wms` source of your own) is fetched as one picture
   of the map plus a margin of 100 m, in tiles of at most 2000 pixels, one request at a time. The pixel size is the
-  sharper of the source's own and the map's. `imagery/<id>.tif` is written and replaced by a new fetch; the list in
+  sharper of the source's own and the map's; for a large map that would be more than 16 000 pixels across, the picture is
+  fetched coarser, and the command says so. `imagery/<id>.tif` is written and replaced by a new fetch; the list in
   `naves.toml` gets no second entry. Pixels the service leaves empty (transparent, or the blank colour of the entry)
   are no data, never colours.
 - A **scene** source (`sentinel2-scenes`) is searched for the clearest scenes (less than 20 % cloud, least snow) of the
@@ -82,7 +83,7 @@ redistributed map. The evidence for every entry, with the publisher's terms and 
 
 Files can overlap. Náves measures their colours against each other where they overlap and corrects the exposure
 with a smooth gain, so that a difference in brightness between two flights does not show as a seam and the detail
-stays untouched. A change that is real (a mown field, snow in one image) is not corrected. Where several images
+stays untouched. A change that is real (a mown field, snow in one image) is not corrected: a cell that is brighter or darker than the cells around it, or by more than a factor of 2 than the image as a whole, counts as a change and takes the correction of its surroundings. Where several images
 cover a spot, the sharpest is drawn on top, equals in the order of the list, and every image fades in over a few land
 cells at its edge. The image with the most coverage keeps its colours, so a Sentinel-2 image of the whole map
 under aerial photos needs no setting. The [GUI](gui.md) and the `imagery` overlay of the [MCP server](mcp.md) show

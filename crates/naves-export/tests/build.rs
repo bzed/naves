@@ -667,6 +667,29 @@ fn missing_imagery_names_the_file() {
     let err = build(&proj, &env.tools(), &quiet).unwrap_err();
     assert!(err.to_string().contains("s2.tif"), "{err}");
     assert!(!proj.join("build/staging").exists(), "no tool ran");
+    // a file of your own: said to be missing, with no advice about JPEG that has nothing to do with it
+    let text = err.to_string();
+    assert!(
+        text.contains("missing") && !text.contains("JPEG") && !text.contains("fetch"),
+        "{text}"
+    );
+
+    // a file that a fetch wrote (imagery/<id>-<scene>.tif): the command to get it again
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.imagery[0].path =
+        PathBuf::from("imagery/sentinel2-scenes-S2C_T32TQT_20250919T101514_L2A.tif");
+    p.save(&proj).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("S2C_T32TQT") && text.contains("missing"),
+        "{text}"
+    );
+    assert!(
+        text.contains("naves imagery fetch sentinel2-scenes"),
+        "{text}"
+    );
+    assert!(!text.contains("JPEG"), "{text}");
 }
 
 #[test]

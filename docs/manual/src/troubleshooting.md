@@ -71,6 +71,11 @@ request was too large or the area is outside the service. Try another source (`n
 **`... this source has nothing for this area`**
 Every pixel of the answer is empty or blank: the map lies outside the area the service covers.
 
+**`<file>: the file is missing`**
+A file listed in `sources.imagery` is not in the project folder, for example because a project was copied without its
+`imagery` folder. When the name is one that `naves imagery fetch` writes, the message gives the command to get it
+again; otherwise copy the file back or take it off the list.
+
 **`overlaps no other image, its colours are not matched`**
 A file touches the map but does not overlap any other image, so there is nothing to match its colours to. It is used
 as it is. Add a file that covers both, or accept the step in colour.

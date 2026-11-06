@@ -43,6 +43,20 @@ const GAIN_LIMITS: (f32, f32) = (0.15, 6.0);
 /// block 3 times as bright is no longer recognised in `changed_content_leaves_no_stamp`).
 const CONTENT_CHANGE: f32 = 1.0;
 
+/// A cell is also compared with the median gain of its neighbourhood, [`LOCAL_RADIUS`] cells around it: a cell whose
+/// gain is further than this share from that median is a small real change (a field, a roof, snow on a slope)
+/// whatever the tone difference of the two sensors is, because that varies over a large area and not from cell to
+/// cell. The cell then takes the median of its neighbourhood, so that the change is not stamped into the correction
+/// and no halo of the blur is left around it.
+const LOCAL_CHANGE: f32 = 0.15;
+
+/// Radius in cells of the neighbourhood of [`LOCAL_CHANGE`]: 13 x 13 cells (1.3 km at the default scale), wide
+/// enough that a change of up to about eight cells across does not move the median.
+const LOCAL_RADIUS: usize = 6;
+
+/// A neighbourhood with fewer cells that have a gain than this does not decide; the median of the raster does.
+const MIN_LOCAL_CELLS: usize = 9;
+
 /// Fewer overlapping cells than this and the colours are not matched at all.
 const MIN_OVERLAP_CELLS: usize = 16;
 
@@ -399,24 +413,31 @@ fn match_colours(composite: &Means, own: &Means, cells: usize) -> Matching {
     } else {
         1.0
     };
+    let ratios_plane: Vec<Option<f32>> = (0..cells * cells)
+        .map(
+            |index| match (composite.get(index), own.get(index), pairs.get(index)) {
+                (Some(Some(_)), Some(Some(_)), Some(pair)) if usable(pair) => Some(ratio(pair)),
+                _ => None,
+            },
+        )
+        .collect();
+    let expected = local_medians(&ratios_plane, cells, global);
     let mut plane = vec![global; cells * cells];
     let (mut changed, mut measured) = (0_usize, 0_usize);
     for (index, slot) in plane.iter_mut().enumerate() {
-        let (Some(Some(_)), Some(Some(_)), Some(pair)) =
-            (composite.get(index), own.get(index), pairs.get(index))
-        else {
+        let Some(Some(local)) = ratios_plane.get(index) else {
             continue;
         };
-        if !usable(pair) {
-            continue;
-        }
+        let near = expected.get(index).copied().unwrap_or(global);
         measured += 1;
-        let local = ratio(pair);
-        let factor = local / global;
-        if (1.0 / (1.0 + CONTENT_CHANGE)..=1.0 + CONTENT_CHANGE).contains(&factor) {
-            *slot = local;
+        let within = |factor: f32, tolerance: f32| {
+            (1.0 / (1.0 + tolerance)..=1.0 + tolerance).contains(&factor)
+        };
+        if within(local / global, CONTENT_CHANGE) && within(local / near, LOCAL_CHANGE) {
+            *slot = *local;
         } else {
             changed += 1;
+            *slot = near.clamp(GAIN_LIMITS.0, GAIN_LIMITS.1);
         }
     }
     for _ in 0..BLUR_PASSES {
@@ -433,6 +454,38 @@ fn match_colours(composite: &Means, own: &Means, cells: usize) -> Matching {
         changed_share: share(changed, measured),
         matched: true,
     }
+}
+
+/// The median gain of the cells around every cell, [`LOCAL_RADIUS`] cells in each direction; `fallback` where fewer
+/// than [`MIN_LOCAL_CELLS`] of them have a gain.
+fn local_medians(ratios: &[Option<f32>], cells: usize, fallback: f32) -> Vec<f32> {
+    let rows: Vec<Vec<f32>> = (0..cells)
+        .into_par_iter()
+        .map(|row| {
+            let mut window: Vec<f32> = Vec::with_capacity((2 * LOCAL_RADIUS + 1).pow(2));
+            (0..cells)
+                .map(|col| {
+                    window.clear();
+                    for r in row.saturating_sub(LOCAL_RADIUS)..=(row + LOCAL_RADIUS).min(cells - 1)
+                    {
+                        for c in
+                            col.saturating_sub(LOCAL_RADIUS)..=(col + LOCAL_RADIUS).min(cells - 1)
+                        {
+                            if let Some(Some(v)) = ratios.get(r * cells + c) {
+                                window.push(*v);
+                            }
+                        }
+                    }
+                    if window.len() < MIN_LOCAL_CELLS {
+                        fallback
+                    } else {
+                        median(&mut window)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    rows.into_iter().flatten().collect()
 }
 
 /// One pass of a box blur of the given radius over a square grid, the edge repeated.
