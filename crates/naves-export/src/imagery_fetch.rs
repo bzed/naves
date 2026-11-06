@@ -549,7 +549,8 @@ impl Context<'_> {
 
     fn listed(&self, file_name: &str, attribution: String) -> ImageryFile {
         ImageryFile {
-            path: PathBuf::from("imagery").join(file_name),
+            // always a slash: a project written on Windows must still find its files on Linux
+            path: PathBuf::from(format!("imagery/{file_name}")),
             attribution,
             licence: self.source.licence.clone(),
             non_commercial: self.source.non_commercial,
