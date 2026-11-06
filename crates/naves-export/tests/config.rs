@@ -119,7 +119,9 @@ fn the_world_inherits_the_sky_and_weather_from_livonia() {
 fn the_sun_follows_the_project_location() {
     let c = world_config(&project(), &heightmap(300.0));
     assert!(
-        c.contains("latitude = 47.585;") && c.contains("longitude = 12.965;"),
+        // the game counts latitude positive to the south (Livonia -54, Chernarus -56); with the wrong sign the
+        // noon sun stands in the north
+        c.contains("latitude = -47.585;") && c.contains("longitude = 12.965;"),
         "{c}"
     );
 }

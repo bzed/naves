@@ -60,7 +60,8 @@ pub fn world_config(project: &Project, hm: &Heightmap) -> String {
         shown.as_str()
     };
     let path = prefix(world);
-    let (lat, lon) = (project.area.center_lat, project.area.center_lon);
+    // the game counts latitude positive to the south (Livonia -54, Chernarus -56)
+    let (lat, lon) = (-project.area.center_lat, project.area.center_lon);
     format!(
         r#"class CfgPatches {{
     class naves_{world} {{

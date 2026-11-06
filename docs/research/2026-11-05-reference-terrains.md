@@ -171,3 +171,19 @@ Two separate faults, each seen in the client and fixed:
 2. **Wrong near texture.** Grass was red and rock green in the mask, which select slots 1 and 2. Bohemia's sample
    shows the mapping (table in `terrain-layers.md`). With grass black and rock red the ground has its grass texture
    and clutter.
+
+## Land-cover sources for the example area (2026-11-06)
+
+Box 12.8797-13.0503 E, 47.5275-47.6425 N, about 164 km². Both sources were read once for this note; Náves does not
+use them yet.
+
+- **ESA WorldCover 2021** (10 m, CC BY 4.0, Cloud Optimized GeoTIFF on S3, the 3° tile is 85 MB): trees 61.5 %, grass
+  26.7 %, bare 5.6 %, water 3.0 %, built-up 2.5 %, snow 0.3 %. Every pixel has a class. Stated overall accuracy 77 %.
+- **OpenStreetMap** (Overpass, 2348 ways and relations with `natural` or `landuse`): `landuse=forest` 126.6 km²,
+  `natural=wood` 34.0, `natural=bare_rock` 31.1, `landuse=meadow` 20.6, `natural=scrub` 9.0, `natural=scree` 7.8,
+  `landuse=residential` 6.7, `natural=grassland` 6.2, `natural=water` 5.5. These areas are rough: polygons may extend
+  past the box and may overlap, and unclosed relation members were skipped. Coverage is not complete, but rock, scree
+  and water are named as such.
+
+The two disagree on rock (5.6 % against up to about 24 % of the box), so a comparison on the map should come before
+relying on either one for rock.
