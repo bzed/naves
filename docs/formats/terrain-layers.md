@@ -80,11 +80,21 @@ names show how many slots a tile uses (`P_000-000_L00` uses one):
 | 4 | blue, alpha 255 | 3 |
 | 5 or more | colours at alpha 128 | 4 and up (the exact colours are not needed yet) |
 
-Livonia's masks use the same colours. Náves uses two slots: grass is `(0, 0, 0, 255)`, rock `(255, 0, 0, 255)`.
+Livonia's masks use the same colours. Náves uses the first four slots:
+
+| Slot | Class | Mask | Texture (`dz\surfaces_bliss\data\terrain\`) |
+|---|---|---|---|
+| 0 | grass | `(0, 0, 0, 255)` | `en_grass1` |
+| 1 | rock | `(255, 0, 0, 255)` | `en_stones` |
+| 2 | forest | `(0, 255, 0, 255)` | `en_forest_con` |
+| 3 | soil | `(0, 0, 255, 255)` | `en_soil` |
+
+Slots 2 and 3 are read from Bohemia's sample; check them in the game before relying on them (see the test notes in
+`AGENTS.md`).
 
 ## Where grass ends
 
-Náves has no land-cover data yet. It makes ground rock on slopes above 35° and above a real altitude of 2100 m (map
+Where neither land-cover nor OSM data says anything, Náves makes ground rock on slopes above 35° and above a real altitude of 2100 m (map
 height divided by `scale.height`). The limit is measured: ESA WorldCover 2021 (10 m) against Copernicus GLO-30 on the
 Berchtesgaden example area gives trees on 31 % of the ground at 1700 to 1900 m and 2.5 % at 1900 to 2100 m; bare
 ground on 27 % at 1900 to 2100 m, 58 % at 2100 to 2300 m and 87 % at 2300 to 2500 m. The limit fits the Alps; other

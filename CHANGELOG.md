@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The terrain has four ground layers (grass, rock, forest, soil); the ground of each map cell is decided in one place (`SurfaceGrid`).
 - Project file `naves.toml`.
 - Copernicus GLO-30 GeoTIFF DEM input.
 - MCP server `naves mcp`: `project_get`, `project_set`, `heightmap_stats`, `render_topdown` and `build` for AI clients over stdio.
@@ -29,6 +30,10 @@ All notable changes to this project are documented here. The format follows
   the mesh with DayZDiag and Flare Navgen.
 - Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope and above a real
   altitude of 2100 m) and a tile material for every terrain tile.
+
+### Changed
+
+- Lighter baked shading on the satellite images: rock faces were nearly black.
 
 ### Fixed
 

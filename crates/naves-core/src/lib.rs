@@ -9,3 +9,4 @@ pub mod ident;
 pub mod project;
 pub mod projection;
 pub mod render;
+pub mod surface;

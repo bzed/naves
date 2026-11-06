@@ -10,7 +10,8 @@
 use std::io::Cursor;
 
 use image::{ImageFormat, RgbImage, RgbaImage};
-use naves_core::heightmap::{Heightmap, Sample};
+use naves_core::heightmap::Heightmap;
+use naves_core::surface::SurfaceGrid;
 use rayon::prelude::*;
 
 use crate::rvmat::tile_material;
@@ -25,13 +26,6 @@ const PX_PER_CELL: f64 = 60.0;
 const TILE_PX: u32 = 512;
 /// Overlap on every side of a tile image in pixels.
 const OVERLAP_PX: u32 = 16;
-/// Slope in degrees above which ground counts as rock.
-const ROCK_SLOPE_DEG: f32 = 35.0;
-
-/// Real altitude in metres above which bare ground takes over from grass. Measured with ESA `WorldCover` around
-/// Berchtesgaden: 27 % of the ground is bare at 1900 to 2100 m, 58 % at 2100 to 2300 m, 87 % at 2300 to 2500 m.
-const GRASS_LIMIT_REAL_M: f64 = 2100.0;
-
 /// The tile grid of a map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileGrid {
@@ -108,8 +102,8 @@ pub struct Surface {
     pub sat_rgb: [u8; 3],
 }
 
-/// The surfaces of milestone 1, in layer-slot order: slot 0 is grass (black in the mask), slot 1 rock (red).
-/// There is no snow texture among the vanilla terrain surfaces.
+/// The surfaces, indexed by [`naves_core::surface::SurfaceClass::slot`]: slot 0 is grass (black in the mask),
+/// 1 rock (red), 2 forest (green), 3 soil (blue). There is no snow texture among the vanilla terrain surfaces.
 pub const SURFACES: &[Surface] = &[
     Surface {
         name: "grass",
@@ -123,43 +117,28 @@ pub const SURFACES: &[Surface] = &[
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_stones_ca.paa",
         sat_rgb: [0x8a, 0x87, 0x80],
     },
+    Surface {
+        name: "forest",
+        nopx: "dz\\surfaces_bliss\\data\\terrain\\en_forest_con_nopx.paa",
+        ca: "dz\\surfaces_bliss\\data\\terrain\\en_forest_con_ca.paa",
+        sat_rgb: [0x2e, 0x4d, 0x2a],
+    },
+    Surface {
+        name: "soil",
+        nopx: "dz\\surfaces_bliss\\data\\terrain\\en_soil_nopx.paa",
+        ca: "dz\\surfaces_bliss\\data\\terrain\\en_soil_ca.paa",
+        sat_rgb: [0x7a, 0x68, 0x4e],
+    },
 ];
 
-/// The grass limit in map metres for a project's `scale.height`.
-#[must_use]
-pub fn grass_limit_m(height_scale: f64) -> f32 {
-    narrow(GRASS_LIMIT_REAL_M * height_scale)
-}
-
-/// Index into [`SURFACES`] for ground with this slope and height.
-fn surface_index(s: &Sample, grass_limit: f32) -> u8 {
-    u8::from(s.slope_deg() > ROCK_SLOPE_DEG || s.height > grass_limit)
-}
-
-/// The surface of every heightmap vertex: an index into [`SURFACES`] (rock on slopes above 35° and above
-/// `grass_limit` metres of map height, else grass).
-#[must_use]
-pub fn classify(hm: &Heightmap, grass_limit: f32) -> Vec<u8> {
-    let cell = f64::from(hm.cell_m);
-    let mut out = Vec::with_capacity(hm.h.len());
-    for row in 0..i64::from(hm.size) {
-        for col in 0..i64::from(hm.size) {
-            #[expect(clippy::cast_precision_loss, reason = "vertex indices are below 2^13")]
-            let (x, y) = (col as f64 * cell, row as f64 * cell);
-            let here = hm.sample(x, y);
-            // The bilinear gradient inside a cell is one-sided at a vertex; average both sides.
-            let there = hm.sample(x - cell * 0.5, y - cell * 0.5);
-            out.push(surface_index(
-                &Sample {
-                    height: here.height,
-                    dz_dx: f32::midpoint(here.dz_dx, there.dz_dx),
-                    dz_dy: f32::midpoint(here.dz_dy, there.dz_dy),
-                },
-                grass_limit,
-            ));
-        }
+/// The mask colour of a layer slot: black, red, green, blue at full alpha are slots 0 to 3.
+fn mask_rgba(slot: usize) -> [u8; 4] {
+    match slot {
+        1 => [255, 0, 0, 255],
+        2 => [0, 255, 0, 255],
+        3 => [0, 0, 255, 255],
+        _ => [0, 0, 0, 255],
     }
-    out
 }
 
 /// Everything the terrain layers produce.
@@ -190,7 +169,7 @@ fn render_tile(
     grid: &TileGrid,
     map_size_m: f64,
     (tx, ty): (u32, u32),
-    grass_limit: f32,
+    surfaces: &SurfaceGrid,
 ) -> TileImages {
     let size = grid.tile_px;
     let mut sat = RgbImage::new(size, size);
@@ -204,11 +183,11 @@ fn render_tile(
         for px in 0..size {
             let x = west + (f64::from(px) - overlap + 0.5) * grid.px_m;
             let here = hm.sample(x, y);
-            let surface = surface_index(&here, grass_limit);
-            let shade = 0.35 + 0.65 * here.hillshade();
-            let rgb = SURFACES
-                .get(usize::from(surface))
-                .map_or([0; 3], |s| s.sat_rgb);
+            let slot = surfaces.at(x, y).slot();
+            // Light baked shading: the game lights the terrain itself, and deeper shadows made rock faces
+            // nearly black.
+            let shade = 0.7 + 0.3 * here.hillshade();
+            let rgb = SURFACES.get(slot).map_or([0; 3], |s| s.sat_rgb);
             let lit = |c: u8| {
                 #[expect(
                     clippy::cast_possible_truncation,
@@ -219,9 +198,7 @@ fn render_tile(
                 v
             };
             sat.put_pixel(px, py, image::Rgb(rgb.map(lit)));
-            // the mask selects the layer slot: black, red, green, blue at full alpha are slots 0 to 3
-            let r = if surface == 0 { 0 } else { 255 };
-            mask.put_pixel(px, py, image::Rgba([r, 0, 0, 255]));
+            mask.put_pixel(px, py, image::Rgba(mask_rgba(slot)));
         }
     }
     TileImages {
@@ -233,9 +210,14 @@ fn render_tile(
 /// Builds satellite images, masks and tile materials for the whole map.
 ///
 /// `land_size` is the material grid size (a multiple of 8); `prefix` is the world's in-game path, for
-/// example `naves\worlds\berchtesgaden`; `grass_limit` comes from [`grass_limit_m`].
+/// example `naves\worlds\berchtesgaden`; `surfaces` decides the ground of every position.
 #[must_use]
-pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str, grass_limit: f32) -> LayerSet {
+pub fn build_layers(
+    hm: &Heightmap,
+    land_size: u32,
+    prefix: &str,
+    surfaces: &SurfaceGrid,
+) -> LayerSet {
     let map_size_m = f64::from(hm.size) * f64::from(hm.cell_m);
     let grid = tile_grid(map_size_m, land_size);
     let coords: Vec<(u32, u32)> = (0..grid.tiles_y)
@@ -243,7 +225,7 @@ pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str, grass_limit: f
         .collect();
     let rendered: Vec<TileImages> = coords
         .par_iter()
-        .map(|&tile| render_tile(hm, &grid, map_size_m, tile, grass_limit))
+        .map(|&tile| render_tile(hm, &grid, map_size_m, tile, surfaces))
         .collect();
 
     let mut materials = vec![String::new()];

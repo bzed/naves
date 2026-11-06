@@ -24,13 +24,14 @@ use std::time::Duration;
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
 use naves_core::project::{Project, ProjectError};
+use naves_core::surface::{grass_limit_m, procedural_grid};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
 use crate::config::{prefix, world_config};
-use crate::layers::{LayerSet, build_layers, grass_limit_m};
+use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
 
@@ -466,11 +467,12 @@ pub fn build(
 
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);
+    let surfaces = procedural_grid(&heightmap, grass_limit_m(project.scale.height));
     let layers = build_layers(
         &heightmap,
         project.grid.land_size,
         &layout.prefix,
-        grass_limit_m(project.scale.height),
+        &surfaces,
     );
     layout.clean()?;
 
