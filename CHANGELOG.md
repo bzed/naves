@@ -42,6 +42,11 @@ All notable changes to this project are documented here. The format follows
   the byte armake2's `img2paa` appends to LZO-compressed mipmaps, which the game cannot read.
 - The no-data value of a GeoTIFF (for example -9999) counts as a gap in the elevation data, not as a height.
 - Saving `naves.toml` keeps the file's permissions and syncs it to disk before it replaces the old file.
+- A failed build keeps the mod and mission of the last good build; a new build replaces them only when it is finished.
+- Relative paths in `ARMAKE2`, `PROTON` and similar variables work. External tools no longer inherit stdin, which is
+  the protocol stream under `naves mcp`. On Windows, Proton is not required and Steam is found in its program folder.
+- The generated mission has no gas zones at Livonia's positions. Still from Livonia: `areaflags.map` and the wildlife
+  territories.
 - The sun is in the right part of the sky: the world config writes the latitude with the game's sign (positive to
   the south).
 - Surface masks select the right layers: grass is black and rock red at full alpha. Before, grass showed the rock

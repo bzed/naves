@@ -61,6 +61,11 @@ fn fake_install(root: &Path) -> PathBuf {
     std::fs::write(enoch.join("mapgrouppos.xml"), GROUPS).unwrap();
     std::fs::write(enoch.join("cfgeventspawns.xml"), EVENTS).unwrap();
     std::fs::write(enoch.join("init.c"), "void main() {}\n").unwrap();
+    std::fs::write(
+        enoch.join("cfgeffectarea.json"),
+        r#"{"Areas":[{"AreaName":"Radunin","Data":{"Pos":[7500,0,6156]}}],"SafePositions":[[1,2]]}"#,
+    )
+    .unwrap();
     std::fs::write(enoch.join("db/types.xml"), "<types/>\n").unwrap();
     mpmissions
 }
@@ -262,5 +267,22 @@ fn edited_files_stay_well_formed() {
     assert!(
         spawns.trim_end().ends_with("</playerspawnpoints>"),
         "{spawns}"
+    );
+}
+
+/// Gas zones at Livonia's coordinates would be at arbitrary places on another map.
+#[test]
+fn mission_has_no_gas_zones_of_the_source_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = fake_install(dir.path());
+    let mission = write_mission(&src, &dir.path().join("out"), "x", (3200.0, 3200.0)).unwrap();
+    let areas = std::fs::read_to_string(mission.join("cfgeffectarea.json")).unwrap();
+    assert!(
+        !areas.contains("Radunin") && !areas.contains("[1,2]"),
+        "{areas}"
+    );
+    assert!(
+        areas.contains("\"Areas\"") && areas.contains("\"SafePositions\""),
+        "{areas}"
     );
 }

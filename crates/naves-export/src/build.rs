@@ -221,6 +221,9 @@ struct Layout {
     world_dir: PathBuf,
     mod_dir: PathBuf,
     missions: PathBuf,
+    /// The mod and the missions while they are built.
+    new_mod: PathBuf,
+    new_missions: PathBuf,
     logs: PathBuf,
 }
 
@@ -234,6 +237,8 @@ impl Layout {
             world: world.to_string(),
             prefix: prefix(world),
             world_dir: staging.join("P").join(rel),
+            new_mod: staging.join("mod"),
+            new_missions: staging.join("missions"),
             staging,
             mod_dir: build_dir.join(format!("@naves_{world}")),
             missions: build_dir.join("missions"),
@@ -241,12 +246,22 @@ impl Layout {
         }
     }
 
-    /// Removes what an earlier build left behind; `secrets/` stays.
+    /// Removes the staging folder of an earlier build. Its mod and mission stay until a new build has finished.
     fn clean(&self) -> Result<(), BuildError> {
-        for dir in [&self.staging, &self.mod_dir, &self.missions] {
-            remove_dir(dir)?;
-        }
+        remove_dir(&self.staging)?;
         std::fs::create_dir_all(&self.logs).map_err(io_err(&self.logs))
+    }
+
+    /// Replaces the mod and the missions of an earlier build with the finished ones from staging.
+    fn install(&self) -> Result<(), BuildError> {
+        for (new, old) in [
+            (&self.new_mod, &self.mod_dir),
+            (&self.new_missions, &self.missions),
+        ] {
+            remove_dir(old)?;
+            std::fs::rename(new, old).map_err(io_err(old))?;
+        }
+        Ok(())
     }
 }
 
@@ -393,8 +408,8 @@ fn pack_mod(
         &layout.world,
         &layout.logs.join("keygen.log"),
     )?;
-    let addons = layout.mod_dir.join("addons");
-    let keys = layout.mod_dir.join("keys");
+    let addons = layout.new_mod.join("addons");
+    let keys = layout.new_mod.join("keys");
     for dir in [&addons, &keys] {
         std::fs::create_dir_all(dir).map_err(io_err(dir))?;
     }
@@ -475,15 +490,19 @@ pub fn build(
 
     progress("Assembling the server mission");
     let half = narrow(project.map_size_m() / 2.0);
-    let mission_dir = write_mission(
+    let new_mission = write_mission(
         &tools.dayz_server.join("mpmissions"),
-        &layout.missions,
+        &layout.new_missions,
         &layout.world,
         (half, half),
     )?;
 
     progress("Packing and signing the mod");
-    pack_mod(&layout, tools, &oprw, &mission_dir)?;
+    pack_mod(&layout, tools, &oprw, &new_mission)?;
+    layout.install()?;
+    let mission_dir = layout
+        .missions
+        .join(format!("dayzOffline.{}", layout.world));
     Ok(BuildOutput {
         mod_dir: layout.mod_dir,
         mission_dir,

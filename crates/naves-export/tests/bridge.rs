@@ -454,3 +454,54 @@ fn binarizes_flat_world() {
     assert_eq!(&head[..4], b"OPRW");
     assert_eq!(&head[4..8], &32u32.to_le_bytes());
 }
+
+/// `target` as a path relative to the current directory.
+fn relative_to_cwd(target: &Path) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap();
+    let mut out = PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        out.push("..");
+    }
+    out.join(target.strip_prefix("/").unwrap())
+}
+
+/// The tools run in other working directories, so a relative path from the environment has to be resolved early.
+#[test]
+fn relative_tool_paths_become_absolute() {
+    let _lock = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let steam = fake_steam(&root, "exit 0");
+    let armake2 = fork_armake2(&root);
+    let proton = steam.join("steamapps/common/Proton Hotfix/proton");
+    let env = env_of(vec![
+        ("STEAM_ROOT", steam.clone()),
+        ("ARMAKE2", relative_to_cwd(&armake2)),
+        ("PROTON", relative_to_cwd(&proton)),
+        (
+            "DAYZ_TOOLS",
+            relative_to_cwd(&steam.join("steamapps/common/DayZ Tools")),
+        ),
+    ]);
+    let tools = Tools::locate_with(&env, None, None).unwrap();
+    assert!(tools.armake2.is_absolute(), "{}", tools.armake2.display());
+    assert!(tools.binarize.proton.is_absolute());
+    assert!(tools.binarize.dayz_tools.is_absolute());
+    assert!(tools.dayz_server.is_absolute());
+}
+
+#[test]
+fn steam_is_found_in_the_windows_program_folder() {
+    let _lock = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let programs = dir.path().join("Program Files (x86)");
+    let steam = programs.join("Steam");
+    std::fs::rename(fake_steam(&programs, "exit 0"), &steam).unwrap();
+    let armake2 = fork_armake2(dir.path());
+    let env = env_of(vec![
+        ("ProgramFiles(x86)", programs.clone()),
+        ("ARMAKE2", armake2),
+    ]);
+    let tools = Tools::locate_with(&env, None, None).unwrap();
+    assert_eq!(tools.binarize.steam_root, steam);
+}

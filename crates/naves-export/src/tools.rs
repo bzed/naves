@@ -155,7 +155,7 @@ impl Tools {
             ));
         }
         let proton = var("PROTON").unwrap_or_else(|| common.join("Proton Hotfix/proton"));
-        if !proton.is_file() {
+        if proton_missing(&proton, cfg!(windows)) {
             return Err(missing(
                 "Proton",
                 "PROTON",
@@ -173,19 +173,30 @@ impl Tools {
         let timeout = env("NAVES_BINARIZE_TIMEOUT")
             .and_then(|v| v.to_str().and_then(|s| s.parse::<u64>().ok()))
             .map_or(DEFAULT_BINARIZE_TIMEOUT, Duration::from_secs);
+        // The tools run in other working directories, so relative paths have to be resolved here.
         Ok(Tools {
-            armake2,
-            dayz_server,
+            armake2: absolute(armake2),
+            dayz_server: absolute(dayz_server),
             binarize: BinarizeBridge {
-                dayz: var("DAYZ").unwrap_or_else(|| common.join("DayZ")),
-                dayz_tools,
-                proton,
-                steam_root,
+                dayz: absolute(var("DAYZ").unwrap_or_else(|| common.join("DayZ"))),
+                dayz_tools: absolute(dayz_tools),
+                proton: absolute(proton),
+                steam_root: absolute(steam_root),
                 sandbox_base: default_sandbox_base(),
                 timeout,
             },
         })
     }
+}
+
+/// `path` made absolute; an unusable path stays as it is and fails with a named error when it is used.
+fn absolute(path: PathBuf) -> PathBuf {
+    std::path::absolute(&path).unwrap_or(path)
+}
+
+/// On Windows the DayZ Tools run directly, so only other systems need Proton.
+fn proton_missing(proton: &Path, windows: bool) -> bool {
+    !windows && !proton.is_file()
 }
 
 fn default_sandbox_base() -> PathBuf {
@@ -241,8 +252,21 @@ fn locate_steam(
             h.join(".steam/debian-installation"),
         ]
     });
+    let windows = env("ProgramFiles(x86)").map(|p| PathBuf::from(p).join("Steam"));
     candidates
-        .into_iter()
+        .chain(windows)
         .find(|c| c.join("steamapps").is_dir())
         .ok_or_else(|| missing("Steam", "STEAM_ROOT", HINT))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proton_is_only_needed_off_windows() {
+        let absent = Path::new("/nonexistent/proton");
+        assert!(proton_missing(absent, false));
+        assert!(!proton_missing(absent, true));
+    }
 }

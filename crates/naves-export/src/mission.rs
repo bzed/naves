@@ -126,11 +126,15 @@ fn has_name(e: &BytesStart<'_>, names: &[&str]) -> bool {
     names.contains(&name)
 }
 
+/// `cfgeffectarea.json` without the gas zones of the source map, whose positions mean nothing on another map.
+const NO_GAS_ZONES: &str = "{\n    \"Areas\": [],\n    \"SafePositions\": []\n}\n";
+
 /// Assembles `out_dir/dayzOffline.<world>` from `<server_mpmissions>/dayzOffline.enoch`.
 ///
 /// `cfgplayerspawnpoints.xml` gets the single spawn position (`x`, `z`) in its fresh, hop and travel
-/// sections; the building groups in `mapgrouppos.xml` and the positions in `cfgeventspawns.xml` are removed;
-/// everything else is copied unchanged. The source is only read, and the copy is writable even if the
+/// sections; the building groups in `mapgrouppos.xml`, the positions in `cfgeventspawns.xml` and the gas zones in
+/// `cfgeffectarea.json` are removed; everything else is copied unchanged, including what is still made for Livonia:
+/// `areaflags.map` (no generator yet) and the wildlife territories in `env/`. The source is only read, and the copy is writable even if the
 /// source is not. The folder is built next to its destination and renamed into place.
 ///
 /// # Errors
@@ -184,6 +188,7 @@ pub fn write_mission(
             _ => None,
         };
         let bytes = match edit {
+            _ if name == "cfgeffectarea.json" => NO_GAS_ZONES.as_bytes().to_vec(),
             Some(edit) => {
                 let text = String::from_utf8_lossy(&bytes);
                 xml_edit(&text, edit).map_err(|message| MissionError::Xml {

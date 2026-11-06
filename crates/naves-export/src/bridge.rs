@@ -38,6 +38,7 @@ pub(crate) fn run_supervised(
     let out = File::create(log).map_err(ToolError::io(log))?;
     let err = out.try_clone().map_err(ToolError::io(log))?;
     let mut child: Child = cmd
+        .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
         .spawn()
@@ -287,6 +288,9 @@ impl BinarizeBridge {
             Command::new(server)
                 .arg("-k")
                 .env("WINEPREFIX", wine_prefix.join("pfx"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .ok();
         }
@@ -299,7 +303,12 @@ impl BinarizeBridge {
         };
         let mut cmd = Command::new(&server);
         cmd.arg("-w").env("WINEPREFIX", wine_prefix.join("pfx"));
-        let Ok(mut child) = cmd.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        let spawned = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let Ok(mut child) = spawned else {
             return;
         };
         if matches!(child.wait_timeout(WINESERVER_WAIT), Ok(None)) {
@@ -317,4 +326,20 @@ fn is_oprw(path: &Path) -> bool {
         .and_then(|mut f| f.read_exact(&mut magic))
         .is_ok()
         && &magic == b"OPRW"
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// Under `naves mcp` the stdin of this process is the protocol stream, which tools must not read.
+    #[test]
+    fn tools_do_not_inherit_stdin() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        let mut cmd = Command::new("readlink");
+        cmd.arg("/proc/self/fd/0");
+        run_supervised(&mut cmd, &log, Duration::from_mins(1)).unwrap();
+        assert_eq!(std::fs::read_to_string(log).unwrap().trim(), "/dev/null");
+    }
 }

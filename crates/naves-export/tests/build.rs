@@ -301,3 +301,25 @@ fn terrain_images_get_livonias_colour_tags() {
     let wanted: &[u8] = &[4, 0x80, 4, 0, 3, 0, 0, 0x11, 0, 0, 0, 0, 0, 0, 0, 0];
     assert!(sat.windows(wanted.len()).any(|w| w == wanted));
 }
+
+#[test]
+fn a_failed_build_keeps_the_last_good_output() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    let good = build(&proj, &env.tools(), &quiet).unwrap();
+    let pbo = good.mod_dir.join("addons/naves_test.pbo");
+    let before = std::fs::read(&pbo).unwrap();
+    // the source of the mission disappears: this fails only after the world has been binarized
+    let source = env.tools().dayz_server.join("mpmissions/dayzOffline.enoch");
+    std::fs::remove_dir_all(source).unwrap();
+    assert!(build(&proj, &env.tools(), &quiet).is_err());
+    assert_eq!(
+        std::fs::read(&pbo).unwrap(),
+        before,
+        "the mod is still there"
+    );
+    assert!(
+        good.mission_dir.join("init.c").is_file(),
+        "so is the mission"
+    );
+}
