@@ -14,6 +14,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 - [Navigation mesh](navmesh.md)
 - [Command line](cli.md)
 - [GUI](gui.md)
+  - [Keyboard shortcuts](shortcuts.md)
 - [MCP server](mcp.md)
 - [Troubleshooting](troubleshooting.md)
 - [Credits and data licences](credits.md)

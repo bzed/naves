@@ -153,13 +153,11 @@ impl ViewportSet {
 
     /// Whether there is another view to switch to.
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "Ctrl+Tab uses it (Task 4)"))]
     pub fn can_switch(&self) -> bool {
         !self.others.is_empty()
     }
 
     /// Shows the next view at the place the current one shows.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Ctrl+Tab uses it (Task 4)"))]
     pub fn switch(&mut self) {
         let Some(mut next) = self.others.pop_front() else {
             return;

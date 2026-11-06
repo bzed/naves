@@ -29,6 +29,8 @@ the thick row in its own colour. A level appears when it can do something; today
 | 1 | Terrain | map size, vertex spacing, lowest and highest point, the elevation files |
 | 2 | Ground | the share of the map for each ground class, the land cover and OpenStreetMap files |
 
+Hover a row to see its key; **F1** lists all [keyboard shortcuts](shortcuts.md) of the level you are in, and **Ctrl+B** builds.
+
 A 3 px band in the active level's colour runs along the top of the map, and a line below the map says what
 you can do. The numbers never change, so key 4 will be Roads and paths even though it is not there yet.
 

@@ -10,9 +10,9 @@ use eframe::egui::{self, Align2, Color32, FontId, Sense, WidgetInfo};
 use naves_core::render::Overlay;
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
-use super::NavesApp;
 use super::levels::Level;
 use super::theme::{GREEN, INK};
+use super::{NavesApp, shortcuts};
 
 /// The base maps, in the order they are listed.
 pub const BASE_MAPS: [(Overlay, &str); 5] = [
@@ -154,7 +154,14 @@ fn row(ui: &mut egui::Ui, level: Level, active: bool) -> bool {
             egui::StrokeKind::Inside,
         );
     }
-    response
-        .on_hover_text(format!("Go to {}", level.name()))
-        .clicked()
+    response.on_hover_text(tooltip(level)).clicked()
+}
+
+/// The tooltip of a level's row: where it goes and the key.
+#[must_use]
+pub fn tooltip(level: Level) -> String {
+    match shortcuts::key_text(shortcuts::Action::Level(level), level) {
+        Some(key) => format!("Go to {} ({key})", level.name()),
+        None => format!("Go to {}", level.name()),
+    }
 }

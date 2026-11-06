@@ -16,6 +16,7 @@ use naves_export::testing::FakeEnv;
 use super::*;
 
 mod levels;
+mod shortcuts;
 mod stack;
 mod viewport;
 

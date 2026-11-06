@@ -12,6 +12,7 @@ mod layout;
 mod levels;
 mod map_view;
 mod settings;
+mod shortcuts;
 mod stack;
 #[cfg(test)]
 mod testing;
@@ -67,6 +68,8 @@ pub struct NavesApp {
     panel: LayerPanel,
     /// The left panel was opened by hand in a window that is too small for it.
     left_open: bool,
+    /// The sheet of shortcuts (F1) is open.
+    help_open: bool,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -118,6 +121,7 @@ impl NavesApp {
             levels: levels::BUILT.to_vec(),
             panel: LayerPanel::default(),
             left_open: false,
+            help_open: false,
             heightmap: HeightmapState::NoDem,
             job: None,
             reload_wanted: false,
@@ -235,6 +239,7 @@ impl NavesApp {
         if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        self.keyboard(ui.ctx());
         let fold = layout::fold_for(ui.max_rect().size());
         egui::Panel::bottom("build")
             .resizable(!fold.dock)
@@ -278,6 +283,67 @@ impl NavesApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(GROUND))
             .show(ui, |ui| self.middle(ui));
+        if self.help_open {
+            self.help_ui(ui.ctx());
+        }
+    }
+
+    /// Runs the action of the key pressed in this frame, if it can be done.
+    fn keyboard(&mut self, ctx: &egui::Context) {
+        let typing = shortcuts::typing(ctx);
+        let level = self.panel.active;
+        if let Some(action) = ctx.input(|i| shortcuts::action_for(i, level, typing))
+            && shortcuts::action_exists(action, self)
+        {
+            self.run_action(action);
+        }
+    }
+
+    /// Does what a key (or a click that stands for one) asks for.
+    fn run_action(&mut self, action: shortcuts::Action) {
+        use shortcuts::Action;
+        match action {
+            Action::Level(level) => self.panel.active = level,
+            Action::Cancel => self.help_open = false,
+            Action::Build => self.start_build(),
+            Action::Help => self.help_open = !self.help_open,
+            Action::SwitchView => self.views.switch(),
+            // the other actions do not exist yet, see `shortcuts::action_exists`
+            _ => {}
+        }
+    }
+
+    fn start_build(&mut self) {
+        if self.building() || self.form.error.is_some() {
+            return;
+        }
+        self.log.clear();
+        self.log.push(Line::Info("Starting the build".to_string()));
+        self.worker = Some(BuildWorker::start(self.form.dir(), (self.locate_tools)()));
+    }
+
+    /// The sheet of the shortcuts that work in the active level.
+    fn help_ui(&mut self, ctx: &egui::Context) {
+        let level = self.panel.active;
+        let rows = shortcuts::sheet(self, level);
+        let mut open = true;
+        egui::Window::new("Keyboard shortcuts")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("shortcut-sheet")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        for s in rows {
+                            ui.label(s.label);
+                            ui.label(s.binding.to_string());
+                            ui.end_row();
+                        }
+                    });
+            });
+        self.help_open = open;
     }
 
     /// The panel of the active level.
@@ -408,9 +474,7 @@ impl NavesApp {
             let button = egui::Button::new(RichText::new("Build").color(Color32::WHITE).strong())
                 .fill(GREEN);
             if ui.add_enabled(can_build, button).clicked() {
-                self.log.clear();
-                self.log.push(Line::Info("Starting the build".to_string()));
-                self.worker = Some(BuildWorker::start(self.form.dir(), (self.locate_tools)()));
+                self.start_build();
             }
             if self.building() {
                 ui.spinner();
