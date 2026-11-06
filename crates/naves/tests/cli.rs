@@ -100,6 +100,118 @@ fn new_writes_project() {
 }
 
 #[test]
+fn imagery_list_shows_licences_and_the_non_commercial_mark() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = home.path().join("berchtesgaden");
+    naves(home.path())
+        .arg("new")
+        .arg(&proj)
+        .args([
+            "--name",
+            "Berchtesgaden",
+            "--center",
+            "47.585,12.965",
+            "--extent",
+            "12800",
+        ])
+        .assert()
+        .success();
+    // a user file with one more source, found through XDG_CONFIG_HOME
+    let config = home.path().join(".config/naves");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("imagery-sources.toml"),
+        "[[source]]\nid = \"my-wms\"\nname = \"My WMS\"\nkind = \"wms\"\nurl = \"https://example.org/wms\"\n\
+         layer = \"l\"\nnative_m = 2.0\nlicence = \"CC0\"\nattribution = \"Me\"\n",
+    )
+    .unwrap();
+    let out = naves(home.path())
+        .args(["imagery", "list"])
+        .arg(&proj)
+        .assert()
+        .success();
+    let text = stdout(&out);
+    assert!(text.contains("Berchtesgaden"), "{text}");
+    for wanted in [
+        "sentinel2-scenes",
+        "bayern-dop40",
+        "my-wms",
+        "CC BY 4.0",
+        "whole map",
+        "naves imagery fetch",
+    ] {
+        assert!(text.contains(wanted), "{wanted} missing from:\n{text}");
+    }
+    let nc_line = text
+        .lines()
+        .find(|l| l.contains("eox-cloudless-2025"))
+        .expect("the non-commercial mosaic is listed");
+    assert!(
+        nc_line.contains("CC BY-NC-SA 4.0") && nc_line.contains("NON-COMMERCIAL"),
+        "{nc_line}"
+    );
+    let commercial = text
+        .lines()
+        .find(|l| l.contains("sentinel2-scenes"))
+        .unwrap();
+    assert!(!commercial.contains("NON-COMMERCIAL"), "{commercial}");
+    // without the user file, my-wms is gone
+    let plain = naves(home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("elsewhere"))
+        .args(["imagery", "list"])
+        .arg(&proj)
+        .assert()
+        .success();
+    assert!(!stdout(&plain).contains("my-wms"));
+}
+
+#[test]
+fn imagery_fetch_unknown_id_lists_the_ids() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = home.path().join("p");
+    naves(home.path())
+        .arg("new")
+        .arg(&proj)
+        .args([
+            "--name",
+            "P",
+            "--center",
+            "47.585,12.965",
+            "--extent",
+            "4000",
+        ])
+        .assert()
+        .success();
+    let before = std::fs::read(proj.join("naves.toml")).unwrap();
+    let out = naves(home.path())
+        .args(["imagery", "fetch", "no-such-source"])
+        .arg(&proj)
+        .assert()
+        .failure();
+    let text = stderr(&out);
+    assert!(text.contains("no-such-source"), "{text}");
+    for id in ["sentinel2-scenes", "eox-cloudless-2017", "bayern-dop40"] {
+        assert!(text.contains(id), "{id} missing from:\n{text}");
+    }
+    assert_eq!(std::fs::read(proj.join("naves.toml")).unwrap(), before);
+    // dates must be dates, before anything is fetched
+    let out = naves(home.path())
+        .args([
+            "imagery",
+            "fetch",
+            "sentinel2-scenes",
+            "--from",
+            "yesterday",
+            "--to",
+            "2025-09-30",
+        ])
+        .arg(&proj)
+        .assert()
+        .failure();
+    assert!(stderr(&out).contains("YYYY-MM-DD"), "{}", stderr(&out));
+}
+
+#[test]
 fn new_refuses_existing() {
     let home = tempfile::tempdir().unwrap();
     let proj = home.path().join("p");

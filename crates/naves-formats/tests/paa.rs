@@ -182,6 +182,52 @@ fn the_stray_byte_after_an_lzo_stream_goes() {
     );
 }
 
+/// A PAA with one 256 x 256 mipmap of `body` that is marked as LZO, and the end marker.
+fn paa_with_marked_mip(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mip0 = 2 + 12 + 64 + 2;
+    let mut offs = [0u32; 16];
+    offs[0] = u32::try_from(mip0).unwrap();
+    let mut out = vec![kind, 0xff];
+    out.extend_from_slice(b"GGATSFFO");
+    out.extend_from_slice(&64u32.to_le_bytes());
+    for o in offs {
+        out.extend_from_slice(&o.to_le_bytes());
+    }
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&[0, 0x81, 0, 1]); // 256 x 256, the high bit marks LZO
+    out.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes()[..3]);
+    out.extend_from_slice(body);
+    out.extend_from_slice(&[0; 6]);
+    out
+}
+
+/// armake2 marks a mipmap as LZO even when it kept it uncompressed because LZO did not make it smaller;
+/// the game cannot read that. A mipmap of exactly the uncompressed size is raw data.
+#[test]
+fn an_uncompressed_mipmap_loses_its_lzo_mark() {
+    for (kind, size) in [(0x01_u8, 256 * 256 / 2), (0x05, 256 * 256)] {
+        let body: Vec<u8> = (0..size)
+            .map(|i| u8::try_from(i * 7 % 251).unwrap())
+            .collect();
+        let fixed = without_stray_lzo_bytes(&paa_with_marked_mip(kind, &body)).unwrap();
+        let mip = 2 + 12 + 64 + 2;
+        assert_eq!(
+            &fixed[mip..mip + 4],
+            &[0, 0x01, 0, 1],
+            "type {kind}: no LZO mark"
+        );
+        assert_eq!(&fixed[mip + 7..mip + 7 + size], &body[..]);
+    }
+}
+
+#[test]
+fn a_real_lzo_stream_keeps_its_mark() {
+    // smaller than the uncompressed size, and ending with the marker
+    let lzo = [9, 9, 0x11, 0, 0];
+    let paa = paa_with_marked_mip(0x01, &lzo);
+    assert_eq!(without_stray_lzo_bytes(&paa).unwrap(), paa);
+}
+
 #[test]
 fn intact_files_stay_as_they_are() {
     let good = paa_with_mips(&[9, 9, 0x11, 0, 0], &[0x11, 0, 0, 0]);

@@ -42,6 +42,44 @@ large map. The sandbox is kept.
 The world name or its prefix contains characters other than letters, digits and `_`. The `world` field in
 `naves.toml` must match `^[a-z][a-z0-9_]*$`.
 
+## Imagery
+
+**`<file>: ... EPSG:<code> is not supported`**
+Náves reads imagery in EPSG:4326, UTM (326xx, 327xx, ETRS89 258xx) and EPSG:3857. Convert the file with the
+command the message gives: `gdalwarp -t_srs EPSG:<the UTM code of the map> in.tif out.tif`.
+
+**`... bits per sample, not 8`** or **`it has 1 band(s), RGB needs 3`**
+Imagery must be 8 bit with three colour bands (a fourth band is read as alpha). Convert with
+`gdal_translate -ot Byte -scale in.tif out.tif`; separate band files need `gdal_merge.py -separate` first.
+
+**`cannot decode GeoTIFF`** for a file with JPEG compression
+Convert it with `gdal_translate -co COMPRESS=DEFLATE in.tif out.tif`.
+
+**`the map needs a window of ... pixels`**
+The file is much sharper than the map and has no overviews to read from. Add them with
+`gdaladdo -r average in.tif 2 4 8 16 32`.
+
+**`https://...: ...` when fetching**
+A request failed. Náves tries three times with growing pauses and then reports the address and the reason. Check the
+network and proxy variables (`https_proxy`, `no_proxy`). Only `https://` addresses are used, and a certificate that
+the system or the bundled list does not trust is an error, not a warning.
+
+**`... the service answered something that is not an image`**
+The service sent an error page instead of a picture (the first words of it are in the message), for example because the
+request was too large or the area is outside the service. Try another source (`naves imagery list`).
+
+**`... this source has nothing for this area`**
+Every pixel of the answer is empty or blank: the map lies outside the area the service covers.
+
+**`<file>: the file is missing`**
+A file listed in `sources.imagery` is not in the project folder, for example because a project was copied without its
+`imagery` folder. When the name is one that `naves imagery fetch` writes, the message gives the command to get it
+again; otherwise copy the file back or take it off the list.
+
+**`overlaps no other image, its colours are not matched`**
+A file touches the map but does not overlap any other image, so there is nothing to match its colours to. It is used
+as it is. Add a file that covers both, or accept the step in colour.
+
 ## Server mission
 
 **`source mission not found: .../dayzOffline.enoch`**

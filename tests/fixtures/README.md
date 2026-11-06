@@ -79,3 +79,22 @@ osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigsse
 `osm/koenigssee_north.osm.pbf` and `osm/koenigssee_south.osm.pbf` split the lake: each has only the ways that touch
 its half (`osmium extract -b 12.9,47.548,13.1,47.7 -s simple` and `-b 12.9,47.4,13.1,47.552 -s simple`), so each alone
 cannot close the lake's ring, and the two together can.
+
+## `imagery/sentinel2_crop.tif`: Sentinel-2 crop
+
+A 67 × 67 px crop (10 m pixels, EPSG:32633, 8 bit RGB, DEFLATE) of the true colour image of the Sentinel-2 L2A scene
+`S2C_T33TUN_20250919T101514_L2A` around the Königssee (12.970–12.979 °E, 47.554–47.560 °N). It is also the seed of
+the `imagery_tile` fuzz target.
+
+> Contains modified Copernicus Sentinel data 2025
+
+Created with GDAL (needs network access; the tests do not):
+
+```sh
+U=/vsicurl/https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/sentinel-2-c1-l2a/33/T/UN/2025/9/S2C_T33TUN_20250919T101514_L2A/TCI.tif
+gdal_translate -q -projwin_srs EPSG:4326 -projwin 12.970 47.5600 12.9785 47.5542 \
+  -co COMPRESS=DEFLATE -co PREDICTOR=2 $U sentinel2_crop.tif
+```
+
+Reference values: the pixel centres (347275, 5269395), (347605, 5269065) and (347935, 5268735) in EPSG:32633 are
+(100, 105, 75), (2, 8, 5) and (1, 9, 5) in `gdallocationinfo -wgs84 -valonly`.

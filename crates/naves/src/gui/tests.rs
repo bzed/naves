@@ -59,7 +59,11 @@ fn editing_the_name_saves_naves_toml() {
     let mut app = app(root.path(), &dir);
     let mut harness = Harness::new_ui(|ui| app.show(ui));
     harness.run_steps(4);
-    let field = harness.get_by_role(egui::accesskit::Role::TextInput);
+    // the name is the first text field of the panel
+    let field = harness
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .unwrap();
     field.focus();
     field.type_text("X");
     harness.run_steps(8);
@@ -263,6 +267,117 @@ fn the_surface_overlay_draws_once_the_map_is_ready() {
     );
 }
 
+/// Adds the Sentinel-2 crop to the project in `dir` as imagery with the given licence.
+fn add_imagery(dir: &Path, licence: &str, non_commercial: bool) {
+    let mut p = Project::load(dir).unwrap();
+    std::fs::create_dir_all(dir.join("imagery")).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/imagery/sentinel2_crop.tif"),
+        dir.join("imagery/s2.tif"),
+    )
+    .unwrap();
+    p.sources.imagery = vec![naves_core::project::ImageryFile {
+        path: "imagery/s2.tif".into(),
+        attribution: "Contains modified Copernicus Sentinel data 2025".to_string(),
+        licence: licence.to_string(),
+        non_commercial,
+    }];
+    p.save(dir).unwrap();
+}
+
+#[test]
+fn imagery_files_are_listed() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "Copernicus Sentinel data, free and open", false);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Satellite imagery files").is_some());
+    assert!(harness.query_by_label("imagery/s2.tif").is_some());
+    assert!(
+        harness
+            .query_by_label("Copernicus Sentinel data, free and open")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Non-commercial map").is_none());
+}
+
+#[test]
+fn non_commercial_is_shown() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY-NC-SA 4.0", true);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Non-commercial map").is_some());
+    assert!(
+        harness
+            .query_all_by_label_contains("CC BY-NC-SA 4.0, non-commercial")
+            .count()
+            >= 1,
+        "the file's licence says it in words"
+    );
+}
+
+#[test]
+fn a_project_without_imagery_says_what_the_satellite_image_follows() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(
+        harness
+            .query_by_label_contains("painted from the ground classes")
+            .is_some()
+    );
+}
+
+#[test]
+fn changing_the_imagery_list_reloads_the_map() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    add_imagery(&dir, "CC BY 4.0", false);
+    app.form.project.sources.imagery = Project::load(&dir).unwrap().sources.imagery;
+    app.settings_changed();
+    assert!(
+        app.job.is_some(),
+        "the imagery overlay depends on the files"
+    );
+}
+
+#[test]
+fn the_imagery_overlay_explains_a_gap_and_a_missing_list() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Imagery").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("sources.imagery").is_some()
+    });
+}
+
+#[test]
+fn the_imagery_overlay_draws_once_the_map_is_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY 4.0", false);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Imagery").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("checkered").is_some()
+    });
+}
+
 #[test]
 fn build_warnings_are_shown_in_the_log() {
     let root = tempfile::tempdir().unwrap();
@@ -283,4 +398,286 @@ fn build_warnings_are_shown_in_the_log() {
         h.query_by_label_contains("not covered by the land cover")
             .is_some()
     });
+}
+
+// ---- choosing and fetching imagery ----
+
+use naves_export::imagery_fetch::{FetchError, FetchRequest, Http};
+
+use super::imagery::{OwnFile, option_line, options_for_project};
+
+/// A WMS that answers every request with a picture of the size asked for; `gate` holds it back.
+struct FakeWms {
+    gate: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Http for FakeWms {
+    fn get(&self, url: &str, _max: u64, out: &mut dyn std::io::Write) -> Result<(), FetchError> {
+        if let Some(gate) = &self.gate {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !gate.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let value = |key: &str| -> u32 {
+            url.split(['?', '&'])
+                .find_map(|p| p.strip_prefix(&format!("{key}=")))
+                .and_then(|v| v.parse().ok())
+                .unwrap()
+        };
+        let (width, height) = (value("width"), value("height"));
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([90, 120, 60, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        out.write_all(png.get_ref()).map_err(|e| FetchError::Http {
+            url: url.to_string(),
+            why: e.to_string(),
+        })
+    }
+
+    fn post_json(&self, url: &str, _body: &str, _max: u64) -> Result<Vec<u8>, FetchError> {
+        Err(FetchError::Http {
+            url: url.to_string(),
+            why: "no search in this test".to_string(),
+        })
+    }
+}
+
+fn fetching_app(
+    root: &Path,
+    dir: &Path,
+    gate: Option<Arc<std::sync::atomic::AtomicBool>>,
+) -> NavesApp {
+    let mut app = app(root, dir).with_http(Arc::new(FakeWms { gate }));
+    app.user_catalog = None;
+    app
+}
+
+fn wait_for_the_fetch(app: &mut NavesApp) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while app.fetch_running() {
+        assert!(Instant::now() < deadline, "timed out waiting for the fetch");
+        app.poll_background();
+        std::thread::yield_now();
+    }
+}
+
+fn log_text(app: &NavesApp) -> String {
+    app.log
+        .iter()
+        .map(|line| match line {
+            Line::Info(t) | Line::Warning(t) | Line::Error(t) | Line::Result(t) => t.as_str(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn options_follow_the_area() {
+    let bavaria = Project::new("B", 47.585, 12.965, 12_800.0);
+    let ids = |p: &Project| -> Vec<String> {
+        options_for_project(p, None)
+            .unwrap()
+            .into_iter()
+            .map(|o| o.source.id)
+            .collect()
+    };
+    assert!(ids(&bavaria).contains(&"bayern-dop40".to_string()));
+    let peru = Project::new("P", -13.1, -72.0, 5000.0);
+    assert!(!ids(&peru).contains(&"bayern-dop40".to_string()));
+    assert!(ids(&peru).contains(&"sentinel2-scenes".to_string()));
+}
+
+#[test]
+fn non_commercial_mark_is_text() {
+    let project = Project::new("B", 47.585, 12.965, 12_800.0);
+    let options = options_for_project(&project, None).unwrap();
+    let line = |id: &str| option_line(options.iter().find(|o| o.source.id == id).unwrap());
+    assert!(
+        line("eox-cloudless-2025").contains("non-commercial"),
+        "{}",
+        line("eox-cloudless-2025")
+    );
+    assert!(line("eox-cloudless-2025").contains("CC BY-NC-SA 4.0"));
+    assert!(!line("eox-cloudless-2017").contains("non-commercial"));
+    assert!(
+        line("sentinel2-scenes").contains("10 m"),
+        "{}",
+        line("sentinel2-scenes")
+    );
+    assert!(line("sentinel2-scenes").contains("whole map"));
+}
+
+#[test]
+fn fetch_job_reports_then_lists_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = fetching_app(root.path(), &dir, None);
+    wait_for_the_job(&mut app);
+    app.start_fetch("eox-cloudless-2017", FetchRequest::default())
+        .unwrap();
+    assert!(app.fetch_running());
+    wait_for_the_fetch(&mut app);
+    assert!(dir.join("imagery/eox-cloudless-2017.tif").is_file());
+    let saved = Project::load(&dir).unwrap().sources.imagery;
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].licence, "CC BY 4.0");
+    // the form follows the file, so that the next edit does not undo the fetch
+    assert_eq!(app.form.project.sources.imagery, saved);
+    let log = log_text(&app);
+    assert!(
+        log.contains("Fetching eox-cloudless-2017"),
+        "progress is reported: {log}"
+    );
+    assert!(log.contains("imagery/eox-cloudless-2017.tif"), "{log}");
+    // the map reloads with the new file
+    assert!(app.job.is_some() || matches!(app.heightmap, HeightmapState::Ready(_)));
+}
+
+#[test]
+fn cancel_leaves_no_file() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut app = fetching_app(root.path(), &dir, Some(Arc::clone(&gate)));
+    let before = std::fs::read(dir.join("naves.toml")).unwrap();
+    app.start_fetch("eox-cloudless-2017", FetchRequest::default())
+        .unwrap();
+    app.cancel_fetch();
+    gate.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for_the_fetch(&mut app);
+    let files: Vec<_> = std::fs::read_dir(dir.join("imagery"))
+        .map(|d| d.map(|e| e.unwrap().file_name()).collect())
+        .unwrap_or_default();
+    assert!(files.is_empty(), "{files:?}");
+    assert_eq!(std::fs::read(dir.join("naves.toml")).unwrap(), before);
+    assert!(log_text(&app).contains("cancelled"), "{}", log_text(&app));
+    assert!(!app.fetch_running());
+}
+
+#[test]
+fn one_job_at_a_time() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut app = fetching_app(root.path(), &dir, Some(Arc::clone(&gate)));
+    app.start_fetch("eox-cloudless-2017", FetchRequest::default())
+        .unwrap();
+    let second = app.start_fetch("eox-cloudless-2025", FetchRequest::default());
+    assert!(
+        second.unwrap_err().contains("already"),
+        "a second fetch waits for the first"
+    );
+    gate.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for_the_fetch(&mut app);
+    assert!(
+        app.start_fetch("no-such-source", FetchRequest::default())
+            .unwrap_err()
+            .contains("sentinel2-scenes")
+    );
+}
+
+#[test]
+fn order_buttons_change_the_project() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY 4.0", false);
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    std::fs::copy(dir.join("imagery/s2.tif"), dir.join("imagery/second.tif")).unwrap();
+    app.add_own_imagery(&OwnFile {
+        path: "imagery/second.tif".into(),
+        attribution: "Second".into(),
+        licence: "CC BY 4.0".into(),
+        non_commercial: false,
+    })
+    .unwrap();
+    let paths = |p: &Project| -> Vec<String> {
+        p.sources
+            .imagery
+            .iter()
+            .map(|f| f.path.display().to_string())
+            .collect()
+    };
+    assert_eq!(
+        paths(&Project::load(&dir).unwrap()),
+        ["imagery/s2.tif", "imagery/second.tif"]
+    );
+    app.move_imagery(1, true);
+    assert_eq!(
+        paths(&Project::load(&dir).unwrap()),
+        ["imagery/second.tif", "imagery/s2.tif"]
+    );
+    app.move_imagery(1, false); // the last one cannot go down: nothing changes
+    assert_eq!(
+        paths(&Project::load(&dir).unwrap()),
+        ["imagery/second.tif", "imagery/s2.tif"]
+    );
+    // removing takes the file off the list and leaves it on disk, and says so
+    app.remove_imagery(0);
+    assert_eq!(paths(&Project::load(&dir).unwrap()), ["imagery/s2.tif"]);
+    assert!(dir.join("imagery/second.tif").is_file());
+    assert!(
+        log_text(&app).contains("stays in the project folder"),
+        "{}",
+        log_text(&app)
+    );
+}
+
+#[test]
+fn own_file_needs_licence_and_attribution() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    let own = |path: &str, attribution: &str, licence: &str, nc: bool| OwnFile {
+        path: path.into(),
+        attribution: attribution.into(),
+        licence: licence.into(),
+        non_commercial: nc,
+    };
+    let before = std::fs::read(dir.join("naves.toml")).unwrap();
+    for (bad, field) in [
+        (own("imagery/a.tif", "A", "", false), "licence"),
+        (own("imagery/a.tif", "", "CC BY 4.0", false), "attribution"),
+        (
+            own("/etc/passwd", "A", "CC BY 4.0", false),
+            "sources.imagery",
+        ),
+        (
+            own("imagery/a.tif", "A", "CC BY-NC 4.0", false),
+            "non_commercial",
+        ),
+    ] {
+        let err = app.add_own_imagery(&bad).unwrap_err();
+        assert!(err.contains(field), "{field}: {err}");
+    }
+    assert_eq!(
+        std::fs::read(dir.join("naves.toml")).unwrap(),
+        before,
+        "nothing was saved"
+    );
+    assert!(app.form.project.sources.imagery.is_empty());
+    app.add_own_imagery(&own("imagery/a.tif", "A", "CC BY 4.0", false))
+        .unwrap();
+    assert_eq!(Project::load(&dir).unwrap().sources.imagery.len(), 1);
+}
+
+#[test]
+fn report_is_shown_per_file() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY 4.0", false);
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    let lines = app.imagery_report_lines();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("imagery/s2.tif") && lines[0].contains("covers"),
+        "{lines:?}"
+    );
+    // and in the window
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label_contains("covers").is_some());
 }

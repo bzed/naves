@@ -80,6 +80,24 @@ fn osm_read_seeds() {
 }
 
 #[test]
+fn imagery_catalog_seeds() {
+    for (name, data) in seeds("imagery_catalog") {
+        let text = String::from_utf8(data).unwrap();
+        let result = naves_core::imagery::catalog::parse_sources(&text);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}");
+    }
+}
+
+#[test]
+fn imagery_tile_seeds() {
+    let project = Project::new("Seed", 47.557, 12.974, 800.0);
+    for (name, data) in seeds("imagery_tile") {
+        let result = naves_core::imagery::ImageryRaster::from_bytes(data, &project, 2.0);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}");
+    }
+}
+
+#[test]
 fn landcover_tile_seeds() {
     let window = GeoWindow {
         south: 47.54,

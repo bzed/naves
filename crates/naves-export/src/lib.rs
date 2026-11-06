@@ -6,6 +6,8 @@
 pub mod bridge;
 pub mod build;
 pub mod config;
+pub mod geotiff_write;
+pub mod imagery_fetch;
 pub mod layers;
 pub mod mission;
 pub mod rvmat;

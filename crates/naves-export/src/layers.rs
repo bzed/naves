@@ -11,6 +11,7 @@ use std::io::Cursor;
 
 use image::{ImageFormat, RgbImage, RgbaImage};
 use naves_core::heightmap::Heightmap;
+use naves_core::imagery::{ImageryError, MapRect, TileImagery};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 use rayon::prelude::*;
 
@@ -150,6 +151,8 @@ pub struct LayerSet {
     pub material_index: Vec<u16>,
     /// Files relative to the world folder, with `/` separators: PNG images and tile materials.
     pub files: Vec<(String, Vec<u8>)>,
+    /// Share of the map that the imagery covers (0 without imagery).
+    pub imagery_share: f64,
 }
 
 fn encode_png(img: &image::DynamicImage) -> Vec<u8> {
@@ -162,6 +165,22 @@ fn encode_png(img: &image::DynamicImage) -> Vec<u8> {
 struct TileImages {
     satellite: Vec<u8>,
     mask: Vec<u8>,
+    /// Pixels inside the map that the imagery covers, and pixels inside the map.
+    covered: u64,
+    inside: u64,
+}
+
+/// The satellite colour of a pixel: the imagery colour times the brightness, rounded and clamped.
+fn bright(rgb: [u8; 3], brightness: f64) -> [u8; 3] {
+    rgb.map(|c| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the product is rounded and clamped to 0..=255"
+        )]
+        let v = (f64::from(c) * brightness).round().clamp(0.0, 255.0) as u8;
+        v
+    })
 }
 
 fn render_tile(
@@ -170,7 +189,8 @@ fn render_tile(
     map_size_m: f64,
     (tx, ty): (u32, u32),
     surfaces: &SurfaceGrid,
-) -> TileImages {
+    imagery: Option<&TileImagery<'_>>,
+) -> Result<TileImages, ImageryError> {
     let size = grid.tile_px;
     let mut sat = RgbImage::new(size, size);
     let mut mask = RgbaImage::new(size, size);
@@ -178,12 +198,44 @@ fn render_tile(
     let west = f64::from(tx) * tile_m;
     let north = map_size_m - f64::from(ty) * tile_m;
     let overlap = f64::from(grid.overlap_px);
+    // the pixel centres of the tile, with its overlap, as one rectangle of the map
+    let painted = imagery
+        .map(|i| {
+            i.composite.paint(
+                i.project,
+                &MapRect {
+                    west: west - overlap * grid.px_m,
+                    north: north + overlap * grid.px_m,
+                    step_x: grid.px_m,
+                    step_y: grid.px_m,
+                    width: size,
+                    height: size,
+                },
+            )
+        })
+        .transpose()?;
+    let brightness = imagery.map_or(1.0, |i| i.project.imagery.brightness);
+    let (mut covered, mut inside) = (0_u64, 0_u64);
     for py in 0..size {
         let y = north - (f64::from(py) - overlap + 0.5) * grid.px_m;
         for px in 0..size {
             let x = west + (f64::from(px) - overlap + 0.5) * grid.px_m;
             let here = hm.sample(x, y);
             let slot = surfaces.at(x, y).slot();
+            let seen = painted.as_ref().and_then(|pixels| {
+                let at = usize::try_from(py * size + px).ok()?;
+                pixels.get(at).copied().flatten()
+            });
+            if (0.0..=map_size_m).contains(&x) && (0.0..=map_size_m).contains(&y) {
+                inside += 1;
+                covered += u64::from(seen.is_some());
+            }
+            mask.put_pixel(px, py, image::Rgba(mask_rgba(slot)));
+            if let Some(colour) = seen {
+                // the image holds its own shadows: no baked shading
+                sat.put_pixel(px, py, image::Rgb(bright(colour, brightness)));
+                continue;
+            }
             // Light baked shading: the game lights the terrain itself, and deeper shadows made rock faces
             // nearly black.
             let shade = 0.7 + 0.3 * here.hillshade();
@@ -198,26 +250,33 @@ fn render_tile(
                 v
             };
             sat.put_pixel(px, py, image::Rgb(rgb.map(lit)));
-            mask.put_pixel(px, py, image::Rgba(mask_rgba(slot)));
         }
     }
-    TileImages {
+    Ok(TileImages {
         satellite: encode_png(&image::DynamicImage::ImageRgb8(sat)),
         mask: encode_png(&image::DynamicImage::ImageRgba8(mask)),
-    }
+        covered,
+        inside,
+    })
 }
 
 /// Builds satellite images, masks and tile materials for the whole map.
 ///
 /// `land_size` is the material grid size (a multiple of 8); `prefix` is the world's in-game path, for
-/// example `naves\worlds\berchtesgaden`; `surfaces` decides the ground of every position.
-#[must_use]
+/// example `naves\worlds\berchtesgaden`; `surfaces` decides the ground of every position. Where `imagery`
+/// covers a pixel, the satellite image shows it (times the project's brightness, without baked shading);
+/// everywhere else the class colour with its shading.
+///
+/// # Errors
+///
+/// [`ImageryError`] if a position of the map cannot be converted.
 pub fn build_layers(
     hm: &Heightmap,
     land_size: u32,
     prefix: &str,
     surfaces: &SurfaceGrid,
-) -> LayerSet {
+    imagery: Option<&TileImagery<'_>>,
+) -> Result<LayerSet, ImageryError> {
     let map_size_m = f64::from(hm.size) * f64::from(hm.cell_m);
     let grid = tile_grid(map_size_m, land_size);
     let coords: Vec<(u32, u32)> = (0..grid.tiles_y)
@@ -225,8 +284,11 @@ pub fn build_layers(
         .collect();
     let rendered: Vec<TileImages> = coords
         .par_iter()
-        .map(|&tile| render_tile(hm, &grid, map_size_m, tile, surfaces))
-        .collect();
+        .map(|&tile| render_tile(hm, &grid, map_size_m, tile, surfaces, imagery))
+        .collect::<Result<_, _>>()?;
+    let (covered, inside) = rendered
+        .iter()
+        .fold((0_u64, 0_u64), |(c, i), t| (c + t.covered, i + t.inside));
 
     let mut materials = vec![String::new()];
     let mut files = Vec::with_capacity(coords.len() * 3);
@@ -259,9 +321,19 @@ pub fn build_layers(
             material_index.push(u16::try_from(index).unwrap_or(0));
         }
     }
-    LayerSet {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel counts are far below 2^52"
+    )]
+    let imagery_share = if inside == 0 {
+        0.0
+    } else {
+        covered as f64 / inside as f64
+    };
+    Ok(LayerSet {
         materials,
         material_index,
         files,
-    }
+        imagery_share,
+    })
 }

@@ -358,6 +358,17 @@ fn with_sources(proj: &Path, land_cover: &[&str], osm: &[&str]) -> Project {
 
 /// The pixel of the tile mask at a latitude and longitude, read from the PNG that the fake `img2paa` embeds.
 fn mask_at(proj: &Path, p: &Project, lat: f64, lon: f64) -> [u8; 4] {
+    layer_pixel(proj, p, lat, lon, "m", "lca")
+}
+
+/// The pixel of the satellite image at a latitude and longitude.
+fn sat_at(proj: &Path, p: &Project, lat: f64, lon: f64) -> [u8; 3] {
+    let [r, g, b, _] = layer_pixel(proj, p, lat, lon, "s", "lco");
+    [r, g, b]
+}
+
+/// The pixel of a tile image (`m_..._lca` or `s_..._lco`) at a latitude and longitude.
+fn layer_pixel(proj: &Path, p: &Project, lat: f64, lon: f64, kind: &str, suffix: &str) -> [u8; 4] {
     let (x, y) = MapGeo::new(p).unwrap().to_map(lat, lon).unwrap();
     let grid = tile_grid(p.map_size_m(), p.grid.land_size);
     let overlap = f64::from(grid.overlap_px);
@@ -367,7 +378,7 @@ fn mask_at(proj: &Path, p: &Project, lat: f64, lon: f64) -> [u8; 4] {
     let ty = f64::from(grid.tiles_y) - 1.0 - ty_from_south;
     let px = (x - tx * tile_m) / grid.px_m + overlap;
     let py = ((ty_from_south + 1.0) * tile_m - y) / grid.px_m + overlap;
-    let name = format!("m_{:03}_{:03}_lca.paa", tx as u32, ty as u32);
+    let name = format!("{kind}_{:03}_{:03}_{suffix}.paa", tx as u32, ty as u32);
     let paa = std::fs::read(
         proj.join("build/staging/P/naves/worlds/test/data/layers")
             .join(name),
@@ -528,4 +539,381 @@ fn cut_osm_polygons_are_reported() {
         "{:?}",
         out.warnings
     );
+}
+
+// ---- imagery ----
+
+use naves_core::project::ImageryFile;
+use tiff::encoder::{TiffEncoder, colortype};
+use tiff::tags::Tag;
+
+/// A small map inside both the DEM fixture and the Sentinel-2 crop (12.9697–12.9789 °E, 47.5542–47.5600 °N).
+const SENTINEL_CENTRE: (f64, f64) = (47.5570, 12.9743);
+
+/// A project of `extent` real metres around `centre`, inside the DEM fixture.
+fn small_project(dir: &Path, centre: (f64, f64), extent: f64) -> Project {
+    let mut p = project(dir, centre);
+    p.area.real_extent_m = extent;
+    p.imagery.brightness = 1.0; // the tests compare colours with the files
+    p.save(dir).unwrap();
+    p
+}
+
+/// Copies the Sentinel-2 crop into the project as `imagery/<name>` and lists it.
+fn add_crop(proj: &Path, name: &str, attribution: &str, licence: &str, non_commercial: bool) {
+    let mut p = Project::load(proj).unwrap();
+    std::fs::create_dir_all(proj.join("imagery")).unwrap();
+    std::fs::copy(
+        fixture("imagery/sentinel2_crop.tif"),
+        proj.join("imagery").join(name),
+    )
+    .unwrap();
+    p.sources.imagery.push(ImageryFile {
+        path: PathBuf::from("imagery").join(name),
+        attribution: attribution.to_string(),
+        licence: licence.to_string(),
+        non_commercial,
+    });
+    p.save(proj).unwrap();
+}
+
+const SENTINEL: &str = "Contains modified Copernicus Sentinel data 2025";
+const SENTINEL_LICENCE: &str = "Copernicus Sentinel data, free and open";
+
+/// Writes a geographic RGB GeoTIFF of one colour with its upper left corner at (`west`, `north`).
+fn write_flat_tiff(
+    path: &Path,
+    (west, north): (f64, f64),
+    pixel_deg: f64,
+    size: u32,
+    rgb: [u8; 3],
+) {
+    let mut cur = std::io::Cursor::new(Vec::new());
+    {
+        let mut enc = TiffEncoder::new(&mut cur).unwrap();
+        let mut img = enc.new_image::<colortype::RGB8>(size, size).unwrap();
+        let keys: [u16; 16] = [1, 1, 0, 3, 1024, 0, 1, 2, 1025, 0, 1, 1, 2048, 0, 1, 4326];
+        img.encoder()
+            .write_tag(Tag::ModelPixelScaleTag, &[pixel_deg, pixel_deg, 0.0][..])
+            .unwrap();
+        img.encoder()
+            .write_tag(
+                Tag::ModelTiepointTag,
+                &[0.0, 0.0, 0.0, west, north, 0.0][..],
+            )
+            .unwrap();
+        img.encoder()
+            .write_tag(Tag::GeoKeyDirectoryTag, &keys[..])
+            .unwrap();
+        let data: Vec<u8> = (0..size * size).flat_map(|_| rgb).collect();
+        img.write_data(&data).unwrap();
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, cur.into_inner()).unwrap();
+}
+
+fn attribution_of(out: &naves_export::build::BuildOutput) -> String {
+    std::fs::read_to_string(out.mod_dir.join("ATTRIBUTION.txt")).unwrap()
+}
+
+const NOTICE: &str = "NON-COMMERCIAL USE ONLY\n\
+    The satellite images of this map come from sources that do not allow commercial use (marked below).\n\
+    Do not use this map commercially without a licence from those sources.\n";
+
+/// 64 bit FNV-1a, for a value that must not change between Rust versions.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+#[test]
+fn old_project_builds_the_same() {
+    // a project without imagery keys: the satellite image is what it was before imagery existed
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    with_sources(&proj, &["koenigssee.tif"], &["koenigssee.osm.pbf"]);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let dir = proj.join("build/staging/P/naves/worlds/test/data/layers");
+    let hash = fnv(&std::fs::read(dir.join("s_000_000_lco.paa")).unwrap());
+    assert_eq!(
+        hash, 16_896_988_459_575_528_590,
+        "satellite image of tile 0, 0 (as it was before imagery existed)"
+    );
+}
+
+#[test]
+fn imagery_reaches_the_png() {
+    let (_dir, env, proj) = setup();
+    let p = small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    // the centre of the pixel that gdallocationinfo reads as 2, 8, 5 (tests/fixtures/README.md)
+    let got = sat_at(&proj, &p, 47.557_108_415_078_8, 12.974_288_132_34);
+    for (g, want) in got.iter().zip([2_u8, 8, 5]) {
+        assert!(g.abs_diff(want) <= 2, "{got:?}");
+    }
+    // and no hillshade: a pixel two crop pixels away is whatever the crop says there
+    let other = sat_at(&proj, &p, 47.5599, 12.9698);
+    assert_ne!(other, got);
+}
+
+#[test]
+fn missing_imagery_names_the_file() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    std::fs::remove_file(proj.join("imagery/s2.tif")).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("s2.tif"), "{err}");
+    assert!(!proj.join("build/staging").exists(), "no tool ran");
+    // a file of your own: said to be missing, with no advice about JPEG that has nothing to do with it
+    let text = err.to_string();
+    assert!(
+        text.contains("missing") && !text.contains("JPEG") && !text.contains("fetch"),
+        "{text}"
+    );
+
+    // a file that a fetch wrote (imagery/<id>-<scene>.tif): the command to get it again
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.imagery[0].path =
+        PathBuf::from("imagery/sentinel2-scenes-S2C_T32TQT_20250919T101514_L2A.tif");
+    p.save(&proj).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("S2C_T32TQT") && text.contains("missing"),
+        "{text}"
+    );
+    assert!(
+        text.contains("naves imagery fetch sentinel2-scenes"),
+        "{text}"
+    );
+    assert!(!text.contains("JPEG"), "{text}");
+}
+
+#[test]
+fn bad_imagery_costs_nothing() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let good = build(&proj, &env.tools(), &quiet).unwrap();
+    let pbo = good.mod_dir.join("addons/naves_test.pbo");
+    let before = std::fs::read(&pbo).unwrap();
+    std::fs::write(proj.join("imagery/s2.tif"), b"not a tiff").unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("s2.tif"), "{err}");
+    assert_eq!(
+        std::fs::read(&pbo).unwrap(),
+        before,
+        "the mod is still there"
+    );
+}
+
+#[test]
+fn partial_imagery_coverage_warns() {
+    let (_dir, env, proj) = setup();
+    // 500 m around a point south of the crop's middle: the crop covers the northern part of the map only
+    small_project(&proj, (47.5545, 12.9743), 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.contains("satellite") && w.contains('%')),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn full_imagery_coverage_does_not_warn() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+#[test]
+fn merge_warnings_reach_the_build() {
+    let (_dir, env, proj) = setup();
+    // the crop covers the north of the map; a flat file covers the south and does not overlap it
+    small_project(&proj, (47.5552, 12.9743), 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    write_flat_tiff(
+        &proj.join("imagery/south.tif"),
+        (12.970, 47.5536),
+        1e-4,
+        40,
+        [90, 90, 90],
+    );
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.imagery.push(ImageryFile {
+        path: "imagery/south.tif".into(),
+        attribution: "South".into(),
+        licence: "CC BY 4.0".into(),
+        non_commercial: false,
+    });
+    p.save(&proj).unwrap();
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.contains("south.tif") && w.contains("not matched")),
+        "{:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn non_commercial_is_stated_everywhere() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "eox.tif", "EOxCloudless", "CC BY-NC-SA 4.0", true);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        attribution_of(&out).starts_with(NOTICE),
+        "{}",
+        attribution_of(&out)
+    );
+    let mission = std::fs::read_to_string(out.mission_dir.join("ATTRIBUTION.txt")).unwrap();
+    assert!(mission.starts_with(NOTICE), "{mission}");
+    let mod_cpp = std::fs::read_to_string(out.mod_dir.join("mod.cpp")).unwrap();
+    assert!(mod_cpp.contains("Non-commercial use only"), "{mod_cpp}");
+    assert!(
+        out.warnings.iter().any(|w| w.contains("non-commercial")),
+        "{:?}",
+        out.warnings
+    );
+    let text = attribution_of(&out);
+    assert!(
+        text.contains("EOxCloudless")
+            && text.contains("CC BY-NC-SA 4.0")
+            && text.contains("non-commercial"),
+        "{text}"
+    );
+}
+
+#[test]
+fn commercial_sources_state_no_restriction() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let text = attribution_of(&out);
+    assert!(
+        !text.contains("NON-COMMERCIAL") && text.contains(SENTINEL),
+        "{text}"
+    );
+    let mod_cpp = std::fs::read_to_string(out.mod_dir.join("mod.cpp")).unwrap();
+    assert!(
+        mod_cpp.contains("Made with Náves.") && !mod_cpp.contains("Non-commercial"),
+        "{mod_cpp}"
+    );
+    assert!(!out.warnings.iter().any(|w| w.contains("non-commercial")));
+}
+
+#[test]
+fn unused_source_gets_no_notice_and_no_credit() {
+    let (_dir, env, proj) = setup();
+    // a map in the south of the DEM fixture, 1 km from the crop
+    small_project(&proj, (47.5440, 12.9743), 500.0);
+    add_crop(&proj, "eox.tif", "EOxCloudless", "CC BY-NC-SA 4.0", true);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let text = attribution_of(&out);
+    assert!(
+        !text.contains("NON-COMMERCIAL") && !text.contains("EOxCloudless"),
+        "{text}"
+    );
+    assert!(!out.warnings.iter().any(|w| w.contains("non-commercial")));
+}
+
+#[test]
+fn covered_source_still_counts() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "eox.tif", "EOxCloudless", "CC BY-NC-SA 4.0", true);
+    // a sharper commercial file over the whole map
+    write_flat_tiff(
+        &proj.join("imagery/sharp.tif"),
+        (12.9700, 47.5600),
+        1e-5,
+        900,
+        [60, 80, 50],
+    );
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.imagery.push(ImageryFile {
+        path: "imagery/sharp.tif".into(),
+        attribution: "Sharp".into(),
+        licence: "CC BY 4.0".into(),
+        non_commercial: false,
+    });
+    p.save(&proj).unwrap();
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        attribution_of(&out).starts_with(NOTICE),
+        "{}",
+        attribution_of(&out)
+    );
+    assert!(attribution_of(&out).contains("Sharp"));
+}
+
+#[test]
+fn share_alike_line() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "eox.tif", "EOxCloudless", "CC BY-NC-SA 4.0", true);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let text = attribution_of(&out);
+    let line = "Images derived from a share-alike source stay under that licence (marked below).";
+    assert!(text.starts_with(&format!("{NOTICE}{line}\n")), "{text}");
+    // without the share-alike source the line is gone
+    let mut p = Project::load(&proj).unwrap();
+    p.sources.imagery.clear();
+    p.save(&proj).unwrap();
+    add_crop(&proj, "plain.tif", SENTINEL, "CC BY 4.0", false);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(!attribution_of(&out).contains("share-alike"));
+}
+
+#[test]
+fn same_attribution_once() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "a.tif", SENTINEL, SENTINEL_LICENCE, false);
+    add_crop(&proj, "b.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert_eq!(attribution_of(&out).matches(SENTINEL).count(), 1);
+}
+
+#[test]
+fn quotes_are_doubled_in_mod_cpp() {
+    let (_dir, env, proj) = setup();
+    let mut p = small_project(&proj, SENTINEL_CENTRE, 500.0);
+    p.name = "Königssee \"Test\"".to_string();
+    p.save(&proj).unwrap();
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let mod_cpp = std::fs::read_to_string(out.mod_dir.join("mod.cpp")).unwrap();
+    assert!(
+        mod_cpp.contains("name = \"Königssee \"\"Test\"\"\";"),
+        "{mod_cpp}"
+    );
+}
+
+#[test]
+fn build_is_reproducible_with_imagery() {
+    let (_dir, env, proj) = setup();
+    small_project(&proj, SENTINEL_CENTRE, 500.0);
+    add_crop(&proj, "s2.tif", SENTINEL, SENTINEL_LICENCE, false);
+    let read = || {
+        let out = build(&proj, &env.tools(), &quiet).unwrap();
+        let dir = proj.join("build/staging/P/naves/worlds/test/data/layers");
+        (
+            std::fs::read(dir.join("s_000_000_lco.paa")).unwrap(),
+            std::fs::read(dir.join("s_001_001_lco.paa")).unwrap(),
+            attribution_of(&out),
+        )
+    };
+    assert_eq!(read(), read());
 }

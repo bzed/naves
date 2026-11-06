@@ -13,6 +13,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The GUI lists the imagery sources for the area of the project and fetches them in the background (with progress and cancel), shows the files in their order with up, down and remove, accepts files of your own once they have a credit and a licence, and shows what the merge found out about each file.
+- `naves imagery fetch <id>` (and the MCP tool `imagery_fetch`) downloads imagery from a catalogue source for the area of a project into its `imagery` folder and lists the files with their licence in `naves.toml`: mosaics from a WMS in tiles, Sentinel-2 scenes from a STAC search (the clearest ones of the last two summers, or of the dates given), cropped to the map. `naves build` still never uses the network. `make ca-bundle` (CI weekly and at every release) checks that the bundled CA list is the newest.
+- `naves imagery list` (and the MCP tool `imagery_options`) shows which imagery sources exist for the area of a project, with pixel size, licence and a NON-COMMERCIAL mark; a user file `imagery-sources.toml` in the configuration folder can add sources. New manual chapter "Imagery".
+- An **Imagery** overlay in the GUI map and in the MCP `render_topdown` tool shows the merged imagery (ground without imagery is checkered). The GUI lists the imagery files with their licences, says "Non-commercial map" when a file that touches the map is non-commercial, and shows the merge's notes in the log.
+- `naves build` paints the satellite images of the terrain from the GeoTIFF files in `sources.imagery`: files that overlap are matched in colour and merged by sharpness with soft edges, and `[imagery] brightness` sets the brightness. A map that uses a non-commercial file says so in `ATTRIBUTION.txt` (mod and mission), in `mod.cpp` and in the build warnings; the credits of the files used are written to `ATTRIBUTION.txt`, and the mod folder now holds a `mod.cpp` with the name of the map.
+- Project file: `sources.imagery` lists satellite or aerial GeoTIFFs with their attribution and licence (`non_commercial` is required where the licence says NC), and `[imagery] brightness` sets how bright they are drawn.
 - `naves build` paints the ground from ESA WorldCover land cover and OpenStreetMap water, rock and built-up areas (`sources.land_cover`, `sources.osm`); the slope and altitude rules apply only where neither says anything. The build warns when the files do not cover the map or an extract cuts polygons, and writes `ATTRIBUTION.txt` (Copernicus, WorldCover, OpenStreetMap as used) into the mod folder.
 - The GUI shows the build's warnings in its log. OpenStreetMap extracts are merged before areas are built, so a polygon that every extract cuts at its border is whole, and only rings on the map are counted in the skipped-rings warning.
 - A **Surface** overlay in the GUI map (with a legend) and in the MCP `render_topdown` tool shows the ground classes; the GUI lists the land cover and OpenStreetMap files.
@@ -40,6 +46,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A small real change in one of several overlapping images (a field, snow on a slope) no longer leaves a halo in the merged satellite image: cells are also compared with their neighbourhood.
+- A missing imagery file is reported as missing (not as a decoding problem with a JPEG hint), with the `naves imagery fetch` command to get it again when a fetch wrote it; imagery of a large map is fetched coarser instead of failing above 16 000 pixels.
+- Imagery of very different brightness (aerial photographs next to a satellite scene) is matched in brightness: the gain limits were too narrow, the change threshold could not recognise darker cells, and a gain per colour channel tinted rock green; the merge now uses one gain for all channels and keeps the colours of the sharper image.
+- `naves imagery fetch` names the clearest scene and suggests other dates when every scene of the default dates is cloudy, and writes the files with the usual mode instead of a private one.
+- Terrain images with real detail (photographs) no longer make `binarize` stop: `img2paa` of armake2 marked mipmaps as LZO that it had stored uncompressed, and Náves now clears the mark (armake2 itself is fixed too).
 - The game client no longer crashes a few seconds after entering a generated world. The world now uses
   Livonia's grid geometry: `grid.land_size` must be exactly `grid.terrain_size / 8` (default 128; other values
   are rejected with the right value named) and the surface tiles are 8 × 8 land cells at 60 pixels per cell. The

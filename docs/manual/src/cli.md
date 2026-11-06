@@ -63,3 +63,26 @@ control and do not share it**. The tools the build needs, and the variables that
 | Variable | Meaning |
 |---|---|
 | `DAYZ_SERVER` | the DayZ Server install that provides `dayzOffline.enoch` (default: `<Steam>/steamapps/common/DayZServer`) |
+
+## `naves imagery fetch`
+
+```sh
+naves imagery fetch <ID> [DIR] [--from DATE --to DATE]
+```
+
+Fetches imagery from the catalogue source `ID` (see `naves imagery list`) for the area of the project in `DIR` into its
+`imagery` folder and lists the files in `naves.toml` with their licence. It first prints the licence, a
+**NON-COMMERCIAL** line where the source does not allow commercial use, and how much will be downloaded. `--from` and
+`--to` (both, `YYYY-MM-DD`) set the dates of a search for scenes; by default the last two summers are searched. An
+unknown `ID` is an error that lists the ids there are. See [Imagery](imagery.md).
+
+## `naves imagery list`
+
+```sh
+naves imagery list [DIR]
+```
+
+Shows which imagery sources have something for the area of the project in `DIR` (default: the current folder), best
+first, with how much of the map each covers, its pixel size, its licence and a **NON-COMMERCIAL** mark where the
+licence does not allow commercial use. Sources of the user's own `imagery-sources.toml` are included. Nothing is
+fetched. See [Imagery](imagery.md).

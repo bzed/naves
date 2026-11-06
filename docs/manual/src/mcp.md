@@ -39,6 +39,8 @@ Give the full path of the project folder. The environment variables from [Instal
 | `project_get` | none | the project as JSON (name, area, scale, grid, sources) |
 | `project_set` | `path`, `value` | sets one field, for example `{"path": "scale.height", "value": 0.75}`; returns the new project |
 | `heightmap_stats` | none | `{min, max, size, cell_m, map_size_m}` of the heightmap |
+| `imagery_options` | none | `{area, options}`: the imagery sources for the area of the project with `id`, `name`, `kind`, `covers`, `pixel_m`, `licence`, `attribution`, `non_commercial` and `note` |
+| `imagery_fetch` | `id`, `from`?, `to`? | fetches imagery from a catalogue source into the project and lists it in `naves.toml`; returns `{files, warnings}`. Takes catalogue ids only, never an address |
 | `render_topdown` | `x0, y0, x1, y1, px, overlay` | a PNG of that part of the map, north up |
 | `build` | none | `{mod_dir, mission_dir, warnings, progress}` after the build |
 
@@ -49,9 +51,10 @@ heightmap is dropped.
 
 **`render_topdown`** takes the rectangle in map metres from the south-west corner (`x0,y0` south-west,
 `x1,y1` north-east), a width `px` in pixels (larger values are reduced to 2048; the height follows from the
-rectangle) and an `overlay`: `hillshade`, `slope`, `height` or `surface` (the ground classes in the colours of the satellite
+rectangle) and an `overlay`: `hillshade`, `slope`, `height`, `surface` (the ground classes in the colours of the satellite
 image, decided as the build does it; the first `surface` render reads the project's land cover and OpenStreetMap
-files and is cached until the project changes). Inverted, empty or non-finite rectangles are
+files and is cached until the project changes) or `imagery` (the merged images of `sources.imagery`; ground without
+imagery is checkered, and a project without imagery files is an error that names `sources.imagery`). Inverted, empty or non-finite rectangles are
 errors. The map's size is in `heightmap_stats` as `map_size_m`.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the

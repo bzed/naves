@@ -12,7 +12,7 @@ LOCKED = --locked
 # cargo-fuzz binaries from prebuilt releases default to a musl target, where sanitizers do not work.
 FUZZ_HOST = $(shell rustc +nightly -vV | sed -n "s/^host: //p")
 
-.PHONY: fmt fmt-check lint doc reuse deny test fuzz cover coverage-check docs miri deb check
+.PHONY: fmt fmt-check lint doc reuse deny ca-bundle test fuzz cover coverage-check docs miri deb check
 
 fmt:
 	$(CARGO) fmt --all
@@ -53,6 +53,16 @@ coverage-check:
 docs:
 	mdbook build docs/manual
 	lychee --offline --no-progress --root-dir $(CURDIR)/docs/manual/book docs/manual/book
+
+# The CA list that the HTTP client trusts (webpki-roots, from Mozilla) must be the newest release: a CA can be
+# revoked, and a build that ships an old list keeps trusting it. Needs network access.
+ca-bundle:
+	@locked=$$(awk '/^name = "webpki-roots"$$/ {getline; gsub(/"/, "", $$3); print $$3}' Cargo.lock | sort -V | tail -1); \
+	latest=$$(curl -fsS -A "naves-ci (https://github.com/bzed/naves)" https://crates.io/api/v1/crates/webpki-roots \
+	  | python3 -c 'import json, sys; print(json.load(sys.stdin)["crate"]["max_stable_version"])'); \
+	[ -n "$$locked" ] && [ -n "$$latest" ] || { echo "cannot find the webpki-roots version"; exit 1; }; \
+	if [ "$$locked" = "$$latest" ]; then echo "webpki-roots $$locked is the newest release"; \
+	else echo "webpki-roots $$locked in Cargo.lock, the newest is $$latest: run 'cargo update -p webpki-roots'"; exit 1; fi
 
 miri:
 	$(CARGO) +nightly miri test --workspace $(LOCKED)

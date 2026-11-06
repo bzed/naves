@@ -1,0 +1,6 @@
+Copernicus Sentinel data
+
+Contains modified Copernicus Sentinel data.
+
+Sentinel data may be used free of charge for any purpose, commercial use included, under the Legal Notice on the use of Copernicus Sentinel Data and Service Information:
+https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice

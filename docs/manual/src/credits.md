@@ -38,3 +38,13 @@ The data is licensed under the [Open Database Licence](https://opendatacommons.o
 from it contains OSM-derived data: if you publish it, keep this attribution with the map, and note that the ODbL
 requires the derived database to be shared alike. `naves build` writes the attribution to `ATTRIBUTION.txt` in the
 mod folder.
+
+## Satellite images: Copernicus Sentinel-2
+
+Náves can read Sentinel-2 images (10 m) to paint the satellite images of the terrain, and its test files contain a
+small crop of one.
+
+> Contains modified Copernicus Sentinel data 2025
+
+Sentinel data is free and open under the [Copernicus data licence](https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice),
+commercial use included. If you publish a map made from it, keep this attribution with the map.

@@ -3,3 +3,4 @@ secrets/
 navmesh/*.nm
 landcover/
 osm/
+imagery/

@@ -14,11 +14,16 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use naves_core::dem::Dem;
-use naves_core::heightmap::{Heightmap, build_heightmap};
+use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
+use naves_core::imagery::catalog::{
+    SourceKind, catalog, find_source, options_for, user_catalog_path,
+};
+use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::build;
+use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -55,6 +60,8 @@ pub enum OverlayArg {
     Height,
     /// The ground class of every cell.
     Surface,
+    /// The satellite or aerial imagery of sources.imagery; ground without imagery is checkered.
+    Imagery,
 }
 
 impl From<OverlayArg> for Overlay {
@@ -64,6 +71,7 @@ impl From<OverlayArg> for Overlay {
             OverlayArg::Slope => Overlay::Slope,
             OverlayArg::Height => Overlay::Height,
             OverlayArg::Surface => Overlay::Surface,
+            OverlayArg::Imagery => Overlay::Imagery,
         }
     }
 }
@@ -85,11 +93,34 @@ pub struct RenderParams {
     overlay: OverlayArg,
 }
 
-/// A heightmap, the ground surfaces once they were asked for, and the project they were made from.
+/// Arguments of `imagery_fetch`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FetchParams {
+    /// The id of a source from `imagery_options`. Only catalogue ids are accepted, never an address.
+    id: String,
+    /// First day of the search for scenes, `YYYY-MM-DD` (needs `to`).
+    from: Option<String>,
+    /// Last day of the search for scenes, `YYYY-MM-DD` (needs `from`).
+    to: Option<String>,
+}
+
+/// A heightmap, the ground surfaces and the imagery once they were asked for, and the project they were made
+/// from.
 struct Cached {
     project: Project,
     heightmap: Arc<Heightmap>,
     surfaces: Option<Arc<SurfaceGrid>>,
+    /// Whether the imagery was looked for; `imagery` stays empty when the project lists none.
+    imagery_loaded: bool,
+    imagery: Option<Arc<LoadedImagery>>,
+}
+
+/// What `NavesMcp::map` hands out.
+struct MapData {
+    project: Project,
+    heightmap: Arc<Heightmap>,
+    surfaces: Option<Arc<SurfaceGrid>>,
+    imagery: Option<Arc<LoadedImagery>>,
 }
 
 type CachedHeightmap = Option<Cached>;
@@ -150,15 +181,13 @@ impl NavesMcp {
 
     /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
-        Ok(self.map(false).await?.0)
+        Ok(self.map(false, false).await?.heightmap)
     }
 
-    /// The heightmap and, when `with_surfaces` is set, the ground surfaces of the saved project. Both are
-    /// computed again only when the project file has changed; the surfaces are only made when asked for.
-    async fn map(
-        &self,
-        with_surfaces: bool,
-    ) -> Result<(Arc<Heightmap>, Option<Arc<SurfaceGrid>>), String> {
+    /// The heightmap and, when asked for, the ground surfaces and the imagery of the saved project. All are
+    /// computed again only when the project file has changed; surfaces and imagery are only made when asked
+    /// for.
+    async fn map(&self, with_surfaces: bool, with_imagery: bool) -> Result<MapData, String> {
         let mut cache = self.heightmap.lock().await;
         let dir = self.dir.clone();
         let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
@@ -170,6 +199,8 @@ impl NavesMcp {
                 project: project.clone(),
                 heightmap: hm,
                 surfaces: None,
+                imagery_loaded: false,
+                imagery: None,
             });
         }
         let Some(cached) = cache.as_mut() else {
@@ -178,12 +209,27 @@ impl NavesMcp {
         if with_surfaces && cached.surfaces.is_none() {
             let dir = self.dir.clone();
             let hm = Arc::clone(&cached.heightmap);
+            let input = project.clone();
             let grid =
-                blocking(move || project_surfaces(&project, &dir, &hm).map_err(|e| e.to_string()))
+                blocking(move || project_surfaces(&input, &dir, &hm).map_err(|e| e.to_string()))
                     .await??;
             cached.surfaces = Some(Arc::new(grid));
         }
-        Ok((Arc::clone(&cached.heightmap), cached.surfaces.clone()))
+        if with_imagery && !cached.imagery_loaded {
+            let dir = self.dir.clone();
+            let input = project.clone();
+            let loaded =
+                blocking(move || load_imagery(&input, &dir, &|_| {}).map_err(|e| e.to_string()))
+                    .await??;
+            cached.imagery = loaded.map(Arc::new);
+            cached.imagery_loaded = true;
+        }
+        Ok(MapData {
+            project,
+            heightmap: Arc::clone(&cached.heightmap),
+            surfaces: cached.surfaces.clone(),
+            imagery: cached.imagery.clone(),
+        })
     }
 
     #[tool(
@@ -248,14 +294,20 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope, height or surface (the ground classes grass, rock, forest and soil in their satellite colours)."
+        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope, height, surface (the ground classes grass, rock, forest and soil in their satellite colours) or imagery (the merged images of sources.imagery, ground without imagery checkered)."
     )]
     async fn render_topdown(
         &self,
         Parameters(params): Parameters<RenderParams>,
     ) -> Result<CallToolResult, McpError> {
         let wants_surfaces = matches!(params.overlay, OverlayArg::Surface);
-        let (hm, surfaces) = match self.map(wants_surfaces).await {
+        let wants_imagery = matches!(params.overlay, OverlayArg::Imagery);
+        let MapData {
+            project,
+            heightmap: hm,
+            surfaces,
+            imagery,
+        } = match self.map(wants_surfaces, wants_imagery).await {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -268,8 +320,12 @@ impl NavesMcp {
             overlay: params.overlay.into(),
         };
         let png = blocking(move || -> Result<Vec<u8>, String> {
-            let image =
-                render_topdown(&hm, &request, surfaces.as_deref()).map_err(|e| e.to_string())?;
+            let tile_imagery = imagery.as_deref().map(|loaded| TileImagery {
+                composite: &loaded.composite,
+                project: &project,
+            });
+            let image = render_topdown(&hm, &request, surfaces.as_deref(), tile_imagery.as_ref())
+                .map_err(|e| e.to_string())?;
             let mut bytes = Cursor::new(Vec::new());
             image
                 .write_to(&mut bytes, image::ImageFormat::Png)
@@ -282,6 +338,99 @@ impl NavesMcp {
                 base64::engine::general_purpose::STANDARD.encode(bytes),
                 "image/png",
             )]),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Which imagery sources exist for the area of the project, best first: id, name, how much of the map it covers (0..1), pixel size in metres, licence, credit, whether it is non-commercial and a note. Whole-map sources that allow commercial use come first."
+    )]
+    async fn imagery_options(&self) -> Result<CallToolResult, McpError> {
+        let dir = self.dir.clone();
+        let result = blocking(move || -> Result<serde_json::Value, String> {
+            let project = Project::load(&dir).map_err(|e| e.to_string())?;
+            let window = MapGeo::new(&project)
+                .and_then(|geo| geo.window(0.0))
+                .map_err(|e| e.to_string())?;
+            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
+            let options: Vec<serde_json::Value> = options_for(&sources, window)
+                .into_iter()
+                .map(|o| {
+                    json!({
+                        "id": o.source.id,
+                        "name": o.source.name,
+                        "kind": match o.source.kind {
+                            SourceKind::Stac { .. } => "stac",
+                            SourceKind::Wms { .. } => "wms",
+                        },
+                        "covers": o.coverage_share,
+                        "pixel_m": o.source.native_m,
+                        "licence": o.source.licence,
+                        "attribution": o.source.attribution,
+                        "non_commercial": o.source.non_commercial,
+                        "note": o.source.note,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "area": {
+                    "west": window.west,
+                    "south": window.south,
+                    "east": window.east,
+                    "north": window.north,
+                },
+                "options": options,
+            }))
+        })
+        .await;
+        Ok(match result.and_then(|r| r) {
+            Ok(value) => json_text(&value),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Fetch imagery from a catalogue source (an id from imagery_options) for the area of the project: the files go into the imagery folder and are listed in naves.toml with their licence. Takes only catalogue ids, no addresses. Can take minutes and download hundreds of megabytes. Returns the files and warnings."
+    )]
+    async fn imagery_fetch(
+        &self,
+        Parameters(params): Parameters<FetchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let _writing = self.writes.lock().await;
+        let dir = self.dir.clone();
+        let result = blocking(move || -> Result<serde_json::Value, String> {
+            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
+            let source = find_source(&sources, &params.id).map_err(|e| e.to_string())?;
+            let warnings = Mutex::new(Vec::new());
+            let files = fetch(
+                &dir,
+                source,
+                &FetchRequest {
+                    from: params.from,
+                    to: params.to,
+                },
+                &RealHttp::new(),
+                &|line| {
+                    if let (true, Ok(mut warnings)) = (line.starts_with("warning"), warnings.lock())
+                    {
+                        warnings.push(line.to_string());
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "files": files.iter().map(|f| json!({
+                    "path": f.path,
+                    "attribution": f.attribution,
+                    "licence": f.licence,
+                    "non_commercial": f.non_commercial,
+                })).collect::<Vec<_>>(),
+                "warnings": warnings.into_inner().unwrap_or_default(),
+            }))
+        })
+        .await;
+        Ok(match result.and_then(|r| r) {
+            Ok(value) => json_text(&value),
             Err(e) => failure(e),
         })
     }

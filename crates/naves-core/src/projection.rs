@@ -98,3 +98,10 @@ fn utm_zone(lon: f64) -> u8 {
     let index = ((lon + 180.0) / 6.0).floor() as u8;
     index + 1
 }
+
+/// The EPSG code of the UTM zone (WGS84) that contains the position: 326xx north of the equator, 327xx south.
+#[must_use]
+pub fn utm_epsg(lat: f64, lon: f64) -> u32 {
+    let base = if lat < 0.0 { 32_700 } else { 32_600 };
+    base + u32::from(utm_zone(lon))
+}

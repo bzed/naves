@@ -60,6 +60,24 @@ above 2100 m real altitude); see [Ground from real data](#ground-from-real-data)
 trees or water planes yet (a lake is only soil-coloured ground). Infected and animals only move once the project
 has a [navigation mesh](navmesh.md).
 
+## Satellite images from real imagery
+
+By default the satellite image that the game shows from a distance is painted from the ground classes. List
+GeoTIFF files in `[[sources.imagery]]` (see [the project file](project-file.md#sourcesimagery)) and `naves build`
+paints the satellite images from them instead, without baked shading, because the image holds its own shadows. Where
+no file covers the map, the class colours are used, and the build says how much of the map that is.
+
+Several files can overlap. Náves measures their colours against each other where they overlap, evens out
+differences in exposure, draws the sharpest image where several cover a spot, and fades one image into the next
+over a few land cells. The image with the most coverage keeps its colours; a Sentinel-2 image of the whole map
+under aerial photos needs no setting. The colours are made 30 % brighter by default, because satellite images are dark next to the game's own terrain; change `[imagery] brightness` to taste.
+
+Imagery comes with a licence. Náves writes the credits of every file that touches the map into `ATTRIBUTION.txt`
+(in the mod and in the mission) and a short note into `mod.cpp`. If a file is marked `non_commercial = true`, the
+attribution opens with **NON-COMMERCIAL USE ONLY**, the launcher shows it in the mod's overview and the build
+warns. A file that does not touch the map gets neither notice nor credit. This is information, not legal advice:
+whether you may publish the map is your responsibility.
+
 ## Ground from real data
 
 Add ESA WorldCover tiles and OpenStreetMap extracts to the `[sources]` table

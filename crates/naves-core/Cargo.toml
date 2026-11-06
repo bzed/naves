@@ -33,4 +33,5 @@ test-util = []
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 naves-core = { path = ".", features = ["test-util"] }
+proptest = "1.12.0"
 tiff = { version = "0.11.3", default-features = false, features = ["deflate"] }

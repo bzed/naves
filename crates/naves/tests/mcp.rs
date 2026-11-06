@@ -115,11 +115,78 @@ async fn lists_tools() {
         [
             "build",
             "heightmap_stats",
+            "imagery_fetch",
+            "imagery_options",
             "project_get",
             "project_set",
             "render_topdown"
         ]
     );
+}
+
+#[tokio::test]
+async fn imagery_options_lists_the_same() {
+    use naves_core::heightmap::MapGeo;
+    use naves_core::imagery::catalog::{catalog, options_for};
+    let f = start().await;
+    let result = call(&f, "imagery_options", json!({})).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let listed: Value = serde_json::from_str(&text(&result)).unwrap();
+    let project = naves_core::project::Project::load(&f.proj).unwrap();
+    let window = MapGeo::new(&project).unwrap().window(0.0).unwrap();
+    let expected = options_for(&catalog(None).unwrap(), window);
+    let got: Vec<&str> = listed["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    let want: Vec<&str> = expected.iter().map(|o| o.source.id.as_str()).collect();
+    assert_eq!(got, want);
+    let nc = listed["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "eox-cloudless-2025")
+        .unwrap();
+    assert_eq!(nc["non_commercial"], true);
+    assert_eq!(nc["licence"], "CC BY-NC-SA 4.0");
+    assert!(listed["area"]["west"].as_f64().unwrap() < listed["area"]["east"].as_f64().unwrap());
+}
+
+#[tokio::test]
+async fn imagery_fetch_takes_no_url() {
+    let f = start().await;
+    let tools = f.client.list_all_tools().await.unwrap();
+    let tool = tools.iter().find(|t| t.name == "imagery_fetch").unwrap();
+    let schema = serde_json::to_value(&tool.input_schema).unwrap();
+    let mut properties: Vec<&str> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    properties.sort_unstable();
+    assert_eq!(
+        properties,
+        ["from", "id", "to"],
+        "ids from the catalogue only: no address"
+    );
+    // an unknown id is an error that names the ids there are, and the project stays as it was
+    let before = std::fs::read(f.proj.join("naves.toml")).unwrap();
+    let result = call(
+        &f,
+        "imagery_fetch",
+        json!({"id": "https://example.org/x.tif"}),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("sentinel2-scenes"),
+        "{}",
+        text(&result)
+    );
+    assert_eq!(std::fs::read(f.proj.join("naves.toml")).unwrap(), before);
 }
 
 #[tokio::test]
@@ -239,6 +306,76 @@ async fn render_topdown_shows_surfaces() {
         seen.contains_key(&[0x2e, 0x4d, 0x2a]),
         "trees are forest: {seen:?}"
     );
+}
+
+/// Points the project at the Sentinel-2 crop (12.9697–12.9789 °E, 47.5542–47.5600 °N) as its imagery.
+async fn use_the_sentinel_crop(f: &Fixture) {
+    std::fs::create_dir_all(f.proj.join("imagery")).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/imagery/sentinel2_crop.tif"),
+        f.proj.join("imagery/s2.tif"),
+    )
+    .unwrap();
+    for (path, value) in [
+        ("area.center_lat", json!(47.557)),
+        ("area.center_lon", json!(12.9743)),
+        ("area.real_extent_m", json!(500)),
+        (
+            "sources.imagery",
+            json!([{
+                "path": "imagery/s2.tif",
+                "attribution": "Contains modified Copernicus Sentinel data 2025",
+                "licence": "Copernicus Sentinel data, free and open"
+            }]),
+        ),
+    ] {
+        let result = call(f, "project_set", json!({"path": path, "value": value})).await;
+        assert_ne!(result.is_error, Some(true), "{path}: {}", text(&result));
+    }
+}
+
+#[tokio::test]
+async fn render_topdown_shows_imagery() {
+    let f = start().await;
+    use_the_sentinel_crop(&f).await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 200, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let seen = colours(&result);
+    assert!(
+        seen.len() > 20,
+        "a photograph has many colours, not a checkered gap: {} colours",
+        seen.len()
+    );
+}
+
+#[tokio::test]
+async fn imagery_overlay_follows_the_file_list() {
+    let f = start().await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 750, "y1": 750, "px": 50, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args.clone()).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("sources.imagery"),
+        "{}",
+        text(&result)
+    );
+    // the same server notices the new list
+    use_the_sentinel_crop(&f).await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 50, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    // and an empty list again
+    let result = call(
+        &f,
+        "project_set",
+        json!({"path": "sources.imagery", "value": []}),
+    )
+    .await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 50, "overlay": "imagery"});
+    assert_eq!(call(&f, "render_topdown", args).await.is_error, Some(true));
 }
 
 #[tokio::test]

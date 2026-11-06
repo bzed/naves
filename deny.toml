@@ -27,3 +27,10 @@ unknown-git = "deny"
 [[licenses.exceptions]]
 crate = "epaint_default_fonts"
 allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+# The Mozilla CA list that the HTTP client (ureq with rustls) trusts. CDLA-Permissive-2.0 is a permissive data
+# licence: it allows using and redistributing the list in a program. Scoped to this crate, not allowed globally.
+# A CA can be revoked, so `make ca-bundle` (CI, weekly and at every release) fails when a newer release exists.
+[[licenses.exceptions]]
+crate = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]

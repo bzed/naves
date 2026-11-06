@@ -15,6 +15,7 @@ The reference project of milestone 1: a 12.8 km square of the Berchtesgaden Alps
 | In it | the Königssee, the Watzmann massif (west of the lake), the Hochkalter group, Berchtesgaden town |
 | Elevation data | Copernicus GLO-30, two tiles that meet at 13.0 °E, so it also tests the tile seam |
 | Ground | ESA WorldCover (one tile) and OpenStreetMap (Oberbayern and Austria: the south and east of the map are Austrian) |
+| Satellite image | Sentinel-2, one clear scene of 2025-09-19 (10 m), which covers the whole map |
 
 ## Fetch the elevation data
 
@@ -47,8 +48,32 @@ curl -fLO https://download.geofabrik.de/europe/austria-latest.osm.pbf
 Without these two folders, remove `land_cover` and `osm` from `naves.toml`: the ground then follows slope and
 altitude only.
 
-Data licences and attribution: see "Credits and data licences" in the manual. A map built from these files contains
-OpenStreetMap data under the ODbL.
+## Fetch the satellite image
+
+The satellite image of the terrain is merged from two sources: Sentinel-2 (10 m, one clear scene of 2025-09-19 that
+covers the whole map; Austria and Bavaria) and the aerial photographs of Bavaria (DOP40, 0.4 m, used at the
+resolution of the map; the south and east of the map are Austrian, where the service answers blank and the Sentinel-2
+image shows). Both are free to use, commercial use included. Náves fetches them into `imagery/`:
+
+```sh
+naves imagery fetch sentinel2-scenes examples/berchtesgaden   # 100 s, a 4 MB crop of a 340 MB scene
+naves imagery fetch bayern-dop40 examples/berchtesgaden       # 5 min, 20 requests, a 160 MB file
+```
+
+The scene is dark for a terrain; the build makes the imagery 30 % brighter, and `[imagery] brightness` in `naves.toml`
+changes that. Náves evens out the colours of the photographs and the scene where they overlap; the photographs are
+much brighter than the scene, and where the kind of ground differs (forest is nearly black in the scene) a soft band
+of colour remains at the border to Austria. Without the files, remove the `[[sources.imagery]]` blocks from
+`naves.toml`: the satellite image is then painted from the ground classes. With only Sentinel-2, the map is built
+from a smaller file and has no band. For a non-commercial map, `eox-cloudless-2025` is the newest cloud-free
+mosaic; the map then says that it is non-commercial.
+
+Cost of the satellite image (release binary, `naves build`; same map without imagery in brackets):
+
+| `terrain_size` | Build time | Peak memory | PBO |
+|---|---|---|---|
+| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) |
+| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) |
 
 ## Build
 

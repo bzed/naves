@@ -105,3 +105,36 @@ strips, uncompressed or DEFLATE-compressed, such as the Copernicus GLO-30 tiles.
 rejected with a message that says why. Files may be neighbouring tiles; heights are interpolated
 across the border between them. A spot that no file covers is an error when you build, not a hole in
 the map. The data licence is in [Credits and data licences](credits.md).
+
+### `[[sources.imagery]]`
+
+Satellite or aerial images that become the satellite images of the terrain. One block per file, in priority
+order: among equally sharp images the first one listed is drawn on top.
+
+```toml
+[[sources.imagery]]
+path = "imagery/sentinel2-S2C_T33TUN_20250919T101514_L2A.tif"
+attribution = "Contains modified Copernicus Sentinel data 2025"
+licence = "Copernicus Sentinel data, free and open"
+
+[[sources.imagery]]
+path = "imagery/eox-cloudless-2024.tif"
+attribution = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)"
+licence = "CC BY-NC-SA 4.0"
+non_commercial = true
+```
+
+| Field | Default | Valid values |
+|---|---|---|
+| `path` | required | relative path inside the project folder |
+| `attribution` | required | one line of at most 500 characters, without control characters; written into the finished map |
+| `licence` | required | one line of at most 500 characters, for example `CC BY 4.0` |
+| `non_commercial` | `false` | must be `true` when the licence contains the word `NC` (for example `CC BY-NC-SA 4.0`) |
+
+## `[imagery]`
+
+| Field | Default | Valid values |
+|---|---|---|
+| `brightness` | 1.3 | 0.25 to 4; factor on the colours of the imagery (Sentinel-2 images are dark for a terrain) |
+
+Both sections are left out of the file while they are empty or default.

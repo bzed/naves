@@ -28,6 +28,52 @@ pub struct Project {
     pub grid: Grid,
     /// Input data.
     pub sources: Sources,
+    /// How the satellite images are drawn.
+    #[serde(default, skip_serializing_if = "ImagerySettings::is_default")]
+    pub imagery: ImagerySettings,
+}
+
+/// The brightness factor applied to imagery when a project does not set one.
+pub const DEFAULT_BRIGHTNESS: f64 = 1.3;
+
+/// How imagery is drawn into the satellite images.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ImagerySettings {
+    /// Factor on the image colours, `0.25..=4`. Satellite images are dark for a terrain.
+    #[serde(default = "default_brightness")]
+    pub brightness: f64,
+}
+
+fn default_brightness() -> f64 {
+    DEFAULT_BRIGHTNESS
+}
+
+impl Default for ImagerySettings {
+    fn default() -> Self {
+        ImagerySettings {
+            brightness: DEFAULT_BRIGHTNESS,
+        }
+    }
+}
+
+impl ImagerySettings {
+    fn is_default(&self) -> bool {
+        *self == ImagerySettings::default()
+    }
+}
+
+/// One imagery GeoTIFF of the project and the terms it comes with.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ImageryFile {
+    /// The file, relative to the project directory.
+    pub path: PathBuf,
+    /// The credit line the source asks for; it is written into the finished map.
+    pub attribution: String,
+    /// The licence in words, for example `CC BY 4.0`.
+    pub licence: String,
+    /// The licence does not allow commercial use; the finished map says so.
+    #[serde(default)]
+    pub non_commercial: bool,
 }
 
 /// A square real-world area.
@@ -74,6 +120,9 @@ pub struct Sources {
     /// OpenStreetMap `.osm.pbf` extracts, relative to the project directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub osm: Vec<PathBuf>,
+    /// Satellite or aerial images (GeoTIFF) with their licences, in priority order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imagery: Vec<ImageryFile>,
 }
 
 /// Errors loading, validating or saving a project.
@@ -157,7 +206,9 @@ impl Project {
                 dem: Vec::new(),
                 land_cover: Vec::new(),
                 osm: Vec::new(),
+                imagery: Vec::new(),
             },
+            imagery: ImagerySettings::default(),
         }
     }
 
@@ -236,6 +287,16 @@ impl Project {
     ) -> Result<Project, ProjectError> {
         let bad = |why: &str| ProjectError::Invalid(format!("{path}: {why}"));
         let mut document = serde_json::to_value(self).map_err(|e| bad(&e.to_string()))?;
+        // Fields that are left out of the file while empty or default can be set all the same.
+        if let Some(root) = document.as_object_mut() {
+            root.entry("imagery")
+                .or_insert_with(|| serde_json::json!({ "brightness": DEFAULT_BRIGHTNESS }));
+            if let Some(sources) = root.get_mut("sources").and_then(|s| s.as_object_mut()) {
+                for key in ["land_cover", "osm", "imagery"] {
+                    sources.entry(key).or_insert_with(|| serde_json::json!([]));
+                }
+            }
+        }
         let mut node = &mut document;
         let mut keys = path.split('.').peekable();
         if path.is_empty() {
@@ -307,22 +368,73 @@ impl Project {
             ("osm", &src.osm),
         ] {
             for p in list {
-                // A rooted path ("/etc/x") is not absolute on Windows (no drive), so check the root too.
-                let escapes = p.is_absolute()
-                    || p.has_root()
-                    || p.components().any(|c| {
-                        matches!(
-                            c,
-                            Component::ParentDir | Component::Prefix(_) | Component::RootDir
-                        )
-                    });
-                if escapes || p.as_os_str().is_empty() {
-                    return invalid(format!(
-                        "sources.{name} entries must be relative paths inside the project"
-                    ));
-                }
+                check_inside_project(name, p)?;
             }
+        }
+        for file in &src.imagery {
+            check_inside_project("imagery", &file.path)?;
+            file.validate()?;
+        }
+        let b = self.imagery.brightness;
+        if !(b.is_finite() && (0.25..=4.0).contains(&b)) {
+            return invalid("imagery.brightness must be in 0.25..=4");
         }
         Ok(())
     }
+}
+
+/// The longest credit line; it ends up in `mod.cpp` and `ATTRIBUTION.txt`.
+const MAX_ATTRIBUTION_CHARS: usize = 500;
+
+impl ImageryFile {
+    fn validate(&self) -> Result<(), ProjectError> {
+        let one_line = |field: &str, text: &str| -> Result<(), ProjectError> {
+            if text.trim().is_empty() {
+                return invalid(format!("sources.imagery {field} must not be empty"));
+            }
+            if text.chars().any(char::is_control) {
+                return invalid(format!(
+                    "sources.imagery {field} must be one line without control characters"
+                ));
+            }
+            if text.chars().count() > MAX_ATTRIBUTION_CHARS {
+                return invalid(format!(
+                    "sources.imagery {field} is longer than {MAX_ATTRIBUTION_CHARS} characters"
+                ));
+            }
+            Ok(())
+        };
+        one_line("attribution", &self.attribution)?;
+        one_line("licence", &self.licence)?;
+        let says_nc = self
+            .licence
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|token| token.eq_ignore_ascii_case("nc"));
+        if says_nc && !self.non_commercial {
+            return invalid(format!(
+                "sources.imagery non_commercial must be true for {}: its licence {:?} says NC",
+                self.path.display(),
+                self.licence
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn check_inside_project(name: &str, p: &Path) -> Result<(), ProjectError> {
+    // A rooted path ("/etc/x") is not absolute on Windows (no drive), so check the root too.
+    let escapes = p.is_absolute()
+        || p.has_root()
+        || p.components().any(|c| {
+            matches!(
+                c,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        });
+    if escapes || p.as_os_str().is_empty() {
+        return invalid(format!(
+            "sources.{name} entries must be relative paths inside the project"
+        ));
+    }
+    Ok(())
 }

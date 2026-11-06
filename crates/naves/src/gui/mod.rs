@@ -7,6 +7,7 @@
 //! Look: the manual's palette. A lichen-green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
+mod imagery;
 mod map_view;
 mod settings;
 mod worker;
@@ -16,12 +17,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use naves_core::project::{Area, Grid, LAND_RATIO, Project, Scale};
+use naves_core::imagery::TileImagery;
+use naves_core::imagery::catalog::ImageryOption;
+use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
+use naves_export::imagery_fetch::Http;
 use naves_export::tools::Tools;
 
+use imagery::{FetchJob, OwnFile};
 use map_view::MapView;
 use settings::SettingsForm;
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, MapData};
@@ -60,6 +65,21 @@ pub struct NavesApp {
     worker: Option<BuildWorker>,
     log: Vec<Line>,
     locate_tools: ToolLocator,
+    /// A fetch of imagery, running in the background.
+    fetch: Option<FetchJob>,
+    /// The network that fetches use.
+    http: Arc<dyn Http + Send + Sync>,
+    /// The user's own catalogue of imagery sources.
+    user_catalog: Option<PathBuf>,
+    /// The sources that have imagery for the area of the project.
+    imagery_options: Vec<ImageryOption>,
+    imagery_options_error: Option<String>,
+    /// The dates typed for a search for scenes.
+    fetch_from: String,
+    fetch_to: String,
+    /// The file of your own that is being filled in, and why it was not added.
+    own_imagery: OwnFile,
+    own_imagery_error: Option<String>,
 }
 
 fn to_px(v: f32) -> u32 {
@@ -111,7 +131,17 @@ impl NavesApp {
             worker: None,
             log: Vec::new(),
             locate_tools,
+            fetch: None,
+            http: imagery::real_http(),
+            user_catalog: imagery::user_catalog(),
+            imagery_options: Vec::new(),
+            imagery_options_error: None,
+            fetch_from: String::new(),
+            fetch_to: String::new(),
+            own_imagery: OwnFile::default(),
+            own_imagery_error: None,
         };
+        app.refresh_imagery_options();
         app.reload_heightmap();
         Ok(app)
     }
@@ -141,6 +171,7 @@ impl NavesApp {
     /// Saves changed settings; only what the heightmap depends on makes it load again.
     fn settings_changed(&mut self) {
         if self.form.commit() {
+            self.refresh_imagery_options();
             let inputs = heightmap_inputs(&self.form.project);
             if inputs != self.heightmap_inputs {
                 self.heightmap_inputs = inputs;
@@ -150,13 +181,20 @@ impl NavesApp {
     }
 
     fn poll_background(&mut self) {
+        self.poll_fetch();
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
             if std::mem::take(&mut self.reload_wanted) {
                 self.job = Some(HeightmapJob::start(self.form.dir()));
             } else {
                 self.heightmap = match result {
-                    Ok(data) => HeightmapState::Ready(Arc::new(data)),
+                    Ok(data) => {
+                        if let Some(imagery) = &data.imagery {
+                            self.log
+                                .extend(imagery.warnings.iter().cloned().map(Line::Warning));
+                        }
+                        HeightmapState::Ready(Arc::new(data))
+                    }
                     Err(error) => HeightmapState::Failed(error),
                 };
             }
@@ -193,14 +231,18 @@ impl NavesApp {
     /// Draws the whole window into `ui`.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         self.poll_background();
-        if self.building() || self.job.is_some() {
+        if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         egui::Panel::left("settings")
             .resizable(false)
             .exact_size(SETTINGS_WIDTH)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
-            .show(ui, |ui| self.settings_ui(ui));
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.settings_ui(ui));
+            });
         egui::Panel::bottom("build")
             .resizable(true)
             .default_size(150.0)
@@ -298,12 +340,14 @@ impl NavesApp {
                  sources.osm in naves.toml, then reopen the project.",
             );
         }
+        if changed {
+            self.settings_changed();
+        }
+        ui.add_space(8.0);
+        self.imagery_section(ui);
         if let Some(error) = &self.form.error {
             ui.add_space(8.0);
             ui.colored_label(ERROR, format!("Not saved: {error}"));
-        }
-        if changed {
-            self.settings_changed();
         }
     }
 
@@ -351,9 +395,14 @@ impl NavesApp {
             ui.selectable_value(&mut self.overlay, Overlay::Slope, "Slope");
             ui.selectable_value(&mut self.overlay, Overlay::Height, "Height");
             ui.selectable_value(&mut self.overlay, Overlay::Surface, "Surface");
+            ui.selectable_value(&mut self.overlay, Overlay::Imagery, "Imagery");
             if self.overlay == Overlay::Surface {
                 ui.add_space(12.0);
                 surface_legend(ui);
+            }
+            if self.overlay == Overlay::Imagery {
+                ui.add_space(12.0);
+                ui.label("Ground without imagery is checkered.");
             }
         });
         let data = match &self.heightmap {
@@ -405,6 +454,14 @@ impl NavesApp {
 
     fn draw_map(&mut self, ui: &mut egui::Ui, data: &MapData, view: MapView, rect: egui::Rect) {
         let (x0, y0, x1, y1) = view.bounds(f64::from(rect.width()), f64::from(rect.height()));
+        if self.overlay == Overlay::Imagery && data.imagery.is_none() {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    "No imagery yet. List GeoTIFF files in sources.imagery in naves.toml, then reopen the project.",
+                );
+            });
+            return;
+        }
         let request = RenderRequest {
             x0,
             y0,
@@ -414,7 +471,18 @@ impl NavesApp {
             overlay: self.overlay,
         };
         if self.texture.as_ref().is_none_or(|(r, _)| *r != request)
-            && let Ok(image) = render_topdown(&data.heightmap, &request, Some(&data.surfaces))
+            && let Ok(image) = render_topdown(
+                &data.heightmap,
+                &request,
+                Some(&data.surfaces),
+                data.imagery
+                    .as_ref()
+                    .map(|loaded| TileImagery {
+                        composite: &loaded.composite,
+                        project: &self.form.project,
+                    })
+                    .as_ref(),
+            )
         {
             let size = [image.width() as usize, image.height() as usize];
             let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
@@ -468,7 +536,15 @@ fn field(
 }
 
 /// The project values the map depends on: the area, the scales, the grid and the files of every source.
-type HeightmapInputs = (Area, Scale, Grid, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
+type HeightmapInputs = (
+    Area,
+    Scale,
+    Grid,
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    Vec<ImageryFile>,
+);
 
 fn heightmap_inputs(project: &Project) -> HeightmapInputs {
     (
@@ -478,6 +554,7 @@ fn heightmap_inputs(project: &Project) -> HeightmapInputs {
         project.sources.dem.clone(),
         project.sources.land_cover.clone(),
         project.sources.osm.clone(),
+        project.sources.imagery.clone(),
     )
 }
 
