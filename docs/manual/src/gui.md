@@ -39,8 +39,15 @@ A top-down view of the heightmap, north up.
   satellite image, with a legend next to the buttons. It is decided from the land cover and OpenStreetMap files
   of the project, and from slope and altitude where they say nothing, exactly as the build does. The map takes
   a little longer to appear when the project lists such files.
+- **Imagery** shows the satellite or aerial images of `sources.imagery`, merged as the build merges them, so
+  you can check the result before a long build. Ground that no file covers is drawn in a checkered grey, so
+  a gap cannot be mistaken for ground. Without imagery files the map says how to add them.
 
 ![The slope overlay](images/map-slope.png)
+
+The project panel lists the **satellite imagery files** with their licences. A file whose licence does not allow
+commercial use says so in words, and a line **Non-commercial map** appears when such a file touches the map.
+Notes of the merge (a file that overlaps no other image, so its colours are not matched) appear in the log.
 
 If the project has no elevation files, or the files do not cover the area, the map says so instead of drawing.
 

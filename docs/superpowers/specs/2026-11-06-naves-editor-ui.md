@@ -39,7 +39,7 @@ memorable thing in the interface, and everything around it stays quiet.
 | 8 | Life | infected groups (village, city, farm, military, industrial), animal groups (forest, open, mountain), player spawns | Infected areas, Animal areas, Spawns |
 | 9 | Economy | loot tiers, vehicle and event spawns | Loot tiers, Events |
 
-Above the stack, always: the base map (one of Relief, Slope, Height, Ground) and Problems with its count. They belong to
+Above the stack, always: the base map (one of Relief, Slope, Height, Ground, Imagery) and Problems with its count. They belong to
 no level.
 
 Rules:

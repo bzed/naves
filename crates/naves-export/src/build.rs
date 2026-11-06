@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
-use naves_core::imagery::{Composite, ImageryError, ImageryRaster, TileImagery, merge, real_px_m};
+use naves_core::imagery::{ImageryError, TileImagery, load_imagery};
 use naves_core::project::{ImageryFile, Project, ProjectError};
 use naves_core::surface::{LoadedSources, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
@@ -539,49 +539,6 @@ fn mod_cpp(project: &Project, imagery: &[ImageryFile]) -> String {
     )
 }
 
-/// The merged imagery and what the build has to say about it.
-struct Imagery {
-    composite: Composite,
-    /// The files that touch the map, in the order of the project.
-    used: Vec<ImageryFile>,
-    warnings: Vec<String>,
-}
-
-/// Reads the imagery files of the project and merges them.
-fn read_imagery(
-    project: &Project,
-    project_dir: &Path,
-    progress: &dyn Fn(&str),
-) -> Result<Option<Imagery>, BuildError> {
-    if project.sources.imagery.is_empty() {
-        return Ok(None);
-    }
-    progress("Reading the imagery");
-    let target_m = real_px_m(project);
-    let (mut rasters, mut used) = (Vec::new(), Vec::new());
-    for file in &project.sources.imagery {
-        let path = project_dir.join(&file.path);
-        if let Some(raster) = ImageryRaster::open(&path, project, target_m)? {
-            rasters.push(raster.with_label(file.path.display().to_string()));
-            used.push(file.clone());
-        }
-    }
-    progress("Merging the imagery");
-    let (composite, report) = merge(rasters, project)?;
-    let mut warnings = report.warnings;
-    if used.is_empty() {
-        warnings.push(format!(
-            "none of the {} imagery file(s) touches the map; the class colours are drawn",
-            project.sources.imagery.len()
-        ));
-    }
-    Ok(Some(Imagery {
-        composite,
-        used,
-        warnings,
-    }))
-}
-
 /// Imagery coverage of the map below this gets no warning.
 const IMAGERY_UNCOVERED_WARN_SHARE: f64 = 0.01;
 
@@ -661,7 +618,7 @@ pub fn build(
     // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
     let ground = decide_ground(&project, project_dir, &heightmap, progress)?;
 
-    let imagery = read_imagery(&project, project_dir, progress)?;
+    let imagery = load_imagery(&project, project_dir, progress)?;
 
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);

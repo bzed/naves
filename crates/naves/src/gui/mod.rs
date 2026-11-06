@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use naves_core::project::{Area, Grid, LAND_RATIO, Project, Scale};
+use naves_core::imagery::TileImagery;
+use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
@@ -156,7 +157,13 @@ impl NavesApp {
                 self.job = Some(HeightmapJob::start(self.form.dir()));
             } else {
                 self.heightmap = match result {
-                    Ok(data) => HeightmapState::Ready(Arc::new(data)),
+                    Ok(data) => {
+                        if let Some(imagery) = &data.imagery {
+                            self.log
+                                .extend(imagery.warnings.iter().cloned().map(Line::Warning));
+                        }
+                        HeightmapState::Ready(Arc::new(data))
+                    }
                     Err(error) => HeightmapState::Failed(error),
                 };
             }
@@ -291,6 +298,12 @@ impl NavesApp {
         source_list(ui, "Land cover files", &p.sources.land_cover);
         ui.add_space(8.0);
         source_list(ui, "OpenStreetMap files", &p.sources.osm);
+        ui.add_space(8.0);
+        let used = match &self.heightmap {
+            HeightmapState::Ready(data) => data.imagery.as_ref().map(|i| i.used.as_slice()),
+            _ => None,
+        };
+        imagery_list(ui, &p.sources.imagery, used);
         if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
             ui.add_space(4.0);
             ui.label(
@@ -351,9 +364,14 @@ impl NavesApp {
             ui.selectable_value(&mut self.overlay, Overlay::Slope, "Slope");
             ui.selectable_value(&mut self.overlay, Overlay::Height, "Height");
             ui.selectable_value(&mut self.overlay, Overlay::Surface, "Surface");
+            ui.selectable_value(&mut self.overlay, Overlay::Imagery, "Imagery");
             if self.overlay == Overlay::Surface {
                 ui.add_space(12.0);
                 surface_legend(ui);
+            }
+            if self.overlay == Overlay::Imagery {
+                ui.add_space(12.0);
+                ui.label("Ground without imagery is checkered.");
             }
         });
         let data = match &self.heightmap {
@@ -405,6 +423,14 @@ impl NavesApp {
 
     fn draw_map(&mut self, ui: &mut egui::Ui, data: &MapData, view: MapView, rect: egui::Rect) {
         let (x0, y0, x1, y1) = view.bounds(f64::from(rect.width()), f64::from(rect.height()));
+        if self.overlay == Overlay::Imagery && data.imagery.is_none() {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    "No imagery yet. List GeoTIFF files in sources.imagery in naves.toml, then reopen the project.",
+                );
+            });
+            return;
+        }
         let request = RenderRequest {
             x0,
             y0,
@@ -414,7 +440,18 @@ impl NavesApp {
             overlay: self.overlay,
         };
         if self.texture.as_ref().is_none_or(|(r, _)| *r != request)
-            && let Ok(image) = render_topdown(&data.heightmap, &request, Some(&data.surfaces))
+            && let Ok(image) = render_topdown(
+                &data.heightmap,
+                &request,
+                Some(&data.surfaces),
+                data.imagery
+                    .as_ref()
+                    .map(|loaded| TileImagery {
+                        composite: &loaded.composite,
+                        project: &self.form.project,
+                    })
+                    .as_ref(),
+            )
         {
             let size = [image.width() as usize, image.height() as usize];
             let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
@@ -443,6 +480,33 @@ fn source_list(ui: &mut egui::Ui, title: &str, files: &[PathBuf]) {
     }
 }
 
+/// The imagery files with their licences; `used` are the files that touch the map once it is loaded. A line
+/// "Non-commercial map" warns when a file that is used does not allow commercial use.
+fn imagery_list(ui: &mut egui::Ui, files: &[ImageryFile], used: Option<&[ImageryFile]>) {
+    ui.label(RichText::new("Satellite imagery files").strong());
+    if files.is_empty() {
+        ui.label(
+            "None. The satellite image is painted from the ground classes. List GeoTIFF files in \
+             sources.imagery in naves.toml, then reopen the project.",
+        );
+        return;
+    }
+    for file in files {
+        ui.label(file.path.display().to_string());
+        let licence = if file.non_commercial {
+            format!("{}, non-commercial", file.licence)
+        } else {
+            file.licence.clone()
+        };
+        ui.label(RichText::new(licence).small().color(BROWN));
+    }
+    let relevant = used.unwrap_or(files);
+    if relevant.iter().any(|f| f.non_commercial) {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Non-commercial map").strong().color(BROWN));
+    }
+}
+
 /// The ground classes with the colour they have in the surface overlay.
 fn surface_legend(ui: &mut egui::Ui) {
     for class in SurfaceClass::ALL {
@@ -468,7 +532,15 @@ fn field(
 }
 
 /// The project values the map depends on: the area, the scales, the grid and the files of every source.
-type HeightmapInputs = (Area, Scale, Grid, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
+type HeightmapInputs = (
+    Area,
+    Scale,
+    Grid,
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    Vec<PathBuf>,
+    Vec<ImageryFile>,
+);
 
 fn heightmap_inputs(project: &Project) -> HeightmapInputs {
     (
@@ -478,6 +550,7 @@ fn heightmap_inputs(project: &Project) -> HeightmapInputs {
         project.sources.dem.clone(),
         project.sources.land_cover.clone(),
         project.sources.osm.clone(),
+        project.sources.imagery.clone(),
     )
 }
 

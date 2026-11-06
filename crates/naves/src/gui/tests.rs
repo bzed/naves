@@ -263,6 +263,116 @@ fn the_surface_overlay_draws_once_the_map_is_ready() {
     );
 }
 
+/// Adds the Sentinel-2 crop to the project in `dir` as imagery with the given licence.
+fn add_imagery(dir: &Path, licence: &str, non_commercial: bool) {
+    let mut p = Project::load(dir).unwrap();
+    std::fs::create_dir_all(dir.join("imagery")).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/imagery/sentinel2_crop.tif"),
+        dir.join("imagery/s2.tif"),
+    )
+    .unwrap();
+    p.sources.imagery = vec![naves_core::project::ImageryFile {
+        path: "imagery/s2.tif".into(),
+        attribution: "Contains modified Copernicus Sentinel data 2025".to_string(),
+        licence: licence.to_string(),
+        non_commercial,
+    }];
+    p.save(dir).unwrap();
+}
+
+#[test]
+fn imagery_files_are_listed() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "Copernicus Sentinel data, free and open", false);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Satellite imagery files").is_some());
+    assert!(harness.query_by_label("imagery/s2.tif").is_some());
+    assert!(
+        harness
+            .query_by_label("Copernicus Sentinel data, free and open")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Non-commercial map").is_none());
+}
+
+#[test]
+fn non_commercial_is_shown() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY-NC-SA 4.0", true);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Non-commercial map").is_some());
+    assert!(
+        harness
+            .query_by_label_contains("CC BY-NC-SA 4.0, non-commercial")
+            .is_some(),
+        "the file's licence says it in words"
+    );
+}
+
+#[test]
+fn a_project_without_imagery_says_what_the_satellite_image_follows() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    assert!(
+        harness
+            .query_by_label_contains("painted from the ground classes")
+            .is_some()
+    );
+}
+
+#[test]
+fn changing_the_imagery_list_reloads_the_map() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    add_imagery(&dir, "CC BY 4.0", false);
+    app.form.project.sources.imagery = Project::load(&dir).unwrap().sources.imagery;
+    app.settings_changed();
+    assert!(
+        app.job.is_some(),
+        "the imagery overlay depends on the files"
+    );
+}
+
+#[test]
+fn the_imagery_overlay_explains_a_gap_and_a_missing_list() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Imagery").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("sources.imagery").is_some()
+    });
+}
+
+#[test]
+fn the_imagery_overlay_draws_once_the_map_is_ready() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    add_imagery(&dir, "CC BY 4.0", false);
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Imagery").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("checkered").is_some()
+    });
+}
+
 #[test]
 fn build_warnings_are_shown_in_the_log() {
     let root = tempfile::tempdir().unwrap();

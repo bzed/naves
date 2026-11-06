@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, build_heightmap};
+use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::{SurfaceGrid, project_surfaces};
@@ -55,6 +56,8 @@ pub enum OverlayArg {
     Height,
     /// The ground class of every cell.
     Surface,
+    /// The satellite or aerial imagery of sources.imagery; ground without imagery is checkered.
+    Imagery,
 }
 
 impl From<OverlayArg> for Overlay {
@@ -64,6 +67,7 @@ impl From<OverlayArg> for Overlay {
             OverlayArg::Slope => Overlay::Slope,
             OverlayArg::Height => Overlay::Height,
             OverlayArg::Surface => Overlay::Surface,
+            OverlayArg::Imagery => Overlay::Imagery,
         }
     }
 }
@@ -85,11 +89,23 @@ pub struct RenderParams {
     overlay: OverlayArg,
 }
 
-/// A heightmap, the ground surfaces once they were asked for, and the project they were made from.
+/// A heightmap, the ground surfaces and the imagery once they were asked for, and the project they were made
+/// from.
 struct Cached {
     project: Project,
     heightmap: Arc<Heightmap>,
     surfaces: Option<Arc<SurfaceGrid>>,
+    /// Whether the imagery was looked for; `imagery` stays empty when the project lists none.
+    imagery_loaded: bool,
+    imagery: Option<Arc<LoadedImagery>>,
+}
+
+/// What `NavesMcp::map` hands out.
+struct MapData {
+    project: Project,
+    heightmap: Arc<Heightmap>,
+    surfaces: Option<Arc<SurfaceGrid>>,
+    imagery: Option<Arc<LoadedImagery>>,
 }
 
 type CachedHeightmap = Option<Cached>;
@@ -150,15 +166,13 @@ impl NavesMcp {
 
     /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
-        Ok(self.map(false).await?.0)
+        Ok(self.map(false, false).await?.heightmap)
     }
 
-    /// The heightmap and, when `with_surfaces` is set, the ground surfaces of the saved project. Both are
-    /// computed again only when the project file has changed; the surfaces are only made when asked for.
-    async fn map(
-        &self,
-        with_surfaces: bool,
-    ) -> Result<(Arc<Heightmap>, Option<Arc<SurfaceGrid>>), String> {
+    /// The heightmap and, when asked for, the ground surfaces and the imagery of the saved project. All are
+    /// computed again only when the project file has changed; surfaces and imagery are only made when asked
+    /// for.
+    async fn map(&self, with_surfaces: bool, with_imagery: bool) -> Result<MapData, String> {
         let mut cache = self.heightmap.lock().await;
         let dir = self.dir.clone();
         let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
@@ -170,6 +184,8 @@ impl NavesMcp {
                 project: project.clone(),
                 heightmap: hm,
                 surfaces: None,
+                imagery_loaded: false,
+                imagery: None,
             });
         }
         let Some(cached) = cache.as_mut() else {
@@ -178,12 +194,27 @@ impl NavesMcp {
         if with_surfaces && cached.surfaces.is_none() {
             let dir = self.dir.clone();
             let hm = Arc::clone(&cached.heightmap);
+            let input = project.clone();
             let grid =
-                blocking(move || project_surfaces(&project, &dir, &hm).map_err(|e| e.to_string()))
+                blocking(move || project_surfaces(&input, &dir, &hm).map_err(|e| e.to_string()))
                     .await??;
             cached.surfaces = Some(Arc::new(grid));
         }
-        Ok((Arc::clone(&cached.heightmap), cached.surfaces.clone()))
+        if with_imagery && !cached.imagery_loaded {
+            let dir = self.dir.clone();
+            let input = project.clone();
+            let loaded =
+                blocking(move || load_imagery(&input, &dir, &|_| {}).map_err(|e| e.to_string()))
+                    .await??;
+            cached.imagery = loaded.map(Arc::new);
+            cached.imagery_loaded = true;
+        }
+        Ok(MapData {
+            project,
+            heightmap: Arc::clone(&cached.heightmap),
+            surfaces: cached.surfaces.clone(),
+            imagery: cached.imagery.clone(),
+        })
     }
 
     #[tool(
@@ -248,14 +279,20 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope, height or surface (the ground classes grass, rock, forest and soil in their satellite colours)."
+        description = "A top-down PNG of a rectangle of the map (north up). x0,y0 is the south-west and x1,y1 the north-east corner in map metres from the south-west corner of the map; px is the width in pixels (at most 2048); overlay is hillshade, slope, height, surface (the ground classes grass, rock, forest and soil in their satellite colours) or imagery (the merged images of sources.imagery, ground without imagery checkered)."
     )]
     async fn render_topdown(
         &self,
         Parameters(params): Parameters<RenderParams>,
     ) -> Result<CallToolResult, McpError> {
         let wants_surfaces = matches!(params.overlay, OverlayArg::Surface);
-        let (hm, surfaces) = match self.map(wants_surfaces).await {
+        let wants_imagery = matches!(params.overlay, OverlayArg::Imagery);
+        let MapData {
+            project,
+            heightmap: hm,
+            surfaces,
+            imagery,
+        } = match self.map(wants_surfaces, wants_imagery).await {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -268,8 +305,12 @@ impl NavesMcp {
             overlay: params.overlay.into(),
         };
         let png = blocking(move || -> Result<Vec<u8>, String> {
-            let image =
-                render_topdown(&hm, &request, surfaces.as_deref()).map_err(|e| e.to_string())?;
+            let tile_imagery = imagery.as_deref().map(|loaded| TileImagery {
+                composite: &loaded.composite,
+                project: &project,
+            });
+            let image = render_topdown(&hm, &request, surfaces.as_deref(), tile_imagery.as_ref())
+                .map_err(|e| e.to_string())?;
             let mut bytes = Cursor::new(Vec::new());
             image
                 .write_to(&mut bytes, image::ImageFormat::Png)

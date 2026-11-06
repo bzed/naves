@@ -14,7 +14,7 @@ use geotiff_reader::GeoTiffFile;
 use proj4rs::Proj;
 
 use crate::heightmap::MapGeo;
-use crate::project::Project;
+use crate::project::{ImageryFile, Project};
 use crate::projection::{ProjectionError, utm_epsg};
 
 mod merge;
@@ -74,6 +74,61 @@ fn geotiff_error(e: geotiff_reader::Error) -> ImageryError {
         geotiff_reader::Error::NotGeoTiff => ImageryError::Unsupported(e.to_string()),
         other => ImageryError::GeoTiff(other),
     }
+}
+
+/// The imagery files of a project, read and merged.
+#[derive(Debug)]
+pub struct LoadedImagery {
+    /// The merged picture of the map.
+    pub composite: Composite,
+    /// The files that touch the map, in the order of the project.
+    pub used: Vec<ImageryFile>,
+    /// What the merge found out about each file.
+    pub report: MergeReport,
+    /// Things the user should know: the merge's warnings and an empty result.
+    pub warnings: Vec<String>,
+}
+
+/// Reads every file of `sources.imagery` that touches the map and merges them. `None` if the project lists no
+/// imagery. Nothing is fetched: only the files in the project folder are read.
+///
+/// # Errors
+///
+/// [`ImageryError::File`] naming the first file that cannot be read, [`ImageryError::Projection`] if the map
+/// cannot be converted.
+pub fn load_imagery(
+    project: &Project,
+    project_dir: &Path,
+    progress: &dyn Fn(&str),
+) -> Result<Option<LoadedImagery>, ImageryError> {
+    if project.sources.imagery.is_empty() {
+        return Ok(None);
+    }
+    progress("Reading the imagery");
+    let target_m = real_px_m(project);
+    let (mut rasters, mut used) = (Vec::new(), Vec::new());
+    for file in &project.sources.imagery {
+        let path = project_dir.join(&file.path);
+        if let Some(raster) = ImageryRaster::open(&path, project, target_m)? {
+            rasters.push(raster.with_label(file.path.display().to_string()));
+            used.push(file.clone());
+        }
+    }
+    progress("Merging the imagery");
+    let (composite, report) = merge(rasters, project)?;
+    let mut warnings = report.warnings.clone();
+    if used.is_empty() {
+        warnings.push(format!(
+            "none of the {} imagery file(s) touches the map; the class colours are drawn",
+            project.sources.imagery.len()
+        ));
+    }
+    Ok(Some(LoadedImagery {
+        composite,
+        used,
+        report,
+        warnings,
+    }))
 }
 
 /// The size in real metres of one pixel of the surface images of the terrain: the `target_m` to pass to

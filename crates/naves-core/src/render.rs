@@ -7,6 +7,7 @@ use image::{Rgba, RgbaImage};
 use rayon::prelude::*;
 
 use crate::heightmap::Heightmap;
+use crate::imagery::{MapRect, TileImagery};
 use crate::surface::SurfaceGrid;
 
 /// Largest accepted output width in pixels.
@@ -25,6 +26,8 @@ pub enum Overlay {
     Height,
     /// The ground class of every cell, in the colours of the satellite image.
     Surface,
+    /// The merged satellite or aerial imagery; ground it does not cover is drawn checkered.
+    Imagery,
 }
 
 /// A rectangle of the map and the output width.
@@ -59,6 +62,54 @@ pub enum RenderError {
     /// The surface overlay was asked for without surfaces.
     #[error("the surface overlay needs the ground surfaces")]
     NoSurfaces,
+    /// The imagery overlay was asked for without imagery.
+    #[error("the imagery overlay needs imagery files: list them in sources.imagery")]
+    NoImagery,
+    /// The imagery could not be drawn.
+    #[error("cannot draw the imagery: {0}")]
+    Imagery(String),
+}
+
+/// Rows of the picture that are painted from the imagery in one piece.
+const IMAGERY_BAND_ROWS: u32 = 16;
+
+/// Side of a square of the checkered pattern that marks ground without imagery, in pixels.
+const CHECKER_PX: u32 = 8;
+
+/// The imagery of a picture, row by row; `None` where no image covers a pixel.
+fn paint_imagery(
+    imagery: &TileImagery<'_>,
+    req: &RenderRequest,
+    (width, height): (u32, u32),
+) -> Result<Vec<Option<[u8; 3]>>, RenderError> {
+    let step_x = (req.x1 - req.x0) / f64::from(width);
+    let step_y = (req.y1 - req.y0) / f64::from(height);
+    let bands: Vec<u32> = (0..height).step_by(IMAGERY_BAND_ROWS as usize).collect();
+    let painted: Vec<Result<Vec<Option<[u8; 3]>>, RenderError>> = bands
+        .par_iter()
+        .map(|&first| {
+            let rows = IMAGERY_BAND_ROWS.min(height - first);
+            imagery
+                .composite
+                .paint(
+                    imagery.project,
+                    &MapRect {
+                        west: req.x0,
+                        north: req.y1 - f64::from(first) * step_y,
+                        step_x,
+                        step_y,
+                        width,
+                        height: rows,
+                    },
+                )
+                .map_err(|e| RenderError::Imagery(e.to_string()))
+        })
+        .collect();
+    let mut all = Vec::new();
+    for band in painted {
+        all.extend(band?);
+    }
+    Ok(all)
 }
 
 fn narrow(v: f64) -> f32 {
@@ -130,21 +181,27 @@ fn mix(from: [f32; 3], to: [f32; 3], amount: f32) -> [u8; 4] {
 
 /// Renders the rectangle of the heightmap, north up.
 ///
-/// `surfaces` is only used by [`Overlay::Surface`].
+/// `surfaces` is only used by [`Overlay::Surface`] and `imagery` only by [`Overlay::Imagery`].
 ///
 /// # Errors
 ///
-/// [`RenderError`] if the request is invalid, see [`RenderRequest::size`], or if the surface overlay is
-/// asked for without `surfaces`.
+/// [`RenderError`] if the request is invalid, see [`RenderRequest::size`], or if the surface or imagery
+/// overlay is asked for without `surfaces` or `imagery`.
 pub fn render_topdown(
     hm: &Heightmap,
     req: &RenderRequest,
     surfaces: Option<&SurfaceGrid>,
+    imagery: Option<&TileImagery<'_>>,
 ) -> Result<RgbaImage, RenderError> {
     let (width, height) = req.size()?;
     if req.overlay == Overlay::Surface && surfaces.is_none() {
         return Err(RenderError::NoSurfaces);
     }
+    let painted = match (req.overlay, imagery) {
+        (Overlay::Imagery, None) => return Err(RenderError::NoImagery),
+        (Overlay::Imagery, Some(imagery)) => Some(paint_imagery(imagery, req, (width, height))?),
+        _ => None,
+    };
     let (low, high) = hm.min_max();
     let span = if high > low { high - low } else { 1.0 };
     let step_x = (req.x1 - req.x0) / f64::from(width);
@@ -158,6 +215,28 @@ pub fn render_topdown(
                     let east = req.x0 + (f64::from(col) + 0.5) * step_x;
                     let ground = hm.sample(east, north);
                     match req.overlay {
+                        Overlay::Imagery => {
+                            let at = usize::try_from(row)
+                                .ok()
+                                .zip(usize::try_from(width).ok())
+                                .and_then(|(r, w)| {
+                                    r.checked_mul(w)?.checked_add(usize::try_from(col).ok()?)
+                                });
+                            let seen = painted
+                                .as_ref()
+                                .zip(at)
+                                .and_then(|(pixels, at)| pixels.get(at).copied().flatten());
+                            seen.map_or_else(
+                                || {
+                                    if (row / CHECKER_PX + col / CHECKER_PX).is_multiple_of(2) {
+                                        [96, 96, 96, 255]
+                                    } else {
+                                        [128, 128, 128, 255]
+                                    }
+                                },
+                                |[red, green, blue]| [red, green, blue, 255],
+                            )
+                        }
                         Overlay::Surface => {
                             let [red, green, blue] =
                                 surfaces.map_or([0; 3], |grid| grid.at(east, north).rgb());

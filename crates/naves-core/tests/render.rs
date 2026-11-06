@@ -3,7 +3,14 @@
 
 //! Top-down rendering of a heightmap.
 
-use naves_core::heightmap::Heightmap;
+#![expect(
+    clippy::unwrap_used,
+    reason = "test helper code; failing loudly is the point"
+)]
+
+use naves_core::heightmap::{Heightmap, MapGeo};
+use naves_core::imagery::{Composite, ImageryRaster, TileImagery, merge};
+use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderError, RenderRequest, render_topdown};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
@@ -36,7 +43,7 @@ fn request(hm: &Heightmap, px: u32, overlay: Overlay) -> RenderRequest {
 fn north_up() {
     // rising to the north: the top image row is the highest ground
     let hm = map(64, |_, row| row * 3.0);
-    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Height), None).unwrap();
+    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Height), None, None).unwrap();
     let top = img.get_pixel(32, 0);
     let bottom = img.get_pixel(32, img.height() - 1);
     assert!(top[0] > bottom[0] + 100, "{top:?} vs {bottom:?}");
@@ -45,7 +52,7 @@ fn north_up() {
 #[test]
 fn east_is_right() {
     let hm = map(64, |col, _| col * 3.0);
-    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Height), None).unwrap();
+    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Height), None, None).unwrap();
     assert!(img.get_pixel(img.width() - 1, 32)[0] > img.get_pixel(0, 32)[0] + 100);
 }
 
@@ -60,7 +67,7 @@ fn aspect_kept() {
         px: 400,
         overlay: Overlay::Hillshade,
     };
-    let img = render_topdown(&hm, &req, None).unwrap();
+    let img = render_topdown(&hm, &req, None, None).unwrap();
     assert_eq!((img.width(), img.height()), (400, 200));
 }
 
@@ -74,7 +81,7 @@ fn slope_overlay_marks_steep() {
             (col - 32.0) * 10.0 * 3.0_f32.sqrt()
         }
     });
-    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Slope), None).unwrap();
+    let img = render_topdown(&hm, &request(&hm, 64, Overlay::Slope), None, None).unwrap();
     let wall = img.get_pixel(50, 20);
     let flat = img.get_pixel(10, 20);
     assert!(
@@ -92,16 +99,27 @@ fn hillshade_is_lit_from_the_north_west() {
     // a slope that faces north-west (rises towards the south-east) is lit, the opposite one is dark
     let faces_nw = map(32, |col, row| (col - row) * 4.0);
     let faces_se = map(32, |col, row| (row - col) * 4.0);
-    let lit = render_topdown(&faces_nw, &request(&faces_nw, 32, Overlay::Hillshade), None).unwrap();
-    let dark =
-        render_topdown(&faces_se, &request(&faces_se, 32, Overlay::Hillshade), None).unwrap();
+    let lit = render_topdown(
+        &faces_nw,
+        &request(&faces_nw, 32, Overlay::Hillshade),
+        None,
+        None,
+    )
+    .unwrap();
+    let dark = render_topdown(
+        &faces_se,
+        &request(&faces_se, 32, Overlay::Hillshade),
+        None,
+        None,
+    )
+    .unwrap();
     assert!(lit.get_pixel(16, 16)[0] > dark.get_pixel(16, 16)[0] + 50);
 }
 
 #[test]
 fn flat_height_map_does_not_divide_by_zero() {
     let hm = map(16, |_, _| 5.0);
-    let img = render_topdown(&hm, &request(&hm, 16, Overlay::Height), None).unwrap();
+    let img = render_topdown(&hm, &request(&hm, 16, Overlay::Height), None, None).unwrap();
     assert_eq!(img.get_pixel(3, 3)[3], 255);
 }
 
@@ -123,7 +141,7 @@ fn bad_requests_are_errors() {
     ] {
         assert!(
             matches!(
-                render_topdown(&hm, &bad, None),
+                render_topdown(&hm, &bad, None, None),
                 Err(RenderError::Bounds | RenderError::Width(_) | RenderError::Aspect)
             ),
             "{bad:?}"
@@ -134,8 +152,8 @@ fn bad_requests_are_errors() {
 #[test]
 fn output_is_deterministic() {
     let hm = map(32, |col, row| col * row * 0.1);
-    let a = render_topdown(&hm, &request(&hm, 48, Overlay::Slope), None).unwrap();
-    let b = render_topdown(&hm, &request(&hm, 48, Overlay::Slope), None).unwrap();
+    let a = render_topdown(&hm, &request(&hm, 48, Overlay::Slope), None, None).unwrap();
+    let b = render_topdown(&hm, &request(&hm, 48, Overlay::Slope), None, None).unwrap();
     assert_eq!(a, b);
 }
 
@@ -149,7 +167,7 @@ fn surface_overlay_uses_the_class_colours() {
         (false, true) => SurfaceClass::Forest,
         (true, true) => SurfaceClass::Soil,
     });
-    let img = render_topdown(&hm, &request(&hm, 40, Overlay::Surface), Some(&grid)).unwrap();
+    let img = render_topdown(&hm, &request(&hm, 40, Overlay::Surface), Some(&grid), None).unwrap();
     // the image is north up: row 0 is the north
     assert_eq!(img.get_pixel(10, 30).0, [0x4a, 0x7a, 0x3a, 255], "grass");
     assert_eq!(img.get_pixel(30, 30).0, [0x8a, 0x87, 0x80, 255], "rock");
@@ -157,11 +175,76 @@ fn surface_overlay_uses_the_class_colours() {
     assert_eq!(img.get_pixel(30, 10).0, [0x7a, 0x68, 0x4e, 255], "soil");
 }
 
+/// A project of 1280 real metres (a 640 m map, like `map(64, ..)`) and imagery over its western half.
+fn imagery_over_the_west() -> (Project, Composite) {
+    let project = Project::new("r", 47.0, 12.0, 1280.0);
+    let geo = MapGeo::new(&project).unwrap();
+    let (south, west) = geo.to_geo(-50.0, -50.0).unwrap();
+    let (north, east) = geo.to_geo(690.0, 690.0).unwrap();
+    let raster = ImageryRaster::from_fn(west, south, east, north, 1e-4, |lat, lon| {
+        let (x, _) = geo.to_map(lat, lon).unwrap();
+        (x < 320.0).then_some([200, 100, 50])
+    });
+    let (composite, _) = merge(vec![raster], &project).unwrap();
+    (project, composite)
+}
+
+#[test]
+fn imagery_overlay_shows_the_composite() {
+    let hm = map(64, |_, _| 100.0);
+    let (project, composite) = imagery_over_the_west();
+    let imagery = TileImagery {
+        composite: &composite,
+        project: &project,
+    };
+    let img = render_topdown(
+        &hm,
+        &request(&hm, 64, Overlay::Imagery),
+        None,
+        Some(&imagery),
+    )
+    .unwrap();
+    assert_eq!(img.get_pixel(10, 32).0, [200, 100, 50, 255]);
+}
+
+#[test]
+fn imagery_overlay_marks_gaps() {
+    let hm = map(64, |_, _| 100.0);
+    let (project, composite) = imagery_over_the_west();
+    let imagery = TileImagery {
+        composite: &composite,
+        project: &project,
+    };
+    let img = render_topdown(
+        &hm,
+        &request(&hm, 64, Overlay::Imagery),
+        None,
+        Some(&imagery),
+    )
+    .unwrap();
+    // no imagery in the east: a checkered grey that cannot be mistaken for ground
+    let (a, b) = (img.get_pixel(50, 10).0, img.get_pixel(58, 10).0);
+    assert!(
+        a[0] == a[1] && a[1] == a[2] && b[0] == b[1] && b[1] == b[2],
+        "{a:?} {b:?}"
+    );
+    assert_ne!(a, b, "neighbouring squares differ");
+}
+
+#[test]
+fn imagery_overlay_without_sources_is_an_error() {
+    let hm = map(10, |_, _| 100.0);
+    assert_eq!(
+        render_topdown(&hm, &request(&hm, 40, Overlay::Imagery), None, None).unwrap_err(),
+        RenderError::NoImagery
+    );
+}
+
 #[test]
 fn surface_overlay_needs_surfaces() {
     let hm = map(10, |_, _| 100.0);
     assert_eq!(
-        render_topdown(&hm, &request(&hm, 40, Overlay::Surface), None).unwrap_err(),
+        render_topdown(&hm, &request(&hm, 40, Overlay::Surface), None, None).unwrap_err(),
         RenderError::NoSurfaces
     );
 }

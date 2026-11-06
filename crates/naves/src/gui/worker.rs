@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 
 use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, build_heightmap};
+use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::{BuildOutput, build};
@@ -117,6 +118,8 @@ pub struct MapData {
     pub heightmap: Heightmap,
     /// The ground class of every map cell.
     pub surfaces: SurfaceGrid,
+    /// The merged imagery, if the project lists any.
+    pub imagery: Option<LoadedImagery>,
 }
 
 /// The state of the heightmap behind the map view.
@@ -149,9 +152,11 @@ impl HeightmapJob {
                 let heightmap = build_heightmap(&project, &dem).map_err(|e| e.to_string())?;
                 let surfaces =
                     project_surfaces(&project, &dir, &heightmap).map_err(|e| e.to_string())?;
+                let imagery = load_imagery(&project, &dir, &|_| {}).map_err(|e| e.to_string())?;
                 Ok(MapData {
                     heightmap,
                     surfaces,
+                    imagery,
                 })
             })();
             tx.send(result).ok(); // the window may be gone already

@@ -41,6 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    render_topdown(&hm, &request, surfaces.as_ref())?.save(out)?;
+    render_topdown(&hm, &request, surfaces.as_ref(), None)?.save(out)?;
     Ok(())
 }

@@ -241,6 +241,76 @@ async fn render_topdown_shows_surfaces() {
     );
 }
 
+/// Points the project at the Sentinel-2 crop (12.9697–12.9789 °E, 47.5542–47.5600 °N) as its imagery.
+async fn use_the_sentinel_crop(f: &Fixture) {
+    std::fs::create_dir_all(f.proj.join("imagery")).unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/imagery/sentinel2_crop.tif"),
+        f.proj.join("imagery/s2.tif"),
+    )
+    .unwrap();
+    for (path, value) in [
+        ("area.center_lat", json!(47.557)),
+        ("area.center_lon", json!(12.9743)),
+        ("area.real_extent_m", json!(500)),
+        (
+            "sources.imagery",
+            json!([{
+                "path": "imagery/s2.tif",
+                "attribution": "Contains modified Copernicus Sentinel data 2025",
+                "licence": "Copernicus Sentinel data, free and open"
+            }]),
+        ),
+    ] {
+        let result = call(f, "project_set", json!({"path": path, "value": value})).await;
+        assert_ne!(result.is_error, Some(true), "{path}: {}", text(&result));
+    }
+}
+
+#[tokio::test]
+async fn render_topdown_shows_imagery() {
+    let f = start().await;
+    use_the_sentinel_crop(&f).await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 200, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let seen = colours(&result);
+    assert!(
+        seen.len() > 20,
+        "a photograph has many colours, not a checkered gap: {} colours",
+        seen.len()
+    );
+}
+
+#[tokio::test]
+async fn imagery_overlay_follows_the_file_list() {
+    let f = start().await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 750, "y1": 750, "px": 50, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args.clone()).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("sources.imagery"),
+        "{}",
+        text(&result)
+    );
+    // the same server notices the new list
+    use_the_sentinel_crop(&f).await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 50, "overlay": "imagery"});
+    let result = call(&f, "render_topdown", args).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    // and an empty list again
+    let result = call(
+        &f,
+        "project_set",
+        json!({"path": "sources.imagery", "value": []}),
+    )
+    .await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let args = json!({"x0": 0, "y0": 0, "x1": 250, "y1": 250, "px": 50, "overlay": "imagery"});
+    assert_eq!(call(&f, "render_topdown", args).await.is_error, Some(true));
+}
+
 #[tokio::test]
 async fn surfaces_without_sources_follow_the_rules() {
     let f = start().await;
