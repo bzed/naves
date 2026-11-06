@@ -17,6 +17,7 @@ use crate::heightmap::MapGeo;
 use crate::project::{ImageryFile, Project};
 use crate::projection::{ProjectionError, utm_epsg};
 
+pub mod catalog;
 mod merge;
 
 pub use merge::{Composite, MapRect, MergeReport, SourceReport, TileImagery, merge};

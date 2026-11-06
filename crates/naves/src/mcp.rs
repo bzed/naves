@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use naves_core::dem::Dem;
-use naves_core::heightmap::{Heightmap, build_heightmap};
+use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
+use naves_core::imagery::catalog::{SourceKind, catalog, options_for, user_catalog_path};
 use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
@@ -323,6 +324,53 @@ impl NavesMcp {
                 base64::engine::general_purpose::STANDARD.encode(bytes),
                 "image/png",
             )]),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Which imagery sources exist for the area of the project, best first: id, name, how much of the map it covers (0..1), pixel size in metres, licence, credit, whether it is non-commercial and a note. Whole-map sources that allow commercial use come first."
+    )]
+    async fn imagery_options(&self) -> Result<CallToolResult, McpError> {
+        let dir = self.dir.clone();
+        let result = blocking(move || -> Result<serde_json::Value, String> {
+            let project = Project::load(&dir).map_err(|e| e.to_string())?;
+            let window = MapGeo::new(&project)
+                .and_then(|geo| geo.window(0.0))
+                .map_err(|e| e.to_string())?;
+            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
+            let options: Vec<serde_json::Value> = options_for(&sources, window)
+                .into_iter()
+                .map(|o| {
+                    json!({
+                        "id": o.source.id,
+                        "name": o.source.name,
+                        "kind": match o.source.kind {
+                            SourceKind::Stac { .. } => "stac",
+                            SourceKind::Wms { .. } => "wms",
+                        },
+                        "covers": o.coverage_share,
+                        "pixel_m": o.source.native_m,
+                        "licence": o.source.licence,
+                        "attribution": o.source.attribution,
+                        "non_commercial": o.source.non_commercial,
+                        "note": o.source.note,
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "area": {
+                    "west": window.west,
+                    "south": window.south,
+                    "east": window.east,
+                    "north": window.north,
+                },
+                "options": options,
+            }))
+        })
+        .await;
+        Ok(match result.and_then(|r| r) {
+            Ok(value) => json_text(&value),
             Err(e) => failure(e),
         })
     }

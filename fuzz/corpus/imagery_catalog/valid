@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# The imagery sources Náves knows. Every entry was checked by hand against the service on 2026-11-06, see
+# docs/research/2026-11-06-imagery-sources.md. A user file (`$XDG_CONFIG_HOME/naves/imagery-sources.toml`) can add
+# entries or replace one by its id.
+#
+# coverage = [west, south, east, north] in degrees, left out for the whole world.
+# native_m = metres per pixel of the source.
+# attribution may hold {year}, which a fetch replaces with the year of the scene.
+
+[[source]]
+id = "sentinel2-scenes"
+name = "Sentinel-2 scenes"
+kind = "stac"
+url = "https://earth-search.aws.element84.com/v1"
+collection = "sentinel-2-c1-l2a"
+asset = "visual"
+asset_hosts = ["e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com"]
+native_m = 10.0
+licence = "Copernicus Sentinel data, free and open"
+attribution = "Contains modified Copernicus Sentinel data {year}"
+non_commercial = false
+note = "single dates: Náves picks the clearest scenes of the last two summers"
+
+[[source]]
+id = "eox-cloudless-2017"
+name = "EOxCloudless 2017"
+kind = "wms"
+url = "https://tiles.maps.eox.at/wms"
+layer = "s2cloudless-2017"
+max_px = 2000
+native_m = 10.0
+licence = "CC BY 4.0"
+attribution = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2017)"
+non_commercial = false
+note = "cloud-free mosaic of 2017; the newest year that allows commercial use"
+
+[[source]]
+id = "eox-cloudless-2025"
+name = "EOxCloudless 2025"
+kind = "wms"
+url = "https://tiles.maps.eox.at/wms"
+layer = "s2cloudless-2025"
+max_px = 2000
+native_m = 10.0
+licence = "CC BY-NC-SA 4.0"
+attribution = "EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025)"
+non_commercial = true
+note = "cloud-free mosaic of 2025; the map must say that it is non-commercial and share-alike"
+
+[[source]]
+id = "bayern-dop40"
+name = "Bavaria aerial photographs (DOP40)"
+kind = "wms"
+url = "https://geoservices.bayern.de/od/wms/dop/v1/dop40"
+layer = "by_dop40c"
+max_px = 2000
+coverage = [8.891584, 46.98, 14.193229, 50.715246]
+native_m = 0.4
+licence = "CC BY 4.0"
+attribution = "Bayerische Vermessungsverwaltung, https://geoservices.bayern.de (DOP40)"
+non_commercial = false
+note = "bounding box of Bavaria: outside the state the service answers blank, which counts as no data"

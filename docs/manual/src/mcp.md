@@ -39,6 +39,7 @@ Give the full path of the project folder. The environment variables from [Instal
 | `project_get` | none | the project as JSON (name, area, scale, grid, sources) |
 | `project_set` | `path`, `value` | sets one field, for example `{"path": "scale.height", "value": 0.75}`; returns the new project |
 | `heightmap_stats` | none | `{min, max, size, cell_m, map_size_m}` of the heightmap |
+| `imagery_options` | none | `{area, options}`: the imagery sources for the area of the project with `id`, `name`, `kind`, `covers`, `pixel_m`, `licence`, `attribution`, `non_commercial` and `note` |
 | `render_topdown` | `x0, y0, x1, y1, px, overlay` | a PNG of that part of the map, north up |
 | `build` | none | `{mod_dir, mission_dir, warnings, progress}` after the build |
 

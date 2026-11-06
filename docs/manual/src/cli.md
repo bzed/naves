@@ -63,3 +63,14 @@ control and do not share it**. The tools the build needs, and the variables that
 | Variable | Meaning |
 |---|---|
 | `DAYZ_SERVER` | the DayZ Server install that provides `dayzOffline.enoch` (default: `<Steam>/steamapps/common/DayZServer`) |
+
+## `naves imagery list`
+
+```sh
+naves imagery list [DIR]
+```
+
+Shows which imagery sources have something for the area of the project in `DIR` (default: the current folder), best
+first, with how much of the map each covers, its pixel size, its licence and a **NON-COMMERCIAL** mark where the
+licence does not allow commercial use. Sources of the user's own `imagery-sources.toml` are included. Nothing is
+fetched. See [Imagery](imagery.md).

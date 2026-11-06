@@ -115,11 +115,42 @@ async fn lists_tools() {
         [
             "build",
             "heightmap_stats",
+            "imagery_options",
             "project_get",
             "project_set",
             "render_topdown"
         ]
     );
+}
+
+#[tokio::test]
+async fn imagery_options_lists_the_same() {
+    use naves_core::heightmap::MapGeo;
+    use naves_core::imagery::catalog::{catalog, options_for};
+    let f = start().await;
+    let result = call(&f, "imagery_options", json!({})).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let listed: Value = serde_json::from_str(&text(&result)).unwrap();
+    let project = naves_core::project::Project::load(&f.proj).unwrap();
+    let window = MapGeo::new(&project).unwrap().window(0.0).unwrap();
+    let expected = options_for(&catalog(None).unwrap(), window);
+    let got: Vec<&str> = listed["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    let want: Vec<&str> = expected.iter().map(|o| o.source.id.as_str()).collect();
+    assert_eq!(got, want);
+    let nc = listed["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["id"] == "eox-cloudless-2025")
+        .unwrap();
+    assert_eq!(nc["non_commercial"], true);
+    assert_eq!(nc["licence"], "CC BY-NC-SA 4.0");
+    assert!(listed["area"]["west"].as_f64().unwrap() < listed["area"]["east"].as_f64().unwrap());
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `naves imagery list` (and the MCP tool `imagery_options`) shows which imagery sources exist for the area of a project, with pixel size, licence and a NON-COMMERCIAL mark; a user file `imagery-sources.toml` in the configuration folder can add sources. New manual chapter "Imagery".
 - An **Imagery** overlay in the GUI map and in the MCP `render_topdown` tool shows the merged imagery (ground without imagery is checkered). The GUI lists the imagery files with their licences, says "Non-commercial map" when a file that touches the map is non-commercial, and shows the merge's notes in the log.
 - `naves build` paints the satellite images of the terrain from the GeoTIFF files in `sources.imagery`: files that overlap are matched in colour and merged by sharpness with soft edges, and `[imagery] brightness` sets the brightness. A map that uses a non-commercial file says so in `ATTRIBUTION.txt` (mod and mission), in `mod.cpp` and in the build warnings; the credits of the files used are written to `ATTRIBUTION.txt`, and the mod folder now holds a `mod.cpp` with the name of the map.
 - Project file: `sources.imagery` lists satellite or aerial GeoTIFFs with their attribution and licence (`non_commercial` is required where the licence says NC), and `[imagery] brightness` sets how bright they are drawn.

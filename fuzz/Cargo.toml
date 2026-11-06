@@ -62,6 +62,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "imagery_catalog"
+path = "fuzz_targets/imagery_catalog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "imagery_tile"
 path = "fuzz_targets/imagery_tile.rs"
 test = false
