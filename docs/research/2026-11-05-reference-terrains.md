@@ -249,3 +249,55 @@ shading.
   streams that end at the `11 00 00` marker, marks only compressed mipmaps and compresses better (mip 0 of a tile
   94 725 bytes against 117 691 for armake2). armake2 is fixed (no stray byte after the stream, mark only what is
   compressed) and Náves clears the wrong mark in files from an older armake2.
+
+## Real areas, one source and two (satellite imagery plan, Task 9, 2026-11-06)
+
+- **One source, whole area.** `naves imagery fetch sentinel2-scenes` for the example: 103 s, 66 MiB, one scene
+  (`S2C_T32TQT_20250919T101514_L2A`, zone 32, 0.0003 % cloud) covers the whole map, a 4 MB file is kept of the
+  340 MB download. The Imagery overlay and the Surface overlay of the same map line up: the Königssee, Berchtesgaden
+  town, the Watzmann's rock and the forest edges are in the same places within a pixel or two.
+- **Overlap, the case the merge is for.** `bayern-dop40` over the Sentinel-2 base: 20 requests, 285 s, 353 MiB, a
+  160 MB file. The measurement is the mean difference between the merged picture and the Sentinel-2 picture on a
+  grid of 100 m cells (the aerial photographs show more detail, so the grid averages them out), over the whole map.
+  *Before* (gain limits 0.4 to 2.5, change threshold 25 % of the median): median gain 0.40, 0.43, 0.40, **at the
+  lower limit**, 86 % of the cells treated as real change; mean difference 19.3 levels, 39.6 % of the cells more than
+  12 and 20.1 % more than 25 levels off, blue 7 levels too high and red 4 too low, so the aerial part looked grey and
+  a step stood at the border. The orthophotos are about twice as bright as the scene (mean 93, 105, 94 against 44,
+  52, 32) and their blue is three times as bright, which a gain of 0.4 cannot undo. *After* (limits 0.15 to 6,
+  the change threshold a factor of 2 in either direction, blur radius 2 cells): median gain 0.34, 0.43, 0.27;
+  mean difference **15.2** levels, 15.1 % of the cells more than 25 off. Wider thresholds do better on the number (a
+  factor of 2.5: 13.4; no detection: 10) but would stamp a real change into the colours, which
+  `changed_content_leaves_no_stamp` forbids. The first change test also could never recognise a cell that is
+  *darker* than expected, from a threshold of 100 % up; it is now symmetric.
+  **What stays:** a satellite scene and an orthophoto differ in more than exposure: forest is nearly black in the
+  scene and not in the photograph, snow and rock the other way round. One smooth gain per 100 m cell cannot follow
+  that, and a soft band of colour remains where the photographs end (the border to Austria). A tone curve per
+  channel (matching the histograms of the overlap) would be the next step; it is a design decision, not a tuning
+  of the values in the plan, so it is **not** done here.
+- **A colour cast, found in the game.** In the game the first merged map looked right in forest and meadow but the
+  Watzmann's rock face was bright green: the gain per colour channel (0.34, 0.43, 0.27) came from the typical
+  ground, the forest, and tinted the grey rock, where the photograph and the scene relate differently. The merge now
+  uses **one gain for all three channels** per cell (the geometric mean of the channel ratios): the colours of the
+  sharper image are kept and only its brightness is matched. The mean difference from the satellite colours per cell
+  is 16.8 levels (15.2 with the tinting gains), 15.7 % of the cells more than 25 off, with a neutral rock face
+  (`neutral_ground_stays_neutral`; it failed with the gain per channel).
+- **In the game, the merged map** (DayZ 1.30, headless client, noon, clear weather, x 3962, z 1400, yaw 270 over the
+  Königssee, and a ground view at x 5200, z 2400 on the Austrian side): the player connects at both views and
+  nothing crashes. The photographs show the forest as single trees and the meadows and the rock face as they are; with
+  the gain per channel the rock face was green, with one gain it is grey and white like the scene's. No seam between
+  tiles can be seen. The soft colour band at the end of the photographs was not looked for at ground level.
+- **Non-commercial.** The same map with `eox-cloudless-2025`: `ATTRIBUTION.txt` in the mod and in the mission opens
+  with the notice and the share-alike line, `mod.cpp` says "Non-commercial use only", the build warns on the command
+  line (the GUI shows the line "Non-commercial map"; the launcher's own display of `overview` was not looked at).
+- **Another part of the world.** `naves imagery list` for the Andes (Cusco, -13.5, -71.5): the world sources and no
+  Bavaria. The default dates (southern summer, November to March) are the rainy season there: 128 scenes, all above
+  20 % cloud, and the fetch stopped with "no usable scene"; it now says that the clearest scene has x % cloud and to try
+  other dates. With `--from 2025-06-01 --to 2025-08-31` it fetched `S2A_T18LZL_20250704T150100_L2A` and the Imagery
+  overlay shows the dry altiplano. A map across the border of the UTM zones 32 and 33 at 12 °E (47.30 °N) is covered
+  by one scene of zone 32, so the seam of two zones is only tested with synthetic files
+  (`file_in_the_neighbouring_zone_lines_up`).
+- **Cost** (release binary, `naves build` in the headless session, same map without imagery in brackets):
+  `terrain_size` 1024: 16.1 s (15 s), peak 1.76 GiB (1.2 GiB), PBO 75.4 MB (50.9 MB); 2048: 38.0 s (31.7 s), peak
+  1.76 GiB (1.25 GiB), PBO 220 MB (118 MB). The build is 1.07 and 1.2 times as slow and the PBO 1.5 and 1.9 times as
+  large; the plan's limit (twice as slow, or a PBO too large to use) is not reached, but a 2048 map with photographs
+  is a 220 MB mod.

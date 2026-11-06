@@ -23,6 +23,11 @@ land_cover = ["landcover/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif"]
 osm = ["osm/oberbayern-latest.osm.pbf", "osm/austria-latest.osm.pbf"]
 
 [[sources.imagery]]
-path = "imagery/sentinel2-S2C_T33TUN_20250919T101514_L2A.tif"
+path = "imagery/sentinel2-scenes-S2C_T32TQT_20250919T101514_L2A.tif"
 attribution = "Contains modified Copernicus Sentinel data 2025"
 licence = "Copernicus Sentinel data, free and open"
+
+[[sources.imagery]]
+path = "imagery/bayern-dop40.tif"
+attribution = "Bayerische Vermessungsverwaltung, https://geoservices.bayern.de (DOP40)"
+licence = "CC BY 4.0"
