@@ -50,6 +50,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The GUI's look: boxes, radio buttons and fields have an outline that shows on the panel, selected rows are a light green that ink reads on, tabs are marked by a bar instead of a filled button, and keyboard focus is a green ring (white or ink on a coloured level row). The shortcut sheet (F1) is centred and has no shadow.
 - The GUI map moves with Space + drag or the middle mouse button; the left button no longer pans.
 - `naves.toml` with an option that Náves does not know (a typo, or an option of a newer Náves) is rejected with the option named, in the CLI, the GUI and over MCP, instead of being read and dropped when the file is saved again.
 - Lighter baked shading on the satellite images: rock faces were nearly black.

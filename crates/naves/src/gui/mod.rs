@@ -577,6 +577,12 @@ impl NavesApp {
         let mut open = true;
         egui::Window::new("Keyboard shortcuts")
             .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .frame(
+                egui::Frame::window(&ctx.global_style())
+                    .shadow(egui::Shadow::NONE)
+                    .stroke(egui::Stroke::new(1.5, INK)),
+            )
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {

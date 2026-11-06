@@ -56,7 +56,7 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
             painter.rect_stroke(
                 rect.shrink(1.0),
                 0.0,
-                egui::Stroke::new(2.0, GREEN),
+                egui::Stroke::new(2.0, if active { level.band_text() } else { GREEN }),
                 egui::StrokeKind::Inside,
             );
         }

@@ -154,7 +154,27 @@ pub fn show(app: &mut NavesApp, ctx: &egui::Context) {
                 ui.set_width(130.0);
                 for (tab, name) in PrefsTab::ALL {
                     let selected = window.tab == tab;
-                    let r = ui.selectable_label(selected, name);
+                    let text = if selected {
+                        RichText::new(name).strong()
+                    } else {
+                        RichText::new(name)
+                    };
+                    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                    if selected {
+                        let bar = egui::Rect::from_min_size(
+                            egui::pos2(r.rect.left() - 8.0, r.rect.top()),
+                            egui::vec2(3.0, r.rect.height()),
+                        );
+                        ui.painter().rect_filled(bar, 0.0, super::theme::GREEN);
+                    }
+                    if r.has_focus() {
+                        ui.painter().rect_stroke(
+                            r.rect.expand(2.0),
+                            2.0,
+                            egui::Stroke::new(2.0, super::theme::GREEN),
+                            egui::StrokeKind::Outside,
+                        );
+                    }
                     r.widget_info(|| {
                         WidgetInfo::selected(egui::Role::Tab, true, selected, name.to_string())
                     });
@@ -273,7 +293,7 @@ fn keyboard_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui)
     }
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .max_height(300.0)
+        .max_height(330.0)
         .show(ui, |ui| {
             for (name, rows) in groups.into_iter().filter(|(_, r)| !r.is_empty()) {
                 ui.label(RichText::new(&name).strong());
@@ -442,11 +462,11 @@ fn tools_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
     }
     let mut changed = None;
     egui::Grid::new("tools")
-        .num_columns(3)
-        .spacing([12.0, 6.0])
+        .num_columns(2)
+        .spacing([16.0, 12.0])
         .show(ui, |ui| {
             for (i, origin) in origins.iter().enumerate() {
-                ui.label(origin.tool);
+                ui.label(RichText::new(origin.tool).strong());
                 ui.vertical(|ui| {
                     ui.label(
                         origin
@@ -455,17 +475,17 @@ fn tools_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
                             .map_or_else(|| "none".to_string(), |p| p.display().to_string()),
                     );
                     ui.label(RichText::new(origin_words(origin.from, "")).weak());
-                });
-                if let Some(text) = window.paths.get_mut(i) {
-                    let r = ui.add(
-                        egui::TextEdit::singleline(text)
-                            .hint_text("Path in the settings")
-                            .desired_width(220.0),
-                    );
-                    if r.changed() {
-                        changed = Some((origin.tool, text.clone()));
+                    if let Some(text) = window.paths.get_mut(i) {
+                        let r = ui.add(
+                            egui::TextEdit::singleline(text)
+                                .hint_text("Path in the settings")
+                                .desired_width(340.0),
+                        );
+                        if r.changed() {
+                            changed = Some((origin.tool, text.clone()));
+                        }
                     }
-                }
+                });
                 ui.end_row();
             }
         });

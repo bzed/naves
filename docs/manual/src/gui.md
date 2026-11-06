@@ -13,9 +13,9 @@ naves gui [<project folder>]
 opens the project in the current folder (or the one you name) in a window titled *Náves – (project name)*.
 There is no object editing yet; the window shows the project, reads the terrain and builds it.
 
-![The map view: shaded relief of the Königssee area](images/map-hillshade.png)
+![The editor: Terrain level with the layer Too steep to walk, the Ground base map and the dock](images/editor.png)
 
-*The map with the Relief base map (the Königssee test area).*
+*Level 1, Terrain, with the Ground base map and the layer Too steep to walk switched on. The data is the Königssee crop of the test fixtures (`tests/fixtures`: Copernicus GLO-30, ESA WorldCover, OpenStreetMap); the hatching is in the top left, where the ground is steeper than 60°.*
 
 ## The stack (right)
 

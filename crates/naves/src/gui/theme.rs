@@ -16,6 +16,12 @@ pub const GROUND: Color32 = Color32::from_rgb(0xf2, 0xf5, 0xec);
 /// Side panels and the dock.
 pub const PANEL: Color32 = Color32::from_rgb(0xe7, 0xed, 0xe0);
 
+/// The background of a selected row: a light green that ink reads on.
+pub const SELECTED: Color32 = Color32::from_rgb(0xbd, 0xd6, 0xc2);
+
+/// The outline of boxes, radio buttons and fields.
+pub const EDGE: Color32 = Color32::from_rgb(0x6a, 0x75, 0x6d);
+
 /// Sets the theme: the manual's palette. Keyboard focus is a green ring, which shows on the light panel.
 pub fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::light();
@@ -23,9 +29,11 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.window_fill = GROUND;
     visuals.extreme_bg_color = Color32::WHITE;
     visuals.override_text_color = Some(INK);
-    visuals.selection.bg_fill = GREEN;
+    visuals.selection.bg_fill = SELECTED;
     visuals.selection.stroke.color = GREEN;
     visuals.hyperlink_color = GREEN;
+    // an unchecked box, a radio button and a field must show on the panel: 3:1 against it
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, EDGE);
     visuals.widgets.hovered.bg_stroke.color = GREEN;
     visuals.widgets.active.bg_fill = GREEN;
     ctx.set_visuals(visuals);

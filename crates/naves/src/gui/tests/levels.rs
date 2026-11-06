@@ -6,7 +6,7 @@
 use eframe::egui::Color32;
 
 use crate::gui::levels::Level;
-use crate::gui::theme::{ERROR, GREEN, INK, PANEL, contrast};
+use crate::gui::theme::{ERROR, GREEN, INK, PANEL, SELECTED, contrast};
 
 #[test]
 fn digits_never_change() {
@@ -94,4 +94,17 @@ fn no_text_is_below_4_5_on_the_panel() {
         let ratio = contrast(colour, PANEL);
         assert!(ratio >= 4.5, "{name}: {ratio}");
     }
+}
+
+#[test]
+fn the_outline_of_a_box_has_3_to_1_against_the_panel() {
+    // WCAG 1.4.11: the parts of a control that show where it is need 3:1
+    let ratio = contrast(crate::gui::theme::EDGE, PANEL);
+    assert!(ratio >= 3.0, "{ratio}");
+}
+
+#[test]
+fn ink_reads_on_a_selected_row() {
+    let ratio = contrast(INK, SELECTED);
+    assert!(ratio >= 4.5, "{ratio}");
 }
