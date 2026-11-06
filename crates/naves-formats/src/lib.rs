@@ -4,5 +4,6 @@
 //! Náves file formats: pure readers and writers, no I/O policy and no game logic.
 
 mod binio;
+pub mod odol;
 pub mod paa;
 pub mod wrp8;
