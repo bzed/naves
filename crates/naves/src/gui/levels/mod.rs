@@ -7,9 +7,11 @@ use eframe::egui::{self, Color32};
 
 use super::NavesApp;
 use super::layers::LayerDef;
+use super::palette::PaletteItem;
 use super::selection::Selection;
+use super::shortcuts::ToolId;
 use super::theme::{INK, contrast};
-use super::viewport::WorldPoint;
+use super::viewport::{ViewEvent, WorldPoint};
 
 /// A level of the stack. The digit is the key and never changes; a level appears in the editor when it is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -151,6 +153,27 @@ pub struct LevelDef {
     pub layers: &'static [LayerDef],
     /// What a click on the map picks in this level, if anything.
     pub pick: Option<fn(&NavesApp, WorldPoint) -> Option<Selection>>,
+    /// The tools of the level besides Select, for the rail. Empty until a level has more than one.
+    pub tools: &'static [ToolDef],
+    /// What the level can add, for the items panel. Empty until a level has any.
+    pub items: fn(&NavesApp) -> Vec<PaletteItem>,
+}
+
+/// A tool of the rail.
+pub struct ToolDef {
+    /// Which tool; its key is in the shortcut table.
+    pub tool: ToolId,
+    /// The word below the letter.
+    pub word: &'static str,
+    /// The status line while the tool is active: what it does and what to press.
+    pub status: &'static str,
+    /// What the tool does with what happens in the view, in map metres.
+    pub on_event: Option<fn(&mut NavesApp, &ViewEvent)>,
+}
+
+/// The empty items function of a level that adds nothing yet.
+pub fn no_items(_: &NavesApp) -> Vec<PaletteItem> {
+    Vec::new()
 }
 
 /// The levels that are built, bottom first. A later plan adds its level here and nowhere else.

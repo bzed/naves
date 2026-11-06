@@ -6,7 +6,7 @@
 use eframe::egui::{self, Color32};
 use naves_core::surface::SurfaceClass;
 
-use super::{Level, LevelDef, number_row, ready_data, waiting};
+use super::{Level, LevelDef, no_items, number_row, ready_data, waiting};
 use crate::gui::selection::Selection;
 use crate::gui::stack::ground_shares;
 use crate::gui::viewport::WorldPoint;
@@ -19,6 +19,8 @@ pub const DEF: LevelDef = LevelDef {
     status: "Select: click to read the ground here.",
     layers: &[],
     pick: Some(pick),
+    tools: &[],
+    items: no_items,
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {

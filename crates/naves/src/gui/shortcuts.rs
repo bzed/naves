@@ -638,14 +638,14 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::HideLevel
         | Action::ShowOthersInFull => true,
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
-        Action::Tool(_)
-        | Action::WorldAxes
+        Action::Tool(tool) => app.has_tool(tool),
+        Action::SearchItems => app.has_palette(),
+        Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
         | Action::Duplicate
         | Action::Undo
         | Action::Redo
-        | Action::SearchItems
         | Action::BrushSmaller
         | Action::BrushLarger
         | Action::BrushWeaker

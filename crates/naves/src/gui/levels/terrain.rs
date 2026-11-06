@@ -8,7 +8,7 @@ use naves_core::render::{MapLayer, WALK_LIMIT_DEG};
 
 use naves_core::heightmap::MapGeo;
 
-use super::{Level, LevelDef, number_row, ready_data, waiting};
+use super::{Level, LevelDef, no_items, number_row, ready_data, waiting};
 use crate::gui::layers::LayerDef;
 use crate::gui::selection::Selection;
 use crate::gui::theme::INK;
@@ -21,6 +21,8 @@ pub const DEF: LevelDef = LevelDef {
     panel,
     status: "Select: click to read the height and slope here.",
     pick: Some(pick),
+    tools: &[],
+    items: no_items,
     layers: &[LayerDef {
         layer: MapLayer::TooSteepToWalk,
         name: "Too steep to walk",

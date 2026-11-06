@@ -5,7 +5,7 @@
 
 use eframe::egui;
 
-use super::{Level, LevelDef};
+use super::{Level, LevelDef, no_items};
 use crate::gui::NavesApp;
 
 /// The level.
@@ -15,6 +15,8 @@ pub const DEF: LevelDef = LevelDef {
     status: "Project settings are on the left. Press 1 to read the terrain.",
     layers: &[],
     pick: None,
+    tools: &[],
+    items: no_items,
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {

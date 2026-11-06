@@ -13,7 +13,9 @@ mod layers;
 mod layout;
 mod levels;
 mod map_view;
+mod palette;
 mod problems;
+mod rail;
 mod selection;
 mod settings;
 mod shortcuts;
@@ -78,6 +80,12 @@ pub struct NavesApp {
     selection: Option<selection::Selection>,
     /// The tab of the bottom dock.
     dock: &'static str,
+    /// The tool in use.
+    tool: shortcuts::ToolId,
+    /// The item that was picked last.
+    item: Option<String>,
+    /// The search and the last used items of the palette.
+    palette: palette::Palette,
     /// What is wrong, from all sources.
     problems: problems::ProblemList,
     /// Warnings and errors of the last build; cleared when the next build starts.
@@ -138,6 +146,9 @@ impl NavesApp {
             help_open: false,
             selection: None,
             dock: "build",
+            tool: shortcuts::ToolId::SELECT,
+            item: None,
+            palette: palette::Palette::default(),
             problems: problems::ProblemList::default(),
             build_problems: Vec::new(),
             merge_problems: Vec::new(),
@@ -314,6 +325,13 @@ impl NavesApp {
                         .show(ui, |ui| self.left_panel(ui));
                 });
         }
+        if self.has_rail() {
+            egui::Panel::left("rail")
+                .resizable(false)
+                .exact_size(rail::RAIL_WIDTH)
+                .frame(egui::Frame::new().fill(PANEL))
+                .show(ui, |ui| rail::rail_ui(self, ui));
+        }
         egui::Panel::right("stack")
             .resizable(false)
             .exact_size(RIGHT_WIDTH)
@@ -394,9 +412,13 @@ impl NavesApp {
             Action::ShowOthersInFull => {
                 self.panel.show_others_in_full = !self.panel.show_others_in_full;
             }
+            Action::Tool(tool) => self.tool = tool,
+            Action::SearchItems => self.palette.focus_search = true,
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;
+                } else if self.tool != shortcuts::ToolId::SELECT {
+                    self.tool = shortcuts::ToolId::SELECT;
                 } else {
                     self.selection = None;
                 }
@@ -428,6 +450,10 @@ impl NavesApp {
 
     /// Makes a level the one you work on. A hidden level is shown again.
     fn activate(&mut self, level: levels::Level) {
+        if self.panel.active != level {
+            self.tool = shortcuts::ToolId::SELECT;
+            self.item = None;
+        }
         self.panel.active = level;
         self.panel.hidden.remove(&level);
     }
@@ -468,9 +494,28 @@ impl NavesApp {
 
     /// The panel of the active level.
     fn left_panel(&mut self, ui: &mut egui::Ui) {
-        if let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) {
+        let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
+            return;
+        };
+        let items = (def.items)(self);
+        if items.is_empty() {
             (def.panel)(self, ui);
+        } else {
+            palette::palette_ui(self, ui, &items);
         }
+    }
+
+    /// Whether the active level has this tool: Select when it can pick, or one of its own.
+    fn has_tool(&self, tool: shortcuts::ToolId) -> bool {
+        self.rail_tools().iter().any(|(t, _)| *t == tool)
+    }
+
+    /// Whether the active level shows the items panel.
+    fn has_palette(&self) -> bool {
+        self.levels
+            .iter()
+            .find(|d| d.level == self.panel.active)
+            .is_some_and(|d| !(d.items)(self).is_empty())
     }
 
     /// The band, the view and the status line.
@@ -488,11 +533,7 @@ impl NavesApp {
             egui::pos2(full.max.x, status.min.y.max(band.max.y)),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(map), |ui| self.map_ui(ui));
-        let text = self
-            .levels
-            .iter()
-            .find(|d| d.level == self.panel.active)
-            .map_or("", |d| d.status);
+        let text = self.status_text();
         ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -665,15 +706,43 @@ impl NavesApp {
         self.draw_markers(ui, rect);
         self.draw_selection(ui, rect);
         for event in &events {
-            if let ViewEvent::Click { at, modifiers } = *event {
-                self.select(at, modifiers);
-            }
+            self.route(event);
         }
         #[cfg(test)]
         {
             self.seen_events.extend(events);
             self.seen_rect = rect;
         }
+    }
+
+    /// An event of the view goes to the tool in use; Select picks.
+    fn route(&mut self, event: &ViewEvent) {
+        if self.tool == shortcuts::ToolId::SELECT {
+            if let ViewEvent::Click { at, modifiers } = *event {
+                self.select(at, modifiers);
+            }
+            return;
+        }
+        let tool = self
+            .levels
+            .iter()
+            .find(|d| d.level == self.panel.active)
+            .and_then(|d| d.tools.iter().find(|t| t.tool == self.tool))
+            .and_then(|t| t.on_event);
+        if let Some(on_event) = tool {
+            on_event(self, event);
+        }
+    }
+
+    /// What the status line says: the tool in use, or the level.
+    fn status_text(&self) -> &'static str {
+        let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
+            return "";
+        };
+        def.tools
+            .iter()
+            .find(|t| t.tool == self.tool)
+            .map_or(def.status, |t| t.status)
     }
 
     /// A click: picks in the active level, or with Alt in the highest level that has something there.

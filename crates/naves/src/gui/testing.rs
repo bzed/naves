@@ -91,7 +91,9 @@ impl Viewport for FakeViewport {
 }
 
 use super::NavesApp;
-use super::levels::{Level, LevelDef};
+use super::levels::{Level, LevelDef, ToolDef};
+use super::palette::{ItemKind, ItemSource, PaletteItem, Thumbnail};
+use super::shortcuts::ToolId;
 
 /// A level 6 that only tests build.
 pub static FAKE_LEVEL: LevelDef = LevelDef {
@@ -100,7 +102,70 @@ pub static FAKE_LEVEL: LevelDef = LevelDef {
     layers: &[],
     status: "Fake level: the status line of a level that tests add.",
     pick: Some(fake_pick),
+    tools: &[
+        ToolDef {
+            tool: ToolId::ADD,
+            word: "Place",
+            status: "Place: click to place the item.",
+            on_event: Some(fake_tool_event),
+        },
+        ToolDef {
+            tool: ToolId::COMPOSITION,
+            word: "Compose",
+            status: "Compose: click the pieces to join.",
+            on_event: Some(fake_tool_event),
+        },
+    ],
+    items: fake_items,
 };
+
+thread_local! {
+    static TOOL_EVENTS: RefCell<Vec<ViewEvent>> = const { RefCell::new(Vec::new()) };
+}
+
+fn fake_tool_event(_app: &mut NavesApp, event: &ViewEvent) {
+    TOOL_EVENTS.with(|e| e.borrow_mut().push(*event));
+}
+
+/// What the fake tools were told since the last call (on this thread, so tests do not meet).
+pub fn take_tool_events() -> Vec<ViewEvent> {
+    TOOL_EVENTS.with(|e| std::mem::take(&mut *e.borrow_mut()))
+}
+
+fn fake_items(_app: &NavesApp) -> Vec<PaletteItem> {
+    let item = |id: &str, name: &str, group: &str, kind, tool| PaletteItem {
+        id: id.to_string(),
+        name: name.to_string(),
+        group: group.to_string(),
+        thumbnail: Thumbnail::Swatch([154, 79, 60]),
+        kind,
+        default_tool: tool,
+        source: ItemSource::Game,
+    };
+    vec![
+        item(
+            "house.small",
+            "Small house",
+            "Residential",
+            ItemKind::Preset,
+            ToolId::ADD,
+        ),
+        item(
+            "house.big",
+            "Big house",
+            "Residential",
+            ItemKind::Model,
+            ToolId::ADD,
+        ),
+        item(
+            "bunker",
+            "Bunker",
+            "Military",
+            ItemKind::Preset,
+            ToolId::COMPOSITION,
+        ),
+    ]
+}
 
 #[expect(clippy::unnecessary_wraps, reason = "the signature of LevelDef::pick")]
 fn fake_pick(

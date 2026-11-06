@@ -18,6 +18,7 @@ use super::*;
 mod dock;
 mod layers;
 mod levels;
+mod rail;
 mod selection;
 mod shortcuts;
 mod stack;
