@@ -628,11 +628,13 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
     match action {
         Action::Level(level) => app.levels.iter().any(|d| d.level == level),
         Action::SwitchView => app.views.can_switch(),
-        Action::Cancel | Action::Build | Action::Help => true,
+        Action::Cancel
+        | Action::Build
+        | Action::Help
+        | Action::HideLevel
+        | Action::ShowOthersInFull => true,
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
         Action::Tool(_)
-        | Action::HideLevel
-        | Action::ShowOthersInFull
         | Action::FrameSelection
         | Action::FrameMap
         | Action::WorldAxes

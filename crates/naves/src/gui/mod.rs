@@ -8,6 +8,7 @@
 //! one loud thing on the screen.
 
 mod imagery;
+mod layers;
 mod layout;
 mod levels;
 mod map_view;
@@ -303,7 +304,16 @@ impl NavesApp {
     fn run_action(&mut self, action: shortcuts::Action) {
         use shortcuts::Action;
         match action {
-            Action::Level(level) => self.panel.active = level,
+            Action::Level(level) => self.activate(level),
+            Action::HideLevel => {
+                let level = self.panel.active;
+                if !self.panel.hidden.remove(&level) {
+                    self.panel.hidden.insert(level);
+                }
+            }
+            Action::ShowOthersInFull => {
+                self.panel.show_others_in_full = !self.panel.show_others_in_full;
+            }
             Action::Cancel => self.help_open = false,
             Action::Build => self.start_build(),
             Action::Help => self.help_open = !self.help_open,
@@ -311,6 +321,12 @@ impl NavesApp {
             // the other actions do not exist yet, see `shortcuts::action_exists`
             _ => {}
         }
+    }
+
+    /// Makes a level the one you work on. A hidden level is shown again.
+    fn activate(&mut self, level: levels::Level) {
+        self.panel.active = level;
+        self.panel.hidden.remove(&level);
     }
 
     fn start_build(&mut self) {
@@ -536,10 +552,12 @@ impl NavesApp {
             return;
         }
         let rect = ui.available_rect_before_wrap();
+        let layers = layers::visible(&self.panel, &self.levels, layers::FADE);
         let frame = ViewFrame {
             data: &data,
             project: &self.form.project,
             base: self.panel.base,
+            layers: &layers,
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);

@@ -321,10 +321,14 @@ fn f1_shows_the_shortcuts_of_this_level_only() {
         "the button and the row"
     );
     assert!(
-        h.query_by_label("Hide the active level").is_none(),
+        h.query_by_label("Frame the selection").is_none(),
         "not built yet"
     );
     assert!(h.query_by_label("Go to Water").is_none(), "no such level");
+    assert!(
+        h.query_by_label("Hide the active level").is_some(),
+        "built with the layers"
+    );
     h.key_press(egui::Key::F1);
     h.run_steps(3);
     assert!(

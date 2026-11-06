@@ -15,6 +15,7 @@ use naves_export::testing::FakeEnv;
 
 use super::*;
 
+mod layers;
 mod levels;
 mod shortcuts;
 mod stack;

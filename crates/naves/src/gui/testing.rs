@@ -21,6 +21,8 @@ pub struct FakeState {
     pub generations: Vec<u64>,
     /// How many times it was reset.
     pub resets: u32,
+    /// The layers of the last frame.
+    pub layers: Vec<super::viewport::VisibleLayer>,
     /// Events it reports in its next `show`.
     pub queued: Vec<ViewEvent>,
     /// What `project` answers.
@@ -55,6 +57,7 @@ impl Viewport for FakeViewport {
         let mut state = self.0.borrow_mut();
         state.shown += 1;
         state.generations.push(frame.generation);
+        state.layers = frame.layers.to_vec();
         std::mem::take(&mut state.queued)
     }
 
@@ -81,6 +84,10 @@ impl Viewport for FakeViewport {
     fn holds_picture(&self) -> bool {
         false
     }
+
+    fn renders(&self) -> u64 {
+        0
+    }
 }
 
 use super::NavesApp;
@@ -90,6 +97,7 @@ use super::levels::{Level, LevelDef};
 pub static FAKE_LEVEL: LevelDef = LevelDef {
     level: Level::Buildings,
     panel: fake_panel,
+    layers: &[],
     status: "Fake level: the status line of a level that tests add.",
 };
 

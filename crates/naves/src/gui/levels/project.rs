@@ -13,6 +13,7 @@ pub const DEF: LevelDef = LevelDef {
     level: Level::Project,
     panel,
     status: "Project settings are on the left. Press 1 to read the terrain.",
+    layers: &[],
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {

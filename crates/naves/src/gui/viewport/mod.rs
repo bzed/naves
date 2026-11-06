@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Modifiers};
 use naves_core::project::Project;
-use naves_core::render::Overlay;
+use naves_core::render::{MapLayer, Overlay};
 
 use super::worker::MapData;
 
@@ -70,6 +70,15 @@ pub enum ViewEvent {
     },
 }
 
+/// A layer to draw over the base map, and how strongly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisibleLayer {
+    /// Which layer.
+    pub layer: MapLayer,
+    /// 1 for the active level, less for the faded ones.
+    pub opacity: f32,
+}
+
 /// What the shell hands to a view each frame.
 pub struct ViewFrame<'a> {
     /// The data of the map.
@@ -78,6 +87,8 @@ pub struct ViewFrame<'a> {
     pub project: &'a Project,
     /// The base map.
     pub base: Overlay,
+    /// The layers to draw over it, bottom first.
+    pub layers: &'a [VisibleLayer],
     /// Counts up with every new `MapData` (and every change of what the pictures show).
     pub generation: u64,
 }
@@ -111,6 +122,9 @@ pub trait Viewport {
     fn reset(&mut self);
     /// Forgets the pictures only: they look different now, but the data is the same.
     fn invalidate(&mut self);
+    /// How many pictures were rendered so far (for tests).
+    #[cfg(test)]
+    fn renders(&self) -> u64;
     /// Whether a picture of the map is held (for tests).
     #[cfg(test)]
     fn holds_picture(&self) -> bool;

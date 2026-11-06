@@ -194,6 +194,34 @@ fn mix(from: [f32; 3], to: [f32; 3], amount: f32) -> [u8; 4] {
     [r, g, b, 255]
 }
 
+/// Paints an image of the request's rectangle: `pixel(row, col, east, north)` gives the pixel whose centre is at
+/// (`east`, `north`) in map metres. Rows are computed in parallel.
+fn paint_grid(
+    req: &RenderRequest,
+    (width, height): (u32, u32),
+    pixel: impl Fn(u32, u32, f64, f64) -> [u8; 4] + Sync,
+) -> RgbaImage {
+    let step_x = (req.x1 - req.x0) / f64::from(width);
+    let step_y = (req.y1 - req.y0) / f64::from(height);
+    let mut rows: Vec<Vec<[u8; 4]>> = (0..height)
+        .into_par_iter()
+        .map(|row| {
+            let north = req.y1 - (f64::from(row) + 0.5) * step_y;
+            (0..width)
+                .map(|col| pixel(row, col, req.x0 + (f64::from(col) + 0.5) * step_x, north))
+                .collect()
+        })
+        .collect();
+    let mut img = RgbaImage::new(width, height);
+    for (y, row) in rows.drain(..).enumerate() {
+        let y = u32::try_from(y).unwrap_or(0);
+        for (x, px) in row.into_iter().enumerate() {
+            img.put_pixel(u32::try_from(x).unwrap_or(0), y, Rgba(px));
+        }
+    }
+    img
+}
+
 /// Renders the rectangle of the heightmap, north up.
 ///
 /// `surfaces` is only used by [`Overlay::Surface`] and `imagery` only by [`Overlay::Imagery`].
@@ -219,62 +247,102 @@ pub fn render_topdown(
     };
     let (low, high) = hm.min_max();
     let span = if high > low { high - low } else { 1.0 };
-    let step_x = (req.x1 - req.x0) / f64::from(width);
-    let step_y = (req.y1 - req.y0) / f64::from(height);
-    let mut rows: Vec<Vec<[u8; 4]>> = (0..height)
-        .into_par_iter()
-        .map(|row| {
-            let north = req.y1 - (f64::from(row) + 0.5) * step_y;
-            (0..width)
-                .map(|col| {
-                    let east = req.x0 + (f64::from(col) + 0.5) * step_x;
-                    let ground = hm.sample(east, north);
-                    match req.overlay {
-                        Overlay::Imagery => {
-                            let at = usize::try_from(row)
-                                .ok()
-                                .zip(usize::try_from(width).ok())
-                                .and_then(|(r, w)| {
-                                    r.checked_mul(w)?.checked_add(usize::try_from(col).ok()?)
-                                });
-                            let seen = painted
-                                .as_ref()
-                                .zip(at)
-                                .and_then(|(pixels, at)| pixels.get(at).copied().flatten());
-                            seen.map_or_else(
-                                || {
-                                    if (row / CHECKER_PX + col / CHECKER_PX).is_multiple_of(2) {
-                                        [96, 96, 96, 255]
-                                    } else {
-                                        [128, 128, 128, 255]
-                                    }
-                                },
-                                |[red, green, blue]| [red, green, blue, 255],
-                            )
+    Ok(paint_grid(req, (width, height), |row, col, east, north| {
+        let ground = hm.sample(east, north);
+        match req.overlay {
+            Overlay::Imagery => {
+                let at = usize::try_from(row)
+                    .ok()
+                    .zip(usize::try_from(width).ok())
+                    .and_then(|(r, w)| r.checked_mul(w)?.checked_add(usize::try_from(col).ok()?));
+                let seen = painted
+                    .as_ref()
+                    .zip(at)
+                    .and_then(|(pixels, at)| pixels.get(at).copied().flatten());
+                seen.map_or_else(
+                    || {
+                        if (row / CHECKER_PX + col / CHECKER_PX).is_multiple_of(2) {
+                            [96, 96, 96, 255]
+                        } else {
+                            [128, 128, 128, 255]
                         }
-                        Overlay::Surface => {
-                            let [red, green, blue] =
-                                surfaces.map_or([0; 3], |grid| grid.at(east, north).rgb());
-                            [red, green, blue, 255]
-                        }
-                        Overlay::Hillshade => grey(255.0 * ground.hillshade()),
-                        Overlay::Height => grey(40.0 + 190.0 * (ground.height - low) / span),
-                        Overlay::Slope => mix(
-                            [70.0, 140.0, 70.0],
-                            [220.0, 40.0, 40.0],
-                            (ground.slope_deg() / 45.0).min(1.0),
-                        ),
-                    }
-                })
-                .collect()
-        })
-        .collect();
-    let mut img = RgbaImage::new(width, height);
-    for (y, row) in rows.drain(..).enumerate() {
-        let y = u32::try_from(y).unwrap_or(0);
-        for (x, px) in row.into_iter().enumerate() {
-            img.put_pixel(u32::try_from(x).unwrap_or(0), y, Rgba(px));
+                    },
+                    |[red, green, blue]| [red, green, blue, 255],
+                )
+            }
+            Overlay::Surface => {
+                let [red, green, blue] = surfaces.map_or([0; 3], |grid| grid.at(east, north).rgb());
+                [red, green, blue, 255]
+            }
+            Overlay::Hillshade => grey(255.0 * ground.hillshade()),
+            Overlay::Height => grey(40.0 + 190.0 * (ground.height - low) / span),
+            Overlay::Slope => mix(
+                [70.0, 140.0, 70.0],
+                [220.0, 40.0, 40.0],
+                (ground.slope_deg() / 45.0).min(1.0),
+            ),
+        }
+    }))
+}
+
+/// Ground steeper than this cannot be walked up, in degrees. **Provisional**: 60° is the maximum slope of the
+/// Livonia navigation mesh, an upper bound, so the layer under-reports but never marks walkable ground. The roads plan
+/// measures the real limit (its Task 1) and replaces this value.
+pub const WALK_LIMIT_DEG: f64 = 60.0;
+
+/// A layer over the base map: an image that is transparent where it draws nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MapLayer {
+    /// Hatching over ground above [`WALK_LIMIT_DEG`].
+    TooSteepToWalk,
+}
+
+impl MapLayer {
+    /// Every layer, in the order they are drawn: bottom first.
+    pub const ALL: &'static [MapLayer] = &[MapLayer::TooSteepToWalk];
+
+    /// The stable name, for the settings file and the MCP tools.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            MapLayer::TooSteepToWalk => "too_steep_to_walk",
         }
     }
-    Ok(img)
+}
+
+/// What the layers are drawn from.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerData<'a> {
+    /// The heights of the map.
+    pub heightmap: &'a Heightmap,
+}
+
+/// The ink of the hatching, `1d2924`, at 55 %.
+const HATCH: [u8; 4] = [0x1d, 0x29, 0x24, 140];
+/// Distance of the hatching lines in image pixels.
+const HATCH_PX: u32 = 6;
+
+/// Renders one layer for the rectangle of `req` (its `overlay` is not used). The picture is transparent where
+/// the layer draws nothing. The request can be the whole map, so that a 3D view can drape the same image.
+///
+/// # Errors
+///
+/// [`RenderError`] if the request is invalid, see [`RenderRequest::size`].
+pub fn render_layer(
+    layer: MapLayer,
+    data: &LayerData<'_>,
+    req: &RenderRequest,
+) -> Result<RgbaImage, RenderError> {
+    let size = req.size()?;
+    Ok(match layer {
+        MapLayer::TooSteepToWalk => paint_grid(req, size, |row, col, east, north| {
+            let steep = f64::from(data.heightmap.sample(east, north).slope_deg()) > WALK_LIMIT_DEG;
+            // diagonal lines, two pixels wide, every HATCH_PX pixels
+            if steep && (row + col) % HATCH_PX < 2 {
+                HATCH
+            } else {
+                [0; 4]
+            }
+        }),
+    })
 }

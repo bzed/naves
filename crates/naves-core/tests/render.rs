@@ -275,3 +275,111 @@ fn surface_overlay_needs_surfaces() {
         RenderError::NoSurfaces
     );
 }
+
+// ---- map layers: images over a rectangle of the map ----
+
+use naves_core::render::{LayerData, MapLayer, render_layer};
+
+/// A 64 x 64 map (640 m) with a 200 m high step between the columns 31 and 32.
+fn wall() -> Heightmap {
+    map(64, |col, _| if col >= 32.0 { 200.0 } else { 0.0 })
+}
+
+fn whole(hm: &Heightmap, px: u32) -> RenderRequest {
+    request(hm, px, Overlay::Hillshade)
+}
+
+#[test]
+fn each_layer_is_transparent_where_it_draws_nothing() {
+    let hm = map(64, |_, _| 100.0);
+    for layer in MapLayer::ALL {
+        let img = render_layer(*layer, &LayerData { heightmap: &hm }, &whole(&hm, 128)).unwrap();
+        assert!(img.pixels().all(|p| p[3] == 0), "{layer:?}");
+    }
+}
+
+#[test]
+fn hatching_marks_only_ground_above_the_limit() {
+    let hm = wall();
+    // 4 px per 10 m cell; the step is in x 310 m to 320 m
+    let img = render_layer(
+        MapLayer::TooSteepToWalk,
+        &LayerData { heightmap: &hm },
+        &RenderRequest {
+            x0: 200.0,
+            y0: 200.0,
+            x1: 440.0,
+            y1: 440.0,
+            px: 240,
+            overlay: Overlay::Hillshade,
+        },
+    )
+    .unwrap();
+    let mut inside = 0;
+    for (x, _, p) in img.enumerate_pixels() {
+        let east = 200.0 + f64::from(x) + 0.5;
+        if p[3] > 0 {
+            assert!((309.0..321.0).contains(&east), "hatching at {east} m");
+            inside += 1;
+        }
+    }
+    assert!(inside > 0, "the wall is hatched");
+}
+
+#[test]
+fn hatching_stays_at_55_percent() {
+    let hm = wall();
+    let img = render_layer(
+        MapLayer::TooSteepToWalk,
+        &LayerData { heightmap: &hm },
+        &whole(&hm, 640),
+    )
+    .unwrap();
+    let max = img.pixels().map(|p| p[3]).max().unwrap();
+    assert!(max > 0 && max <= 141, "{max}");
+}
+
+#[test]
+fn drawing_order_is_stable() {
+    assert_eq!(MapLayer::ALL, &[MapLayer::TooSteepToWalk]);
+    assert_eq!(MapLayer::TooSteepToWalk.id(), "too_steep_to_walk");
+}
+
+#[test]
+fn the_whole_map_can_be_asked_for() {
+    let hm = wall();
+    let img = render_layer(
+        MapLayer::TooSteepToWalk,
+        &LayerData { heightmap: &hm },
+        &whole(&hm, 320),
+    )
+    .unwrap();
+    // 0.5 px per metre: the step is in the columns 155 to 160
+    let (mut at_wall, mut elsewhere) = (0, 0);
+    for (x, _, p) in img.enumerate_pixels() {
+        if p[3] > 0 {
+            if (154..161).contains(&x) {
+                at_wall += 1;
+            } else {
+                elsewhere += 1;
+            }
+        }
+    }
+    assert!(at_wall > 0 && elsewhere == 0, "{at_wall} {elsewhere}");
+}
+
+#[test]
+fn a_bad_request_is_an_error() {
+    let hm = wall();
+    let mut req = whole(&hm, 64);
+    req.x1 = req.x0;
+    assert_eq!(
+        render_layer(
+            MapLayer::TooSteepToWalk,
+            &LayerData { heightmap: &hm },
+            &req
+        )
+        .unwrap_err(),
+        RenderError::Bounds
+    );
+}

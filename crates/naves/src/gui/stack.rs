@@ -7,7 +7,9 @@
 //! digit, the name beside it on the panel. The active level is thicker and fills its whole row.
 
 use eframe::egui::{self, Align2, Color32, FontId, Sense, WidgetInfo};
-use naves_core::render::Overlay;
+use std::collections::BTreeSet;
+
+use naves_core::render::{MapLayer, Overlay};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
 use super::levels::Level;
@@ -26,14 +28,21 @@ pub const BASE_MAPS: [(Overlay, &str); 5] = [
 const CLOSED_ROW: f32 = 24.0;
 const ACTIVE_ROW: f32 = 32.0;
 const BLOCK: f32 = 28.0;
+const EDGE: f32 = 4.0;
 
 /// What the stack shows: the base map and the level you are working on. Per session, never saved with the project.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LayerPanel {
     /// The base map.
     pub base: Overlay,
     /// The level you are working on.
     pub active: Level,
+    /// The layers that are switched on.
+    pub on: BTreeSet<MapLayer>,
+    /// The levels that are hidden (H).
+    pub hidden: BTreeSet<Level>,
+    /// The other levels are drawn in full, not faded (Shift+H).
+    pub show_others_in_full: bool,
 }
 
 impl Default for LayerPanel {
@@ -41,6 +50,9 @@ impl Default for LayerPanel {
         Self {
             base: Overlay::Hillshade,
             active: Level::Project,
+            on: BTreeSet::new(),
+            hidden: BTreeSet::new(),
+            show_others_in_full: false,
         }
     }
 }
@@ -48,7 +60,7 @@ impl Default for LayerPanel {
 impl LayerPanel {
     /// The colour of the band on top of the map.
     #[must_use]
-    pub fn band_colour(self) -> Color32 {
+    pub fn band_colour(&self) -> Color32 {
         self.active.colour()
     }
 }
@@ -92,8 +104,12 @@ pub fn stack_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.y = 0.0;
     let levels: Vec<Level> = app.levels.iter().map(|d| d.level).rev().collect();
     for level in levels {
-        if row(ui, level, app.panel.active == level) {
-            app.panel.active = level;
+        let active = app.panel.active == level;
+        if row(ui, level, active) {
+            app.activate(level);
+        }
+        if active {
+            layers_ui(app, ui, level);
         }
     }
 }
@@ -164,4 +180,44 @@ pub fn tooltip(level: Level) -> String {
         Some(key) => format!("Go to {} ({key})", level.name()),
         None => format!("Go to {}", level.name()),
     }
+}
+
+/// The layers of the open level: a checkbox each, the key under it while it is on. A 4 px edge in the level's colour
+/// runs down the left, so that they read as part of the stratum above.
+fn layers_ui(app: &mut NavesApp, ui: &mut egui::Ui, level: Level) {
+    let Some(def) = app.levels.iter().find(|d| d.level == level) else {
+        return;
+    };
+    if def.layers.is_empty() {
+        return;
+    }
+    let top = ui.cursor().min;
+    ui.horizontal(|ui| {
+        ui.add_space(EDGE + 8.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.add_space(4.0);
+            for layer in def.layers {
+                let mut on = app.panel.on.contains(&layer.layer);
+                if ui
+                    .checkbox(&mut on, layer.name)
+                    .on_hover_text((layer.tooltip)())
+                    .changed()
+                {
+                    if on {
+                        app.panel.on.insert(layer.layer);
+                    } else {
+                        app.panel.on.remove(&layer.layer);
+                    }
+                }
+                if on {
+                    ui.indent(layer.name, |ui| (layer.key)(ui));
+                }
+            }
+            ui.add_space(4.0);
+        });
+    });
+    let bottom = ui.cursor().min.y;
+    let edge = egui::Rect::from_min_max(top, egui::pos2(top.x + EDGE, bottom));
+    ui.painter().rect_filled(edge, 0.0, level.colour());
 }

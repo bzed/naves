@@ -5,9 +5,11 @@
 
 use eframe::egui::{self, Color32};
 use naves_core::imagery::TileImagery;
-use naves_core::render::{RenderRequest, render_topdown};
+use std::collections::BTreeMap;
 
-use super::{ViewEvent, ViewFocus, ViewFrame, Viewport, WorldPoint};
+use naves_core::render::{LayerData, MapLayer, RenderRequest, render_layer, render_topdown};
+
+use super::{ViewEvent, ViewFocus, ViewFrame, Viewport, VisibleLayer, WorldPoint};
 use crate::gui::map_view::MapView;
 
 /// Widest picture the map renders; larger windows scale it up.
@@ -30,6 +32,8 @@ pub struct MapViewport {
     size: (f64, f64),
     pending: Option<ViewFocus>,
     texture: Option<(RenderRequest, u64, egui::TextureHandle)>,
+    /// One picture per layer, so that fading or hiding one renders nothing.
+    layer_textures: BTreeMap<MapLayer, (RenderRequest, u64, egui::TextureHandle)>,
     /// How many times a picture was rendered.
     pub renders: u64,
 }
@@ -159,10 +163,17 @@ impl Viewport for MapViewport {
         self.view = None;
         self.pending = None;
         self.texture = None;
+        self.layer_textures.clear();
     }
 
     fn invalidate(&mut self) {
         self.texture = None;
+        self.layer_textures.clear();
+    }
+
+    #[cfg(test)]
+    fn renders(&self) -> u64 {
+        self.renders
     }
 
     #[cfg(test)]
@@ -210,11 +221,59 @@ impl MapViewport {
             self.texture = Some((request, frame.generation, handle));
             self.renders += 1;
         }
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         if let Some((_, _, texture)) = &self.texture {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             ui.painter()
                 .with_clip_rect(rect)
                 .image(texture.id(), rect, uv, Color32::WHITE);
+        }
+        for visible in frame.layers {
+            self.draw_layer(ui, rect, frame, &request, *visible);
+        }
+    }
+
+    /// One layer over the base map. Its picture is made once per rectangle and generation; the opacity is
+    /// only a tint when it is painted.
+    fn draw_layer(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        frame: &ViewFrame<'_>,
+        request: &RenderRequest,
+        visible: VisibleLayer,
+    ) {
+        let stale = self
+            .layer_textures
+            .get(&visible.layer)
+            .is_none_or(|(r, g, _)| r != request || *g != frame.generation);
+        if stale
+            && let Ok(image) = render_layer(
+                visible.layer,
+                &LayerData {
+                    heightmap: &frame.data.heightmap,
+                },
+                request,
+            )
+        {
+            let size = [image.width() as usize, image.height() as usize];
+            let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+            let handle = ui.ctx().load_texture(
+                format!("layer-{}", visible.layer.id()),
+                color,
+                egui::TextureOptions::LINEAR,
+            );
+            self.layer_textures
+                .insert(visible.layer, (*request, frame.generation, handle));
+            self.renders += 1;
+        }
+        if let Some((_, _, texture)) = self.layer_textures.get(&visible.layer) {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().with_clip_rect(rect).image(
+                texture.id(),
+                rect,
+                uv,
+                Color32::WHITE.gamma_multiply(visible.opacity),
+            );
         }
     }
 }

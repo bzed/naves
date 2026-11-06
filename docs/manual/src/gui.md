@@ -31,6 +31,18 @@ the thick row in its own colour. A level appears when it can do something; today
 
 Hover a row to see its key; **F1** lists all [keyboard shortcuts](shortcuts.md) of the level you are in, and **Ctrl+B** builds.
 
+### Layers
+
+A level can have **layers**: things drawn over the base map. They are in the stack, under the active level, as
+checkboxes. Switching one on shows its key under it (the symbol as drawn on the map). Level 1 has **Too steep to
+walk**: diagonal hatching over ground steeper than 60° (a provisional limit, the steepest slope of the Livonia
+navigation mesh, so the layer may miss some ground that is too steep, but never marks walkable ground).
+
+The levels you are not working on are drawn faded, at 40 %, so that you see what you work against. **H** hides the
+active level, **Shift+H** shows the others in full; making a hidden level active shows it again. Layers and the
+active level belong to the window and are not saved in `naves.toml`. Switching, fading and hiding draw nothing
+anew.
+
 A 3 px band in the active level's colour runs along the top of the map, and a line below the map says what
 you can do. The numbers never change, so key 4 will be Roads and paths even though it is not there yet.
 

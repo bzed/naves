@@ -15,6 +15,7 @@ pub const DEF: LevelDef = LevelDef {
     level: Level::Ground,
     panel,
     status: "Ground: what covers the terrain. Press 0 for the project settings.",
+    layers: &[],
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {

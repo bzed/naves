@@ -6,6 +6,7 @@
 use eframe::egui::{self, Color32};
 
 use super::NavesApp;
+use super::layers::LayerDef;
 use super::theme::{INK, contrast};
 
 /// A level of the stack. The digit is the key and never changes; a level appears in the editor when it is built.
@@ -144,6 +145,8 @@ pub struct LevelDef {
     pub panel: fn(&mut NavesApp, &mut egui::Ui),
     /// The status line while nothing else speaks.
     pub status: &'static str,
+    /// The map layers of the level, in the order of the stack.
+    pub layers: &'static [LayerDef],
 }
 
 /// The levels that are built, bottom first. A later plan adds its level here and nowhere else.
