@@ -9,8 +9,8 @@
 //!
 //! 1. every raster gets a mean colour per cell;
 //! 2. the raster with the most cells is the reference, its colours stay as they are;
-//! 3. the others are matched to the colours seen so far, largest overlap first, with a smooth gain per cell
-//!    (so exposure and fall-off are evened out and the detail is left alone);
+//! 3. the others are matched to the brightness seen so far, largest overlap first, with a smooth gain per cell, the
+//!    same in all three channels (so exposure and fall-off are evened out, the colours and the detail are left alone);
 //! 4. the sharpest raster is drawn on top, equals in the order of the list;
 //! 5. a raster fades in over a few cells at its edges.
 
@@ -87,7 +87,7 @@ pub struct SourceReport {
     pub coverage: f64,
     /// Share of those cells that other images covered as well.
     pub overlap: f64,
-    /// The typical colour correction per channel: 1 means untouched.
+    /// The typical correction of the brightness, the same in all three channels: 1 means untouched.
     pub median_gain: [f32; 3],
     /// Share of the overlap that looked like real change and not like exposure.
     pub changed_share: f64,
@@ -379,69 +379,56 @@ fn match_colours(composite: &Means, own: &Means, cells: usize) -> Matching {
             _ => ([0.0; 3], [0.0; 3]),
         })
         .collect();
-    let usable = |c: usize, (a, b): &([f32; 3], [f32; 3])| {
-        a.get(c).copied().unwrap_or(0.0) > DARK_FLOOR
-            && b.get(c).copied().unwrap_or(0.0) > DARK_FLOOR
+    // One gain for all three channels: the colours of the sharper image are kept and only its brightness is
+    // matched. A gain per channel measured on the typical ground (forest) tints the rest (rock, snow, water)
+    // wherever the two images relate differently by kind of ground, which satellite scenes and photographs do.
+    let usable = |(a, b): &([f32; 3], [f32; 3])| a.iter().chain(b.iter()).all(|&v| v > DARK_FLOOR);
+    // the brightness ratio of a cell: the geometric mean of its three channel ratios
+    let ratio = |(a, b): &([f32; 3], [f32; 3])| {
+        let one = |c: usize| a.get(c).copied().unwrap_or(1.0) / b.get(c).copied().unwrap_or(1.0);
+        (one(0) * one(1) * one(2)).cbrt()
     };
-    let ratio = |c: usize, (a, b): &([f32; 3], [f32; 3])| {
-        a.get(c).copied().unwrap_or(1.0) / b.get(c).copied().unwrap_or(1.0)
+    let mut ratios: Vec<f32> = pairs
+        .iter()
+        .zip(composite.iter().zip(own))
+        .filter(|(p, (a, b))| a.is_some() && b.is_some() && usable(p))
+        .map(|(p, _)| ratio(p))
+        .collect();
+    let global = if ratios.len() >= MIN_OVERLAP_CELLS {
+        median(&mut ratios).clamp(GAIN_LIMITS.0, GAIN_LIMITS.1)
+    } else {
+        1.0
     };
-    let mut global = [1.0_f32; 3];
-    for (c, slot) in global.iter_mut().enumerate() {
-        let mut ratios: Vec<f32> = pairs
-            .iter()
-            .zip(composite.iter().zip(own))
-            .filter(|(p, (a, b))| a.is_some() && b.is_some() && usable(c, p))
-            .map(|(p, _)| ratio(c, p))
-            .collect();
-        if ratios.len() >= MIN_OVERLAP_CELLS {
-            *slot = median(&mut ratios).clamp(GAIN_LIMITS.0, GAIN_LIMITS.1);
-        }
-    }
-    let mut gain = vec![global; cells * cells];
+    let mut plane = vec![global; cells * cells];
     let (mut changed, mut measured) = (0_usize, 0_usize);
-    for (index, g) in gain.iter_mut().enumerate() {
+    for (index, slot) in plane.iter_mut().enumerate() {
         let (Some(Some(_)), Some(Some(_)), Some(pair)) =
             (composite.get(index), own.get(index), pairs.get(index))
         else {
             continue;
         };
-        let mut any_change = false;
-        let mut any_measured = false;
-        for c in 0..3 {
-            if !usable(c, pair) {
-                continue;
-            }
-            any_measured = true;
-            let local = ratio(c, pair);
-            let reference = global.get(c).copied().unwrap_or(1.0);
-            let factor = local / reference;
-            if !(1.0 / (1.0 + CONTENT_CHANGE)..=1.0 + CONTENT_CHANGE).contains(&factor) {
-                any_change = true;
-            } else if let Some(slot) = g.get_mut(c) {
-                *slot = local;
-            }
+        if !usable(pair) {
+            continue;
         }
-        measured += usize::from(any_measured);
-        changed += usize::from(any_change);
-    }
-    for c in 0..3 {
-        let mut plane: Vec<f32> = gain
-            .iter()
-            .map(|g| g.get(c).copied().unwrap_or(1.0))
-            .collect();
-        for _ in 0..BLUR_PASSES {
-            box_blur(&mut plane, cells, BLUR_RADIUS);
-        }
-        for (g, v) in gain.iter_mut().zip(plane) {
-            if let Some(slot) = g.get_mut(c) {
-                *slot = v.clamp(GAIN_LIMITS.0, GAIN_LIMITS.1);
-            }
+        measured += 1;
+        let local = ratio(pair);
+        let factor = local / global;
+        if (1.0 / (1.0 + CONTENT_CHANGE)..=1.0 + CONTENT_CHANGE).contains(&factor) {
+            *slot = local;
+        } else {
+            changed += 1;
         }
     }
+    for _ in 0..BLUR_PASSES {
+        box_blur(&mut plane, cells, BLUR_RADIUS);
+    }
+    let gain: Vec<[f32; 3]> = plane
+        .iter()
+        .map(|&v| [v.clamp(GAIN_LIMITS.0, GAIN_LIMITS.1); 3])
+        .collect();
     Matching {
         gain,
-        global,
+        global: [global; 3],
         overlap,
         changed_share: share(changed, measured),
         matched: true,

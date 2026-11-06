@@ -255,6 +255,42 @@ fn a_much_brighter_flight_is_matched() {
 }
 
 #[test]
+fn neutral_ground_stays_neutral() {
+    // Where the aerial photograph and the satellite scene relate differently by kind of ground (forest and rock),
+    // a gain per colour channel from the typical ground would tint the rest: here the forest is 3.3, 2.2 and
+    // 10 times as bright in the photograph and the rock 2.9 times in all channels. The rock must stay grey.
+    let p = project();
+    let in_rock = |lat: f64, lon: f64| {
+        let (x, _) = MapGeo::new(&project()).unwrap().to_map(lat, lon).unwrap();
+        x > MAP * 0.1 && x < MAP * 0.3
+    };
+    let reference = raster(&p, ALL, COARSE, |lat, lon| {
+        Some(if in_rock(lat, lon) {
+            [60.0, 60.0, 60.0]
+        } else {
+            [30.0, 45.0, 10.0]
+        })
+    });
+    let photo = raster(&p, ALL, 3e-5, |lat, lon| {
+        Some(if in_rock(lat, lon) {
+            [170.0, 170.0, 170.0]
+        } else {
+            [100.0, 100.0, 100.0]
+        })
+    });
+    let (c, _) = merge(vec![reference, photo], &p).unwrap();
+    for i in 0..8 {
+        let (x, y) = (
+            MAP * (0.14 + 0.12 * f64::from(i) / 7.0),
+            MAP * (0.3 + 0.05 * f64::from(i)),
+        );
+        let got = paint_f(&c, &p, x, y).unwrap();
+        let spread = got[0].max(got[1]).max(got[2]) - got[0].min(got[1]).min(got[2]);
+        assert!(spread <= 3.0, "the rock is tinted at ({x}, {y}): {got:?}");
+    }
+}
+
+#[test]
 fn falloff_inside_a_photo_is_evened_out() {
     let p = project();
     let reference = raster(&p, ALL, COARSE, |lat, lon| Some(scene(lat, lon)));
