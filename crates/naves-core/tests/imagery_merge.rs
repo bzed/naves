@@ -228,6 +228,33 @@ fn exposure_step_disappears() {
 }
 
 #[test]
+fn a_much_brighter_flight_is_matched() {
+    // aerial photographs against a satellite scene: 4 times as bright, which a gain of 0.25 undoes
+    let p = project();
+    let reference = raster(&p, ALL, COARSE, |lat, lon| {
+        Some(scaled(scene(lat, lon), 0.25))
+    });
+    let bright = raster(&p, (0.2, 0.2, 0.8, 0.8), 3e-5, |lat, lon| {
+        Some(scene(lat, lon))
+    });
+    let (c, report) = merge(vec![reference.clone(), bright], &p).unwrap();
+    assert!(report.sources[1].median_gain[0] < 0.3, "{report:?}");
+    let sampler = reference.sampler().unwrap();
+    for i in 0..10 {
+        for j in 0..10 {
+            let (x, y) = (
+                MAP * (0.35 + 0.3 * f64::from(i) / 9.0),
+                MAP * (0.35 + 0.3 * f64::from(j) / 9.0),
+            );
+            let (lat, lon) = lat_lon(&p, x, y);
+            let want = sampler.rgb_at(lat, lon).unwrap();
+            let got = paint_f(&c, &p, x, y).unwrap();
+            assert!(close(got, want, 4.0), "{x} {y}: {got:?} against {want:?}");
+        }
+    }
+}
+
+#[test]
 fn falloff_inside_a_photo_is_evened_out() {
     let p = project();
     let reference = raster(&p, ALL, COARSE, |lat, lon| Some(scene(lat, lon)));
@@ -446,7 +473,7 @@ fn changed_content_leaves_no_stamp() {
     let second = |with_block: bool| {
         raster(&p, (0.1, 0.1, 0.9, 0.9), 3e-5, |lat, lon| {
             let gain = if with_block && block(lat, lon, &p) {
-                2.4
+                3.6
             } else {
                 1.2
             };

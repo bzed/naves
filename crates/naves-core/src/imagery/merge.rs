@@ -27,20 +27,27 @@ const CELL_SAMPLES: u32 = 4;
 /// take part in the colour matching (deep water and shadows differ in colour without meaning anything).
 const DARK_FLOOR: f32 = 8.0;
 
-/// The colour of a raster is never changed by more than this factor (smallest, largest): a larger
-/// difference is more likely a different scene than a different exposure.
-const GAIN_LIMITS: (f32, f32) = (0.4, 2.5);
+/// The colour of a raster is never changed by more than this factor (smallest, largest). Satellite scenes are
+/// much darker than aerial photographs of the same ground (a Sentinel-2 true colour image averages 44, 52, 32 where
+/// the Bavarian orthophotos average 93, 105, 94, so the gain is 0.3 to 0.5), and a difference this large is still an
+/// exposure; a larger one is more likely a different scene.
+const GAIN_LIMITS: (f32, f32) = (0.15, 6.0);
 
-/// A cell whose gain is further than this share from the raster's median gain is real change (a mown field,
+/// A cell whose gain is further than this factor from the raster's median gain, in either direction (a cell
+/// gain above `1 + CONTENT_CHANGE` times the median or below its inverse), is real change (a mown field,
 /// snow, a new estate) and not exposure; it takes the median so that the change is not stamped into the
-/// correction.
-const CONTENT_CHANGE: f32 = 0.25;
+/// correction. Sensors do not only differ in exposure: their colours differ by the kind of ground too (forest is
+/// nearly black in a satellite scene and not in a photograph), so the value is generous: 1.0 is a factor of 2.
+/// Tuned on Berchtesgaden, Sentinel-2 under Bavarian orthophotos: the mean difference of the matched colours from
+/// the satellite's per 100 m cell went from 19 to 15 levels (0.25 with the old limits: 19; 1.5: 13, but then a
+/// block 3 times as bright is no longer recognised in `changed_content_leaves_no_stamp`).
+const CONTENT_CHANGE: f32 = 1.0;
 
 /// Fewer overlapping cells than this and the colours are not matched at all.
 const MIN_OVERLAP_CELLS: usize = 16;
 
 /// The gain field is smoothed with a box blur of this radius in cells, applied [`BLUR_PASSES`] times.
-const BLUR_RADIUS: usize = 4;
+const BLUR_RADIUS: usize = 2;
 
 /// Number of blur passes.
 const BLUR_PASSES: usize = 2;
@@ -408,7 +415,8 @@ fn match_colours(composite: &Means, own: &Means, cells: usize) -> Matching {
             any_measured = true;
             let local = ratio(c, pair);
             let reference = global.get(c).copied().unwrap_or(1.0);
-            if (local / reference - 1.0).abs() > CONTENT_CHANGE {
+            let factor = local / reference;
+            if !(1.0 / (1.0 + CONTENT_CHANGE)..=1.0 + CONTENT_CHANGE).contains(&factor) {
                 any_change = true;
             } else if let Some(slot) = g.get_mut(c) {
                 *slot = local;
