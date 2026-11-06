@@ -55,3 +55,19 @@ U=/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ES
 gdal_translate -q -co TILED=YES -co BLOCKXSIZE=64 -co BLOCKYSIZE=64 -co COMPRESS=DEFLATE \
   -projwin 12.96 47.56 12.99 47.54 $U koenigssee.tif
 ```
+
+## `osm/koenigssee.osm.pbf`: OpenStreetMap crop
+
+A 38 KB extract of OpenStreetMap around the Königssee: water, rock, built-up and (to test that they are ignored)
+forest areas, with the complete ways and multipolygon relations that touch 12.96–12.99 °E, 47.54–47.56 °N.
+
+> © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright
+
+Created with `osmium` 1.19 from the Geofabrik extract `oberbayern-latest.osm.pbf` of 2026-11-06:
+
+```sh
+osmium tags-filter oberbayern-latest.osm.pbf -o filtered.osm.pbf \
+  wr/natural=water,glacier,bare_rock,scree,shingle,wood \
+  wr/landuse=reservoir,residential,industrial,commercial,farmyard,military,forest
+osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigssee.osm.pbf
+```

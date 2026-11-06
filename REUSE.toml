@@ -51,3 +51,9 @@ path = "tests/fixtures/landcover/*.tif"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium"
 SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+path = "tests/fixtures/osm/*.osm.pbf"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© OpenStreetMap contributors"
+SPDX-License-Identifier = "ODbL-1.0"

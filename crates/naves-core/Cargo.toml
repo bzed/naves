@@ -24,6 +24,7 @@ rayon = "1.12.0"
 geotiff-reader = { version = "0.11.0", default-features = false, features = ["local"] }
 image = { version = "0.25.10", default-features = false }
 serde_json = "1.0.154"
+osmpbf = "0.3.8"
 
 [features]
 # Test-only constructors (Dem::from_fn); used by the tests of the other crates too.

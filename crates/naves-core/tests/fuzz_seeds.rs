@@ -66,6 +66,20 @@ fn mcp_project_set_seeds() {
 }
 
 #[test]
+fn osm_read_seeds() {
+    let window = GeoWindow {
+        south: 47.54,
+        west: 12.96,
+        north: 47.56,
+        east: 12.99,
+    };
+    for (name, data) in seeds("osm_read") {
+        let result = naves_core::osm::read_land_from_bytes(&data, window);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+    }
+}
+
+#[test]
 fn landcover_tile_seeds() {
     let window = GeoWindow {
         south: 47.54,
