@@ -28,6 +28,10 @@ const OVERLAP_PX: u32 = 16;
 /// Slope in degrees above which ground counts as rock.
 const ROCK_SLOPE_DEG: f32 = 35.0;
 
+/// Real altitude in metres above which bare ground takes over from grass. Measured with ESA `WorldCover` around
+/// Berchtesgaden: 27 % of the ground is bare at 1900 to 2100 m, 58 % at 2100 to 2300 m, 87 % at 2300 to 2500 m.
+const GRASS_LIMIT_REAL_M: f64 = 2100.0;
+
 /// The tile grid of a map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TileGrid {
@@ -121,14 +125,21 @@ pub const SURFACES: &[Surface] = &[
     },
 ];
 
-/// Index into [`SURFACES`] for ground with this slope.
-fn surface_index(s: &Sample) -> u8 {
-    u8::from(s.slope_deg() > ROCK_SLOPE_DEG)
+/// The grass limit in map metres for a project's `scale.height`.
+#[must_use]
+pub fn grass_limit_m(height_scale: f64) -> f32 {
+    narrow(GRASS_LIMIT_REAL_M * height_scale)
 }
 
-/// The surface of every heightmap vertex: an index into [`SURFACES`] (rock on slopes above 35°, else grass).
+/// Index into [`SURFACES`] for ground with this slope and height.
+fn surface_index(s: &Sample, grass_limit: f32) -> u8 {
+    u8::from(s.slope_deg() > ROCK_SLOPE_DEG || s.height > grass_limit)
+}
+
+/// The surface of every heightmap vertex: an index into [`SURFACES`] (rock on slopes above 35° and above
+/// `grass_limit` metres of map height, else grass).
 #[must_use]
-pub fn classify(hm: &Heightmap) -> Vec<u8> {
+pub fn classify(hm: &Heightmap, grass_limit: f32) -> Vec<u8> {
     let cell = f64::from(hm.cell_m);
     let mut out = Vec::with_capacity(hm.h.len());
     for row in 0..i64::from(hm.size) {
@@ -138,11 +149,14 @@ pub fn classify(hm: &Heightmap) -> Vec<u8> {
             let here = hm.sample(x, y);
             // The bilinear gradient inside a cell is one-sided at a vertex; average both sides.
             let there = hm.sample(x - cell * 0.5, y - cell * 0.5);
-            out.push(surface_index(&Sample {
-                height: here.height,
-                dz_dx: f32::midpoint(here.dz_dx, there.dz_dx),
-                dz_dy: f32::midpoint(here.dz_dy, there.dz_dy),
-            }));
+            out.push(surface_index(
+                &Sample {
+                    height: here.height,
+                    dz_dx: f32::midpoint(here.dz_dx, there.dz_dx),
+                    dz_dy: f32::midpoint(here.dz_dy, there.dz_dy),
+                },
+                grass_limit,
+            ));
         }
     }
     out
@@ -171,7 +185,13 @@ struct TileImages {
     mask: Vec<u8>,
 }
 
-fn render_tile(hm: &Heightmap, grid: &TileGrid, map_size_m: f64, tx: u32, ty: u32) -> TileImages {
+fn render_tile(
+    hm: &Heightmap,
+    grid: &TileGrid,
+    map_size_m: f64,
+    (tx, ty): (u32, u32),
+    grass_limit: f32,
+) -> TileImages {
     let size = grid.tile_px;
     let mut sat = RgbImage::new(size, size);
     let mut mask = RgbaImage::new(size, size);
@@ -184,7 +204,7 @@ fn render_tile(hm: &Heightmap, grid: &TileGrid, map_size_m: f64, tx: u32, ty: u3
         for px in 0..size {
             let x = west + (f64::from(px) - overlap + 0.5) * grid.px_m;
             let here = hm.sample(x, y);
-            let surface = surface_index(&here);
+            let surface = surface_index(&here, grass_limit);
             let shade = 0.35 + 0.65 * here.hillshade();
             let rgb = SURFACES
                 .get(usize::from(surface))
@@ -212,10 +232,10 @@ fn render_tile(hm: &Heightmap, grid: &TileGrid, map_size_m: f64, tx: u32, ty: u3
 
 /// Builds satellite images, masks and tile materials for the whole map.
 ///
-/// `land_size` is the material grid size (a multiple of 32); `prefix` is the world's in-game path, for
-/// example `naves\worlds\berchtesgaden`.
+/// `land_size` is the material grid size (a multiple of 8); `prefix` is the world's in-game path, for
+/// example `naves\worlds\berchtesgaden`; `grass_limit` comes from [`grass_limit_m`].
 #[must_use]
-pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str) -> LayerSet {
+pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str, grass_limit: f32) -> LayerSet {
     let map_size_m = f64::from(hm.size) * f64::from(hm.cell_m);
     let grid = tile_grid(map_size_m, land_size);
     let coords: Vec<(u32, u32)> = (0..grid.tiles_y)
@@ -223,7 +243,7 @@ pub fn build_layers(hm: &Heightmap, land_size: u32, prefix: &str) -> LayerSet {
         .collect();
     let rendered: Vec<TileImages> = coords
         .par_iter()
-        .map(|&(tx, ty)| render_tile(hm, &grid, map_size_m, tx, ty))
+        .map(|&tile| render_tile(hm, &grid, map_size_m, tile, grass_limit))
         .collect();
 
     let mut materials = vec![String::new()];

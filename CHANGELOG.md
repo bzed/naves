@@ -26,8 +26,8 @@ All notable changes to this project are documented here. The format follows
 - Navigation mesh support: the world config has a `Navmesh` class (inherited agent and link types, seed in the map
   centre) and `naves build` packs `<project>/navmesh/<world>.nm` when it exists; the manual describes how to make
   the mesh with DayZDiag and Flare Navgen.
-- Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope) and a tile
-  material for every terrain tile.
+- Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope and above a real
+  altitude of 2100 m) and a tile material for every terrain tile.
 
 ### Fixed
 

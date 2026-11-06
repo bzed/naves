@@ -30,7 +30,7 @@ use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
 use crate::config::{prefix, world_config};
-use crate::layers::{LayerSet, build_layers};
+use crate::layers::{LayerSet, build_layers, grass_limit_m};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
 
@@ -449,7 +449,12 @@ pub fn build(
 
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);
-    let layers = build_layers(&heightmap, project.grid.land_size, &layout.prefix);
+    let layers = build_layers(
+        &heightmap,
+        project.grid.land_size,
+        &layout.prefix,
+        grass_limit_m(project.scale.height),
+    );
     layout.clean()?;
 
     progress("Writing the world and converting the images");

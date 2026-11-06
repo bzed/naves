@@ -55,5 +55,6 @@ Mission: berchtesgaden/build/missions/dayzOffline.berchtesgaden
    or a game is running.
 
 The server log shows `Loading landscape 'berchtesgaden'` when the map loads. New characters spawn in the middle
-of the map. The first version has procedural surfaces only (grass, and rock on steep slopes), no roads, houses
-or water, and no navigation mesh yet, so infected and animals do not move.
+of the map. The first version has procedural surfaces only (grass, and rock on steep slopes and above 2100 m real
+altitude), no roads, houses or water. Infected and animals only move once the project has a
+[navigation mesh](navmesh.md).

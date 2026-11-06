@@ -82,6 +82,14 @@ names show how many slots a tile uses (`P_000-000_L00` uses one):
 
 Livonia's masks use the same colours. Náves uses two slots: grass is `(0, 0, 0, 255)`, rock `(255, 0, 0, 255)`.
 
+## Where grass ends
+
+Náves has no land-cover data yet. It makes ground rock on slopes above 35° and above a real altitude of 2100 m (map
+height divided by `scale.height`). The limit is measured: ESA WorldCover 2021 (10 m) against Copernicus GLO-30 on the
+Berchtesgaden example area gives trees on 31 % of the ground at 1700 to 1900 m and 2.5 % at 1900 to 2100 m; bare
+ground on 27 % at 1900 to 2100 m, 58 % at 2100 to 2300 m and 87 % at 2300 to 2500 m. The limit fits the Alps; other
+regions differ.
+
 ## PAA tags
 
 Livonia's satellite images carry the PAA tags `AVGC` (average colour, stored blue, green, red, alpha; `25 44 3f ff`

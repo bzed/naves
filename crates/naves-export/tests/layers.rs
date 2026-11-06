@@ -10,9 +10,11 @@
 )]
 
 use naves_core::heightmap::Heightmap;
-use naves_export::layers::{SURFACES, build_layers, classify, tile_grid};
+use naves_export::layers::{SURFACES, build_layers, classify, grass_limit_m, tile_grid};
 
 const PREFIX: &str = "naves\\worlds\\t";
+/// Grass limit in map metres for these tests.
+const LIMIT: f32 = 1000.0;
 
 /// A flat heightmap of `size` vertices, 4 m apart.
 fn flat(size: u32, height: f32) -> Heightmap {
@@ -58,7 +60,7 @@ fn grid_follows_the_land_size() {
 
 #[test]
 fn every_land_cell_has_material() {
-    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX, LIMIT);
     assert_eq!(set.material_index.len(), 32 * 32);
     assert_eq!(set.materials[0], "");
     assert_eq!(set.materials.len(), 1 + 16);
@@ -71,7 +73,7 @@ fn every_land_cell_has_material() {
 
 #[test]
 fn tiles_are_numbered_from_the_north() {
-    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX, LIMIT);
     // land rows are south first: row 0 is the southern tile row, which is tile row 3 (from the north)
     let south_west = set.material_index[0];
     let north_west = set.material_index[31 * 32];
@@ -97,7 +99,7 @@ fn steep_is_rock() {
             hm.h[row * 256 + col] = ((col - 128) as f32) * 4.0 * 3.0_f32.sqrt();
         }
     }
-    let surf = classify(&hm);
+    let surf = classify(&hm, LIMIT);
     let grass = SURFACES.iter().position(|s| s.name == "grass").unwrap();
     let rock = SURFACES.iter().position(|s| s.name == "rock").unwrap();
     assert_eq!(usize::from(surf[100 * 256 + 20]), grass, "flat ground");
@@ -106,7 +108,7 @@ fn steep_is_rock() {
 
 #[test]
 fn files_cover_every_tile() {
-    let set = build_layers(&flat(256, 100.0), 32, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 32, PREFIX, LIMIT);
     for (tx, ty) in [(0, 0), (3, 0), (0, 3), (3, 3)] {
         for name in [
             format!("data/layers/s_{tx:03}_{ty:03}_lco.png"),
@@ -121,7 +123,7 @@ fn files_cover_every_tile() {
 
 #[test]
 fn images_are_512_square_pngs() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 64, PREFIX, LIMIT);
     for name in [
         "data/layers/s_000_000_lco.png",
         "data/layers/m_000_000_lca.png",
@@ -135,7 +137,7 @@ fn images_are_512_square_pngs() {
 
 #[test]
 fn flat_ground_is_grass_in_the_mask() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 64, PREFIX, LIMIT);
     let mask = image::load_from_memory(file(&set.files, "data/layers/m_000_000_lca.png"))
         .unwrap()
         .to_rgba8();
@@ -152,7 +154,7 @@ fn rock_is_red_in_the_mask() {
             hm.h[row * 256 + col] = (col as f32) * 4.0 * 3.0_f32.sqrt();
         }
     }
-    let set = build_layers(&hm, 32, PREFIX);
+    let set = build_layers(&hm, 32, PREFIX, LIMIT);
     let mask = image::load_from_memory(file(&set.files, "data/layers/m_000_000_lca.png"))
         .unwrap()
         .to_rgba8();
@@ -165,7 +167,7 @@ fn rock_is_red_in_the_mask() {
 
 #[test]
 fn rvmat_shape() {
-    let set = build_layers(&flat(256, 100.0), 64, PREFIX);
+    let set = build_layers(&flat(256, 100.0), 64, PREFIX, LIMIT);
     let text = String::from_utf8(file(&set.files, "data/layers/p_000-000.rvmat").to_vec()).unwrap();
     assert!(text.contains("PixelShaderID = \"TerrainX\";"));
     assert!(text.contains(&format!(
@@ -185,8 +187,39 @@ fn rvmat_shape() {
 
 #[test]
 fn output_is_deterministic() {
-    let a = build_layers(&flat(256, 100.0), 64, PREFIX);
-    let b = build_layers(&flat(256, 100.0), 64, PREFIX);
+    let a = build_layers(&flat(256, 100.0), 64, PREFIX, LIMIT);
+    let b = build_layers(&flat(256, 100.0), 64, PREFIX, LIMIT);
     assert_eq!(a.files, b.files);
     assert_eq!(a.material_index, b.material_index);
+}
+
+#[test]
+fn nothing_grows_above_the_grass_limit() {
+    for (height, surface) in [(900.0, "grass"), (1100.0, "rock")] {
+        let hm = flat(256, height);
+        let expected = SURFACES.iter().position(|s| s.name == surface).unwrap();
+        assert!(
+            classify(&hm, LIMIT)
+                .iter()
+                .all(|&s| usize::from(s) == expected),
+            "flat ground at {height} m is {surface}"
+        );
+        let set = build_layers(&hm, 32, PREFIX, LIMIT);
+        let mask = image::load_from_memory(file(&set.files, "data/layers/m_000_000_lca.png"))
+            .unwrap()
+            .to_rgba8();
+        let red = if surface == "rock" { 255 } else { 0 };
+        assert_eq!(
+            mask.get_pixel(256, 256).0,
+            [red, 0, 0, 255],
+            "mask at {height} m"
+        );
+    }
+}
+
+#[test]
+fn the_grass_limit_is_a_real_altitude() {
+    // measured with ESA WorldCover around Berchtesgaden; map heights are real heights times scale.height
+    assert!((grass_limit_m(1.0) - 2100.0).abs() < 1e-3);
+    assert!((grass_limit_m(0.5) - 1050.0).abs() < 1e-3);
 }
