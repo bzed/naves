@@ -6,16 +6,21 @@
 use eframe::egui::{self, RichText};
 use naves_core::render::{MapLayer, WALK_LIMIT_DEG};
 
-use super::{Level, LevelDef, number_row, waiting};
+use naves_core::heightmap::MapGeo;
+
+use super::{Level, LevelDef, number_row, ready_data, waiting};
 use crate::gui::layers::LayerDef;
+use crate::gui::selection::Selection;
 use crate::gui::theme::INK;
+use crate::gui::viewport::WorldPoint;
 use crate::gui::{NavesApp, dem_files_ui};
 
 /// The level.
 pub const DEF: LevelDef = LevelDef {
     level: Level::Terrain,
     panel,
-    status: "Terrain: the shape of the ground. Press 2 to read what covers it.",
+    status: "Select: click to read the height and slope here.",
+    pick: Some(pick),
     layers: &[LayerDef {
         layer: MapLayer::TooSteepToWalk,
         name: "Too steep to walk",
@@ -73,4 +78,34 @@ fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
     ui.add_space(8.0);
     ui.label(RichText::new("Elevation files").strong());
     dem_files_ui(ui, p);
+}
+
+/// Position, latitude and longitude, height and slope at a point.
+fn pick(app: &NavesApp, at: WorldPoint) -> Option<Selection> {
+    let data = ready_data(app)?;
+    let map = app.form.project.map_size_m();
+    if !(0.0..=map).contains(&at.x) || !(0.0..=map).contains(&at.y) {
+        return None;
+    }
+    let sample = data.heightmap.sample(at.x, at.y);
+    let mut rows = vec![(
+        "Position".to_string(),
+        format!("{:.0} m east, {:.0} m north", at.x, at.y),
+    )];
+    if let Ok(geo) = MapGeo::new(&app.form.project)
+        && let Ok((lat, lon)) = geo.to_geo(at.x, at.y)
+    {
+        rows.push(("Latitude".to_string(), format!("{lat:.5}°")));
+        rows.push(("Longitude".to_string(), format!("{lon:.5}°")));
+    }
+    rows.push(("Height".to_string(), format!("{:.1} m", sample.height)));
+    rows.push(("Slope".to_string(), format!("{:.1}°", sample.slope_deg())));
+    Some(Selection {
+        level: Level::Terrain,
+        title: "Terrain".to_string(),
+        rows,
+        origin: None,
+        at,
+        span_m: None,
+    })
 }

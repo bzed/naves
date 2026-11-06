@@ -17,6 +17,7 @@ use super::*;
 
 mod layers;
 mod levels;
+mod selection;
 mod shortcuts;
 mod stack;
 mod viewport;

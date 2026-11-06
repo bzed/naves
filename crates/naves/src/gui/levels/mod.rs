@@ -7,7 +7,9 @@ use eframe::egui::{self, Color32};
 
 use super::NavesApp;
 use super::layers::LayerDef;
+use super::selection::Selection;
 use super::theme::{INK, contrast};
+use super::viewport::WorldPoint;
 
 /// A level of the stack. The digit is the key and never changes; a level appears in the editor when it is built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -147,6 +149,8 @@ pub struct LevelDef {
     pub status: &'static str,
     /// The map layers of the level, in the order of the stack.
     pub layers: &'static [LayerDef],
+    /// What a click on the map picks in this level, if anything.
+    pub pick: Option<fn(&NavesApp, WorldPoint) -> Option<Selection>>,
 }
 
 /// The levels that are built, bottom first. A later plan adds its level here and nowhere else.
@@ -163,6 +167,14 @@ pub(super) fn number_row(ui: &mut egui::Ui, label: &str, value: &str) {
         ui.label(value);
     });
     ui.end_row();
+}
+
+/// The data once it is there.
+pub(super) fn ready_data(app: &NavesApp) -> Option<std::sync::Arc<super::worker::MapData>> {
+    match &app.heightmap {
+        super::worker::HeightmapState::Ready(data) => Some(std::sync::Arc::clone(data)),
+        _ => None,
+    }
 }
 
 /// What a panel shows while the map has no data: what to do, or that it is being read.

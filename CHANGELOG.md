@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Click in the GUI map to read a point in the active level (position, latitude and longitude, height and slope in Terrain; the ground class in Ground), Alt+click to pick across levels, Esc to clear, F to frame it and Shift+F to frame the whole map.
 - Switchable map layers in the GUI, under the active level in the stack, starting with **Too steep to walk** (hatching over ground steeper than 60°, a provisional limit). H hides the active level, Shift+H shows the other levels in full; they are drawn at 40 % otherwise. New `naves_core::render::render_layer`.
 - Keyboard shortcuts in the GUI, from one table: the digits 0 to 2 go to a level, Ctrl+B builds, F1 lists the keys that work in the level you are in, Esc closes the list. While a text field has the keyboard, no single key fires. The table already holds the final set of keys of the editor; a key whose action is not built yet does nothing. New manual page "Keyboard shortcuts".
 - The GUI is built around the stack of levels: Project, Terrain and Ground (keys 0 to 2), each with its own left panel, a band in the level's colour on top of the map and a status line below it. The base maps (Relief, Slope, Height, Ground, Imagery) moved to the right column; "Hillshade" is called Relief and "Surface" Ground there. The panels fold on small windows.
@@ -45,6 +46,8 @@ All notable changes to this project are documented here. The format follows
   altitude of 2100 m) and a tile material for every terrain tile.
 
 ### Changed
+
+- The GUI map moves with Space + drag or the middle mouse button; the left button no longer pans.
 
 - `naves.toml` with an option that Náves does not know (a typo, or an option of a newer Náves) is rejected with the option named, in the CLI, the GUI and over MCP, instead of being read and dropped when the file is saved again.
 - Lighter baked shading on the satellite images: rock faces were nearly black.

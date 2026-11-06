@@ -74,8 +74,14 @@ see [the project file](project-file.md#sources). Changing a list reloads the map
 
 ## Map (centre)
 
-A top-down view of the heightmap, north up. **Drag** to move the map, **scroll** to zoom in and out around the
-pointer.
+A top-down view of the heightmap, north up.
+
+- **Space + drag** or the **middle mouse button + drag** moves the map (before this version the left button did;
+  it is kept for the tools of the editor). **Scroll** zooms in and out around the pointer.
+- **Click** reads a point in the active level: in Terrain its position, latitude and longitude, height and
+  slope, in Ground the ground class. The result is under the stack, and a ring marks the point. **Alt+click** picks in
+  the highest level that has something there and switches to it. Levels you hid (H) pick nothing. **Esc** clears it.
+- **F** centres the map on the selected point, **Shift+F** shows the whole map.
 
 ![The slope overlay](images/map-slope.png)
 

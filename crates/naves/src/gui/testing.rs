@@ -99,7 +99,23 @@ pub static FAKE_LEVEL: LevelDef = LevelDef {
     panel: fake_panel,
     layers: &[],
     status: "Fake level: the status line of a level that tests add.",
+    pick: Some(fake_pick),
 };
+
+#[expect(clippy::unnecessary_wraps, reason = "the signature of LevelDef::pick")]
+fn fake_pick(
+    _app: &NavesApp,
+    at: super::viewport::WorldPoint,
+) -> Option<super::selection::Selection> {
+    Some(super::selection::Selection {
+        level: Level::Buildings,
+        title: "Fake thing".to_string(),
+        rows: Vec::new(),
+        origin: None,
+        at,
+        span_m: Some(100.0),
+    })
+}
 
 fn fake_panel(_app: &mut NavesApp, ui: &mut egui::Ui) {
     ui.label("The panel of the fake level.");

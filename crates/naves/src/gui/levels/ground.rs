@@ -6,16 +6,19 @@
 use eframe::egui::{self, Color32};
 use naves_core::surface::SurfaceClass;
 
-use super::{Level, LevelDef, number_row, waiting};
+use super::{Level, LevelDef, number_row, ready_data, waiting};
+use crate::gui::selection::Selection;
 use crate::gui::stack::ground_shares;
+use crate::gui::viewport::WorldPoint;
 use crate::gui::{NavesApp, ground_files_ui};
 
 /// The level.
 pub const DEF: LevelDef = LevelDef {
     level: Level::Ground,
     panel,
-    status: "Ground: what covers the terrain. Press 0 for the project settings.",
+    status: "Select: click to read the ground here.",
     layers: &[],
+    pick: Some(pick),
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
@@ -39,4 +42,30 @@ fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
     }
     ui.add_space(8.0);
     ground_files_ui(ui, &app.form.project);
+}
+
+/// Position and ground class at a point.
+fn pick(app: &NavesApp, at: WorldPoint) -> Option<Selection> {
+    let data = ready_data(app)?;
+    let map = app.form.project.map_size_m();
+    if !(0.0..=map).contains(&at.x) || !(0.0..=map).contains(&at.y) {
+        return None;
+    }
+    Some(Selection {
+        level: Level::Ground,
+        title: "Ground".to_string(),
+        rows: vec![
+            (
+                "Position".to_string(),
+                format!("{:.0} m east, {:.0} m north", at.x, at.y),
+            ),
+            (
+                "Ground".to_string(),
+                data.surfaces.at(at.x, at.y).name().to_string(),
+            ),
+        ],
+        origin: None,
+        at,
+        span_m: None,
+    })
 }

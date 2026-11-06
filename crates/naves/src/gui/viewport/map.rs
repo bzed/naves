@@ -69,7 +69,11 @@ impl Viewport for MapViewport {
                 None => MapView::fit(map_size, w, h),
             });
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-        if response.dragged() {
+        // Space + drag and the middle button pan; a plain left drag belongs to the tools
+        let space = ui.input(|i| i.key_down(egui::Key::Space));
+        let panning = response.dragged_by(egui::PointerButton::Middle)
+            || (space && response.dragged_by(egui::PointerButton::Primary));
+        if panning {
             let d = response.drag_delta();
             view.pan_px(f64::from(d.x), f64::from(d.y));
         }
@@ -100,19 +104,19 @@ impl Viewport for MapViewport {
             events.push(ViewEvent::Hover(at(pos)));
         }
         if let Some(pos) = response.interact_pointer_pos() {
-            if response.drag_started() {
+            if !panning && response.drag_started() {
                 events.push(ViewEvent::Press {
                     at: at(pos),
                     modifiers,
                 });
             }
-            if response.dragged() {
+            if !panning && response.dragged() {
                 events.push(ViewEvent::Drag {
                     at: at(pos),
                     modifiers,
                 });
             }
-            if response.drag_stopped() {
+            if !panning && response.drag_stopped() {
                 events.push(ViewEvent::Release {
                     at: at(pos),
                     modifiers,

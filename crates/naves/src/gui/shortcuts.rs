@@ -628,6 +628,8 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
     match action {
         Action::Level(level) => app.levels.iter().any(|d| d.level == level),
         Action::SwitchView => app.views.can_switch(),
+        Action::FrameSelection => app.selection.is_some() && ready(app),
+        Action::FrameMap => ready(app),
         Action::Cancel
         | Action::Build
         | Action::Help
@@ -635,8 +637,6 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::ShowOthersInFull => true,
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
         Action::Tool(_)
-        | Action::FrameSelection
-        | Action::FrameMap
         | Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
@@ -654,6 +654,10 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::PreviousProblem
         | Action::Settings => false,
     }
+}
+
+fn ready(app: &NavesApp) -> bool {
+    matches!(app.heightmap, super::worker::HeightmapState::Ready(_))
 }
 
 /// Whether a key still fires while a text field has focus: F-keys, Esc, Enter, and Ctrl+Tab and Ctrl+B.

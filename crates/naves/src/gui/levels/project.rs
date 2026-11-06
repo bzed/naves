@@ -14,6 +14,7 @@ pub const DEF: LevelDef = LevelDef {
     panel,
     status: "Project settings are on the left. Press 1 to read the terrain.",
     layers: &[],
+    pick: None,
 };
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {

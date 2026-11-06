@@ -181,7 +181,7 @@ fn the_status_line_follows_the_level() {
         h.query_by_label_contains("Press 1 to read the terrain")
             .is_none()
     );
-    assert!(h.query_by_label_contains("Ground:").is_some());
+    assert!(h.query_by_label_contains("read the ground").is_some());
 }
 
 #[test]

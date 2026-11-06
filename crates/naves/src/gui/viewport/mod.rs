@@ -113,10 +113,6 @@ pub trait Viewport {
     /// Moves the view to a place; before the first `show` it is remembered.
     fn set_focus(&mut self, focus: ViewFocus);
     /// Where a map point is on the screen inside `rect`, or `None` when it is not visible (also behind a camera).
-    #[expect(
-        dead_code,
-        reason = "the selection and problem markers use it (Tasks 6 and 7)"
-    )]
     fn project(&self, at: WorldPoint, rect: egui::Rect) -> Option<egui::Pos2>;
     /// Forgets the camera and every picture: the map under it has changed.
     fn reset(&mut self);
@@ -152,10 +148,6 @@ impl ViewportSet {
 
     /// The view that is shown.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the shell asks for its name (Task 4)")
-    )]
     pub fn active(&self) -> &dyn Viewport {
         self.current.as_ref()
     }

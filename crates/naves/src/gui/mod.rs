@@ -12,6 +12,7 @@ mod layers;
 mod layout;
 mod levels;
 mod map_view;
+mod selection;
 mod settings;
 mod shortcuts;
 mod stack;
@@ -37,15 +38,15 @@ use imagery::{FetchJob, OwnFile};
 use levels::LevelDef;
 use settings::SettingsForm;
 use stack::LayerPanel;
-#[cfg(test)]
-use viewport::ViewEvent;
-use viewport::{ViewFrame, ViewportSet, default_views};
+use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
 
 use theme::{ERROR, GREEN, GROUND, INK, PANEL};
 const SETTINGS_WIDTH: f32 = 300.0;
 const RIGHT_WIDTH: f32 = 230.0;
 const BAND_HEIGHT: f32 = 3.0;
+/// How many metres Frame selection shows when neither the selection nor the view says.
+const FRAME_SPAN_M: f64 = 300.0;
 const STATUS_HEIGHT: f32 = 26.0;
 
 type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
@@ -71,6 +72,8 @@ pub struct NavesApp {
     left_open: bool,
     /// The sheet of shortcuts (F1) is open.
     help_open: bool,
+    /// What a click picked.
+    selection: Option<selection::Selection>,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -123,6 +126,7 @@ impl NavesApp {
             panel: LayerPanel::default(),
             left_open: false,
             help_open: false,
+            selection: None,
             heightmap: HeightmapState::NoDem,
             job: None,
             reload_wanted: false,
@@ -156,6 +160,7 @@ impl NavesApp {
 
     fn reload_heightmap(&mut self) {
         self.views.reset_all();
+        self.selection = None;
         if self.form.project.sources.dem.is_empty() {
             self.heightmap = HeightmapState::NoDem;
             self.job = None;
@@ -279,7 +284,10 @@ impl NavesApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| stack::stack_ui(self, ui));
+                    .show(ui, |ui| {
+                        stack::stack_ui(self, ui);
+                        self.properties_ui(ui);
+                    });
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(GROUND))
@@ -314,7 +322,15 @@ impl NavesApp {
             Action::ShowOthersInFull => {
                 self.panel.show_others_in_full = !self.panel.show_others_in_full;
             }
-            Action::Cancel => self.help_open = false,
+            Action::Cancel => {
+                if self.help_open {
+                    self.help_open = false;
+                } else {
+                    self.selection = None;
+                }
+            }
+            Action::FrameSelection => self.frame_selection(),
+            Action::FrameMap => self.frame_map(),
             Action::Build => self.start_build(),
             Action::Help => self.help_open = !self.help_open,
             Action::SwitchView => self.views.switch(),
@@ -561,13 +577,95 @@ impl NavesApp {
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);
+        self.draw_selection(ui, rect);
+        for event in &events {
+            if let ViewEvent::Click { at, modifiers } = *event {
+                self.select(at, modifiers);
+            }
+        }
         #[cfg(test)]
         {
             self.seen_events.extend(events);
             self.seen_rect = rect;
         }
-        #[cfg(not(test))]
-        drop(events); // tools and selection read them in the tasks that add them
+    }
+
+    /// A click: picks in the active level, or with Alt in the highest level that has something there.
+    fn select(&mut self, at: viewport::WorldPoint, modifiers: egui::Modifiers) {
+        self.selection = selection::pick_at(self, at, modifiers);
+        if modifiers.alt
+            && let Some(selection) = &self.selection
+        {
+            self.activate(selection.level);
+        }
+    }
+
+    /// The marker of the selection, where the active view says the point is.
+    fn draw_selection(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        if let Some(pos) = self.views.active().project(selection.at, rect) {
+            let painter = ui.painter().with_clip_rect(rect);
+            painter.circle_stroke(pos, 9.0, egui::Stroke::new(5.0, egui::Color32::WHITE));
+            painter.circle_stroke(pos, 9.0, egui::Stroke::new(2.5, INK));
+        }
+    }
+
+    /// Frames the selection in the active view, keeping the zoom unless the selection has a size.
+    fn frame_selection(&mut self) {
+        if !matches!(self.heightmap, HeightmapState::Ready(_)) {
+            return;
+        }
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        let view = self.views.active_mut();
+        let span = selection
+            .span_m
+            .or_else(|| view.focus().map(|f| f.span_m))
+            .unwrap_or(FRAME_SPAN_M);
+        view.set_focus(viewport::ViewFocus {
+            center: selection.at,
+            span_m: span,
+        });
+    }
+
+    /// Shows the whole map in the active view.
+    fn frame_map(&mut self) {
+        if !matches!(self.heightmap, HeightmapState::Ready(_)) {
+            return;
+        }
+        let size = self.form.project.map_size_m();
+        self.views.active_mut().set_focus(viewport::ViewFocus {
+            center: viewport::WorldPoint {
+                x: size / 2.0,
+                y: size / 2.0,
+            },
+            span_m: size,
+        });
+    }
+
+    /// What the selection is, under the stack.
+    fn properties_ui(&self, ui: &mut egui::Ui) {
+        let Some(selection) = &self.selection else {
+            return;
+        };
+        ui.add_space(14.0);
+        ui.label(RichText::new(&selection.title).strong());
+        egui::Grid::new("properties")
+            .num_columns(2)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                for (name, value) in &selection.rows {
+                    ui.label(name);
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
+        if let Some(origin) = &selection.origin {
+            ui.label(origin);
+        }
     }
 
     /// Adds a level that only tests build.
