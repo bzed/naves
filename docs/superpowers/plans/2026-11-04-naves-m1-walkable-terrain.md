@@ -507,6 +507,6 @@ Goal: establish the exact inputs with which BI's `binarize.exe` under Proton tur
 4. **Water:** lakes (water planes, generated beds, swim depth, leak check), rivers.
 5. **Railways and bridges.**
 6. **Scaling and thinning** (overfull detection, priorities, dropped-for-scale objects), scaling preview.
-7. **Satellite imagery and surface mask from land use** (replacing the procedural satmap).
+7. **Satellite imagery and surface mask from land use** (replacing the procedural satmap). Land use: `2026-11-06-naves-land-cover.md`. Imagery: `2026-11-06-naves-satellite-imagery.md`.
 
 Separate track in bzed's armake2 fork: whatever these plans need there (design 5.6).
