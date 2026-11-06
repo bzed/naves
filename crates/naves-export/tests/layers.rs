@@ -4,12 +4,17 @@
 //! Terrain layers: tile geometry, surface classification, satellite/mask images and tile materials.
 
 #![expect(
+    clippy::unwrap_used,
     clippy::panic,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
     reason = "test helper code; failing loudly is the point"
 )]
 
-use naves_core::heightmap::Heightmap;
+use naves_core::heightmap::{Heightmap, MapGeo};
+use naves_core::imagery::{ImageryRaster, TileImagery, merge};
+use naves_core::project::Project;
 use naves_core::surface::{SurfaceClass, SurfaceGrid, procedural_grid};
 use naves_export::layers::{SURFACES, build_layers, tile_grid};
 
@@ -28,7 +33,7 @@ fn flat(size: u32, height: f32) -> Heightmap {
 
 /// The layers of `hm` with the procedural ground.
 fn layers(hm: &Heightmap, land_size: u32) -> naves_export::layers::LayerSet {
-    build_layers(hm, land_size, PREFIX, &procedural_grid(hm, LIMIT))
+    build_layers(hm, land_size, PREFIX, &procedural_grid(hm, LIMIT), None).unwrap()
 }
 
 fn file<'a>(files: &'a [(String, Vec<u8>)], name: &str) -> &'a [u8] {
@@ -211,7 +216,7 @@ fn quadrants() -> SurfaceGrid {
 #[test]
 fn every_class_has_its_mask_colour() {
     // a 1024 m map of 4 tiles; tile (tx, ty) counts from the north-west
-    let set = build_layers(&flat(256, 100.0), 16, PREFIX, &quadrants());
+    let set = build_layers(&flat(256, 100.0), 16, PREFIX, &quadrants(), None).unwrap();
     for (tile, expected) in [
         ("000_000", [0, 255, 0, 255]), // north-west: forest
         ("001_000", [0, 0, 255, 255]), // north-east: soil
@@ -270,7 +275,9 @@ fn baked_shading_stays_light() {
         32,
         PREFIX,
         &SurfaceGrid::from_fn(64, 16.0, |_, _| SurfaceClass::Rock),
-    );
+        None,
+    )
+    .unwrap();
     let sat = image::load_from_memory(file(&set.files, "data/layers/s_000_000_lco.png"))
         .unwrap()
         .to_rgb8();
@@ -280,4 +287,182 @@ fn baked_shading_stays_light() {
             "pixel channel {got} is darker than 70 % of {class}"
         );
     }
+}
+
+// ---- imagery ----
+
+/// A project whose map is the 1024 m square of `flat(256, ..)`.
+fn imagery_project() -> Project {
+    let mut p = Project::new("t", 47.0, 12.0, 2048.0);
+    p.grid.terrain_size = 256;
+    p.grid.land_size = 32;
+    p
+}
+
+/// A raster over (a part of) the map; `colour` gets the map position in metres.
+fn raster_over(
+    p: &Project,
+    (x0, y0, x1, y1): (f64, f64, f64, f64),
+    colour: impl Fn(f64, f64) -> Option<[u8; 3]>,
+) -> ImageryRaster {
+    let geo = MapGeo::new(p).unwrap();
+    // the box of the part given in map metres, in degrees
+    let corner = |x: f64, y: f64| geo.to_geo(x, y).unwrap();
+    let (lat_a, lon_a) = corner(x0, y0);
+    let (lat_b, lon_b) = corner(x1, y1);
+    ImageryRaster::from_fn(
+        lon_a.min(lon_b) - 0.0004,
+        lat_a.min(lat_b) - 0.0004,
+        lon_a.max(lon_b) + 0.0004,
+        lat_a.max(lat_b) + 0.0004,
+        1e-4,
+        |lat, lon| {
+            let (x, y) = geo.to_map(lat, lon).unwrap();
+            if x < x0 || x > x1 || y < y0 || y > y1 {
+                return None;
+            }
+            colour(x, y)
+        },
+    )
+}
+
+fn sat_png(set: &naves_export::layers::LayerSet, tile: &str) -> image::RgbImage {
+    image::load_from_memory(file(&set.files, &format!("data/layers/s_{tile}_lco.png")))
+        .unwrap()
+        .to_rgb8()
+}
+
+fn with_imagery(
+    hm: &Heightmap,
+    p: &Project,
+    rasters: Vec<ImageryRaster>,
+) -> naves_export::layers::LayerSet {
+    let (composite, _) = merge(rasters, p).unwrap();
+    let imagery = TileImagery {
+        composite: &composite,
+        project: p,
+    };
+    build_layers(hm, 32, PREFIX, &procedural_grid(hm, LIMIT), Some(&imagery)).unwrap()
+}
+
+#[test]
+fn no_imagery_is_todays_image() {
+    let hm = flat(256, 100.0);
+    let p = imagery_project();
+    let plain = layers(&hm, 32);
+    // imagery that covers nothing leaves the picture as it was
+    let set = with_imagery(&hm, &p, Vec::new());
+    assert_eq!(set.files, plain.files);
+    assert!(set.imagery_share.abs() < 1e-12);
+}
+
+#[test]
+fn imagery_replaces_class_colour_without_shading() {
+    // a steep wall falling to the east: shaded and rock coloured without imagery
+    let mut hm = flat(256, 0.0);
+    for row in 0..256usize {
+        for col in 0..256usize {
+            hm.h[row * 256 + col] = ((255 - col) as f32) * 4.0 * 3.0_f32.sqrt();
+        }
+    }
+    let p = imagery_project();
+    let r = raster_over(&p, (-50.0, -50.0, 1074.0, 1074.0), |_, _| {
+        Some([90, 120, 60])
+    });
+    let set = with_imagery(&hm, &p, vec![r]);
+    let sat = sat_png(&set, "000_000");
+    assert_eq!(sat.get_pixel(256, 256).0, [90, 120, 60]);
+    assert!(
+        (set.imagery_share - 1.0).abs() < 1e-9,
+        "{}",
+        set.imagery_share
+    );
+}
+
+#[test]
+fn uncovered_pixels_fall_back() {
+    let hm = flat(256, 100.0);
+    let p = imagery_project();
+    // the western half only
+    let r = raster_over(&p, (-50.0, -50.0, 512.0, 1074.0), |_, _| {
+        Some([200, 10, 10])
+    });
+    let set = with_imagery(&hm, &p, vec![r]);
+    let plain = layers(&hm, 32);
+    // tile (3, 0) is in the east: unchanged, bit for bit
+    assert_eq!(
+        file(&set.files, "data/layers/s_003_000_lco.png"),
+        file(&plain.files, "data/layers/s_003_000_lco.png")
+    );
+    // tile (0, 0) is in the west: the imagery
+    assert_eq!(
+        sat_png(&set, "000_000").get_pixel(256, 256).0,
+        [200, 10, 10]
+    );
+    assert!(
+        (set.imagery_share - 0.5).abs() < 0.02,
+        "{}",
+        set.imagery_share
+    );
+}
+
+#[test]
+fn brightness_is_applied_and_clamped() {
+    let hm = flat(256, 100.0);
+    let mut p = imagery_project();
+    p.imagery.brightness = 1.5;
+    let r = raster_over(&p, (-50.0, -50.0, 1074.0, 1074.0), |_, _| {
+        Some([100, 200, 40])
+    });
+    let set = with_imagery(&hm, &p, vec![r]);
+    assert_eq!(
+        sat_png(&set, "000_000").get_pixel(256, 256).0,
+        [150, 255, 60]
+    );
+}
+
+/// The tile and pixel that hold the map position (`x`, `y`) in tile (`tx`, `ty`), `ty` counted from the north.
+fn pixel_in(map_m: f64, (tx, ty): (u32, u32), x: f64, y: f64) -> (u32, u32) {
+    let g = tile_grid(map_m, 32);
+    let tile_m = f64::from(g.tile_px - 2 * g.overlap_px) * g.px_m;
+    let overlap = f64::from(g.overlap_px);
+    let west = f64::from(tx) * tile_m;
+    let north = map_m - f64::from(ty) * tile_m;
+    (
+        ((x - west) / g.px_m + overlap).floor() as u32,
+        ((north - y) / g.px_m + overlap).floor() as u32,
+    )
+}
+
+#[test]
+fn marked_pixel_lands_on_the_tile_position() {
+    let hm = flat(256, 100.0);
+    let p = imagery_project();
+    let marker = |x: f64, y: f64| {
+        let inside = (x - 509.0).abs() < 15.0 && (y - 300.0).abs() < 15.0;
+        Some(if inside { [250, 10, 10] } else { [50, 60, 70] })
+    };
+    let r = raster_over(&p, (-50.0, -50.0, 1074.0, 1074.0), marker);
+    let set = with_imagery(&hm, &p, vec![r]);
+    // (509, 300) is 3 m west of the border between the tile columns 1 and 2: in the overlap of both
+    let west_tile = pixel_in(1024.0, (1, 2), 509.0, 300.0);
+    let east_tile = pixel_in(1024.0, (2, 2), 509.0, 300.0);
+    assert!(
+        west_tile.0 < 512 && east_tile.0 < 512,
+        "{west_tile:?} {east_tile:?}"
+    );
+    let a = sat_png(&set, "001_002")
+        .get_pixel(west_tile.0, west_tile.1)
+        .0;
+    let b = sat_png(&set, "002_002")
+        .get_pixel(east_tile.0, east_tile.1)
+        .0;
+    assert_eq!(a, [250, 10, 10], "tile 1");
+    assert_eq!(b, [250, 10, 10], "tile 2");
+    // 20 m away from the marker: the background, which proves that it is not everywhere
+    let off = pixel_in(1024.0, (1, 2), 509.0 - 60.0, 300.0);
+    assert_eq!(
+        sat_png(&set, "001_002").get_pixel(off.0, off.1).0,
+        [50, 60, 70]
+    );
 }

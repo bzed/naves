@@ -23,7 +23,8 @@ use std::time::Duration;
 
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
-use naves_core::project::{Project, ProjectError};
+use naves_core::imagery::{Composite, ImageryError, ImageryRaster, TileImagery, merge, real_px_m};
+use naves_core::project::{ImageryFile, Project, ProjectError};
 use naves_core::surface::{LoadedSources, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
@@ -69,6 +70,9 @@ pub enum BuildError {
     /// The ground cannot be decided.
     #[error(transparent)]
     Surface(#[from] SurfaceError),
+    /// An imagery file cannot be read or merged.
+    #[error(transparent)]
+    Imagery(#[from] ImageryError),
     /// An external tool is missing or failed.
     #[error(transparent)]
     Tool(#[from] ToolError),
@@ -440,9 +444,33 @@ fn pack_mod(
 /// Land cover shares of the map above this get a warning.
 const UNCOVERED_WARN_SHARE: f64 = 0.01;
 
+/// The notice that opens `ATTRIBUTION.txt` when a used imagery file does not allow commercial use.
+const NON_COMMERCIAL_NOTICE: &str = "NON-COMMERCIAL USE ONLY\n\
+    The satellite images of this map come from sources that do not allow commercial use (marked below).\n\
+    Do not use this map commercially without a licence from those sources.\n";
+
+/// Added under the notice when a used licence is share-alike.
+const SHARE_ALIKE_LINE: &str =
+    "Images derived from a share-alike source stay under that licence (marked below).\n";
+
+/// Whether the licence text contains the word `token` (case does not matter).
+fn licence_has(licence: &str, token: &str) -> bool {
+    licence
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case(token))
+}
+
 /// The text of `ATTRIBUTION.txt`: only the sources this build used.
-fn attribution(land_cover: bool, osm: bool) -> String {
-    let mut text = String::from(
+fn attribution(land_cover: bool, osm: bool, imagery: &[ImageryFile]) -> String {
+    let mut text = String::new();
+    if imagery.iter().any(|f| f.non_commercial) {
+        text.push_str(NON_COMMERCIAL_NOTICE);
+        if imagery.iter().any(|f| licence_has(&f.licence, "SA")) {
+            text.push_str(SHARE_ALIKE_LINE);
+        }
+        text.push('\n');
+    }
+    text.push_str(
         "This map was made with Náves from the following data. Keep this attribution with the map.\n\n\
          Elevation: Copernicus DEM GLO-30\n\
          (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the\n\
@@ -462,8 +490,100 @@ fn attribution(land_cover: bool, osm: bool) -> String {
              shared alike.\n",
         );
     }
+    // one entry per distinct credit: five scenes of one year are one line
+    let mut seen: Vec<(&str, &str, bool)> = Vec::new();
+    for file in imagery {
+        let key = (
+            file.attribution.as_str(),
+            file.licence.as_str(),
+            file.non_commercial,
+        );
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let mark = if file.non_commercial {
+            " (non-commercial)"
+        } else {
+            ""
+        };
+        for part in [
+            "\nSatellite images: ",
+            file.attribution.as_str(),
+            "\nLicence: ",
+            file.licence.as_str(),
+            mark,
+            "\n",
+        ] {
+            text.push_str(part);
+        }
+    }
     text
 }
+
+/// `mod.cpp`: the name and the overview that the launcher shows.
+fn mod_cpp(project: &Project, imagery: &[ImageryFile]) -> String {
+    let name: String = project
+        .name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let restriction = if imagery.iter().any(|f| f.non_commercial) {
+        " Non-commercial use only: see ATTRIBUTION.txt."
+    } else {
+        ""
+    };
+    format!(
+        "name = \"{}\";\noverview = \"Made with Náves.{restriction}\";\n",
+        name.replace('"', "\"\"")
+    )
+}
+
+/// The merged imagery and what the build has to say about it.
+struct Imagery {
+    composite: Composite,
+    /// The files that touch the map, in the order of the project.
+    used: Vec<ImageryFile>,
+    warnings: Vec<String>,
+}
+
+/// Reads the imagery files of the project and merges them.
+fn read_imagery(
+    project: &Project,
+    project_dir: &Path,
+    progress: &dyn Fn(&str),
+) -> Result<Option<Imagery>, BuildError> {
+    if project.sources.imagery.is_empty() {
+        return Ok(None);
+    }
+    progress("Reading the imagery");
+    let target_m = real_px_m(project);
+    let (mut rasters, mut used) = (Vec::new(), Vec::new());
+    for file in &project.sources.imagery {
+        let path = project_dir.join(&file.path);
+        if let Some(raster) = ImageryRaster::open(&path, project, target_m)? {
+            rasters.push(raster.with_label(file.path.display().to_string()));
+            used.push(file.clone());
+        }
+    }
+    progress("Merging the imagery");
+    let (composite, report) = merge(rasters, project)?;
+    let mut warnings = report.warnings;
+    if used.is_empty() {
+        warnings.push(format!(
+            "none of the {} imagery file(s) touches the map; the class colours are drawn",
+            project.sources.imagery.len()
+        ));
+    }
+    Ok(Some(Imagery {
+        composite,
+        used,
+        warnings,
+    }))
+}
+
+/// Imagery coverage of the map below this gets no warning.
+const IMAGERY_UNCOVERED_WARN_SHARE: f64 = 0.01;
 
 /// The decided ground and what the build has to say about it.
 struct Ground {
@@ -541,14 +661,44 @@ pub fn build(
     // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
     let ground = decide_ground(&project, project_dir, &heightmap, progress)?;
 
+    let imagery = read_imagery(&project, project_dir, progress)?;
+
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);
+    let tile_imagery = imagery.as_ref().map(|i| TileImagery {
+        composite: &i.composite,
+        project: &project,
+    });
     let layers = build_layers(
         &heightmap,
         project.grid.land_size,
         &layout.prefix,
         &ground.grid,
-    );
+        tile_imagery.as_ref(),
+    )?;
+    let used_imagery: &[ImageryFile] = imagery.as_ref().map_or(&[], |i| i.used.as_slice());
+    let mut warnings = ground.warnings;
+    if let Some(imagery) = &imagery {
+        warnings.extend(imagery.warnings.iter().cloned());
+        if !imagery.used.is_empty() && 1.0 - layers.imagery_share > IMAGERY_UNCOVERED_WARN_SHARE {
+            warnings.push(format!(
+                "{:.0} % of the map has no satellite imagery; the class colours are drawn there",
+                (1.0 - layers.imagery_share) * 100.0
+            ));
+        }
+    }
+    let non_commercial: Vec<&str> = used_imagery
+        .iter()
+        .filter(|f| f.non_commercial)
+        .map(|f| f.attribution.as_str())
+        .collect();
+    if !non_commercial.is_empty() {
+        warnings.push(format!(
+            "the satellite images use non-commercial sources ({}): the map may only be used non-commercially, \
+             see ATTRIBUTION.txt",
+            non_commercial.join("; ")
+        ));
+    }
     layout.clean()?;
 
     progress("Writing the world and converting the images");
@@ -576,9 +726,13 @@ pub fn build(
 
     progress("Packing and signing the mod");
     pack_mod(&layout, tools, &oprw, &new_mission)?;
+    let credits = attribution(ground.used_land_cover, ground.used_osm, used_imagery);
+    write_file(&layout.new_mod.join("ATTRIBUTION.txt"), credits.as_bytes())?;
+    // server owners install the mission separately from the mod
+    write_file(&new_mission.join("ATTRIBUTION.txt"), credits.as_bytes())?;
     write_file(
-        &layout.new_mod.join("ATTRIBUTION.txt"),
-        attribution(ground.used_land_cover, ground.used_osm).as_bytes(),
+        &layout.new_mod.join("mod.cpp"),
+        mod_cpp(&project, used_imagery).as_bytes(),
     )?;
     layout.install()?;
     let mission_dir = layout
@@ -587,6 +741,6 @@ pub fn build(
     Ok(BuildOutput {
         mod_dir: layout.mod_dir,
         mission_dir,
-        warnings: ground.warnings,
+        warnings,
     })
 }

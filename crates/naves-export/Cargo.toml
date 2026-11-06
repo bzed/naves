@@ -33,3 +33,4 @@ test-util = []
 [dev-dependencies]
 naves-export = { path = ".", features = ["test-util"] }
 naves-core = { path = "../naves-core", features = ["test-util"] }
+tiff = { version = "0.11.3", default-features = false, features = ["deflate"] }

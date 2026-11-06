@@ -81,10 +81,22 @@ fn array_at<const N: usize>(paa: &[u8], at: usize) -> Result<[u8; N], PaaError> 
         .ok_or(PaaError::Truncated)
 }
 
-/// Returns `paa` without the byte that armake2's `img2paa` appends to every LZO-compressed mipmap.
+/// The size in bytes of an uncompressed mipmap of `width` × `height` pixels, for the DXT1 and DXT5 PAA types.
+fn raw_size(kind: [u8; 2], width: u16, h0: u8, h1: u8) -> Option<usize> {
+    let pixels = usize::from(width) * usize::from(u16::from_le_bytes([h0, h1]));
+    match kind {
+        [0x01, 0xff] => Some(pixels / 2),
+        [0x05, 0xff] => Some(pixels),
+        _ => None,
+    }
+}
+
+/// Returns `paa` without what armake2's `img2paa` gets wrong in its LZO mipmaps.
 ///
 /// An LZO stream ends with the marker `11 00 00`, so a mipmap that ends with `11 00 00 00` has one byte too many.
-/// The game cannot read such a mipmap and draws the tile in its average colour. Other files come back unchanged.
+/// And a mipmap that LZO did not make smaller is stored uncompressed but still marked as LZO. The game cannot
+/// read either (`binarize` stops, or the tile is drawn in its average colour); the byte goes and the mark is
+/// cleared. Other files come back unchanged.
 ///
 /// # Errors
 ///
@@ -96,6 +108,7 @@ pub fn without_stray_lzo_bytes(paa: &[u8]) -> Result<Vec<u8>, PaaError> {
         .find(|t| t.name == OFFS && t.payload.len() == OFFSETS * 4)
         .map(|t| t.at)
         .ok_or(PaaError::NoOffsets)?;
+    let kind: [u8; 2] = array_at(paa, 0)?;
     let palette: [u8; 2] = array_at(paa, header_end)?;
     let palette = usize::from(u16::from_le_bytes(palette)) * 3;
     let mut pos = header_end + 2 + palette;
@@ -111,8 +124,16 @@ pub fn without_stray_lzo_bytes(paa: &[u8]) -> Result<Vec<u8>, PaaError> {
         let start = pos + 7;
         let end = start.checked_add(size).ok_or(PaaError::Truncated)?;
         let mut body = paa.get(start..end).ok_or(PaaError::Truncated)?;
+        let mut w1 = w1;
         if w1 & 0x80 != 0 && body.ends_with(&[0x11, 0, 0, 0]) {
             body = body.get(..size - 1).ok_or(PaaError::Truncated)?;
+            stripped = true;
+        } else if w1 & 0x80 != 0
+            && Some(size) == raw_size(kind, u16::from_le_bytes([w0, w1 & 0x7f]), h0, h1)
+            && !body.ends_with(&[0x11, 0, 0])
+        {
+            // armake2 kept the mipmap uncompressed because LZO did not make it smaller, but marked it as LZO
+            w1 &= 0x7f;
             stripped = true;
         }
         starts.push(u32::try_from(out.len()).map_err(|_| PaaError::Truncated)?);

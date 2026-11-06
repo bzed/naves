@@ -19,6 +19,11 @@ The map is cut into square tiles. Per tile the game needs
 - a mask `m_XXX_YYY_lca.paa` (which surface layer shows where),
 - a tile material `p_XXX-YYY_<layers>.rvmat` that binds both and lists the surface textures of its layers.
 
+Náves paints the satellite image from imagery (GeoTIFF files, merged where they overlap) where there is any,
+and from the class colours of the ground with a light baked hillshade where there is none. The imagery already
+holds its own shadows, so it is not shaded again. The mask is never taken from imagery: it always follows the
+ground classes.
+
 `XXX` is the tile column from the west, `YYY` the tile row **from the north** (tile 000_000 is the north-west
 corner). All three files of one tile exist in `data\layers\` of the world's data folder. Livonia has 32 × 32 = 1024
 tiles of each image.
