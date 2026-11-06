@@ -293,6 +293,20 @@ built in milestone 1, so milestone 2 adds operations, not a new model.
   are shareable and live in the repo/community. **[verify]** whether this is fine for every mod's assets (short
   legal look; research doc section 8 item 7 lists the related ODbL/EULA questions).
 
+### 5.12 Imagery
+
+Decisions of the maintainer, 2026-11-06. Plan: `docs/superpowers/plans/2026-11-06-naves-satellite-imagery.md`.
+
+- **Any area.** The user is shown the options for retrieving imagery for the project's area, worldwide and regional,
+  with coverage, resolution and licence, and can use their own files. Options come from a catalogue that the user can
+  extend. Fetching is a separate step; a build works from local files alone and stays reproducible.
+- **Overlaps.** Areas can have images from different sources and flights. A source that covers the whole area is the
+  first choice. Otherwise the images are analysed and merged: colours are matched where they overlap, and the
+  sharpest image is used, with no visible seam where they meet.
+- **Non-commercial data is allowed**, because DayZ maps usually are non-commercial, but the resulting map says so
+  whenever such a source is used.
+- Without imagery, the procedural satellite image stays.
+
 ## 6. Milestone 2: the editor
 
 Based on STAG.vision and on Terrain Builder/Buldozer. Must cover, for both automatic and hand-made maps:
