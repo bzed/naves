@@ -352,6 +352,31 @@ fn changing_the_imagery_list_reloads_the_map() {
 }
 
 #[test]
+fn the_imagery_brightness_is_set_in_the_panel() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    {
+        let mut harness = Harness::new_ui(|ui| app.show(ui));
+        harness.run_steps(4);
+        assert!(
+            harness.query_by_label("Imagery brightness").is_some(),
+            "the setting is in the project panel"
+        );
+    }
+    wait_for_the_job(&mut app);
+    // a change is saved and the picture is drawn again, since it looks different
+    app.form.project.imagery.brightness = 2.0;
+    app.settings_changed();
+    assert!((Project::load(&dir).unwrap().imagery.brightness - 2.0).abs() < 1e-9);
+    assert!(
+        app.texture.is_none(),
+        "the map is drawn again with the new brightness"
+    );
+    assert!(app.job.is_none(), "no data is read again for a brightness");
+}
+
+#[test]
 fn the_imagery_overlay_explains_a_gap_and_a_missing_list() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());

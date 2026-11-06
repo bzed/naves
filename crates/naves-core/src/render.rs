@@ -105,9 +105,24 @@ fn paint_imagery(
                 .map_err(|e| RenderError::Imagery(e.to_string()))
         })
         .collect();
+    // what the build makes of it: the colours times the project's brightness
+    let brightness = imagery.project.imagery.brightness;
+    let bright = |c: u8| -> u8 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "rounded and clamped to 0..=255"
+        )]
+        let v = (f64::from(c) * brightness).round().clamp(0.0, 255.0) as u8;
+        v
+    };
     let mut all = Vec::new();
     for band in painted {
-        all.extend(band?);
+        all.extend(
+            band?
+                .into_iter()
+                .map(|pixel| pixel.map(|[r, g, b]| [bright(r), bright(g), bright(b)])),
+        );
     }
     Ok(all)
 }

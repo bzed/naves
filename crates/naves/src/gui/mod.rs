@@ -171,6 +171,8 @@ impl NavesApp {
     /// Saves changed settings; only what the heightmap depends on makes it load again.
     fn settings_changed(&mut self) {
         if self.form.commit() {
+            // a setting can change how the map looks (the imagery brightness) without changing its data
+            self.texture = None;
             self.refresh_imagery_options();
             let inputs = heightmap_inputs(&self.form.project);
             if inputs != self.heightmap_inputs {
@@ -298,6 +300,13 @@ impl NavesApp {
                             .range(0.0..=2.0),
                     )
                 });
+                changed |= field(ui, "Imagery brightness", |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut p.imagery.brightness)
+                            .speed(0.01)
+                            .range(0.25..=4.0),
+                    )
+                });
                 let terrain = field(ui, "Terrain grid", |ui| {
                     power_of_two(ui, "terrain", &mut p.grid.terrain_size, 256, 8192)
                 });
@@ -320,26 +329,7 @@ impl NavesApp {
             .color(BROWN),
         );
         ui.add_space(8.0);
-        ui.label(RichText::new("Elevation files").strong());
-        if p.sources.dem.is_empty() {
-            ui.label(
-                "None yet. Add DEM files to sources.dem in naves.toml, then reopen the project.",
-            );
-        }
-        for file in &p.sources.dem {
-            ui.label(file.display().to_string());
-        }
-        ui.add_space(8.0);
-        source_list(ui, "Land cover files", &p.sources.land_cover);
-        ui.add_space(8.0);
-        source_list(ui, "OpenStreetMap files", &p.sources.osm);
-        if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
-            ui.add_space(4.0);
-            ui.label(
-                "Without them the ground follows slope and altitude. List files in sources.land_cover and \
-                 sources.osm in naves.toml, then reopen the project.",
-            );
-        }
+        elevation_and_ground_files_ui(ui, p);
         if changed {
             self.settings_changed();
         }
@@ -497,6 +487,28 @@ impl NavesApp {
                 .with_clip_rect(rect)
                 .image(texture.id(), rect, uv, Color32::WHITE);
         }
+    }
+}
+
+/// The elevation, land cover and OpenStreetMap files of the project, with what to do when there are none.
+fn elevation_and_ground_files_ui(ui: &mut egui::Ui, p: &Project) {
+    ui.label(RichText::new("Elevation files").strong());
+    if p.sources.dem.is_empty() {
+        ui.label("None yet. Add DEM files to sources.dem in naves.toml, then reopen the project.");
+    }
+    for file in &p.sources.dem {
+        ui.label(file.display().to_string());
+    }
+    ui.add_space(8.0);
+    source_list(ui, "Land cover files", &p.sources.land_cover);
+    ui.add_space(8.0);
+    source_list(ui, "OpenStreetMap files", &p.sources.osm);
+    if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
+        ui.add_space(4.0);
+        ui.label(
+                "Without them the ground follows slope and altitude. List files in sources.land_cover and \
+                 sources.osm in naves.toml, then reopen the project.",
+            );
     }
 }
 

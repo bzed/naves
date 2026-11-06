@@ -177,7 +177,8 @@ fn surface_overlay_uses_the_class_colours() {
 
 /// A project of 1280 real metres (a 640 m map, like `map(64, ..)`) and imagery over its western half.
 fn imagery_over_the_west() -> (Project, Composite) {
-    let project = Project::new("r", 47.0, 12.0, 1280.0);
+    let mut project = Project::new("r", 47.0, 12.0, 1280.0);
+    project.imagery.brightness = 1.0; // the tests compare the colours of the file
     let geo = MapGeo::new(&project).unwrap();
     let (south, west) = geo.to_geo(-50.0, -50.0).unwrap();
     let (north, east) = geo.to_geo(690.0, 690.0).unwrap();
@@ -205,6 +206,32 @@ fn imagery_overlay_shows_the_composite() {
     )
     .unwrap();
     assert_eq!(img.get_pixel(10, 32).0, [200, 100, 50, 255]);
+}
+
+#[test]
+fn imagery_overlay_follows_the_brightness() {
+    // the preview shows what the build will make: the colours times [imagery] brightness, clamped
+    let hm = map(64, |_, _| 100.0);
+    let (mut project, _) = imagery_over_the_west();
+    project.imagery.brightness = 1.5;
+    let geo = MapGeo::new(&project).unwrap();
+    let (south, west) = geo.to_geo(-50.0, -50.0).unwrap();
+    let (north, east) = geo.to_geo(690.0, 690.0).unwrap();
+    let raster =
+        ImageryRaster::from_fn(west, south, east, north, 1e-4, |_, _| Some([200, 100, 50]));
+    let (composite, _) = merge(vec![raster], &project).unwrap();
+    let imagery = TileImagery {
+        composite: &composite,
+        project: &project,
+    };
+    let img = render_topdown(
+        &hm,
+        &request(&hm, 64, Overlay::Imagery),
+        None,
+        Some(&imagery),
+    )
+    .unwrap();
+    assert_eq!(img.get_pixel(10, 32).0, [255, 150, 75, 255]);
 }
 
 #[test]
