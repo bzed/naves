@@ -222,6 +222,13 @@ fn written_file_reads_back_with_geotiff_reader() {
     let lat = bounds.north - (5.5 / 20.0) * (bounds.north - bounds.south);
     assert_eq!(sampler.rgb_at(lat, lon), Some([250.0, 10.0, 10.0]));
     assert_eq!(sampler.rgb_at(CENTRE.0, CENTRE.1), Some([50.0, 50.0, 50.0]));
+    // readable like the project's other files, not the private mode of a temporary file
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644);
+    }
     // no temporary file is left behind
     let left: Vec<_> = std::fs::read_dir(dir.path().join("out"))
         .unwrap()
@@ -687,6 +694,28 @@ fn stops_at_max_scenes_and_warns() {
             .any(|l| l.contains("warning") && l.contains('%')),
         "{lines:?}"
     );
+}
+
+#[test]
+fn only_cloudy_scenes_names_the_clearest_and_suggests_other_dates() {
+    // the rainy season of a place: every scene is above the limit
+    let dir = tempfile::tempdir().unwrap();
+    project(dir.path());
+    let http = stac_fake(vec![
+        good("A", 55.0, everything()),
+        good("B", 41.0, everything()),
+    ]);
+    let err = fetch(dir.path(), &stac(), &dated(), &http, &quiet).unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("41 %") && text.contains("20 %"),
+        "the clearest and the limit: {text}"
+    );
+    assert!(
+        text.contains("--from") && text.contains("--to"),
+        "what to do: {text}"
+    );
+    assert!(http.urls("GET").is_empty());
 }
 
 #[test]

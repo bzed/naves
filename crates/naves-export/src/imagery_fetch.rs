@@ -950,11 +950,20 @@ fn choose_scenes<'a>(
         chosen.push(candidate);
     }
     if chosen.is_empty() {
+        let clearest = all.iter().map(|c| c.cloud).fold(f64::INFINITY, f64::min);
+        let advice = if clearest > MAX_CLOUD_PERCENT && clearest.is_finite() {
+            format!(
+                "; the clearest scene has {clearest:.0} % cloud and the limit is {MAX_CLOUD_PERCENT:.0} %: try \
+                 other dates with --from and --to, for example the dry season of the area"
+            )
+        } else {
+            String::new()
+        };
         return service(
             source,
             format!(
                 "no usable scene for this area and these dates ({} found, {rejected} rejected, others too cloudy \
-                 or outside the map)",
+                 or outside the map){advice}",
                 all.len()
             ),
         );

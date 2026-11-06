@@ -98,6 +98,14 @@ pub fn write_rgb(path: &Path, rgb: &RgbMosaic, bounds: GeoWindow) -> Result<(), 
         .suffix(".tmp")
         .tempfile_in(dir)
         .map_err(io)?;
+    // a temporary file is private; the imagery of a project is as readable as the project's other files
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))
+            .map_err(io)?;
+    }
     tmp.write_all(cursor.get_ref())
         .and_then(|()| tmp.flush())
         .and_then(|()| tmp.as_file().sync_all())

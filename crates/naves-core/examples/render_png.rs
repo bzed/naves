@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Renders the map of a project to a PNG: `cargo run -p naves-core --example render_png -- <project dir>
-//! <hillshade|slope|height|surface> <width> <out.png>`. Used for the screenshots in the manual.
+//! <hillshade|slope|height|surface|imagery> <width> <out.png>`. Used for the screenshots in the manual.
 
 use std::path::PathBuf;
 
 use naves_core::dem::Dem;
 use naves_core::heightmap::build_heightmap;
+use naves_core::imagery::{TileImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::project_surfaces;
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("slope") => Overlay::Slope,
         Some("height") => Overlay::Height,
         Some("surface") => Overlay::Surface,
+        Some("imagery") => Overlay::Imagery,
         _ => Overlay::Hillshade,
     };
     let px: u32 = args.next().ok_or("missing width")?.parse()?;
@@ -41,6 +43,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    render_topdown(&hm, &request, surfaces.as_ref(), None)?.save(out)?;
+    let loaded = if overlay == Overlay::Imagery {
+        load_imagery(&project, &dir, &|_| {})?
+    } else {
+        None
+    };
+    let imagery = loaded.as_ref().map(|l| TileImagery {
+        composite: &l.composite,
+        project: &project,
+    });
+    render_topdown(&hm, &request, surfaces.as_ref(), imagery.as_ref())?.save(out)?;
     Ok(())
 }
