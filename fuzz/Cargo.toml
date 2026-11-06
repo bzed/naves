@@ -62,6 +62,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "imagery_tile"
+path = "fuzz_targets/imagery_tile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "osm_read"
 path = "fuzz_targets/osm_read.rs"
 test = false

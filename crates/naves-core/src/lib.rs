@@ -6,6 +6,7 @@
 pub mod dem;
 pub mod heightmap;
 pub mod ident;
+pub mod imagery;
 pub mod landcover;
 pub mod osm;
 pub mod project;

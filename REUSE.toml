@@ -57,3 +57,9 @@ path = "tests/fixtures/osm/*.osm.pbf"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "© OpenStreetMap contributors"
 SPDX-License-Identifier = "ODbL-1.0"
+
+[[annotations]]
+path = "tests/fixtures/imagery/*.tif"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Contains modified Copernicus Sentinel data 2025"
+SPDX-License-Identifier = "LicenseRef-Copernicus-Sentinel"
