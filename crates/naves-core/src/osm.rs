@@ -11,8 +11,9 @@
 //! the ways that are areas or relation members, then only the nodes those ways use.
 //!
 //! The `osmpbf` crate can panic on a damaged file (unchecked delta sums, an unknown member type). The
-//! reader runs under `catch_unwind` and turns such a panic into [`OsmError::Malformed`]; the fuzz target
-//! `osm_read` and the damaged-file tests check that nothing else escapes.
+//! reader runs under `catch_unwind` and turns such a panic into [`OsmError::Malformed`]. The unit test of the
+//! guard, the damaged-file tests and the fuzz target `osm_read` (which silences libFuzzer's aborting panic hook, so
+//! that the guard can do its work) check that nothing else escapes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
@@ -311,7 +312,7 @@ fn ways_of<R: Read + Send>(
 fn nodes_of<R: Read + Send>(
     reader: ElementReader<R>,
     wanted: &[i64],
-) -> Result<BTreeMap<i64, (f64, f64)>, OsmError> {
+) -> Result<Vec<(i64, Point)>, OsmError> {
     let found = reader.par_map_reduce(
         |element| match element {
             Element::Node(n) if wanted.binary_search(&n.id()).is_ok() => {
@@ -328,7 +329,7 @@ fn nodes_of<R: Read + Send>(
             a
         },
     )?;
-    Ok(found.into_iter().collect())
+    Ok(found)
 }
 
 fn touches(window: GeoWindow, ring: &[Point]) -> bool {
@@ -343,68 +344,146 @@ fn touches(window: GeoWindow, ring: &[Point]) -> bool {
     south <= window.north && north >= window.south && west <= window.east && east >= window.west
 }
 
-/// The three passes over one source; `open` gives a fresh reader for each.
-fn read_passes<R: Read + Send>(
-    open: impl Fn() -> osmpbf::Result<ElementReader<R>>,
+/// A group of ways that make one area: a tagged way, or the members of a multipolygon relation.
+struct Group {
+    class: SurfaceClass,
+    priority: u8,
+    ways: Vec<RawWay>,
+    /// Member ways that are in none of the sources.
+    missing: usize,
+}
+
+/// The south-west and north-east corner of the nodes of `ways` that are known, if any.
+fn extent(ways: &[RawWay], nodes: &BTreeMap<i64, Point>) -> Option<GeoWindow> {
+    let mut known = ways
+        .iter()
+        .flat_map(|w| w.nodes.iter())
+        .filter_map(|id| nodes.get(id));
+    let &(lat, lon) = known.next()?;
+    let mut window = GeoWindow {
+        south: lat,
+        west: lon,
+        north: lat,
+        east: lon,
+    };
+    for &(lat, lon) in known {
+        window.south = window.south.min(lat);
+        window.north = window.north.max(lat);
+        window.west = window.west.min(lon);
+        window.east = window.east.max(lon);
+    }
+    Some(window)
+}
+
+fn overlaps(a: GeoWindow, b: GeoWindow) -> bool {
+    a.south <= b.north && a.north >= b.south && a.west <= b.east && a.east >= b.west
+}
+
+/// The three passes over every source (`count` of them); `open(i)` gives a fresh reader of source `i`, and
+/// `name(i)` its file for error messages. Relations, ways and nodes of all sources are merged before the
+/// rings are assembled, so a polygon that every extract cuts at its own border can still be whole.
+fn read_sources<R: Read + Send>(
+    count: usize,
+    open: impl Fn(usize) -> osmpbf::Result<ElementReader<R>>,
+    name: impl Fn(usize) -> Option<PathBuf>,
     window: GeoWindow,
 ) -> Result<OsmLand, OsmError> {
-    let mut relations = relations_of(open()?)?;
-    relations.sort_by_key(|r| r.id);
+    let at = |index: usize, error: OsmError| match name(index) {
+        Some(path) => OsmError::File {
+            path,
+            source: Box::new(error),
+        },
+        None => error,
+    };
+    let mut relations = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        relations.extend(relations_of(reader).map_err(|e| at(index, e))?);
+    }
+    // the same id in several sources: keep one, the same one whatever the order of the sources
+    relations.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.members.cmp(&b.members)));
+    relations.dedup_by_key(|r| r.id);
     let members: BTreeSet<i64> = relations
         .iter()
         .flat_map(|r| r.members.iter().map(|&(id, _)| id))
         .collect();
-    let mut ways = ways_of(open()?, &members)?;
-    ways.sort_by_key(|w| w.id);
+    let mut ways = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        ways.extend(ways_of(reader, &members).map_err(|e| at(index, e))?);
+    }
+    ways.sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.nodes.cmp(&b.nodes)));
+    ways.dedup_by_key(|w| w.id);
     let mut wanted: Vec<i64> = ways.iter().flat_map(|w| w.nodes.iter().copied()).collect();
     wanted.sort_unstable();
     wanted.dedup();
-    let nodes = nodes_of(open()?, &wanted)?;
+    let mut found = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        found.extend(nodes_of(reader, &wanted).map_err(|e| at(index, e))?);
+    }
     drop(wanted);
+    found.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.0.total_cmp(&b.1.0))
+            .then_with(|| a.1.1.total_cmp(&b.1.1))
+    });
+    found.dedup_by_key(|n| n.0);
+    let nodes: BTreeMap<i64, Point> = found.into_iter().collect();
+
+    let mut groups: Vec<Group> = Vec::new();
+    for way in &ways {
+        if let Some((class, priority)) = way.area {
+            groups.push(Group {
+                class,
+                priority,
+                ways: vec![RawWay {
+                    nodes: way.nodes.clone(),
+                    inner: false,
+                }],
+                missing: 0,
+            });
+        }
+    }
+    let by_id: BTreeMap<i64, &WayRecord> = ways.iter().map(|w| (w.id, w)).collect();
+    for relation in &relations {
+        let mut group = Group {
+            class: relation.class,
+            priority: relation.priority,
+            ways: Vec::new(),
+            missing: 0,
+        };
+        for &(id, inner) in &relation.members {
+            match by_id.get(&id) {
+                Some(way) => group.ways.push(RawWay {
+                    nodes: way.nodes.clone(),
+                    inner,
+                }),
+                None => group.missing += 1,
+            }
+        }
+        groups.push(group);
+    }
 
     let mut land = OsmLand::default();
-    let mut keep = |class: SurfaceClass, priority: u8, rings: Rings| {
-        land.skipped_rings += rings.skipped;
+    for group in groups {
+        // Only what lies on the map counts, so that the extract's cut polygons far away neither cost time
+        // nor show up as skipped rings.
+        if !extent(&group.ways, &nodes).is_some_and(|e| overlaps(e, window)) {
+            continue;
+        }
+        let rings = assemble(&group.ways, &nodes);
+        land.skipped_rings += rings.skipped + group.missing;
         for (outer, holes) in rings.polygons {
             if touches(window, &outer) {
                 land.polygons.push(LandPolygon {
-                    class,
-                    priority,
+                    class: group.class,
+                    priority: group.priority,
                     outer,
                     holes,
                 });
             }
         }
-    };
-    for way in &ways {
-        if let Some((class, priority)) = way.area {
-            let raw = RawWay {
-                nodes: way.nodes.clone(),
-                inner: false,
-            };
-            keep(class, priority, assemble(&[raw], &nodes));
-        }
-    }
-    let by_id: BTreeMap<i64, &WayRecord> = ways.iter().map(|w| (w.id, w)).collect();
-    for relation in &relations {
-        let mut missing = 0;
-        let raw: Vec<RawWay> = relation
-            .members
-            .iter()
-            .filter_map(|&(id, inner)| {
-                let found = by_id.get(&id);
-                if found.is_none() {
-                    missing += 1;
-                }
-                found.map(|w| RawWay {
-                    nodes: w.nodes.clone(),
-                    inner,
-                })
-            })
-            .collect();
-        let mut rings = assemble(&raw, &nodes);
-        rings.skipped += missing;
-        keep(relation.class, relation.priority, rings);
     }
     Ok(land)
 }
@@ -420,24 +499,26 @@ fn guarded(read: impl FnOnce() -> Result<OsmLand, OsmError>) -> Result<OsmLand, 
 
 /// Reads water, rock and built-up areas that touch `window` from `.osm.pbf` files.
 ///
-/// Elements are processed in id order, so the result does not depend on the order of the file's blocks.
+/// Elements are processed in id order, so the result does not depend on the order of the file's blocks or of the
+/// files. The relations, ways and nodes of all files are merged first: a polygon that each extract cuts at its own
+/// border is assembled from the parts of all of them. Only areas that lie on the window count, also in
+/// [`OsmLand::skipped_rings`].
 ///
 /// # Errors
 ///
 /// [`OsmError::File`], naming the first file that cannot be read or is damaged.
 pub fn read_land(paths: &[PathBuf], window: GeoWindow) -> Result<OsmLand, OsmError> {
-    let mut all = OsmLand::default();
-    for path in paths {
-        let land = guarded(|| read_passes(|| ElementReader::from_path(path), window)).map_err(
-            |source| OsmError::File {
-                path: path.clone(),
-                source: Box::new(source),
+    guarded(|| {
+        read_sources(
+            paths.len(),
+            |i| match paths.get(i) {
+                Some(path) => ElementReader::from_path(path),
+                None => Err(osmpbf::Error::from(std::io::Error::other("no such source"))),
             },
-        )?;
-        all.polygons.extend(land.polygons);
-        all.skipped_rings += land.skipped_rings;
-    }
-    Ok(all)
+            |i| paths.get(i).cloned(),
+            window,
+        )
+    })
 }
 
 /// Like [`read_land`] for data that is already in memory (the entry point of the fuzz target).
@@ -446,5 +527,32 @@ pub fn read_land(paths: &[PathBuf], window: GeoWindow) -> Result<OsmLand, OsmErr
 ///
 /// [`OsmError::Pbf`] or [`OsmError::Malformed`] for damaged data.
 pub fn read_land_from_bytes(bytes: &[u8], window: GeoWindow) -> Result<OsmLand, OsmError> {
-    guarded(|| read_passes(|| Ok(ElementReader::new(Cursor::new(bytes))), window))
+    guarded(|| {
+        read_sources(
+            1,
+            |_| Ok(ElementReader::new(Cursor::new(bytes))),
+            |_| None,
+            window,
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_in_the_decoder_becomes_an_error() {
+        // resume_unwind raises a panic without running the panic hook, like a panic inside a dependency
+        let result = guarded(|| std::panic::resume_unwind(Box::new("decoder failure")));
+        assert!(matches!(result, Err(OsmError::Malformed(_))), "{result:?}");
+    }
+
+    #[test]
+    fn a_result_passes_through_the_guard() {
+        assert_eq!(
+            guarded(|| Ok(OsmLand::default())).unwrap(),
+            OsmLand::default()
+        );
+    }
 }

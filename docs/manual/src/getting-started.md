@@ -75,7 +75,11 @@ of the map the first answer wins:
 
 Real data is never overridden by the rules: grassland on a steep slope stays grass. If the files do not cover
 the whole map, the build says how much of it the rules decided and does not fail. Náves reads only the part of
-a file that the map needs, so a whole WorldCover tile or a regional extract is fine.
+a WorldCover file that the map needs. For OpenStreetMap it reads the whole extract, three times, and keeps the
+water, rock and built-up areas of all of it in memory until the map is done: a regional extract needs several
+hundred megabytes, a country-sized one several gigabytes. Prefer the smallest extract that covers the map.
+Several extracts are merged before the areas are built, so an area that each of them cuts at its border is still
+whole.
 
 A map made from OpenStreetMap contains OSM-derived data under the ODbL: if you publish it, keep the attribution
 that `naves build` writes to `ATTRIBUTION.txt` in the mod folder, and share the derived database alike. The same

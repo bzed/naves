@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - `naves build` paints the ground from ESA WorldCover land cover and OpenStreetMap water, rock and built-up areas (`sources.land_cover`, `sources.osm`); the slope and altitude rules apply only where neither says anything. The build warns when the files do not cover the map or an extract cuts polygons, and writes `ATTRIBUTION.txt` (Copernicus, WorldCover, OpenStreetMap as used) into the mod folder.
+- The GUI shows the build's warnings in its log. OpenStreetMap extracts are merged before areas are built, so a polygon that every extract cuts at its border is whole, and only rings on the map are counted in the skipped-rings warning.
 - A **Surface** overlay in the GUI map (with a legend) and in the MCP `render_topdown` tool shows the ground classes; the GUI lists the land cover and OpenStreetMap files.
 - The terrain has four ground layers (grass, rock, forest, soil); the ground of each map cell is decided in one place (`SurfaceGrid`).
 - Project file `naves.toml`.

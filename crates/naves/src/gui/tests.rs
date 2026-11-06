@@ -262,3 +262,25 @@ fn the_surface_overlay_draws_once_the_map_is_ready() {
         "the legend names the classes"
     );
 }
+
+#[test]
+fn build_warnings_are_shown_in_the_log() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    // land cover for the western half of the map only
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/landcover/koenigssee_west.tif");
+    std::fs::create_dir_all(dir.join("landcover")).unwrap();
+    std::fs::copy(fixture, dir.join("landcover/koenigssee_west.tif")).unwrap();
+    let mut p = Project::load(&dir).unwrap();
+    p.sources.land_cover = vec!["landcover/koenigssee_west.tif".into()];
+    p.save(&dir).unwrap();
+    let mut app = app(root.path(), &dir);
+    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    harness.run_steps(4);
+    harness.get_by_label("Build").click();
+    step_until(&mut harness, |h| {
+        h.query_by_label_contains("not covered by the land cover")
+            .is_some()
+    });
+}

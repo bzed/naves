@@ -40,6 +40,7 @@ type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
 
 enum Line {
     Info(String),
+    Warning(String),
     Error(String),
     Result(String),
 }
@@ -162,19 +163,22 @@ impl NavesApp {
         }
         if let Some(worker) = self.worker.as_mut() {
             for msg in worker.poll() {
-                self.log.push(match msg {
-                    BuildMsg::Progress(line) => Line::Info(line),
-                    BuildMsg::Failed(error) => Line::Error(error),
+                match msg {
+                    BuildMsg::Progress(line) => self.log.push(Line::Info(line)),
+                    BuildMsg::Failed(error) => self.log.push(Line::Error(error)),
                     BuildMsg::Done(BuildOutput {
                         mod_dir,
                         mission_dir,
-                        ..
-                    }) => Line::Result(format!(
-                        "Mod: {}\nMission: {}",
-                        mod_dir.display(),
-                        mission_dir.display()
-                    )),
-                });
+                        warnings,
+                    }) => {
+                        self.log.extend(warnings.into_iter().map(Line::Warning));
+                        self.log.push(Line::Result(format!(
+                            "Mod: {}\nMission: {}",
+                            mod_dir.display(),
+                            mission_dir.display()
+                        )));
+                    }
+                }
             }
             if worker.is_finished() {
                 self.worker = None;
@@ -325,6 +329,10 @@ impl NavesApp {
                 for line in &self.log {
                     match line {
                         Line::Info(text) => ui.label(RichText::new(text).monospace()),
+                        Line::Warning(text) => ui.colored_label(
+                            BROWN,
+                            RichText::new(format!("Warning: {text}")).monospace(),
+                        ),
                         Line::Error(text) => ui.colored_label(
                             ERROR,
                             RichText::new(format!("Failed: {text}")).monospace(),

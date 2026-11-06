@@ -231,3 +231,67 @@ fn a_regional_extract_is_read() {
     let land = read_land(&[path], koenigssee_window()).unwrap();
     assert!(land.polygons.iter().any(|p| contains(p, 47.5534, 12.9765)));
 }
+
+fn lake_polygons(files: &[&str]) -> Result<usize, naves_core::osm::OsmError> {
+    let paths: Vec<PathBuf> = files
+        .iter()
+        .map(|name| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/osm")
+                .join(name)
+        })
+        .collect();
+    Ok(read_land(&paths, koenigssee_window())?
+        .polygons
+        .iter()
+        .filter(|p| contains(p, 47.5534, 12.9765))
+        .count())
+}
+
+#[test]
+fn a_polygon_cut_in_each_file_is_whole_together() {
+    // each extract has only part of the lake's ways: alone it cannot close the ring
+    assert_eq!(
+        lake_polygons(&["koenigssee_north.osm.pbf"]).unwrap(),
+        0,
+        "north alone"
+    );
+    assert_eq!(
+        lake_polygons(&["koenigssee_south.osm.pbf"]).unwrap(),
+        0,
+        "south alone"
+    );
+    assert_eq!(
+        lake_polygons(&["koenigssee_north.osm.pbf", "koenigssee_south.osm.pbf"]).unwrap(),
+        1,
+        "together"
+    );
+    assert_eq!(
+        lake_polygons(&["koenigssee_south.osm.pbf", "koenigssee_north.osm.pbf"]).unwrap(),
+        1,
+        "in the other order"
+    );
+}
+
+#[test]
+fn cut_polygons_far_from_the_window_are_not_counted() {
+    let cut = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/osm/koenigssee_cut.osm.pbf"),
+    ];
+    let far = GeoWindow {
+        south: 10.0,
+        west: 10.0,
+        north: 10.1,
+        east: 10.1,
+    };
+    assert_eq!(
+        read_land(&cut, far).unwrap().skipped_rings,
+        0,
+        "nothing of it is on this map"
+    );
+    assert!(
+        read_land(&cut, koenigssee_window()).unwrap().skipped_rings > 0,
+        "the cut lake is on this map"
+    );
+}

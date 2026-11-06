@@ -220,7 +220,9 @@ on the slopes, grass and soil patches in the basin, grey rock and green patches 
 no navmesh error (the geometry is unchanged).
 
 Cost of the build (release binary, `naves build examples/berchtesgaden`, with `oberbayern-latest.osm.pbf` 260 MB and
-`austria-latest.osm.pbf` 815 MB): 15 s, peak memory 1.2 GiB. Most of the memory is the nodes of every lake, rock and
+`austria-latest.osm.pbf` 815 MB): 15 s, peak memory 1.2 GiB (1233 MiB). Most of the memory is the nodes of every lake, rock and
 built-up polygon in both extracts, which are only known after the whole window test, so it grows with the extract;
 a country-sized extract needs a few GiB. The PBO is 50.9 MB. On the Oberbayern extract alone, reading the window takes
-0.9 s and 460 MiB. 49 rings were skipped where the extracts cut polygons at their borders (the build warns).
+0.9 s and 460 MiB. The two extracts are merged before polygons are built; read one by one, 49 rings
+were skipped where each extract cuts a polygon at the border, and the build warned every time, because the count
+also covered the rest of the extract. Now only rings on the map count, and there are none here.

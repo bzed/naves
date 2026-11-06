@@ -3,11 +3,18 @@
 
 #![no_main]
 
+use std::sync::Once;
+
 use libfuzzer_sys::fuzz_target;
 use naves_core::landcover::GeoWindow;
 use naves_core::osm::read_land_from_bytes;
 
+static QUIET_PANICS: Once = Once::new();
+
 fuzz_target!(|data: &[u8]| {
+    // libFuzzer's panic hook aborts before the guard around the decoder can catch a panic, and the guard is
+    // part of what is being tested: a panic inside `osmpbf` has to come out as an error, nothing else.
+    QUIET_PANICS.call_once(|| std::panic::set_hook(Box::new(|_| {})));
     let window = GeoWindow {
         south: 47.54,
         west: 12.96,

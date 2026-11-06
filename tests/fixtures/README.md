@@ -75,3 +75,7 @@ osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigsse
 `koenigssee_west.tif` is the western half of it (180 × 240 px, `-srcwin 0 0 180 240`), for tests of partial coverage.
 
 `osm/koenigssee_cut.osm.pbf` is that file cut again (`osmium extract -b 12.97,47.545,12.98,47.552 -s simple`): the lake is cut at the border and its rings do not close, as in a real regional extract.
+
+`osm/koenigssee_north.osm.pbf` and `osm/koenigssee_south.osm.pbf` split the lake: each has only the ways that touch
+its half (`osmium extract -b 12.9,47.548,13.1,47.7 -s simple` and `-b 12.9,47.4,13.1,47.552 -s simple`), so each alone
+cannot close the lake's ring, and the two together can.
