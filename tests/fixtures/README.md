@@ -37,3 +37,21 @@ gdal_translate -q $CO -projwin 13.00 47.64 13.02 47.62 /vsicurl/$B/$T13/$T13.tif
 ```
 
 Reference values: `gdallocationinfo -wgs84 -valonly koenigssee.tif 12.9765 47.5534` prints 602.
+
+## `landcover/koenigssee.tif`: ESA WorldCover crop
+
+A 360 × 240 px crop (10 m pixels, about 6 KB) of ESA WorldCover 2021 v200 around the Königssee, tile `N45E012`.
+
+> © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover
+> consortium, licensed CC BY 4.0
+
+Class values (`gdallocationinfo -valonly -geoloc koenigssee.tif <lon> <lat>`): 80 (water) at 12.9765 °E 47.5534 °N,
+30 (grassland) at 12.9605 °E 47.5595 °N, 10 (tree cover) at 12.9605 °E 47.541 °N.
+
+Created with GDAL (needs network access; the tests do not):
+
+```sh
+U=/vsicurl/https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif
+gdal_translate -q -co TILED=YES -co BLOCKXSIZE=64 -co BLOCKYSIZE=64 -co COMPRESS=DEFLATE \
+  -projwin 12.96 47.56 12.99 47.54 $U koenigssee.tif
+```

@@ -53,3 +53,10 @@ path = "fuzz_targets/paa_tags.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "landcover_tile"
+path = "fuzz_targets/landcover_tile.rs"
+test = false
+doc = false
+bench = false

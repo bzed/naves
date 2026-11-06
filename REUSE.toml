@@ -45,3 +45,9 @@ path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**",
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "tests/fixtures/landcover/*.tif"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium"
+SPDX-License-Identifier = "CC-BY-4.0"
