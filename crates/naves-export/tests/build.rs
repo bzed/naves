@@ -554,6 +554,7 @@ const SENTINEL_CENTRE: (f64, f64) = (47.5570, 12.9743);
 fn small_project(dir: &Path, centre: (f64, f64), extent: f64) -> Project {
     let mut p = project(dir, centre);
     p.area.real_extent_m = extent;
+    p.imagery.brightness = 1.0; // the tests compare colours with the files
     p.save(dir).unwrap();
     p
 }

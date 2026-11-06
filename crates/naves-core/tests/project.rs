@@ -429,6 +429,18 @@ fn brightness_range() {
 }
 
 #[test]
+fn imagery_is_brighter_by_default_and_a_project_keeps_its_own_value() {
+    // satellite images are dark for a terrain (docs/research/2026-11-05-reference-terrains.md)
+    let default = Project::parse(&base()).unwrap();
+    assert!((default.imagery.brightness - 1.3).abs() < 1e-9);
+    let own = Project::parse(&format!("{}\n[imagery]\nbrightness = 1.0\n", base())).unwrap();
+    assert!((own.imagery.brightness - 1.0).abs() < 1e-9);
+    // saved and loaded again, the project's own value is still there
+    let again = Project::parse(&toml::to_string(&own).unwrap()).unwrap();
+    assert!((again.imagery.brightness - 1.0).abs() < 1e-9);
+}
+
+#[test]
 fn imagery_can_be_set_over_project_set() {
     let p = Project::new("x", 47.0, 12.0, 4000.0);
     let q = p

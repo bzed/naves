@@ -296,6 +296,7 @@ fn imagery_project() -> Project {
     let mut p = Project::new("t", 47.0, 12.0, 2048.0);
     p.grid.terrain_size = 256;
     p.grid.land_size = 32;
+    p.imagery.brightness = 1.0; // the tests compare colours exactly
     p
 }
 

@@ -226,3 +226,26 @@ a country-sized extract needs a few GiB. The PBO is 50.9 MB. On the Oberbayern e
 0.9 s and 460 MiB. The two extracts are merged before polygons are built; read one by one, 49 rings
 were skipped where each extract cuts a polygon at the border, and the build warned every time, because the count
 also covered the rest of the extract. Now only rings on the map count, and there are none here.
+
+## The satellite image from Sentinel-2 (2026-11-06)
+
+The example project lists one scene, `S2C_T33TUN_20250919T101514_L2A` (true colour, 10 m, 0.0006 % cloud), which
+covers the whole map. `naves build` paints the satellite images from it where it covers a pixel, without baked
+shading.
+
+- **Brightness.** The scene is dark for a terrain: mean red, green, blue 44, 53, 34 over the map against 63, 68, 37
+  for a Livonia tile's `AVGC`. In the game (DayZ 1.30, headless client, noon, clear weather, x 3962, z 1400, yaw 270,
+  over the Königssee towards the Watzmann) the image at `brightness` 1.0 shows the lake, the town and the snow where
+  they are, with no seams between tiles and no crash, but the forests are nearly black. At 1.3 the forests and
+  meadows read as green and the snow is bright without losing its structure. 1.6 was not tried: the snow is already
+  close to white at 1.3. The default is 1.3; a project that sets its own `brightness` keeps it.
+- **Cast shadows.** The scene holds real shadows of the Watzmann's east face. They look right in the distance and
+  are not a problem from the ground view of the test position; the shift from the far image to the near ground
+  textures, which the mask still draws, was not objectionable in this view.
+- **What the build found.** The first build with the scene made `binarize` stop (exit 5) while the control build
+  without imagery worked. armake2's `img2paa` stored mipmaps that LZO did not shrink as raw data but marked them as
+  LZO, so 74 of 512 satellite tiles had a mipmap that no decoder (nor DayZ's `binarize`) could read; a flat image
+  never showed it because it compresses everywhere. DayZ Tools' `ImageToPAA` on the same images writes LZO
+  streams that end at the `11 00 00` marker, marks only compressed mipmaps and compresses better (mip 0 of a tile
+  94 725 bytes against 117 691 for armake2). armake2 is fixed (no stray byte after the stream, mark only what is
+  compressed) and Náves clears the wrong mark in files from an older armake2.

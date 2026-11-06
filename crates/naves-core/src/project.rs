@@ -34,7 +34,7 @@ pub struct Project {
 }
 
 /// The brightness factor applied to imagery when a project does not set one.
-pub const DEFAULT_BRIGHTNESS: f64 = 1.0;
+pub const DEFAULT_BRIGHTNESS: f64 = 1.3;
 
 /// How imagery is drawn into the satellite images.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

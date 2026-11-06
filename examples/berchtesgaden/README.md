@@ -61,7 +61,7 @@ curl -fo sentinel2-S2C_T33TUN_20250919T101514_L2A.tif \
 The scene is almost cloud free (0.0006 %) and covers the whole map. Sentinel data is free to use, commercial use
 included; the build writes the credit into `ATTRIBUTION.txt`. Without the file, remove the `[[sources.imagery]]`
 block from `naves.toml`: the satellite image is then painted from the ground classes. The scene is dark for a
-terrain; `[imagery] brightness` in `naves.toml` raises it.
+terrain; the build makes it 30 % brighter, and `[imagery] brightness` in `naves.toml` changes that.
 
 Data licences and attribution: see "Credits and data licences" in the manual. A map built from these files contains
 OpenStreetMap data under the ODbL.

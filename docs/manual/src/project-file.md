@@ -135,6 +135,6 @@ non_commercial = true
 
 | Field | Default | Valid values |
 |---|---|---|
-| `brightness` | 1.0 | 0.25 to 4; factor on the colours of the imagery |
+| `brightness` | 1.3 | 0.25 to 4; factor on the colours of the imagery (Sentinel-2 images are dark for a terrain) |
 
 Both sections are left out of the file while they are empty or default.

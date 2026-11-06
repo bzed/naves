@@ -70,7 +70,7 @@ no file covers the map, the class colours are used, and the build says how much 
 Several files can overlap. Náves measures their colours against each other where they overlap, evens out
 differences in exposure, draws the sharpest image where several cover a spot, and fades one image into the next
 over a few land cells. The image with the most coverage keeps its colours; a Sentinel-2 image of the whole map
-under aerial photos needs no setting. If the result is too dark, raise `[imagery] brightness`.
+under aerial photos needs no setting. The colours are made 30 % brighter by default, because satellite images are dark next to the game's own terrain; change `[imagery] brightness` to taste.
 
 Imagery comes with a licence. Náves writes the credits of every file that touches the map into `ATTRIBUTION.txt`
 (in the mod and in the mission) and a short note into `mod.cpp`. If a file is marked `non_commercial = true`, the
