@@ -17,6 +17,10 @@ use crate::heightmap::MapGeo;
 use crate::project::Project;
 use crate::projection::{ProjectionError, utm_epsg};
 
+mod merge;
+
+pub use merge::{Composite, MapRect, MergeReport, SourceReport, TileImagery, merge};
+
 /// Largest accepted window side in pixels.
 const MAX_WINDOW_SIDE: u32 = 16_000;
 
@@ -144,6 +148,7 @@ pub struct ImageryRaster {
     /// RGBA, alpha 0 for no data.
     data: Vec<u8>,
     pixel_m: f64,
+    label: String,
 }
 
 /// `v` as a pixel index if it is a finite value in `0..=u32::MAX`.
@@ -279,6 +284,12 @@ impl ImageryRaster {
         GeoTiffFile::open(path)
             .map_err(geotiff_error)
             .and_then(|file| read(&file, project, target_m))
+            .map(|raster| {
+                raster.map(|mut r| {
+                    r.label = path.display().to_string();
+                    r
+                })
+            })
             .map_err(|source| ImageryError::File {
                 path: path.to_path_buf(),
                 source: Box::new(source),
@@ -342,7 +353,21 @@ impl ImageryRaster {
                 pixel_deg,
                 f64::midpoint(south, north),
             ),
+            label: "synthetic imagery".to_string(),
         }
+    }
+
+    /// What the raster is called in messages: the file path for rasters from [`ImageryRaster::open`].
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The raster with another label.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> ImageryRaster {
+        self.label = label.into();
+        self
     }
 
     /// Real metres per pixel of what was read (the geometric mean of width and height).
@@ -575,5 +600,6 @@ fn read(
         rows: win_h,
         data,
         pixel_m: level_m,
+        label: "imagery".to_string(),
     }))
 }
