@@ -7,11 +7,13 @@
 //! Look: the manual's palette. A pale green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
+mod dock;
 mod imagery;
 mod layers;
 mod layout;
 mod levels;
 mod map_view;
+mod problems;
 mod selection;
 mod settings;
 mod shortcuts;
@@ -74,6 +76,14 @@ pub struct NavesApp {
     help_open: bool,
     /// What a click picked.
     selection: Option<selection::Selection>,
+    /// The tab of the bottom dock.
+    dock: &'static str,
+    /// What is wrong, from all sources.
+    problems: problems::ProblemList,
+    /// Warnings and errors of the last build; cleared when the next build starts.
+    build_problems: Vec<problems::Problem>,
+    /// Notes of the imagery merge; replaced with each new map.
+    merge_problems: Vec<problems::Problem>,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -127,6 +137,10 @@ impl NavesApp {
             left_open: false,
             help_open: false,
             selection: None,
+            dock: "build",
+            problems: problems::ProblemList::default(),
+            build_problems: Vec::new(),
+            merge_problems: Vec::new(),
             heightmap: HeightmapState::NoDem,
             job: None,
             reload_wanted: false,
@@ -199,9 +213,17 @@ impl NavesApp {
             } else {
                 self.heightmap = match result {
                     Ok(data) => {
+                        self.merge_problems.clear();
                         if let Some(imagery) = &data.imagery {
                             self.log
                                 .extend(imagery.warnings.iter().cloned().map(Line::Warning));
+                            self.merge_problems.extend(
+                                imagery
+                                    .warnings
+                                    .iter()
+                                    .cloned()
+                                    .map(problems::Problem::note),
+                            );
                         }
                         self.generation += 1;
                         HeightmapState::Ready(Arc::new(data))
@@ -214,12 +236,18 @@ impl NavesApp {
             for msg in worker.poll() {
                 match msg {
                     BuildMsg::Progress(line) => self.log.push(Line::Info(line)),
-                    BuildMsg::Failed(error) => self.log.push(Line::Error(error)),
+                    BuildMsg::Failed(error) => {
+                        self.build_problems
+                            .push(problems::Problem::note(error.clone()));
+                        self.log.push(Line::Error(error));
+                    }
                     BuildMsg::Done(BuildOutput {
                         mod_dir,
                         mission_dir,
                         warnings,
                     }) => {
+                        self.build_problems
+                            .extend(warnings.iter().cloned().map(problems::Problem::note));
                         self.log.extend(warnings.into_iter().map(Line::Warning));
                         self.log.push(Line::Result(format!(
                             "Mod: {}\nMission: {}",
@@ -245,13 +273,22 @@ impl NavesApp {
         if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        self.refresh_problems();
         self.keyboard(ui.ctx());
         let fold = layout::fold_for(ui.max_rect().size());
         egui::Panel::bottom("build")
             .resizable(!fold.dock)
             .default_size(if fold.dock { 40.0 } else { 150.0 })
             .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
-            .show(ui, |ui| self.build_ui(ui, fold.dock));
+            .show(ui, |ui| {
+                dock::tab_row(ui, dock::TABS, self);
+                if !fold.dock {
+                    ui.add_space(4.0);
+                    if let Some(tab) = dock::TABS.iter().find(|t| t.id == self.dock) {
+                        (tab.show)(self, ui);
+                    }
+                }
+            });
         if fold.left && !self.left_open {
             egui::Panel::left("settings-strip")
                 .resizable(false)
@@ -297,6 +334,41 @@ impl NavesApp {
         }
     }
 
+    /// Collects the problems of all sources into the list; the cursor stays where it is when it can.
+    fn refresh_problems(&mut self) {
+        let mut rows: Vec<problems::Problem> = self.build_problems.clone();
+        rows.extend(self.merge_problems.iter().cloned());
+        if let Some(error) = &self.form.error {
+            rows.push(problems::Problem::note(format!("Not saved: {error}")));
+        }
+        if self.problems.rows != rows {
+            self.problems.rows = rows;
+            self.problems.cursor = self
+                .problems
+                .cursor
+                .filter(|c| *c < self.problems.rows.len());
+        }
+    }
+
+    /// Goes to a problem: the map is centred on it, at the zoom it has, when the problem has a position.
+    fn go_to_problem(&mut self, index: usize) {
+        self.problems.cursor = Some(index);
+        let Some(at) = self.problems.rows.get(index).and_then(|p| p.at) else {
+            return;
+        };
+        if !matches!(self.heightmap, HeightmapState::Ready(_)) {
+            return;
+        }
+        let view = self.views.active_mut();
+        let span = view
+            .focus()
+            .map_or_else(|| self.form.project.map_size_m(), |f| f.span_m);
+        view.set_focus(viewport::ViewFocus {
+            center: at,
+            span_m: span,
+        });
+    }
+
     /// Runs the action of the key pressed in this frame, if it can be done.
     fn keyboard(&mut self, ctx: &egui::Context) {
         let typing = shortcuts::typing(ctx);
@@ -331,6 +403,21 @@ impl NavesApp {
             }
             Action::FrameSelection => self.frame_selection(),
             Action::FrameMap => self.frame_map(),
+            Action::NextProblem | Action::PreviousProblem => {
+                let level = self.panel.active;
+                let forward = action == Action::NextProblem;
+                let list = &mut self.problems;
+                let found = if forward {
+                    list.next(level)
+                } else {
+                    list.previous(level)
+                };
+                if found.is_some()
+                    && let Some(index) = self.problems.cursor
+                {
+                    self.go_to_problem(index);
+                }
+            }
             Action::Build => self.start_build(),
             Action::Help => self.help_open = !self.help_open,
             Action::SwitchView => self.views.switch(),
@@ -350,6 +437,7 @@ impl NavesApp {
             return;
         }
         self.log.clear();
+        self.build_problems.clear();
         self.log.push(Line::Info("Starting the build".to_string()));
         self.worker = Some(BuildWorker::start(self.form.dir(), (self.locate_tools)()));
     }
@@ -500,7 +588,7 @@ impl NavesApp {
         }
     }
 
-    fn build_ui(&mut self, ui: &mut egui::Ui, folded: bool) {
+    fn build_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let can_build = !self.building() && self.form.error.is_none();
             let button = egui::Button::new(RichText::new("Build").color(Color32::WHITE).strong())
@@ -512,9 +600,6 @@ impl NavesApp {
                 ui.spinner();
             }
         });
-        if folded {
-            return;
-        }
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
@@ -577,6 +662,7 @@ impl NavesApp {
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);
+        self.draw_markers(ui, rect);
         self.draw_selection(ui, rect);
         for event in &events {
             if let ViewEvent::Click { at, modifiers } = *event {
@@ -597,6 +683,34 @@ impl NavesApp {
             && let Some(selection) = &self.selection
         {
             self.activate(selection.level);
+        }
+    }
+
+    /// A diamond with a white edge for each shown problem that has a position.
+    fn draw_markers(&self, ui: &egui::Ui, rect: egui::Rect) {
+        if !self.problems.markers {
+            return;
+        }
+        let painter = ui.painter().with_clip_rect(rect);
+        for index in self.problems.shown(self.panel.active) {
+            let Some(at) = self.problems.rows.get(index).and_then(|p| p.at) else {
+                continue;
+            };
+            if let Some(pos) = self.views.active().project(at, rect) {
+                let diamond = |r: f32| {
+                    vec![
+                        pos + egui::vec2(0.0, -r),
+                        pos + egui::vec2(r, 0.0),
+                        pos + egui::vec2(0.0, r),
+                        pos + egui::vec2(-r, 0.0),
+                    ]
+                };
+                painter.add(egui::Shape::convex_polygon(
+                    diamond(9.0),
+                    ERROR,
+                    egui::Stroke::new(2.5, egui::Color32::WHITE),
+                ));
+            }
         }
     }
 

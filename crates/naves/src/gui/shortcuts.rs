@@ -630,7 +630,9 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         Action::SwitchView => app.views.can_switch(),
         Action::FrameSelection => app.selection.is_some() && ready(app),
         Action::FrameMap => ready(app),
-        Action::Cancel
+        Action::NextProblem
+        | Action::PreviousProblem
+        | Action::Cancel
         | Action::Build
         | Action::Help
         | Action::HideLevel
@@ -650,8 +652,6 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::BrushStronger
         | Action::Finish
         | Action::Regenerate
-        | Action::NextProblem
-        | Action::PreviousProblem
         | Action::Settings => false,
     }
 }

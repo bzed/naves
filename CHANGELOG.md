@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The GUI's bottom dock has the tabs Build and Problems. Problems lists the warnings and the error of the last build, the notes of the imagery merge and a setting that was not saved; a row with a position (and F8 and Shift+F8) takes the map there, and diamonds mark them on the map.
 - Click in the GUI map to read a point in the active level (position, latitude and longitude, height and slope in Terrain; the ground class in Ground), Alt+click to pick across levels, Esc to clear, F to frame it and Shift+F to frame the whole map.
 - Switchable map layers in the GUI, under the active level in the stack, starting with **Too steep to walk** (hatching over ground steeper than 60°, a provisional limit). H hides the active level, Shift+H shows the other levels in full; they are drawn at 40 % otherwise. New `naves_core::render::render_layer`.
 - Keyboard shortcuts in the GUI, from one table: the digits 0 to 2 go to a level, Ctrl+B builds, F1 lists the keys that work in the level you are in, Esc closes the list. While a text field has the keyboard, no single key fires. The table already holds the final set of keys of the editor; a key whose action is not built yet does nothing. New manual page "Keyboard shortcuts".

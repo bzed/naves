@@ -15,6 +15,7 @@ use naves_export::testing::FakeEnv;
 
 use super::*;
 
+mod dock;
 mod layers;
 mod levels;
 mod selection;
@@ -99,7 +100,9 @@ fn the_build_button_shows_progress_and_the_result() {
     let mut app = app(root.path(), &dir);
     let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
-    harness.get_by_label("Build").click();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Build")
+        .click();
     step_until(&mut harness, |h| {
         h.query_by_label_contains("Mod: ").is_some()
     });
@@ -121,7 +124,9 @@ fn a_failed_build_is_shown_in_the_log() {
     .unwrap();
     let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
-    harness.get_by_label("Build").click();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Build")
+        .click();
     step_until(&mut harness, |h| {
         h.query_by_label_contains("armake2 not found").is_some()
     });
@@ -439,7 +444,9 @@ fn build_warnings_are_shown_in_the_log() {
     let mut app = app(root.path(), &dir);
     let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
-    harness.get_by_label("Build").click();
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, "Build")
+        .click();
     step_until(&mut harness, |h| {
         h.query_by_label_contains("not covered by the land cover")
             .is_some()

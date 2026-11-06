@@ -317,8 +317,8 @@ fn f1_shows_the_shortcuts_of_this_level_only() {
     assert!(h.query_by_label("Go to Terrain").is_some());
     assert_eq!(
         h.query_all_by_label("Build").count(),
-        2,
-        "the button and the row"
+        3,
+        "the tab, the button and the row"
     );
     assert!(
         h.query_by_label("Frame the selection").is_none(),

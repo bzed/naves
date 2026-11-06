@@ -100,6 +100,10 @@ pub fn stack_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
             });
         }
     }
+    ui.add_space(6.0);
+    let label = super::dock::problems_label(app);
+    ui.checkbox(&mut app.problems.markers, label)
+        .on_hover_text("Mark the problems on the map");
     ui.add_space(14.0);
     ui.spacing_mut().item_spacing.y = 0.0;
     let levels: Vec<Level> = app.levels.iter().map(|d| d.level).rev().collect();

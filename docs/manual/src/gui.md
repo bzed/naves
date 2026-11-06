@@ -107,9 +107,19 @@ Notes of the merge (a file that overlaps no other image, so its colours are not 
 
 If the project has no elevation files, or the files do not cover the area, the map says so instead of drawing.
 
-## Build (bottom)
+## The dock (bottom)
 
-**Build** runs the same build as [`naves build`](cli.md) in the background. The log shows the steps as they
-happen; when the build succeeds the last lines give the mod and mission folders, and when it fails they give the
-reason (a missing tool is named together with the variable to set, see [Installation](installation.md)). The
-button is disabled while a build is running or while the settings hold an invalid value.
+The dock has the tabs **Build** and **Problems**. On a low window it folds to its tab row.
+
+**Build** runs the same build as [`naves build`](cli.md) in the background (also with **Ctrl+B**). The log shows
+the steps as they happen; when the build succeeds the last lines give the mod and mission folders, and when it
+fails they give the reason (a missing tool is named together with the variable to set, see
+[Installation](installation.md)). The button is disabled while a build is running or while the settings hold an
+invalid value.
+
+**Problems** lists what is wrong: the warnings and the error of the last build, the notes of the imagery merge,
+and a setting that was not saved. They stay in the build log too. The tab says how many there are ("Problems 3");
+with none it says "No problems". The list follows the level you are in, and the box **All** shows every level.
+A row that has a position takes the map there when you click it. **F8** goes to the next problem and
+**Shift+F8** to the previous one, wrapping around. The row *Problems* above the stack switches the red
+diamonds on the map on and off.
