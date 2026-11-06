@@ -866,6 +866,17 @@ fn scopes_meet(a: Scope, b: Scope) -> bool {
     }
 }
 
+/// Whether the key went down in this frame. A key that is held down repeats; the repeats are not presses, or
+/// holding H would hide and show the level over and over.
+fn pressed_once(input: &InputState, key: Key) -> bool {
+    input.events.iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key
+        )
+    })
+}
+
 /// The action whose key was pressed in this frame, in the level `level`. Modifiers must match exactly, so that
 /// Ctrl+B is not B. While `typing`, only keys that cannot be typed fire.
 #[must_use]
@@ -880,7 +891,7 @@ pub fn action_for(
         .filter(|s| s.scope.applies(level))
         .filter_map(|s| bindings.get(s).map(|b| (s, b)))
         .filter(|(_, b)| !typing || fires_while_typing(*b))
-        .find(|(_, b)| input.key_pressed(b.key) && input.modifiers.matches_exact(b.modifiers))
+        .find(|(_, b)| pressed_once(input, b.key) && input.modifiers.matches_exact(b.modifiers))
         .map(|(s, _)| s.action)
 }
 

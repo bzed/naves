@@ -435,15 +435,12 @@ fn map_tab(app: &mut NavesApp, ui: &mut egui::Ui) {
     }
 }
 
-fn origin_words(from: Origin, var: &str) -> String {
+fn origin_words(from: Origin) -> String {
     match from {
         Origin::Environment => "From an environment variable".to_string(),
         Origin::Settings => "From the settings".to_string(),
         Origin::Found => "Found by searching".to_string(),
-        Origin::Missing => {
-            let _ = var;
-            "Not found".to_string()
-        }
+        Origin::Missing => "Not found".to_string(),
     }
 }
 
@@ -474,7 +471,7 @@ fn tools_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
                             .as_ref()
                             .map_or_else(|| "none".to_string(), |p| p.display().to_string()),
                     );
-                    ui.label(RichText::new(origin_words(origin.from, "")).weak());
+                    ui.label(RichText::new(origin_words(origin.from)).weak());
                     if let Some(text) = window.paths.get_mut(i) {
                         let r = ui.add(
                             egui::TextEdit::singleline(text)

@@ -471,3 +471,30 @@ fn fake_level_scope_is_respected() {
     h.run_steps(2);
     assert_eq!(level(&h), Level::Buildings);
 }
+
+#[test]
+fn a_held_key_fires_once() {
+    // H hides the active level: the repeats of a held H must not toggle it back and forth
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path());
+    h.run_steps(3);
+    h.key_press(egui::Key::Num1);
+    h.run_steps(2);
+    let key_event = |repeat| egui::Event::Key {
+        key: egui::Key::H,
+        physical_key: Some(egui::Key::H),
+        pressed: true,
+        repeat,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.event(key_event(false));
+    h.run_steps(1);
+    for _ in 0..3 {
+        h.event(key_event(true));
+        h.run_steps(1);
+    }
+    assert!(
+        h.state().panel.hidden.contains(&Level::Terrain),
+        "one press hid it; three repeats did not show it again and hide it again"
+    );
+}
