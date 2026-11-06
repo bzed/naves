@@ -9,11 +9,12 @@ use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use naves_core::heightmap::MapGeo;
 use naves_core::imagery::catalog::{
-    ImageryOption, WHOLE_MAP, catalog, options_for, user_catalog_path,
+    ImageryOption, WHOLE_MAP, catalog, find_source, options_for, user_catalog_path,
 };
 use naves_core::landcover::GeoWindow;
 use naves_core::project::{PROJECT_FILE, Project};
 use naves_export::build::build;
+use naves_export::imagery_fetch::{FetchRequest, RealHttp, describe_fetch, fetch};
 use naves_export::tools::Tools;
 
 use crate::output;
@@ -72,6 +73,19 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ImageryAction {
+    /// Fetch imagery for the area of a project into its `imagery` folder and list it in `naves.toml`.
+    Fetch {
+        /// The id of the source, from `naves imagery list`.
+        id: String,
+        /// The project folder (default: the current folder).
+        dir: Option<PathBuf>,
+        /// First day of the search for scenes, `YYYY-MM-DD` (needs `--to`).
+        #[arg(long)]
+        from: Option<String>,
+        /// Last day of the search for scenes, `YYYY-MM-DD` (needs `--from`).
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Show which imagery sources exist for the area of a project and what each one allows.
     List {
         /// The project folder (default: the current folder).
@@ -109,6 +123,11 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Mcp { dir } => run_mcp(&dir),
         Command::Imagery { action } => match action {
             ImageryAction::List { dir } => imagery_list(&dir.unwrap_or_else(|| PathBuf::from("."))),
+            ImageryAction::Fetch { id, dir, from, to } => imagery_fetch(
+                &dir.unwrap_or_else(|| PathBuf::from(".")),
+                &id,
+                &FetchRequest { from, to },
+            ),
         },
         Command::Gui { dir } => crate::gui::run(&dir.unwrap_or_else(|| PathBuf::from("."))),
         Command::Man => {
@@ -233,4 +252,27 @@ fn format_options(project: &Project, window: GeoWindow, options: &[ImageryOption
          Or use your own files: see the manual, \"Imagery\".",
     );
     text
+}
+
+/// `naves imagery fetch`: downloads imagery for the project and lists it in `naves.toml`.
+fn imagery_fetch(dir: &Path, id: &str, request: &FetchRequest) -> Result<()> {
+    let project = Project::load(dir)?;
+    let sources = catalog(user_catalog_path().as_deref())?;
+    let source = find_source(&sources, id)?;
+    // what it is and what it allows, before anything is downloaded
+    output::note(&format!("{}: {}", source.name, source.licence));
+    if source.non_commercial {
+        output::note(
+            "NON-COMMERCIAL: this source does not allow commercial use, and the finished map will say so.",
+        );
+    }
+    output::note(&describe_fetch(&project, source)?);
+    let files = fetch(dir, source, request, &RealHttp::new(), &|line| {
+        output::note(line);
+    })?;
+    for file in &files {
+        output::result(&format!("Added {} ({})", file.path.display(), file.licence));
+    }
+    output::result("naves.toml lists the files; `naves build` uses them.");
+    Ok(())
 }

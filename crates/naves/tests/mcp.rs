@@ -115,6 +115,7 @@ async fn lists_tools() {
         [
             "build",
             "heightmap_stats",
+            "imagery_fetch",
             "imagery_options",
             "project_get",
             "project_set",
@@ -151,6 +152,41 @@ async fn imagery_options_lists_the_same() {
     assert_eq!(nc["non_commercial"], true);
     assert_eq!(nc["licence"], "CC BY-NC-SA 4.0");
     assert!(listed["area"]["west"].as_f64().unwrap() < listed["area"]["east"].as_f64().unwrap());
+}
+
+#[tokio::test]
+async fn imagery_fetch_takes_no_url() {
+    let f = start().await;
+    let tools = f.client.list_all_tools().await.unwrap();
+    let tool = tools.iter().find(|t| t.name == "imagery_fetch").unwrap();
+    let schema = serde_json::to_value(&tool.input_schema).unwrap();
+    let mut properties: Vec<&str> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    properties.sort_unstable();
+    assert_eq!(
+        properties,
+        ["from", "id", "to"],
+        "ids from the catalogue only: no address"
+    );
+    // an unknown id is an error that names the ids there are, and the project stays as it was
+    let before = std::fs::read(f.proj.join("naves.toml")).unwrap();
+    let result = call(
+        &f,
+        "imagery_fetch",
+        json!({"id": "https://example.org/x.tif"}),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("sentinel2-scenes"),
+        "{}",
+        text(&result)
+    );
+    assert_eq!(std::fs::read(f.proj.join("naves.toml")).unwrap(), before);
 }
 
 #[tokio::test]

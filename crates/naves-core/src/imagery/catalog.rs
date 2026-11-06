@@ -43,6 +43,14 @@ pub enum CatalogError {
         /// What is wrong.
         why: String,
     },
+    /// No source has this id.
+    #[error("unknown imagery source {id:?}; the sources are: {known}")]
+    Unknown {
+        /// What was asked for.
+        id: String,
+        /// The ids there are, separated by commas.
+        known: String,
+    },
     /// The user file cannot be read.
     #[error("{}: {why}", path.display())]
     Io {
@@ -373,6 +381,28 @@ pub fn catalog(user_file: Option<&Path>) -> Result<Vec<CatalogSource>, CatalogEr
         }
     }
     Ok(sources)
+}
+
+/// The source with the id `id`.
+///
+/// # Errors
+///
+/// [`CatalogError::Unknown`], which lists the ids there are.
+pub fn find_source<'a>(
+    sources: &'a [CatalogSource],
+    id: &str,
+) -> Result<&'a CatalogSource, CatalogError> {
+    sources
+        .iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| CatalogError::Unknown {
+            id: id.to_string(),
+            known: sources
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
 }
 
 /// The share of `window` that the coverage box overlaps; 0 for a window without area.

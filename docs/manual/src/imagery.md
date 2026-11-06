@@ -25,6 +25,36 @@ sentinel2-scenes    whole map  10 m   Copernicus Sentinel data, ...     single d
 eox-cloudless-2025  whole map  10 m   CC BY-NC-SA 4.0  NON-COMMERCIAL   cloud-free mosaic of 2025; ...
 ```
 
+## Fetching
+
+```sh
+naves imagery fetch sentinel2-scenes myproject
+```
+
+Fetching is a separate step from building. It downloads imagery for the area of the project, writes it as GeoTIFF
+files into the `imagery` folder of the project and lists them in `naves.toml` with their licence; `naves build`
+afterwards reads only those files and never touches the network, so a project that was fetched once builds offline
+and can be copied to another machine. The command prints what the source is, its licence (with a **NON-COMMERCIAL**
+line where that applies) and how much it will download before it starts. The same is available as
+`imagery_fetch` over [MCP](mcp.md) and in the [GUI](gui.md).
+
+- A **mosaic** source (`eox-cloudless-*`, `bayern-dop40`, and any `wms` source of your own) is fetched as one picture
+  of the map plus a margin of 100 m, in tiles of at most 2000 pixels, one request at a time. The pixel size is the
+  sharper of the source's own and the map's. `imagery/<id>.tif` is written and replaced by a new fetch; the list in
+  `naves.toml` gets no second entry. Pixels the service leaves empty (transparent, or the blank colour of the entry)
+  are no data, never colours.
+- A **scene** source (`sentinel2-scenes`) is searched for the clearest scenes (less than 20 % cloud, least snow) of the
+  last two summers, by default May to September north of the equator and November to March south of it, or of the
+  dates you give with `--from` and `--to` (`YYYY-MM-DD`). Scenes are taken until the whole map is inside them, at most
+  six. Each scene (about 340 MB) is downloaded, cropped to the map and written as `imagery/<id>-<scene>.tif`; the download
+  is deleted. Scenes of several dates are normal: the merge evens out their colours. If the scenes do not cover the
+  map, you are told how much they do.
+
+Nothing is replaced until the new file is whole, and `naves.toml` is saved last: a fetch that fails leaves the project
+and its files as they were. Náves sends the user agent `naves/<version>` and nothing about you, makes one request at
+a time and only talks to `https://` addresses; a scene's files may only come from the hosts that the catalogue
+entry names. Proxies are taken from the usual environment variables.
+
 ## Choosing
 
 | Source | Covers | Pixel | Licence | Use it when |

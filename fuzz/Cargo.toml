@@ -16,6 +16,7 @@ libfuzzer-sys = "0.4"
 serde_json = "1"
 naves-formats = { path = "../crates/naves-formats" }
 naves-core = { path = "../crates/naves-core" }
+naves-export = { path = "../crates/naves-export" }
 
 [workspace]
 
@@ -57,6 +58,13 @@ bench = false
 [[bin]]
 name = "landcover_tile"
 path = "fuzz_targets/landcover_tile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stac_response"
+path = "fuzz_targets/stac_response.rs"
 test = false
 doc = false
 bench = false

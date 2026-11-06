@@ -15,12 +15,15 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
-use naves_core::imagery::catalog::{SourceKind, catalog, options_for, user_catalog_path};
+use naves_core::imagery::catalog::{
+    SourceKind, catalog, find_source, options_for, user_catalog_path,
+};
 use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::build;
+use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -88,6 +91,17 @@ pub struct RenderParams {
     px: u32,
     /// What to draw.
     overlay: OverlayArg,
+}
+
+/// Arguments of `imagery_fetch`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FetchParams {
+    /// The id of a source from `imagery_options`. Only catalogue ids are accepted, never an address.
+    id: String,
+    /// First day of the search for scenes, `YYYY-MM-DD` (needs `to`).
+    from: Option<String>,
+    /// Last day of the search for scenes, `YYYY-MM-DD` (needs `from`).
+    to: Option<String>,
 }
 
 /// A heightmap, the ground surfaces and the imagery once they were asked for, and the project they were made
@@ -366,6 +380,52 @@ impl NavesMcp {
                     "north": window.north,
                 },
                 "options": options,
+            }))
+        })
+        .await;
+        Ok(match result.and_then(|r| r) {
+            Ok(value) => json_text(&value),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Fetch imagery from a catalogue source (an id from imagery_options) for the area of the project: the files go into the imagery folder and are listed in naves.toml with their licence. Takes only catalogue ids, no addresses. Can take minutes and download hundreds of megabytes. Returns the files and warnings."
+    )]
+    async fn imagery_fetch(
+        &self,
+        Parameters(params): Parameters<FetchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let _writing = self.writes.lock().await;
+        let dir = self.dir.clone();
+        let result = blocking(move || -> Result<serde_json::Value, String> {
+            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
+            let source = find_source(&sources, &params.id).map_err(|e| e.to_string())?;
+            let warnings = Mutex::new(Vec::new());
+            let files = fetch(
+                &dir,
+                source,
+                &FetchRequest {
+                    from: params.from,
+                    to: params.to,
+                },
+                &RealHttp::new(),
+                &|line| {
+                    if let (true, Ok(mut warnings)) = (line.starts_with("warning"), warnings.lock())
+                    {
+                        warnings.push(line.to_string());
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "files": files.iter().map(|f| json!({
+                    "path": f.path,
+                    "attribution": f.attribution,
+                    "licence": f.licence,
+                    "non_commercial": f.non_commercial,
+                })).collect::<Vec<_>>(),
+                "warnings": warnings.into_inner().unwrap_or_default(),
             }))
         })
         .await;

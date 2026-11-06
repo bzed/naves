@@ -26,8 +26,15 @@ jobs:
           [ "$ws" = "$version" ] || { echo "Cargo.toml version ${ws} != tag ${version}"; exit 1; }
           [ "$deb" = "$version" ] || { echo "debian/changelog ${deb} != tag ${version}"; exit 1; }
 
+  ca-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: A release must not ship an old CA list
+        run: make ca-bundle
+
   build:
-    needs: consistency
+    needs: [consistency, ca-bundle]
     runs-on: ubuntu-latest
     container: debian:trixie
     permissions:

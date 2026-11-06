@@ -59,6 +59,18 @@ Convert it with `gdal_translate -co COMPRESS=DEFLATE in.tif out.tif`.
 The file is much sharper than the map and has no overviews to read from. Add them with
 `gdaladdo -r average in.tif 2 4 8 16 32`.
 
+**`https://...: ...` when fetching**
+A request failed. Náves tries three times with growing pauses and then reports the address and the reason. Check the
+network and proxy variables (`https_proxy`, `no_proxy`). Only `https://` addresses are used, and a certificate that
+the system or the bundled list does not trust is an error, not a warning.
+
+**`... the service answered something that is not an image`**
+The service sent an error page instead of a picture (the first words of it are in the message), for example because the
+request was too large or the area is outside the service. Try another source (`naves imagery list`).
+
+**`... this source has nothing for this area`**
+Every pixel of the answer is empty or blank: the map lies outside the area the service covers.
+
 **`overlaps no other image, its colours are not matched`**
 A file touches the map but does not overlap any other image, so there is nothing to match its colours to. It is used
 as it is. Add a file that covers both, or accept the step in colour.
