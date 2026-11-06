@@ -93,6 +93,20 @@ fn osm_read_seeds() {
 }
 
 #[test]
+fn osm_ways_seeds() {
+    let window = GeoWindow {
+        south: 47.596,
+        west: 12.978,
+        north: 47.606,
+        east: 12.992,
+    };
+    for (name, data) in seeds("osm_ways") {
+        let result = naves_core::osm::read_ways_from_bytes(&data, window);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+    }
+}
+
+#[test]
 fn imagery_catalog_seeds() {
     for (name, data) in seeds("imagery_catalog") {
         let text = String::from_utf8(data).unwrap();

@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod dem;
+pub mod features;
 pub mod heightmap;
 pub mod ident;
 pub mod imagery;

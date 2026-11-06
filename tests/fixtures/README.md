@@ -80,6 +80,24 @@ osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigsse
 its half (`osmium extract -b 12.9,47.548,13.1,47.7 -s simple` and `-b 12.9,47.4,13.1,47.552 -s simple`), so each alone
 cannot close the lake's ring, and the two together can.
 
+## `osm/schoenau.osm.pbf` and `osm/schoenau_cut.osm.pbf`: a village with roads
+
+`schoenau.osm.pbf` (138 KB) is every element that touches 12.978–12.992 °E, 47.596–47.606 °N in Schönau am Königssee:
+a secondary road, tertiary, residential and service streets, tracks (`tracktype` grade 1, 2 and 4), footpaths,
+steps, hiking paths (`sac_scale`), a via ferrata, 8 bridges and a tunnel. It tests the road classification and the
+reading of `highway` ways. `schoenau_cut.osm.pbf` (8 KB) is that file cut again with `-s simple`: its 22 highway ways
+keep all their node references but only the nodes inside the box, so most of them miss nodes, as in a regional
+extract that cuts a road. It is also the valid seed of the `osm_ways` fuzz target.
+
+> © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright
+
+Created with `osmium` from the Geofabrik extract `oberbayern-latest.osm.pbf` of 2026-11-06:
+
+```sh
+osmium extract -b 12.9780,47.5960,12.9920,47.6060 --strategy=complete_ways oberbayern-latest.osm.pbf -o schoenau.osm.pbf
+osmium extract -b 12.9830,47.5970,12.9870,47.6000 --strategy=simple schoenau.osm.pbf -o schoenau_cut.osm.pbf
+```
+
 ## `imagery/sentinel2_crop.tif`: Sentinel-2 crop
 
 A 67 × 67 px crop (10 m pixels, EPSG:32633, 8 bit RGB, DEFLATE) of the true colour image of the Sentinel-2 L2A scene
