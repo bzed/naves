@@ -9,7 +9,7 @@
     reason = "test helper code; failing loudly is the point"
 )]
 
-use naves_formats::paa::{ColourTags, PaaError, with_colour_tags};
+use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 
 /// A minimal DXT1 PAA as armake2 writes it: type, an `OFFS` tag, no palette, two mipmaps, terminator.
 fn paa() -> Vec<u8> {
@@ -142,5 +142,58 @@ fn broken_files_are_errors() {
     assert!(matches!(
         with_colour_tags(&bad, &tags(None)),
         Err(PaaError::BadOffset(_))
+    ));
+}
+
+/// A PAA with one LZO mipmap of `lzo` bytes, one raw mipmap of `raw` bytes and the end marker.
+fn paa_with_mips(lzo: &[u8], raw: &[u8]) -> Vec<u8> {
+    let mip0 = 2 + 12 + 64 + 2;
+    let mip1 = mip0 + 7 + lzo.len();
+    let mut offs = [0u32; 16];
+    offs[0] = u32::try_from(mip0).unwrap();
+    offs[1] = u32::try_from(mip1).unwrap();
+    let mut out = vec![0x01, 0xff];
+    out.extend_from_slice(b"GGATSFFO");
+    out.extend_from_slice(&64u32.to_le_bytes());
+    for o in offs {
+        out.extend_from_slice(&o.to_le_bytes());
+    }
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&[0, 0x82, 0, 2]); // 512 x 512, the high bit marks LZO
+    out.extend_from_slice(&u32::try_from(lzo.len()).unwrap().to_le_bytes()[..3]);
+    out.extend_from_slice(lzo);
+    out.extend_from_slice(&[0, 1, 0, 1]); // 256 x 256, raw
+    out.extend_from_slice(&u32::try_from(raw.len()).unwrap().to_le_bytes()[..3]);
+    out.extend_from_slice(raw);
+    out.extend_from_slice(&[0; 6]);
+    out
+}
+
+/// An LZO stream ends with the marker 11 00 00. armake2 appends a further 00, and the game then cannot
+/// read the mipmap: it draws the tile in its average colour.
+#[test]
+fn the_stray_byte_after_an_lzo_stream_goes() {
+    let raw = [0x11, 0, 0, 0, 7, 7, 0x11, 0, 0, 0];
+    let fixed = without_stray_lzo_bytes(&paa_with_mips(&[9, 9, 0x11, 0, 0, 0], &raw)).unwrap();
+    assert_eq!(
+        fixed,
+        paa_with_mips(&[9, 9, 0x11, 0, 0], &raw),
+        "offsets follow"
+    );
+}
+
+#[test]
+fn intact_files_stay_as_they_are() {
+    let good = paa_with_mips(&[9, 9, 0x11, 0, 0], &[0x11, 0, 0, 0]);
+    assert_eq!(without_stray_lzo_bytes(&good).unwrap(), good);
+    assert_eq!(without_stray_lzo_bytes(&paa()).unwrap(), paa());
+}
+
+#[test]
+fn a_mipmap_past_the_end_is_an_error() {
+    let good = paa_with_mips(&[9, 9, 0x11, 0, 0, 0], &[1, 2]);
+    assert!(matches!(
+        without_stray_lzo_bytes(&good[..90]),
+        Err(PaaError::Truncated)
     ));
 }

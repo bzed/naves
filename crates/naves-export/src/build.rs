@@ -24,7 +24,7 @@ use std::time::Duration;
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
 use naves_core::project::{Project, ProjectError};
-use naves_formats::paa::{ColourTags, PaaError, with_colour_tags};
+use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
 
@@ -95,7 +95,7 @@ pub enum BuildError {
         /// The expected public key.
         public: PathBuf,
     },
-    /// A texture `img2paa` wrote cannot be completed with the colour tags the game needs.
+    /// A texture `img2paa` wrote cannot be completed for the game.
     #[error("{}: {source}", path.display())]
     Paa {
         /// The PAA file.
@@ -328,10 +328,12 @@ fn stage_world(
                 flag: (kind == "dxt5").then_some(1),
             };
             let paa = std::fs::read(&target).map_err(io_err(&target))?;
-            let tagged = with_colour_tags(&paa, &tags).map_err(|source| BuildError::Paa {
-                path: target.clone(),
-                source,
-            })?;
+            let tagged = without_stray_lzo_bytes(&paa)
+                .and_then(|fixed| with_colour_tags(&fixed, &tags))
+                .map_err(|source| BuildError::Paa {
+                    path: target.clone(),
+                    source,
+                })?;
             write_file(&target, &tagged)
         })
         .collect::<Result<Vec<_>, _>>()?;

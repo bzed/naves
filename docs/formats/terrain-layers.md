@@ -94,8 +94,16 @@ regions differ.
 
 Livonia's satellite images carry the PAA tags `AVGC` (average colour, stored blue, green, red, alpha; `25 44 3f ff`
 on `S_010_010_lco.paa`) and `MAXC` (`ff ff ff ff`) before `OFFS`; its masks also carry `FLAG` = 1. armake2's
-`img2paa` writes only `OFFS`. Without the colour tags the game draws the terrain from far away in dark red; Náves
-adds them after the conversion (`naves_formats::paa`), with the average colour of the source image.
+`img2paa` writes only `OFFS`. Náves adds them after the conversion (`naves_formats::paa`), with the average colour of
+the source image.
+
+The game draws a tile in its `AVGC` colour until it can read the image, and in dark red without the tag. So when
+tiles show flat colours with straight edges along the tile grid, their images do not load. A diagnostic that finds
+this quickly: label every satellite tile and set a marker colour in `AVGC`.
+
+armake2 appends one byte to every LZO-compressed mipmap (512 and 256 px), after the stream's end marker `11 00 00`.
+The game cannot read such a mipmap, and neither can armake2's own `paa2img`; the raw smaller mipmaps still work, so
+only far tiles show their image. Náves removes the byte after the conversion.
 
 ## Tile material (`.rvmat`)
 

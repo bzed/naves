@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use naves_formats::paa::{ColourTags, with_colour_tags};
+use naves_formats::paa::{ColourTags, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 
 fn seeds(target: &str) -> Vec<Vec<u8>> {
@@ -49,4 +49,8 @@ fn paa_tags_seeds() {
         .filter(|data| with_colour_tags(data, &tags).is_ok())
         .count();
     assert_eq!(ok, 1, "only the dxt1 seed is a valid file");
+    for data in seeds("paa_tags") {
+        // ok or an error, never a panic
+        drop(without_stray_lzo_bytes(&data));
+    }
 }

@@ -166,11 +166,16 @@ Two separate faults, each seen in the client and fixed:
 
 1. **Red far terrain.** The satellite PAAs decode correctly (checked with a separate LZO and DXT1 reader; the colours
    match the source PNG), but armake2's `img2paa` writes no `AVGC`/`MAXC` tags. Adding the tags turned the far terrain
-   green. Which of the two tags matters was not tested. armake2's own `paa2img` fails on `img2paa` output with an
-   LZO error although the stream decodes; that is a reader problem and did not matter here.
+   green, but only because the game then drew each tile in its average colour: see item 3.
 2. **Wrong near texture.** Grass was red and rock green in the mask, which select slots 1 and 2. Bohemia's sample
    shows the mapping (table in `terrain-layers.md`). With grass black and rock red the ground has its grass texture
    and clutter.
+3. **Straight colour edges along the tile grid.** A software render of the same view from the heightmap and the
+   satellite tiles put the edges exactly on the 400 m tile grid. With a marker colour in `AVGC` nearly the whole
+   terrain took that colour, so the images were not loading. Cause: armake2's `img2paa` appends a byte after the end
+   of every LZO stream (`compressed.push(0)` in `src/paa.rs`; `lzo1x::compress` already writes the end marker). With
+   that byte removed, every tile shows its own labelled image in the right place. armake2's `paa2img` rejects the
+   same files, and it was wrong to dismiss that earlier as a reader problem.
 
 ## Land-cover sources for the example area (2026-11-06)
 

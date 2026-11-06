@@ -4,7 +4,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use naves_formats::paa::{ColourTags, with_colour_tags};
+use naves_formats::paa::{ColourTags, with_colour_tags, without_stray_lzo_bytes};
 
 fuzz_target!(|data: &[u8]| {
     let tags = ColourTags {
@@ -12,4 +12,5 @@ fuzz_target!(|data: &[u8]| {
         flag: Some(1),
     };
     let _ = with_colour_tags(data, &tags);
+    let _ = without_stray_lzo_bytes(data);
 });

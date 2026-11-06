@@ -87,7 +87,7 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
   `<group>` in `generator_posbubbles`; the mission's `areaflags.map` belongs to the map size it was made for.
   The grid geometry must be Livonia's: 8 terrain cells per land cell and 8 land cells per surface tile (the client
   overflows a 128-height buffer and crashes otherwise; `docs/formats/terrain-layers.md`). Terrain PAAs need the
-  `AVGC` and `MAXC` tags (dark red terrain otherwise), and the mask colours black, red, green, blue select the layer
+  `AVGC` and `MAXC` tags (dark red terrain otherwise) and readable LZO mipmaps (flat tile colours otherwise), and the mask colours black, red, green, blue select the layer
   slots 0 to 3. The config's `latitude` is positive to the south (Livonia -54).
 - **Comparable screenshots:** patch the test server's copy of the mission's `init.c`, not the generated one: at the end
   of `main()` a fixed `GetGame().GetWorld().SetDate(...)` at noon and clear weather (`GetWeather().MissionWeather(true)`,

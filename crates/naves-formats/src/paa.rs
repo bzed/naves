@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! PAA textures: adding the colour tags that the game needs on terrain images.
+//! PAA textures: completing what armake2's `img2paa` writes so that the game can use terrain images.
 //!
 //! A PAA starts with a 2-byte type, then tags (`GGAT`, a reversed 4-byte name, a `u32` length and the
 //! payload), then the palette and the mipmaps. The `OFFS` tag holds sixteen absolute file offsets of the
 //! mipmaps (0 = unused). armake2's `img2paa` writes only `OFFS`; Livonia's terrain images also carry `AVGC`
-//! (average colour, stored blue, green, red, alpha) and `MAXC` (maximum colour), the masks also `FLAG`. Without
-//! them the game shows the satellite image as a dark red ground.
+//! (average colour, stored blue, green, red, alpha) and `MAXC` (maximum colour), the masks also `FLAG`. The game
+//! fills a tile with the average colour until it can read the image, and with dark red without the tag.
 
 use thiserror::Error;
 
@@ -49,6 +49,95 @@ fn tag(out: &mut Vec<u8>, name: [u8; 4], payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
+/// One tag of a PAA.
+struct Tag<'a> {
+    name: [u8; 4],
+    payload: &'a [u8],
+    /// File position of the payload.
+    at: usize,
+}
+
+/// The tags of a PAA and the position after them.
+fn read_tags(paa: &[u8]) -> Result<(Vec<Tag<'_>>, usize), PaaError> {
+    let mut pos = 2usize;
+    let mut tags = Vec::new();
+    while paa.get(pos..pos.saturating_add(4)) == Some(MAGIC.as_slice()) {
+        let name = array_at(paa, pos + 4)?;
+        let len = usize::try_from(u32::from_le_bytes(array_at(paa, pos + 8)?))
+            .map_err(|_| PaaError::Truncated)?;
+        let at = pos.checked_add(12).ok_or(PaaError::Truncated)?;
+        let end = at.checked_add(len).ok_or(PaaError::Truncated)?;
+        let payload = paa.get(at..end).ok_or(PaaError::Truncated)?;
+        tags.push(Tag { name, payload, at });
+        pos = end;
+    }
+    Ok((tags, pos))
+}
+
+fn array_at<const N: usize>(paa: &[u8], at: usize) -> Result<[u8; N], PaaError> {
+    let end = at.checked_add(N).ok_or(PaaError::Truncated)?;
+    paa.get(at..end)
+        .and_then(|b| b.try_into().ok())
+        .ok_or(PaaError::Truncated)
+}
+
+/// Returns `paa` without the byte that armake2's `img2paa` appends to every LZO-compressed mipmap.
+///
+/// An LZO stream ends with the marker `11 00 00`, so a mipmap that ends with `11 00 00 00` has one byte too many.
+/// The game cannot read such a mipmap and draws the tile in its average colour. Other files come back unchanged.
+///
+/// # Errors
+///
+/// [`PaaError`] for a file that ends inside its header or a mipmap, or that has no `OFFS` tag.
+pub fn without_stray_lzo_bytes(paa: &[u8]) -> Result<Vec<u8>, PaaError> {
+    let (tags, header_end) = read_tags(paa)?;
+    let offs_at = tags
+        .iter()
+        .find(|t| t.name == OFFS && t.payload.len() == OFFSETS * 4)
+        .map(|t| t.at)
+        .ok_or(PaaError::NoOffsets)?;
+    let palette: [u8; 2] = array_at(paa, header_end)?;
+    let palette = usize::from(u16::from_le_bytes(palette)) * 3;
+    let mut pos = header_end + 2 + palette;
+    let mut out = paa.get(..pos).ok_or(PaaError::Truncated)?.to_vec();
+    let mut starts = Vec::new();
+    let mut stripped = false;
+    while let Ok(head) = array_at::<7>(paa, pos) {
+        let [w0, w1, h0, h1, s0, s1, s2] = head;
+        if [w0, w1] == [0, 0] {
+            break;
+        }
+        let size = usize::from(s0) | usize::from(s1) << 8 | usize::from(s2) << 16;
+        let start = pos + 7;
+        let end = start.checked_add(size).ok_or(PaaError::Truncated)?;
+        let mut body = paa.get(start..end).ok_or(PaaError::Truncated)?;
+        if w1 & 0x80 != 0 && body.ends_with(&[0x11, 0, 0, 0]) {
+            body = body.get(..size - 1).ok_or(PaaError::Truncated)?;
+            stripped = true;
+        }
+        starts.push(u32::try_from(out.len()).map_err(|_| PaaError::Truncated)?);
+        out.extend_from_slice(&[w0, w1, h0, h1]);
+        let new_size = u32::try_from(body.len()).map_err(|_| PaaError::Truncated)?;
+        out.extend_from_slice(new_size.to_le_bytes().get(..3).ok_or(PaaError::Truncated)?);
+        out.extend_from_slice(body);
+        pos = end;
+    }
+    if !stripped {
+        return Ok(paa.to_vec());
+    }
+    out.extend_from_slice(paa.get(pos..).ok_or(PaaError::Truncated)?);
+    let table = out
+        .get_mut(offs_at..offs_at + OFFSETS * 4)
+        .ok_or(PaaError::NoOffsets)?;
+    for (slot, start) in table
+        .chunks_exact_mut(4)
+        .zip(starts.into_iter().chain(std::iter::repeat(0)))
+    {
+        slot.copy_from_slice(&start.to_le_bytes());
+    }
+    Ok(out)
+}
+
 /// Returns `paa` with `AVGC`, `MAXC` (white) and, if asked, `FLAG` set in front of its other tags, and the
 /// mipmap offsets moved by the size change. Tags of these names that are already there are replaced.
 ///
@@ -57,28 +146,12 @@ fn tag(out: &mut Vec<u8>, name: [u8; 4], payload: &[u8]) {
 /// [`PaaError`] for a file that ends inside its header, has no `OFFS` tag or has an offset outside its data.
 pub fn with_colour_tags(paa: &[u8], tags: &ColourTags) -> Result<Vec<u8>, PaaError> {
     let kind = paa.get(..2).ok_or(PaaError::Truncated)?;
-    let mut pos = 2usize;
-    let mut kept: Vec<([u8; 4], &[u8])> = Vec::new();
-    while paa.get(pos..pos + 4) == Some(MAGIC.as_slice()) {
-        let head = paa.get(pos + 4..pos + 12).ok_or(PaaError::Truncated)?;
-        let name: [u8; 4] = head
-            .get(..4)
-            .and_then(|n| n.try_into().ok())
-            .ok_or(PaaError::Truncated)?;
-        let len: [u8; 4] = head
-            .get(4..)
-            .and_then(|n| n.try_into().ok())
-            .ok_or(PaaError::Truncated)?;
-        let len = usize::try_from(u32::from_le_bytes(len)).map_err(|_| PaaError::Truncated)?;
-        let start = pos.checked_add(12).ok_or(PaaError::Truncated)?;
-        let end = start.checked_add(len).ok_or(PaaError::Truncated)?;
-        let payload = paa.get(start..end).ok_or(PaaError::Truncated)?;
-        if ![AVGC, MAXC, FLAG].contains(&name) {
-            kept.push((name, payload));
-        }
-        pos = end;
-    }
-    let header_end = pos;
+    let (all, header_end) = read_tags(paa)?;
+    let kept: Vec<([u8; 4], &[u8])> = all
+        .into_iter()
+        .filter(|t| ![AVGC, MAXC, FLAG].contains(&t.name))
+        .map(|t| (t.name, t.payload))
+        .collect();
     let offsets = kept
         .iter()
         .find(|(n, p)| *n == OFFS && p.len() == OFFSETS * 4)

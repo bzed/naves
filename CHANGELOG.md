@@ -38,6 +38,8 @@ All notable changes to this project are documented here. The format follows
   their navigation mesh regenerated.
 - The terrain no longer looks dark red in the game: the satellite and mask textures get the `AVGC`/`MAXC` (and,
   on masks, `FLAG`) tags that armake2's `img2paa` leaves out.
+- The terrain shows its satellite images instead of a flat colour per tile with straight edges: the build removes
+  the byte armake2's `img2paa` appends to LZO-compressed mipmaps, which the game cannot read.
 - The sun is in the right part of the sky: the world config writes the latitude with the game's sign (positive to
   the south).
 - Surface masks select the right layers: grass is black and rock red at full alpha. Before, grass showed the rock

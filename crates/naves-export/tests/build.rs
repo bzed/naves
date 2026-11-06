@@ -297,4 +297,7 @@ fn terrain_images_get_livonias_colour_tags() {
     let mask = std::fs::read(layers.join("m_000_000_lca.paa")).unwrap();
     let names: Vec<String> = paa_tags(&mask).into_iter().map(|(n, _)| n).collect();
     assert_eq!(names, ["AVGC", "MAXC", "FLAG", "OFFS"], "mask");
+    // the stray byte img2paa writes after an LZO stream is gone: 4 x 4 LZO mipmap of 3 bytes, then the end marker
+    let wanted: &[u8] = &[4, 0x80, 4, 0, 3, 0, 0, 0x11, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert!(sat.windows(wanted.len()).any(|w| w == wanted));
 }
