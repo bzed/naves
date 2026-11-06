@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use naves_core::dem::DemTile;
+use naves_core::landcover::{GeoWindow, LandCover};
 use naves_core::project::Project;
 
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
@@ -61,5 +62,33 @@ fn mcp_project_set_seeds() {
             name == "valid" || name == "list",
             "seed {name}: {result:?}"
         );
+    }
+}
+
+#[test]
+fn osm_read_seeds() {
+    let window = GeoWindow {
+        south: 47.54,
+        west: 12.96,
+        north: 47.56,
+        east: 12.99,
+    };
+    for (name, data) in seeds("osm_read") {
+        let result = naves_core::osm::read_land_from_bytes(&data, window);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+    }
+}
+
+#[test]
+fn landcover_tile_seeds() {
+    let window = GeoWindow {
+        south: 47.54,
+        west: 12.96,
+        north: 47.56,
+        east: 12.99,
+    };
+    for (name, data) in seeds("landcover_tile") {
+        let result = LandCover::from_bytes(data, window);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}");
     }
 }

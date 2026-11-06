@@ -16,15 +16,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
-use naves_core::heightmap::Heightmap;
 use naves_core::project::{Area, Grid, LAND_RATIO, Project, Scale};
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
 use naves_export::tools::Tools;
 
 use map_view::MapView;
 use settings::SettingsForm;
-use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
+use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, MapData};
 
 const GREEN: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
 const BROWN: Color32 = Color32::from_rgb(0x8c, 0x6a, 0x45);
@@ -40,6 +40,7 @@ type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
 
 enum Line {
     Info(String),
+    Warning(String),
     Error(String),
     Result(String),
 }
@@ -155,26 +156,29 @@ impl NavesApp {
                 self.job = Some(HeightmapJob::start(self.form.dir()));
             } else {
                 self.heightmap = match result {
-                    Ok(hm) => HeightmapState::Ready(Arc::new(hm)),
+                    Ok(data) => HeightmapState::Ready(Arc::new(data)),
                     Err(error) => HeightmapState::Failed(error),
                 };
             }
         }
         if let Some(worker) = self.worker.as_mut() {
             for msg in worker.poll() {
-                self.log.push(match msg {
-                    BuildMsg::Progress(line) => Line::Info(line),
-                    BuildMsg::Failed(error) => Line::Error(error),
+                match msg {
+                    BuildMsg::Progress(line) => self.log.push(Line::Info(line)),
+                    BuildMsg::Failed(error) => self.log.push(Line::Error(error)),
                     BuildMsg::Done(BuildOutput {
                         mod_dir,
                         mission_dir,
-                        ..
-                    }) => Line::Result(format!(
-                        "Mod: {}\nMission: {}",
-                        mod_dir.display(),
-                        mission_dir.display()
-                    )),
-                });
+                        warnings,
+                    }) => {
+                        self.log.extend(warnings.into_iter().map(Line::Warning));
+                        self.log.push(Line::Result(format!(
+                            "Mod: {}\nMission: {}",
+                            mod_dir.display(),
+                            mission_dir.display()
+                        )));
+                    }
+                }
             }
             if worker.is_finished() {
                 self.worker = None;
@@ -283,6 +287,17 @@ impl NavesApp {
         for file in &p.sources.dem {
             ui.label(file.display().to_string());
         }
+        ui.add_space(8.0);
+        source_list(ui, "Land cover files", &p.sources.land_cover);
+        ui.add_space(8.0);
+        source_list(ui, "OpenStreetMap files", &p.sources.osm);
+        if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
+            ui.add_space(4.0);
+            ui.label(
+                "Without them the ground follows slope and altitude. List files in sources.land_cover and \
+                 sources.osm in naves.toml, then reopen the project.",
+            );
+        }
         if let Some(error) = &self.form.error {
             ui.add_space(8.0);
             ui.colored_label(ERROR, format!("Not saved: {error}"));
@@ -314,6 +329,10 @@ impl NavesApp {
                 for line in &self.log {
                     match line {
                         Line::Info(text) => ui.label(RichText::new(text).monospace()),
+                        Line::Warning(text) => ui.colored_label(
+                            BROWN,
+                            RichText::new(format!("Warning: {text}")).monospace(),
+                        ),
                         Line::Error(text) => ui.colored_label(
                             ERROR,
                             RichText::new(format!("Failed: {text}")).monospace(),
@@ -331,9 +350,14 @@ impl NavesApp {
             ui.selectable_value(&mut self.overlay, Overlay::Hillshade, "Hillshade");
             ui.selectable_value(&mut self.overlay, Overlay::Slope, "Slope");
             ui.selectable_value(&mut self.overlay, Overlay::Height, "Height");
+            ui.selectable_value(&mut self.overlay, Overlay::Surface, "Surface");
+            if self.overlay == Overlay::Surface {
+                ui.add_space(12.0);
+                surface_legend(ui);
+            }
         });
-        let heightmap = match &self.heightmap {
-            HeightmapState::Ready(hm) => Arc::clone(hm),
+        let data = match &self.heightmap {
+            HeightmapState::Ready(data) => Arc::clone(data),
             HeightmapState::NoDem => {
                 ui.centered_and_justified(|ui| {
                     ui.label("Add elevation files to see the map.");
@@ -376,10 +400,10 @@ impl NavesApp {
             }
         }
         let view = *view;
-        self.draw_map(ui, &heightmap, view, rect);
+        self.draw_map(ui, &data, view, rect);
     }
 
-    fn draw_map(&mut self, ui: &mut egui::Ui, hm: &Heightmap, view: MapView, rect: egui::Rect) {
+    fn draw_map(&mut self, ui: &mut egui::Ui, data: &MapData, view: MapView, rect: egui::Rect) {
         let (x0, y0, x1, y1) = view.bounds(f64::from(rect.width()), f64::from(rect.height()));
         let request = RenderRequest {
             x0,
@@ -390,7 +414,7 @@ impl NavesApp {
             overlay: self.overlay,
         };
         if self.texture.as_ref().is_none_or(|(r, _)| *r != request)
-            && let Ok(image) = render_topdown(hm, &request)
+            && let Ok(image) = render_topdown(&data.heightmap, &request, Some(&data.surfaces))
         {
             let size = [image.width() as usize, image.height() as usize];
             let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
@@ -408,6 +432,28 @@ impl NavesApp {
     }
 }
 
+/// A heading and the files of one source, or "None." when there are none.
+fn source_list(ui: &mut egui::Ui, title: &str, files: &[PathBuf]) {
+    ui.label(RichText::new(title).strong());
+    if files.is_empty() {
+        ui.label("None.");
+    }
+    for file in files {
+        ui.label(file.display().to_string());
+    }
+}
+
+/// The ground classes with the colour they have in the surface overlay.
+fn surface_legend(ui: &mut egui::Ui) {
+    for class in SurfaceClass::ALL {
+        let [r, g, b] = class.rgb();
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
+        ui.label(class.name());
+    }
+}
+
 /// One labelled row of the settings grid; the label is also the widget's accessible name.
 /// Returns whether the widget changed the value.
 fn field(
@@ -421,8 +467,8 @@ fn field(
     response.changed()
 }
 
-/// The project values the heightmap depends on.
-type HeightmapInputs = (Area, Scale, Grid, Vec<PathBuf>);
+/// The project values the map depends on: the area, the scales, the grid and the files of every source.
+type HeightmapInputs = (Area, Scale, Grid, Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>);
 
 fn heightmap_inputs(project: &Project) -> HeightmapInputs {
     (
@@ -430,6 +476,8 @@ fn heightmap_inputs(project: &Project) -> HeightmapInputs {
         project.scale.clone(),
         project.grid.clone(),
         project.sources.dem.clone(),
+        project.sources.land_cover.clone(),
+        project.sources.osm.clone(),
     )
 }
 

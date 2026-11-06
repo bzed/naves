@@ -29,6 +29,11 @@ struct Fixture {
 
 /// A project with the Königssee DEM and a running `naves mcp` on it, using fake external tools.
 async fn start() -> Fixture {
+    start_with(false).await
+}
+
+/// Like [`start`], with the land cover and OSM crops of the Königssee as sources when `sources` is set.
+async fn start_with(sources: bool) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let fakes = FakeEnv::new(&root.path().join("fake")).unwrap();
     let proj = root.path().join("proj");
@@ -40,6 +45,18 @@ async fn start() -> Fixture {
     p.grid.terrain_size = 256;
     p.grid.land_size = 32;
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
+    if sources {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+        for (dir, name) in [
+            ("landcover", "koenigssee.tif"),
+            ("osm", "koenigssee.osm.pbf"),
+        ] {
+            std::fs::create_dir_all(proj.join(dir)).unwrap();
+            std::fs::copy(fixtures.join(dir).join(name), proj.join(dir).join(name)).unwrap();
+        }
+        p.sources.land_cover = vec!["landcover/koenigssee.tif".into()];
+        p.sources.osm = vec!["osm/koenigssee.osm.pbf".into()];
+    }
     p.save(&proj).unwrap();
 
     let home = root.path().to_path_buf();
@@ -192,6 +209,48 @@ async fn render_returns_png() {
         .unwrap();
     let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap();
     assert_eq!(decoded.width(), 300);
+}
+
+/// The colours of a rendered PNG and how often each occurs.
+fn colours(result: &CallToolResult) -> std::collections::BTreeMap<[u8; 3], usize> {
+    let image = result.content.iter().find_map(|c| c.as_image()).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&image.data)
+        .unwrap();
+    let mut seen = std::collections::BTreeMap::new();
+    for pixel in image::load_from_memory(&bytes).unwrap().to_rgb8().pixels() {
+        *seen.entry(pixel.0).or_insert(0) += 1;
+    }
+    seen
+}
+
+#[tokio::test]
+async fn render_topdown_shows_surfaces() {
+    let f = start_with(true).await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 750, "y1": 750, "px": 300, "overlay": "surface"});
+    let result = call(&f, "render_topdown", args).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let seen = colours(&result);
+    assert!(
+        seen.contains_key(&[0x7a, 0x68, 0x4e]),
+        "the lake is soil: {seen:?}"
+    );
+    assert!(
+        seen.contains_key(&[0x2e, 0x4d, 0x2a]),
+        "trees are forest: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn surfaces_without_sources_follow_the_rules() {
+    let f = start().await;
+    let args = json!({"x0": 0, "y0": 0, "x1": 750, "y1": 750, "px": 100, "overlay": "surface"});
+    let seen = colours(&call(&f, "render_topdown", args).await);
+    assert!(
+        seen.keys()
+            .all(|c| *c == [0x4a, 0x7a, 0x3a] || *c == [0x8a, 0x87, 0x80]),
+        "{seen:?}"
+    );
 }
 
 #[tokio::test]

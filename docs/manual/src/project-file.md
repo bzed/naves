@@ -83,9 +83,22 @@ material cell; a larger `terrain_size` therefore means a sharper surface and a l
 | Field | Default | Valid values |
 |---|---|---|
 | `dem` | empty | list of paths relative to the project folder |
+| `land_cover` | empty | list of paths relative to the project folder |
+| `osm` | empty | list of paths relative to the project folder |
 
-`dem` lists the elevation files. Absolute paths and paths with `..` are rejected, so a project folder
-can be moved or shared.
+`dem` lists the elevation files, `land_cover` the [ESA WorldCover](https://esa-worldcover.org/) GeoTIFF
+tiles and `osm` the OpenStreetMap extracts (`.osm.pbf`) that decide the ground surfaces. Both are optional;
+Náves does not download anything. Fetch for example:
+
+```sh
+# land cover, a 3° × 3° tile (here N45 E012)
+curl -fO https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N45E012_Map.tif
+# OpenStreetMap, a regional extract
+curl -fLO https://download.geofabrik.de/europe/germany/bayern/oberbayern-latest.osm.pbf
+```
+
+Absolute paths and paths with `..` are rejected in all three lists, so a project folder can be moved or
+shared.
 
 Náves reads single-band Float32 GeoTIFF files in EPSG:4326 (latitude and longitude on WGS84), tiled or in
 strips, uncompressed or DEFLATE-compressed, such as the Copernicus GLO-30 tiles. Anything else is

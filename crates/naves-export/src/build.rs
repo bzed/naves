@@ -24,13 +24,14 @@ use std::time::Duration;
 use naves_core::dem::{Dem, DemError};
 use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
 use naves_core::project::{Project, ProjectError};
+use naves_core::surface::{LoadedSources, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
 use crate::config::{prefix, world_config};
-use crate::layers::{LayerSet, build_layers, grass_limit_m};
+use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
 
@@ -65,6 +66,9 @@ pub enum BuildError {
     /// The DEM does not cover the area.
     #[error(transparent)]
     Heightmap(#[from] HeightmapError),
+    /// The ground cannot be decided.
+    #[error(transparent)]
+    Surface(#[from] SurfaceError),
     /// An external tool is missing or failed.
     #[error(transparent)]
     Tool(#[from] ToolError),
@@ -433,6 +437,76 @@ fn pack_mod(
     Ok(())
 }
 
+/// Land cover shares of the map above this get a warning.
+const UNCOVERED_WARN_SHARE: f64 = 0.01;
+
+/// The text of `ATTRIBUTION.txt`: only the sources this build used.
+fn attribution(land_cover: bool, osm: bool) -> String {
+    let mut text = String::from(
+        "This map was made with Náves from the following data. Keep this attribution with the map.\n\n\
+         Elevation: Copernicus DEM GLO-30\n\
+         (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the\n\
+         European Union and ESA; all rights reserved\n",
+    );
+    if land_cover {
+        text.push_str(
+            "\nLand cover: ESA WorldCover, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)\n\
+             © ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA\n\
+             WorldCover consortium\n",
+        );
+    }
+    if osm {
+        text.push_str(
+            "\nMap data: © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright\n\
+             This map contains OSM-derived data. The Open Database Licence requires that the derived database is\n\
+             shared alike.\n",
+        );
+    }
+    text
+}
+
+/// The decided ground and what the build has to say about it.
+struct Ground {
+    grid: SurfaceGrid,
+    warnings: Vec<String>,
+    used_land_cover: bool,
+    used_osm: bool,
+}
+
+/// Reads the land cover and OSM files of the project and decides the ground of every map cell.
+fn decide_ground(
+    project: &Project,
+    project_dir: &Path,
+    heightmap: &Heightmap,
+    progress: &dyn Fn(&str),
+) -> Result<Ground, BuildError> {
+    let sources = LoadedSources::open(project, project_dir, progress)?;
+    progress("Deciding the ground");
+    let decided = build_surfaces(project, heightmap, &sources.as_sources())?;
+    let (land_cover, osm) = (sources.land_cover, sources.osm);
+    let mut warnings = Vec::new();
+    if land_cover.is_some() && decided.uncovered_share > UNCOVERED_WARN_SHARE {
+        warnings.push(format!(
+            "{:.0} % of the map is not covered by the land cover files; the slope and altitude rules decide the \
+             ground there",
+            decided.uncovered_share * 100.0
+        ));
+    }
+    if let Some(osm) = osm.as_ref().filter(|o| o.skipped_rings > 0) {
+        warnings.push(format!(
+            "{} OpenStreetMap ring(s) were skipped because the extract cuts them or lacks nodes; the land cover \
+             or the rules decide there",
+            osm.skipped_rings
+        ));
+    }
+    Ok(Ground {
+        grid: decided.grid,
+        warnings,
+        used_land_cover: land_cover.is_some(),
+        used_osm: osm.is_some(),
+    })
+}
+
 /// Builds the mod and the mission of the project in `project_dir`.
 ///
 /// `progress` is called with a short line before every step.
@@ -464,13 +538,16 @@ pub fn build(
     progress("Sampling the heightmap");
     let heightmap = build_heightmap(&project, &dem)?;
 
+    // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
+    let ground = decide_ground(&project, project_dir, &heightmap, progress)?;
+
     progress("Painting the surface layers");
     let layout = Layout::new(project_dir, &project.world);
     let layers = build_layers(
         &heightmap,
         project.grid.land_size,
         &layout.prefix,
-        grass_limit_m(project.scale.height),
+        &ground.grid,
     );
     layout.clean()?;
 
@@ -499,6 +576,10 @@ pub fn build(
 
     progress("Packing and signing the mod");
     pack_mod(&layout, tools, &oprw, &new_mission)?;
+    write_file(
+        &layout.new_mod.join("ATTRIBUTION.txt"),
+        attribution(ground.used_land_cover, ground.used_osm).as_bytes(),
+    )?;
     layout.install()?;
     let mission_dir = layout
         .missions
@@ -506,6 +587,6 @@ pub fn build(
     Ok(BuildOutput {
         mod_dir: layout.mod_dir,
         mission_dir,
-        warnings: Vec::new(),
+        warnings: ground.warnings,
     })
 }

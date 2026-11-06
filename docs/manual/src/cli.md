@@ -41,9 +41,12 @@ Builds the mod and the server mission of the project in `<DIR>`:
 
 1. reads the project and the DEM files;
 2. samples the scaled heightmap (an area that the DEM files do not cover is an error that names the position);
-3. paints the satellite image, the surface mask and the tile materials;
-4. converts the images, runs `binarize.exe` on the world, packs and signs the PBO;
-5. assembles the server mission from the installed `dayzOffline.enoch`.
+3. reads the land cover and OpenStreetMap files of the project, if any (a missing or unreadable file is an error
+   that names it; a map that they only partly cover is a warning), and decides the ground of every map cell;
+4. paints the satellite image, the surface mask and the tile materials;
+5. converts the images, runs `binarize.exe` on the world, packs and signs the PBO;
+6. assembles the server mission from the installed `dayzOffline.enoch`, and writes `ATTRIBUTION.txt` into the mod
+   folder.
 
 Progress goes to standard error; the last two lines on standard output are the folders to use:
 

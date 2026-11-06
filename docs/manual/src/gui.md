@@ -25,7 +25,8 @@ saved; a red line under the form says which field and why, and the file stays as
 recomputes the map. The line below the form shows the size of the map in metres and the distance between
 heightmap vertices.
 
-The elevation files are listed under the form. They are edited in `naves.toml` for now.
+The elevation, land cover and OpenStreetMap files are listed under the form. They are edited in `naves.toml` for now;
+see [the project file](project-file.md#sources). Changing a list reloads the map.
 
 ## Map (centre)
 
@@ -34,6 +35,10 @@ A top-down view of the heightmap, north up.
 - **Drag** to move the map, **scroll** to zoom in and out around the pointer.
 - **Hillshade** shows relief with the sun in the north-west, **Slope** colours the ground from green (flat) to red
   (45° and steeper; the surface painter makes ground above 35° rock), **Height** shades by height.
+- **Surface** shows the ground classes Náves will paint (grass, rock, forest and soil), in the colours of the
+  satellite image, with a legend next to the buttons. It is decided from the land cover and OpenStreetMap files
+  of the project, and from slope and altitude where they say nothing, exactly as the build does. The map takes
+  a little longer to appear when the project lists such files.
 
 ![The slope overlay](images/map-slope.png)
 

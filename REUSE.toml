@@ -41,7 +41,19 @@ SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
 # Example projects: files that `naves new` and `naves build` generate (build output, keys and downloaded DEM
 # tiles are git-ignored and only present after a build).
 [[annotations]]
-path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**", "examples/*/secrets/**", "examples/*/dem/**"]
+path = ["examples/*/.gitignore", "examples/*/naves.toml", "examples/*/build/**", "examples/*/secrets/**", "examples/*/dem/**", "examples/*/landcover/**", "examples/*/osm/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = "tests/fixtures/landcover/*.tif"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+path = "tests/fixtures/osm/*.osm.pbf"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© OpenStreetMap contributors"
+SPDX-License-Identifier = "ODbL-1.0"

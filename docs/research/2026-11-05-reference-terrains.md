@@ -192,3 +192,37 @@ use them yet.
 
 The two disagree on rock (5.6 % against up to about 24 % of the box), so a comparison on the map should come before
 relying on either one for rock.
+
+## What the two sources say together on the example map (2026-11-06)
+
+`naves build` on the Berchtesgaden example with ESA WorldCover (tile `N45E012`) and the Geofabrik extracts of
+Oberbayern and Austria (the south and east of the map lie in Austria). Share of the 6.4 km map per ground class,
+from the surface overlay at 1600 px:
+
+| Sources | Grass | Rock | Forest | Soil |
+|---|---|---|---|---|
+| WorldCover only | 26.8 % | 6.3 % | 61.3 % | 5.6 % |
+| OSM only (the rules decide the rest) | 59.8 % | 32.3 % | – | 7.9 % |
+| Both (OSM first) | 16.8 % | 16.8 % | 57.9 % | 8.5 % |
+
+The Königssee and the Berchtesgaden basin come out as soil with sharp edges, the lower slopes as forest, and the
+massifs as rock.
+
+**Rock from OSM (`natural=bare_rock`, `scree`, `shingle`, `glacier`) stays.** On the Steinernes Meer and the
+Watzmann east face, WorldCover shows a ragged mix of grass and rock, because sparse alpine vegetation on karst counts
+as grassland. OSM draws the plateau and the east wall as rock down to the lake shore, which is closer to the real
+ground. Its edges are coarse: straight polygon sides cut across forest patches. If that looks wrong on a map, drop
+`bare_rock` from the table in `crates/naves-core/src/osm.rs` and the WorldCover rock stays.
+
+In the game (DayZ 1.30, headless client, noon, clear weather) the player connects at all three test views, nothing
+crashes, and the ground textures match the overlay: soil on the lake bed (x 3962, z 1400), forest floor with clutter
+on the slopes, grass and soil patches in the basin, grey rock and green patches on the far ridges. The server log has
+no navmesh error (the geometry is unchanged).
+
+Cost of the build (release binary, `naves build examples/berchtesgaden`, with `oberbayern-latest.osm.pbf` 260 MB and
+`austria-latest.osm.pbf` 815 MB): 15 s, peak memory 1.2 GiB (1233 MiB). Most of the memory is the nodes of every lake, rock and
+built-up polygon in both extracts, which are only known after the whole window test, so it grows with the extract;
+a country-sized extract needs a few GiB. The PBO is 50.9 MB. On the Oberbayern extract alone, reading the window takes
+0.9 s and 460 MiB. The two extracts are merged before polygons are built; read one by one, 49 rings
+were skipped where each extract cuts a polygon at the border, and the build warned every time, because the count
+also covered the rest of the extract. Now only rings on the map count, and there are none here.

@@ -11,6 +11,7 @@
 use rayon::prelude::*;
 
 use crate::dem::Dem;
+use crate::landcover::GeoWindow;
 use crate::project::Project;
 use crate::projection::{LocalProjection, ProjectionError};
 
@@ -72,6 +73,84 @@ fn narrow(v: f64) -> f32 {
     v
 }
 
+/// Converts between positions on the map (metres east and north of the south-west corner) and latitude and
+/// longitude, with the formula the heightmap is built with. It holds a projection, which is cheap to make and
+/// not shared between threads: make one per thread or per row.
+pub struct MapGeo {
+    proj: LocalProjection,
+    center_e: f64,
+    center_n: f64,
+    half: f64,
+    horizontal: f64,
+}
+
+impl MapGeo {
+    /// The conversion for `project`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError`] if the project's centre cannot be projected.
+    pub fn new(project: &Project) -> Result<MapGeo, ProjectionError> {
+        let area = &project.area;
+        let proj = LocalProjection::for_center(area.center_lat, area.center_lon)?;
+        let (center_e, center_n) = proj.to_utm(area.center_lat, area.center_lon)?;
+        Ok(MapGeo {
+            proj,
+            center_e,
+            center_n,
+            half: project.map_size_m() / 2.0,
+            horizontal: project.scale.horizontal,
+        })
+    }
+
+    /// Latitude and longitude of the map position (`x`, `y`) in metres.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError`] if the position cannot be projected.
+    pub fn to_geo(&self, x: f64, y: f64) -> Result<(f64, f64), ProjectionError> {
+        let east = self.center_e + (x - self.half) / self.horizontal;
+        let north = self.center_n + (y - self.half) / self.horizontal;
+        self.proj.to_geo(east, north)
+    }
+
+    /// The latitude and longitude window of the whole map plus `margin_m` metres on every side.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError`] if a corner cannot be projected.
+    pub fn window(&self, margin_m: f64) -> Result<GeoWindow, ProjectionError> {
+        let (low, high) = (-margin_m, self.half * 2.0 + margin_m);
+        let mut window = GeoWindow {
+            south: f64::INFINITY,
+            west: f64::INFINITY,
+            north: f64::NEG_INFINITY,
+            east: f64::NEG_INFINITY,
+        };
+        for (x, y) in [(low, low), (high, low), (low, high), (high, high)] {
+            let (lat, lon) = self.to_geo(x, y)?;
+            window.south = window.south.min(lat);
+            window.north = window.north.max(lat);
+            window.west = window.west.min(lon);
+            window.east = window.east.max(lon);
+        }
+        Ok(window)
+    }
+
+    /// The map position in metres of a latitude and longitude.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectionError`] if the position cannot be projected.
+    pub fn to_map(&self, lat: f64, lon: f64) -> Result<(f64, f64), ProjectionError> {
+        let (east, north) = self.proj.to_utm(lat, lon)?;
+        Ok((
+            (east - self.center_e) * self.horizontal + self.half,
+            (north - self.center_n) * self.horizontal + self.half,
+        ))
+    }
+}
+
 /// Samples `dem` at every vertex of the project's heightmap grid.
 ///
 /// # Errors
@@ -79,25 +158,18 @@ fn narrow(v: f64) -> f32 {
 /// [`HeightmapError::MissingDem`] for the first vertex (south row first, west to east) that the DEM
 /// does not cover; nothing is filled in with zeros.
 pub fn build_heightmap(project: &Project, dem: &Dem) -> Result<Heightmap, HeightmapError> {
-    let area = &project.area;
-    let center = LocalProjection::for_center(area.center_lat, area.center_lon)?;
-    let (center_e, center_n) = center.to_utm(area.center_lat, area.center_lon)?;
     let size = project.grid.terrain_size;
     let cell = project.terrain_cell_m();
-    let half = project.map_size_m() / 2.0;
-    let horizontal = project.scale.horizontal;
     let height_scale = project.scale.height;
 
     let rows: Vec<Result<Vec<f32>, HeightmapError>> = (0..size)
         .into_par_iter()
         .map(|row| {
             // One projection per row: proj4rs objects are cheap to build and not shared.
-            let proj = LocalProjection::for_center(area.center_lat, area.center_lon)?;
-            let north = center_n + (f64::from(row) * cell - half) / horizontal;
+            let geo = MapGeo::new(project)?;
             (0..size)
                 .map(|col| {
-                    let east = center_e + (f64::from(col) * cell - half) / horizontal;
-                    let (lat, lon) = proj.to_geo(east, north)?;
+                    let (lat, lon) = geo.to_geo(f64::from(col) * cell, f64::from(row) * cell)?;
                     let h = dem
                         .height(lat, lon)
                         .ok_or(HeightmapError::MissingDem { lat, lon })?;

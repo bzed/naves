@@ -13,10 +13,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `naves build` paints the ground from ESA WorldCover land cover and OpenStreetMap water, rock and built-up areas (`sources.land_cover`, `sources.osm`); the slope and altitude rules apply only where neither says anything. The build warns when the files do not cover the map or an extract cuts polygons, and writes `ATTRIBUTION.txt` (Copernicus, WorldCover, OpenStreetMap as used) into the mod folder.
+- The GUI shows the build's warnings in its log. OpenStreetMap extracts are merged before areas are built, so a polygon that every extract cuts at its border is whole, and only rings on the map are counted in the skipped-rings warning.
+- A **Surface** overlay in the GUI map (with a legend) and in the MCP `render_topdown` tool shows the ground classes; the GUI lists the land cover and OpenStreetMap files.
+- The terrain has four ground layers (grass, rock, forest, soil); the ground of each map cell is decided in one place (`SurfaceGrid`).
 - Project file `naves.toml`.
 - Copernicus GLO-30 GeoTIFF DEM input.
 - MCP server `naves mcp`: `project_get`, `project_set`, `heightmap_stats`, `render_topdown` and `build` for AI clients over stdio.
 - GUI (`naves gui`): project settings that save to `naves.toml`, a pannable top-down map (hillshade, slope, height) and a build button with a live log.
+- Project file: `sources.land_cover` (ESA WorldCover) and `sources.osm` (OpenStreetMap extracts) list the data that will paint the ground surfaces.
 - `naves new` creates a project, `naves build` builds the signed mod and the server mission.
 - Binarize worlds with DayZ Tools under Proton (sandboxed, with a timeout); the build checks for armake2,
   DayZ Tools and Proton up front and names the variable to set.
@@ -28,6 +33,10 @@ All notable changes to this project are documented here. The format follows
   the mesh with DayZDiag and Flare Navgen.
 - Procedural surfaces: a hillshaded satellite image, a grass/rock mask (rock above 35° slope and above a real
   altitude of 2100 m) and a tile material for every terrain tile.
+
+### Changed
+
+- Lighter baked shading on the satellite images: rock faces were nearly black.
 
 ### Fixed
 
