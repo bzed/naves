@@ -16,7 +16,7 @@ the header of the binarized `enoch.wrp`; Chernarus has the same grids with 60 m 
 The map is cut into square tiles. Per tile the game needs
 
 - a satellite image `s_XXX_YYY_lco.paa` (colour seen from far away),
-- a mask `m_XXX_YYY_lca.paa` (which surface layer shows where, one layer per colour channel),
+- a mask `m_XXX_YYY_lca.paa` (which surface layer shows where),
 - a tile material `p_XXX-YYY_<layers>.rvmat` that binds both and lists the surface textures of its layers.
 
 `XXX` is the tile column from the west, `YYY` the tile row **from the north** (tile 000_000 is the north-west
@@ -66,6 +66,21 @@ tiles and 4 terrain cells per land cell needs 144, overflows that buffer and cra
 it enters the world; with 4 terrain cells per land cell the client also renders a terrain level whose texture was
 never created and crashes. Both were found with a debugger on the client, see
 `docs/research/2026-11-05-reference-terrains.md`.
+
+## Mask colours
+
+Each mask pixel selects a layer slot of the tile material. Read from Bohemia's Test_Terrain sample, whose material
+names show how many slots a tile uses (`P_000-000_L00` uses one):
+
+| Slots in the tile | Colour that appears | Slot |
+|---|---|---|
+| 1 | black, alpha 255 (the whole mask) | 0 |
+| 2 | red, alpha 255 | 1 |
+| 3 | green, alpha 255 | 2 |
+| 4 | blue, alpha 255 | 3 |
+| 5 or more | colours at alpha 128 | 4 and up (the exact colours are not needed yet) |
+
+Livonia's masks use the same colours. Náves uses two slots: grass is `(0, 0, 0, 255)`, rock `(255, 0, 0, 255)`.
 
 ## PAA tags
 

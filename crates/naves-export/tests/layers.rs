@@ -140,7 +140,27 @@ fn flat_ground_is_grass_in_the_mask() {
         .unwrap()
         .to_rgba8();
     let px = mask.get_pixel(256, 256);
-    assert_eq!((px[0], px[1]), (255, 0), "grass in R, no rock in G: {px:?}");
+    // Bohemia's sample: a tile with one layer is all black, red appears with the second layer, then green and blue
+    assert_eq!(px.0, [0, 0, 0, 255], "grass is slot 0: black");
+}
+
+#[test]
+fn rock_is_red_in_the_mask() {
+    let mut hm = flat(256, 0.0);
+    for row in 0..256usize {
+        for col in 0..256usize {
+            hm.h[row * 256 + col] = (col as f32) * 4.0 * 3.0_f32.sqrt();
+        }
+    }
+    let set = build_layers(&hm, 32, PREFIX);
+    let mask = image::load_from_memory(file(&set.files, "data/layers/m_000_000_lca.png"))
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(
+        mask.get_pixel(256, 256).0,
+        [255, 0, 0, 255],
+        "rock is slot 1: red"
+    );
 }
 
 #[test]

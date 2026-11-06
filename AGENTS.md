@@ -86,7 +86,13 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
   inheriting `Enoch` by reference; the server rejects a `cfgplayerspawnpoints.xml` whose points are not inside a
   `<group>` in `generator_posbubbles`; the mission's `areaflags.map` belongs to the map size it was made for.
   The grid geometry must be Livonia's: 8 terrain cells per land cell and 8 land cells per surface tile (the client
-  overflows a 128-height buffer and crashes otherwise; `docs/formats/terrain-layers.md`).
+  overflows a 128-height buffer and crashes otherwise; `docs/formats/terrain-layers.md`). Terrain PAAs need the
+  `AVGC` and `MAXC` tags (dark red terrain otherwise), and the mask colours black, red, green, blue select the layer
+  slots 0 to 3.
+- **Comparable screenshots:** patch the test server's copy of the mission's `init.c`, not the generated one: at the end
+  of `main()` a fixed `GetGame().GetWorld().SetDate(...)` at noon and clear weather (`GetWeather().MissionWeather(true)`,
+  then `SetLimits(0, 0)` and `Set(0, 0, 86400)` on overcast, rain and fog); in `CreateCharacter` a fixed `pos`. Set
+  `serverTimeAcceleration=1;` in the test server's config so that the time stays near noon.
 - **Debugging a client crash:** attach `winedbg` (`proton runinprefix winedbg --file <commands>`, in its own headless
   sway, same prefix as the game) to the running `DayZ_x64.exe`; it gets the exception before the game's crash
   handler. Read the exe base with `info share` first, it is not always the same.

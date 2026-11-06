@@ -104,7 +104,7 @@ pub struct Surface {
     pub sat_rgb: [u8; 3],
 }
 
-/// The surfaces of milestone 1, in layer-slot order: slot 0 is grass (mask channel R), slot 1 rock (G).
+/// The surfaces of milestone 1, in layer-slot order: slot 0 is grass (black in the mask), slot 1 rock (red).
 /// There is no snow texture among the vanilla terrain surfaces.
 pub const SURFACES: &[Surface] = &[
     Surface {
@@ -199,8 +199,9 @@ fn render_tile(hm: &Heightmap, grid: &TileGrid, map_size_m: f64, tx: u32, ty: u3
                 v
             };
             sat.put_pixel(px, py, image::Rgb(rgb.map(lit)));
-            let (r, g) = if surface == 0 { (255, 0) } else { (0, 255) };
-            mask.put_pixel(px, py, image::Rgba([r, g, 0, 0]));
+            // the mask selects the layer slot: black, red, green, blue at full alpha are slots 0 to 3
+            let r = if surface == 0 { 0 } else { 255 };
+            mask.put_pixel(px, py, image::Rgba([r, 0, 0, 255]));
         }
     }
     TileImages {

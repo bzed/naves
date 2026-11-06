@@ -159,3 +159,15 @@ With both (Livonia's geometry) the headless client stays in the Berchtesgaden wo
 `terrain-layers.md` that Livonia has 1024 land cells of 12.5 m and 32-cell tiles was wrong; the binarized
 `enoch.wrp` header says 256 land cells of 50 m and a 2048 terrain grid. Bohemia's sample has 4 terrain cells per land
 cell too.
+
+## Why the crash-free world looked wrong (2026-11-06)
+
+Two separate faults, each seen in the client and fixed:
+
+1. **Red far terrain.** The satellite PAAs decode correctly (checked with a separate LZO and DXT1 reader; the colours
+   match the source PNG), but armake2's `img2paa` writes no `AVGC`/`MAXC` tags. Adding the tags turned the far terrain
+   green. Which of the two tags matters was not tested. armake2's own `paa2img` fails on `img2paa` output with an
+   LZO error although the stream decodes; that is a reader problem and did not matter here.
+2. **Wrong near texture.** Grass was red and rock green in the mask, which select slots 1 and 2. Bohemia's sample
+   shows the mapping (table in `terrain-layers.md`). With grass black and rock red the ground has its grass texture
+   and clutter.
