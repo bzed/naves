@@ -1,0 +1,18 @@
+[shortcuts]
+build = "Ctrl+Shift+B"
+
+[map]
+invert_zoom = true
+fade_percent = 25
+interface_scale = 1.5
+no_unfold_animation = true
+start_base = "slope"
+start_layers = ["too_steep_to_walk"]
+
+[tools]
+armake2 = "/opt/armake2"
+steam_root = "/home/x/.steam/steam"
+dayz_tools = "/x"
+dayz = "/y"
+dayz_server = "/z"
+proton = "/p"

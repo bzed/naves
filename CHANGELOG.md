@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Per-user settings in `settings.toml` in Náves' configuration folder (`$XDG_CONFIG_HOME/naves`): the `[tools]` table names the paths of armake2, Steam, DayZ Tools, DayZ, DayZ Server and Proton. An environment variable still wins; the settings come before the search. `naves build`, `naves mcp` and the GUI use them, a path that does not exist is named, and a damaged file is a warning and is left alone. New: `DAYZ_SERVER` is documented.
 - The GUI's bottom dock has the tabs Build and Problems. Problems lists the warnings and the error of the last build, the notes of the imagery merge and a setting that was not saved; a row with a position (and F8 and Shift+F8) takes the map there, and diamonds mark them on the map.
 - Click in the GUI map to read a point in the active level (position, latitude and longitude, height and slope in Terrain; the ground class in Ground), Alt+click to pick across levels, Esc to clear, F to frame it and Shift+F to frame the whole map.
 - Switchable map layers in the GUI, under the active level in the stack, starting with **Too steep to walk** (hatching over ground steeper than 60°, a provisional limit). H hides the active level, Shift+H shows the other levels in full; they are drawn at 40 % otherwise. New `naves_core::render::render_layer`.

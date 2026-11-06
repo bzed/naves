@@ -7,6 +7,7 @@ mod cli;
 mod gui;
 mod mcp;
 mod output;
+mod user_prefs;
 
 use std::process::ExitCode;
 

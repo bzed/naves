@@ -24,6 +24,14 @@ Install *DayZ Tools* from the Tools section of your Steam library, or set `DAYZ_
 **`Proton not found; set PROTON`**
 Install *Proton Hotfix* (or Proton Experimental) from Steam, or set `PROTON` to a `proton` script.
 
+**`armake2: the path in the settings does not exist: ...`**
+A path in the `[tools]` table of your `settings.toml` (see [Installation](installation.md#external-tools)) leads
+nowhere. Correct it, or remove the line; an environment variable overrides the settings.
+
+**`warning: the settings file is damaged and is ignored`**
+`settings.toml` is not valid TOML or has a value of the wrong type. The message names the line. Náves does not
+change the file; fix it or delete it.
+
 ## Binarize
 
 **`binarize failed (exit N); log: ...; sandbox kept at ...`**

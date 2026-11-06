@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use naves_core::dem::DemTile;
 use naves_core::landcover::{GeoWindow, LandCover};
+use naves_core::prefs::Preferences;
 use naves_core::project::Project;
 
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
@@ -39,6 +40,18 @@ fn dem_tile_seeds() {
     for (name, data) in seeds("dem_tile") {
         let tile = DemTile::from_reader(std::io::Cursor::new(data));
         assert!(tile.is_ok(), "seed {name}: {:?}", tile.err());
+    }
+}
+
+#[test]
+fn prefs_parse_seeds() {
+    for (name, data) in seeds("prefs_parse") {
+        let result = Preferences::parse(&String::from_utf8_lossy(&data));
+        assert_eq!(
+            result.is_ok(),
+            !matches!(name.as_str(), "damaged" | "wrong_type"),
+            "seed {name}"
+        );
     }
 }
 

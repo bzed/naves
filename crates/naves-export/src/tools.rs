@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use naves_core::prefs::ToolPaths;
+
 /// How long `binarize.exe` may run before it is stopped.
 const DEFAULT_BINARIZE_TIMEOUT: Duration = Duration::from_mins(30);
 
@@ -26,6 +28,19 @@ pub enum ToolError {
         env: &'static str,
         /// Where to get it.
         hint: &'static str,
+    },
+    /// A path in the settings does not lead to the tool.
+    #[error(
+        "{tool}: the path in the settings does not exist: {}; change it under Settings, External tools (tools.{setting} in settings.toml)",
+        path.display()
+    )]
+    BadSetting {
+        /// Name of the tool.
+        tool: &'static str,
+        /// The key in the `[tools]` table.
+        setting: &'static str,
+        /// The path that was set.
+        path: PathBuf,
     },
     /// The `armake2` found is the upstream one.
     #[error(
@@ -187,6 +202,196 @@ impl Tools {
             },
         })
     }
+}
+
+/// Where a tool's path comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// An environment variable.
+    Environment,
+    /// The per-user settings.
+    Settings,
+    /// Found by searching `PATH` and the Steam folders.
+    Found,
+    /// Not found.
+    Missing,
+}
+
+/// One tool, the path in use and where it comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOrigin {
+    /// The tool's name, as in the error messages.
+    pub tool: &'static str,
+    /// The path in use; for a missing tool the path that was set, if any.
+    pub path: Option<PathBuf>,
+    /// Where it comes from.
+    pub from: Origin,
+}
+
+/// The environment variable of each tool, its name in the settings and the name of the tool.
+const TOOL_KEYS: [(&str, &str, &str); 6] = [
+    ("ARMAKE2", "armake2", "armake2"),
+    ("STEAM_ROOT", "steam_root", "Steam"),
+    ("DAYZ_TOOLS", "dayz_tools", "DayZ Tools"),
+    ("DAYZ", "dayz", "DayZ"),
+    ("DAYZ_SERVER", "dayz_server", "DayZ Server"),
+    ("PROTON", "proton", "Proton"),
+];
+
+fn setting<'a>(paths: &'a ToolPaths, var: &str) -> Option<&'a PathBuf> {
+    match var {
+        "ARMAKE2" => paths.armake2.as_ref(),
+        "STEAM_ROOT" => paths.steam_root.as_ref(),
+        "DAYZ_TOOLS" => paths.dayz_tools.as_ref(),
+        "DAYZ" => paths.dayz.as_ref(),
+        "DAYZ_SERVER" => paths.dayz_server.as_ref(),
+        "PROTON" => paths.proton.as_ref(),
+        _ => None,
+    }
+}
+
+/// The environment first, then the settings: the lookup of [`Tools::locate_with`] sees both as one environment.
+fn layered<'a>(
+    paths: &'a ToolPaths,
+    env: &'a dyn Fn(&str) -> Option<OsString>,
+) -> impl Fn(&str) -> Option<OsString> + 'a {
+    move |key| env(key).or_else(|| setting(paths, key).map(|p| p.clone().into_os_string()))
+}
+
+/// [`Tools::locate`] with the settings between the environment and the search: an environment variable
+/// wins over the settings, and the settings over the search.
+///
+/// # Errors
+///
+/// As [`Tools::locate`], and [`ToolError::BadSetting`] when the path in the settings does not exist.
+pub fn locate_preferring(paths: &ToolPaths) -> Result<Tools, ToolError> {
+    locate_preferring_with(
+        paths,
+        &|key| std::env::var_os(key),
+        std::env::var_os("PATH"),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+/// [`locate_preferring`] with the environment, `PATH` and home folder passed in.
+///
+/// # Errors
+///
+/// As [`locate_preferring`].
+pub fn locate_preferring_with(
+    paths: &ToolPaths,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    path: Option<OsString>,
+    home: Option<PathBuf>,
+) -> Result<Tools, ToolError> {
+    // a Steam folder from the settings is not checked by the lookup itself, so a bad one would show up as a
+    // missing DayZ Tools; say what is wrong instead
+    if env("STEAM_ROOT").is_none()
+        && let Some(root) = &paths.steam_root
+        && !root.join("steamapps").is_dir()
+    {
+        return Err(ToolError::BadSetting {
+            tool: "Steam",
+            setting: "steam_root",
+            path: root.clone(),
+        });
+    }
+    Tools::locate_with(&layered(paths, env), path, home).map_err(|error| match error {
+        ToolError::Missing { tool, env: var, .. } if env(var).is_none() => {
+            match (setting(paths, var), TOOL_KEYS.iter().find(|k| k.0 == var)) {
+                (Some(path), Some((_, key, _))) => ToolError::BadSetting {
+                    tool,
+                    setting: key,
+                    path: path.clone(),
+                },
+                _ => error,
+            }
+        }
+        other => other,
+    })
+}
+
+/// Every tool with the path in use and where it comes from, for the settings window.
+#[must_use]
+pub fn tool_origins(paths: &ToolPaths) -> Vec<ToolOrigin> {
+    tool_origins_with(
+        paths,
+        &|key| std::env::var_os(key),
+        std::env::var_os("PATH"),
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+/// [`tool_origins`] with the environment, `PATH` and home folder passed in.
+#[must_use]
+pub fn tool_origins_with(
+    paths: &ToolPaths,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    path: Option<OsString>,
+    home: Option<PathBuf>,
+) -> Vec<ToolOrigin> {
+    let all = layered(paths, env);
+    let armake2 = locate_armake2(&all, path).ok();
+    let steam = locate_steam(&all, home).ok();
+    let common = steam.as_ref().map(|s| s.join("steamapps/common"));
+    // an explicit path, else the usual place below the Steam folder
+    let chosen = |var: &str, below: &str| -> Option<PathBuf> {
+        all(var)
+            .map(PathBuf::from)
+            .or_else(|| common.as_ref().map(|c| c.join(below)))
+    };
+    let proton = chosen("PROTON", "Proton Hotfix/proton");
+    let found = |tool: &'static str, var: &str, path: Option<PathBuf>, ok: bool| {
+        let given = env(var).is_some() || setting(paths, var).is_some();
+        let from = match (ok, env(var).is_some(), given) {
+            (false, _, _) => Origin::Missing,
+            (true, true, _) => Origin::Environment,
+            (true, false, true) => Origin::Settings,
+            (true, false, false) => Origin::Found,
+        };
+        ToolOrigin {
+            tool,
+            path: if ok || given { path } else { None },
+            from,
+        }
+    };
+    let dayz_tools = chosen("DAYZ_TOOLS", "DayZ Tools");
+    let dayz = chosen("DAYZ", "DayZ");
+    let server = chosen("DAYZ_SERVER", "DayZServer");
+    vec![
+        found("armake2", "ARMAKE2", armake2.clone(), armake2.is_some()),
+        found("Steam", "STEAM_ROOT", steam.clone(), steam.is_some()),
+        found(
+            "DayZ Tools",
+            "DAYZ_TOOLS",
+            dayz_tools.clone(),
+            dayz_tools
+                .as_ref()
+                .is_some_and(|p| p.join("Bin/Binarize").is_dir()),
+        ),
+        found(
+            "DayZ",
+            "DAYZ",
+            dayz.clone(),
+            dayz.as_ref().is_some_and(|p| p.is_dir()),
+        ),
+        found(
+            "DayZ Server",
+            "DAYZ_SERVER",
+            server.clone(),
+            server
+                .as_ref()
+                .is_some_and(|p| p.join("mpmissions").is_dir()),
+        ),
+        found(
+            "Proton",
+            "PROTON",
+            proton.clone(),
+            proton
+                .as_ref()
+                .is_some_and(|p| !proton_missing(p, cfg!(windows))),
+        ),
+    ]
 }
 
 /// `path` made absolute; an unusable path stays as it is and fails with a named error when it is used.

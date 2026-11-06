@@ -29,7 +29,22 @@ Other variables:
 |---|---|
 | `STEAM_ROOT` | the Steam folder (the one that contains `steamapps/`); default: `~/.steam/steam`, `~/.local/share/Steam` or `~/.steam/debian-installation` |
 | `DAYZ` | the DayZ game folder; default: `<Steam>/steamapps/common/DayZ` |
+| `DAYZ_SERVER` | the DayZ Server folder the mission is built from; default: `<Steam>/steamapps/common/DayZServer` |
 | `NAVES_BINARIZE_TIMEOUT` | seconds `binarize.exe` may run before it is stopped; default 1800 |
+
+**Where a path comes from.** An environment variable wins. Without one, the path in your per-user settings is
+used, and without that Náves searches (`PATH`, the Steam folders). The settings are the file `settings.toml` in
+Náves' configuration folder (`$XDG_CONFIG_HOME/naves`, normally `~/.config/naves`); the `[tools]` table has the keys
+`armake2`, `steam_root`, `dayz_tools`, `dayz`, `dayz_server` and `proton`:
+
+```toml
+[tools]
+armake2 = "/home/me/bin/armake2"
+steam_root = "/mnt/games/Steam"
+```
+
+The settings apply to `naves build`, `naves mcp` and the GUI, and never to a project's `naves.toml`. A path that does
+not exist is reported by name. A damaged file is reported as a warning, left as it is, and ignored.
 
 **armake2.** Use the fork at <https://github.com/bzed/armake2>. Náves tells it apart from the upstream
 program by `--proton-binarize` in `armake2 -h`; the upstream version signs some files wrongly and is refused.

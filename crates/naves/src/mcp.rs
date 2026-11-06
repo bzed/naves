@@ -476,7 +476,8 @@ impl ServerHandler for NavesMcp {}
 ///
 /// The transport fails or the server stops with an error.
 pub async fn serve(dir: &Path) -> anyhow::Result<()> {
-    let locate: ToolLocator = Arc::new(|| Tools::locate().map_err(|e| e.to_string()));
+    let locate: ToolLocator =
+        Arc::new(|| crate::user_prefs::locate_tools().map_err(|e| e.to_string()));
     let service = NavesMcp::new(dir, locate)
         .serve(rmcp::transport::stdio())
         .await

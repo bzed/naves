@@ -15,7 +15,6 @@ use naves_core::landcover::GeoWindow;
 use naves_core::project::{PROJECT_FILE, Project};
 use naves_export::build::build;
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, describe_fetch, fetch};
-use naves_export::tools::Tools;
 
 use crate::output;
 
@@ -161,7 +160,7 @@ fn new_project(dir: &Path, name: &str, center: (f64, f64), extent: f64) -> Resul
 
 fn build_project(dir: &Path) -> Result<()> {
     // Tools first: a missing tool must be reported before any long work starts.
-    let tools = Tools::locate()?;
+    let tools = crate::user_prefs::locate_tools()?;
     let out = build(dir, &tools, &|line| output::note(line))?;
     for warning in &out.warnings {
         output::note(&format!("warning: {warning}"));

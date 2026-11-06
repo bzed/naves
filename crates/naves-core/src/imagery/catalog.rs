@@ -333,20 +333,7 @@ pub fn parse_sources(text: &str) -> Result<Vec<CatalogSource>, CatalogError> {
 /// folder (`$XDG_CONFIG_HOME`, else `~/.config`, else `%APPDATA%`).
 #[must_use]
 pub fn user_catalog_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(|home| PathBuf::from(home).join(".config"))
-        })
-        .or_else(|| {
-            std::env::var_os("APPDATA")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        })?;
-    Some(base.join("naves").join("imagery-sources.toml"))
+    Some(crate::prefs::config_dir()?.join("imagery-sources.toml"))
 }
 
 /// The built-in sources, then those of `user_file` (if it exists); an entry of the user file with the id of a

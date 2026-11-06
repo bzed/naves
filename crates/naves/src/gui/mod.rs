@@ -981,7 +981,10 @@ fn power_of_two(
 ///
 /// The project cannot be loaded or the window cannot be created.
 pub fn run(dir: &Path) -> anyhow::Result<()> {
-    let app = NavesApp::open(dir, Box::new(|| Tools::locate().map_err(|e| e.to_string())))?;
+    let app = NavesApp::open(
+        dir,
+        Box::new(|| crate::user_prefs::locate_tools().map_err(|e| e.to_string())),
+    )?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])

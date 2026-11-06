@@ -1,0 +1,7 @@
+future = 1
+[map]
+future_map = "x"
+[tools]
+future_tool = "/x"
+[ai]
+mode = "approve"

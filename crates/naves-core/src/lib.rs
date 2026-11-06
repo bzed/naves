@@ -9,6 +9,7 @@ pub mod ident;
 pub mod imagery;
 pub mod landcover;
 pub mod osm;
+pub mod prefs;
 pub mod project;
 pub mod projection;
 pub mod render;

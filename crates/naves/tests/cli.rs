@@ -377,3 +377,74 @@ fn build_accepts_a_relative_project_folder() {
             .is_file()
     );
 }
+
+/// Writes `settings.toml` where `naves()` makes the program look for it.
+fn write_settings(home: &Path, text: &str) {
+    let dir = home.join(".config/naves");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("settings.toml"), text).unwrap();
+}
+
+#[test]
+fn naves_build_uses_the_settings() {
+    let home = tempfile::tempdir().unwrap();
+    let fakes = FakeEnv::new(&home.path().join("fake")).unwrap();
+    let proj = new_project(home.path());
+    // no environment variable, nothing on PATH: the tools are named only in the settings
+    write_settings(
+        home.path(),
+        &format!(
+            "[tools]\narmake2 = {:?}\nsteam_root = {:?}\ndayz_server = {:?}\n",
+            fakes.armake2, fakes.steam, fakes.server
+        ),
+    );
+    let out = naves(home.path())
+        .arg("build")
+        .arg(&proj)
+        .assert()
+        .success();
+    assert!(
+        stdout(&out).contains("Mod:"),
+        "{}\n{}",
+        stdout(&out),
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_settings_path_that_does_not_exist_is_named() {
+    let home = tempfile::tempdir().unwrap();
+    let proj = new_project(home.path());
+    write_settings(home.path(), "[tools]\narmake2 = \"/nonexistent/armake2\"\n");
+    let out = naves(home.path())
+        .arg("build")
+        .arg(&proj)
+        .assert()
+        .failure();
+    let err = stderr(&out);
+    assert!(
+        err.contains("/nonexistent/armake2") && err.contains("settings"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_damaged_settings_file_does_not_stop_a_build() {
+    let home = tempfile::tempdir().unwrap();
+    let fakes = FakeEnv::new(&home.path().join("fake")).unwrap();
+    let proj = new_project(home.path());
+    write_settings(home.path(), "this is [not toml");
+    let mut cmd = naves(home.path());
+    with_fakes(&mut cmd, &fakes);
+    let out = cmd.arg("build").arg(&proj).assert().success();
+    let err = stderr(&out);
+    assert!(
+        err.contains("settings.toml") && err.contains("warning"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".config/naves/settings.toml")).unwrap(),
+        "this is [not toml",
+        "the damaged file is left as it is"
+    );
+}
