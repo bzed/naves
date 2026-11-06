@@ -14,6 +14,7 @@ mod layout;
 mod levels;
 mod map_view;
 mod palette;
+mod prefs_window;
 mod problems;
 mod rail;
 mod selection;
@@ -32,11 +33,12 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 use naves_core::imagery::catalog::ImageryOption;
+use naves_core::prefs::{Preferences, ToolPaths};
 use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
 use naves_core::render::Overlay;
 use naves_export::build::BuildOutput;
 use naves_export::imagery_fetch::Http;
-use naves_export::tools::Tools;
+use naves_export::tools::{ToolOrigin, Tools, tool_origins};
 
 use imagery::{FetchJob, OwnFile};
 use levels::LevelDef;
@@ -86,6 +88,22 @@ pub struct NavesApp {
     item: Option<String>,
     /// The search and the last used items of the palette.
     palette: palette::Palette,
+    /// The keys in force.
+    bindings: shortcuts::Bindings,
+    /// What in the settings file's shortcuts could not be read.
+    binding_notes: Vec<String>,
+    /// The per-user settings.
+    prefs: Preferences,
+    /// Where they are saved; without a path nothing is saved (tests, and a person without a configuration folder).
+    prefs_path: Option<PathBuf>,
+    /// The settings file is damaged: this says why. Changes hold for the session and are not saved.
+    prefs_error: Option<String>,
+    /// The last save failed: this says why.
+    prefs_save_error: Option<String>,
+    /// The settings window, while it is open.
+    prefs_window: Option<prefs_window::PrefsWindow>,
+    /// Where the tools come from; replaced in tests.
+    origins: fn(&ToolPaths) -> Vec<ToolOrigin>,
     /// What is wrong, from all sources.
     problems: problems::ProblemList,
     /// Warnings and errors of the last build; cleared when the next build starts.
@@ -149,6 +167,14 @@ impl NavesApp {
             tool: shortcuts::ToolId::SELECT,
             item: None,
             palette: palette::Palette::default(),
+            bindings: shortcuts::Bindings::default(),
+            binding_notes: Vec::new(),
+            prefs: Preferences::default(),
+            prefs_path: None,
+            prefs_error: None,
+            prefs_save_error: None,
+            prefs_window: None,
+            origins: tool_origins,
             problems: problems::ProblemList::default(),
             build_problems: Vec::new(),
             merge_problems: Vec::new(),
@@ -176,6 +202,54 @@ impl NavesApp {
         app.refresh_imagery_options();
         app.reload_heightmap();
         Ok(app)
+    }
+
+    /// Keeps the per-user settings in `path`: reads them now, applies them, and saves changes there. A damaged file is
+    /// reported in the settings window and never overwritten.
+    #[must_use]
+    pub fn with_preferences(mut self, path: PathBuf) -> Self {
+        match Preferences::load(&path) {
+            Ok(prefs) => self.prefs = prefs,
+            Err(error) => self.prefs_error = Some(error.to_string()),
+        }
+        self.prefs_path = Some(path);
+        self.apply_prefs();
+        self.panel = stack::LayerPanel::from_prefs(&self.prefs.map);
+        self
+    }
+
+    /// Takes the shortcuts of the settings.
+    fn apply_prefs(&mut self) {
+        let (bindings, notes) = shortcuts::Bindings::new(&self.prefs.shortcuts);
+        self.bindings = bindings;
+        self.binding_notes = notes;
+    }
+
+    /// Saves the settings after a change. Nothing is written without a path or over a damaged file.
+    fn save_prefs(&mut self) {
+        self.prefs_save_error = None;
+        let Some(path) = &self.prefs_path else {
+            return;
+        };
+        if self.prefs_error.is_some() {
+            return;
+        }
+        // keys of the file that this version does not know stay as they are
+        let known: Vec<&str> = shortcuts::SHORTCUTS.iter().map(|s| s.id).collect();
+        self.prefs
+            .shortcuts
+            .retain(|id, _| !known.contains(&id.as_str()));
+        self.prefs.shortcuts.extend(self.bindings.overrides());
+        if let Err(error) = self.prefs.save(path) {
+            self.prefs_save_error = Some(format!("Not saved: {error}"));
+        }
+    }
+
+    /// Replaces the lookup of the tools' origins (for tests).
+    #[cfg(test)]
+    fn with_tool_origins(mut self, origins: fn(&ToolPaths) -> Vec<ToolOrigin>) -> Self {
+        self.origins = origins;
+        self
     }
 
     /// The window title.
@@ -284,6 +358,7 @@ impl NavesApp {
         if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
+        self.apply_look(ui.ctx());
         self.refresh_problems();
         self.keyboard(ui.ctx());
         let fold = layout::fold_for(ui.max_rect().size());
@@ -350,6 +425,23 @@ impl NavesApp {
         if self.help_open {
             self.help_ui(ui.ctx());
         }
+        prefs_window::show(self, ui.ctx());
+    }
+
+    /// The interface scale and the animation time of the settings.
+    fn apply_look(&self, ctx: &egui::Context) {
+        let scale = self.prefs.map.interface_scale;
+        if (ctx.zoom_factor() - scale).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(scale);
+        }
+        let time = if self.prefs.map.no_unfold_animation {
+            0.0
+        } else {
+            egui::Style::default().animation_time
+        };
+        if (ctx.global_style().animation_time - time).abs() > f32::EPSILON {
+            ctx.global_style_mut(|s| s.animation_time = time);
+        }
     }
 
     /// Collects the problems of all sources into the list; the cursor stays where it is when it can.
@@ -389,9 +481,12 @@ impl NavesApp {
 
     /// Runs the action of the key pressed in this frame, if it can be done.
     fn keyboard(&mut self, ctx: &egui::Context) {
+        if self.prefs_window.is_some() {
+            return; // the window listens to the keys itself
+        }
         let typing = shortcuts::typing(ctx);
         let level = self.panel.active;
-        if let Some(action) = ctx.input(|i| shortcuts::action_for(i, level, typing))
+        if let Some(action) = ctx.input(|i| shortcuts::action_for(i, &self.bindings, level, typing))
             && shortcuts::action_exists(action, self)
         {
             self.run_action(action);
@@ -414,6 +509,7 @@ impl NavesApp {
             }
             Action::Tool(tool) => self.tool = tool,
             Action::SearchItems => self.palette.focus_search = true,
+            Action::Settings => self.open_settings(),
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;
@@ -458,6 +554,12 @@ impl NavesApp {
         self.panel.hidden.remove(&level);
     }
 
+    fn open_settings(&mut self) {
+        if self.prefs_window.is_none() {
+            self.prefs_window = Some(prefs_window::PrefsWindow::default());
+        }
+    }
+
     fn start_build(&mut self) {
         if self.building() || self.form.error.is_some() {
             return;
@@ -482,9 +584,9 @@ impl NavesApp {
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
-                        for s in rows {
-                            ui.label(s.label);
-                            ui.label(s.binding.to_string());
+                        for (label, key) in rows {
+                            ui.label(label);
+                            ui.label(key);
                             ui.end_row();
                         }
                     });
@@ -694,12 +796,17 @@ impl NavesApp {
             return;
         }
         let rect = ui.available_rect_before_wrap();
-        let layers = layers::visible(&self.panel, &self.levels, layers::FADE);
+        let layers = layers::visible(
+            &self.panel,
+            &self.levels,
+            f32::from(self.prefs.map.fade_percent) / 100.0,
+        );
         let frame = ViewFrame {
             data: &data,
             project: &self.form.project,
             base: self.panel.base,
             layers: &layers,
+            invert_zoom: self.prefs.map.invert_zoom,
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);
@@ -981,10 +1088,13 @@ fn power_of_two(
 ///
 /// The project cannot be loaded or the window cannot be created.
 pub fn run(dir: &Path) -> anyhow::Result<()> {
-    let app = NavesApp::open(
+    let mut app = NavesApp::open(
         dir,
         Box::new(|| crate::user_prefs::locate_tools().map_err(|e| e.to_string())),
     )?;
+    if let Some(path) = crate::user_prefs::path() {
+        app = app.with_preferences(path);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])

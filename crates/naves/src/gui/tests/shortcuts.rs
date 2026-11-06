@@ -8,7 +8,7 @@ use egui_kittest::kittest::Queryable;
 
 use super::*;
 use crate::gui::levels::Level;
-use crate::gui::shortcuts::{Action, Binding, SHORTCUTS, Scope, ToolId};
+use crate::gui::shortcuts::{Action, Binding, Bindings, SHORTCUTS, Scope, ToolId};
 use crate::gui::testing::{FAKE_LEVEL, FakeViewport};
 use crate::gui::viewport::Viewport;
 use crate::gui::viewport::map::MapViewport;
@@ -436,11 +436,11 @@ fn tab_still_moves_focus() {
 #[test]
 fn tooltips_show_the_key() {
     assert_eq!(
-        crate::gui::stack::tooltip(Level::Terrain),
+        crate::gui::stack::tooltip(Level::Terrain, &Bindings::default()),
         "Go to Terrain (1)"
     );
     assert_eq!(
-        crate::gui::stack::tooltip(Level::Project),
+        crate::gui::stack::tooltip(Level::Project, &Bindings::default()),
         "Go to Project (0)"
     );
 }

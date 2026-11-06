@@ -97,5 +97,14 @@ pub fn tab_row(ui: &mut egui::Ui, tabs: &[DockTabDef], app: &mut NavesApp) {
                 app.dock = tab.id;
             }
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Settings")
+                .on_hover_text("These apply to every project")
+                .clicked()
+            {
+                app.open_settings();
+            }
+        });
     });
 }

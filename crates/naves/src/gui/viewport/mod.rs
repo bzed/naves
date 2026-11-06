@@ -89,6 +89,8 @@ pub struct ViewFrame<'a> {
     pub base: Overlay,
     /// The layers to draw over it, bottom first.
     pub layers: &'a [VisibleLayer],
+    /// The wheel zooms the other way.
+    pub invert_zoom: bool,
     /// Counts up with every new `MapData` (and every change of what the pictures show).
     pub generation: u64,
 }

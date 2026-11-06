@@ -7,7 +7,7 @@
 use eframe::egui::{self, Align2, FontId, Sense, WidgetInfo};
 
 use super::NavesApp;
-use super::shortcuts::{self, Action, ToolId};
+use super::shortcuts::{Action, ToolId};
 use super::theme::{GREEN, INK};
 
 /// Width of the rail.
@@ -19,7 +19,10 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
     let level = app.panel.active;
     let tools = app.rail_tools();
     for (tool, word) in tools {
-        let key = shortcuts::key_text(Action::Tool(tool), level).unwrap_or_default();
+        let key = app
+            .bindings
+            .key_text(Action::Tool(tool), level)
+            .unwrap_or_default();
         let active = app.tool == tool;
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), BUTTON_HEIGHT),

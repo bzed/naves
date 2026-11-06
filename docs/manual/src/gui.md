@@ -107,6 +107,10 @@ Notes of the merge (a file that overlaps no other image, so its colours are not 
 
 If the project has no elevation files, or the files do not cover the area, the map says so instead of drawing.
 
+## Settings
+
+The **Settings** button at the right end of the dock (or **F2**) opens the [settings](settings.md): keyboard shortcuts, the map and the paths of the external tools. They apply to every project.
+
 ## The dock (bottom)
 
 The dock has the tabs **Build** and **Problems**. On a low window it folds to its tab row.

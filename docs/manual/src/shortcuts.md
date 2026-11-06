@@ -6,7 +6,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Keyboard shortcuts
 
-The defaults of the [GUI](gui.md). Press **F1** in the editor for the keys that work in the level you are in.
+The defaults of the [GUI](gui.md); every key can be changed in the [settings](settings.md). Press **F1** in the editor for the keys that work in the level you are in.
 Only what exists today does anything: a key whose action is not built yet is ignored. Letters are logical keys, so
 a tool's letter is what the keycap says, on a German keyboard too; no default needs Shift or AltGr for a symbol.
 

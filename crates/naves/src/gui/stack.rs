@@ -9,6 +9,7 @@
 use eframe::egui::{self, Align2, Color32, FontId, Sense, WidgetInfo};
 use std::collections::BTreeSet;
 
+use naves_core::prefs::MapPrefs;
 use naves_core::render::{MapLayer, Overlay};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
@@ -57,7 +58,37 @@ impl Default for LayerPanel {
     }
 }
 
+/// The id of a base map, as the settings file spells it.
+#[must_use]
+pub fn overlay_id(overlay: Overlay) -> &'static str {
+    match overlay {
+        Overlay::Hillshade => "hillshade",
+        Overlay::Slope => "slope",
+        Overlay::Height => "height",
+        Overlay::Surface => "surface",
+        Overlay::Imagery => "imagery",
+    }
+}
+
 impl LayerPanel {
+    /// What a project opens with: the base map and the layers of the settings; names that do not exist are ignored.
+    #[must_use]
+    pub fn from_prefs(prefs: &MapPrefs) -> LayerPanel {
+        let mut panel = LayerPanel::default();
+        if let Some((overlay, _)) = BASE_MAPS
+            .iter()
+            .find(|(o, _)| overlay_id(*o) == prefs.start_base)
+        {
+            panel.base = *overlay;
+        }
+        panel.on = MapLayer::ALL
+            .iter()
+            .filter(|l| prefs.start_layers.iter().any(|id| id == l.id()))
+            .copied()
+            .collect();
+        panel
+    }
+
     /// The colour of the band on top of the map.
     #[must_use]
     pub fn band_colour(&self) -> Color32 {
@@ -109,12 +140,13 @@ pub fn stack_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
     let levels: Vec<Level> = app.levels.iter().map(|d| d.level).rev().collect();
     for level in levels {
         let active = app.panel.active == level;
-        if row(ui, level, active) {
+        if row(ui, level, active, &app.bindings) {
             app.activate(level);
         }
-        if active {
-            layers_ui(app, ui, level);
-        }
+        let unfolded = ui
+            .ctx()
+            .animate_bool(egui::Id::unique(("unfold", level.digit())), active);
+        layers_ui(app, ui, level, unfolded);
     }
 }
 
@@ -131,7 +163,7 @@ fn legend_ui(ui: &mut egui::Ui) {
 }
 
 /// One stratum. Returns whether it was clicked.
-fn row(ui: &mut egui::Ui, level: Level, active: bool) -> bool {
+fn row(ui: &mut egui::Ui, level: Level, active: bool, bindings: &shortcuts::Bindings) -> bool {
     let height = if active { ACTIVE_ROW } else { CLOSED_ROW };
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::click());
@@ -174,13 +206,13 @@ fn row(ui: &mut egui::Ui, level: Level, active: bool) -> bool {
             egui::StrokeKind::Inside,
         );
     }
-    response.on_hover_text(tooltip(level)).clicked()
+    response.on_hover_text(tooltip(level, bindings)).clicked()
 }
 
 /// The tooltip of a level's row: where it goes and the key.
 #[must_use]
-pub fn tooltip(level: Level) -> String {
-    match shortcuts::key_text(shortcuts::Action::Level(level), level) {
+pub fn tooltip(level: Level, bindings: &shortcuts::Bindings) -> String {
+    match bindings.key_text(shortcuts::Action::Level(level), level) {
         Some(key) => format!("Go to {} ({key})", level.name()),
         None => format!("Go to {}", level.name()),
     }
@@ -188,15 +220,32 @@ pub fn tooltip(level: Level) -> String {
 
 /// The layers of the open level: a checkbox each, the key under it while it is on. A 4 px edge in the level's colour
 /// runs down the left, so that they read as part of the stratum above.
-fn layers_ui(app: &mut NavesApp, ui: &mut egui::Ui, level: Level) {
+fn layers_ui(app: &mut NavesApp, ui: &mut egui::Ui, level: Level, unfolded: f32) {
     let Some(def) = app.levels.iter().find(|d| d.level == level) else {
         return;
     };
-    if def.layers.is_empty() {
+    if def.layers.is_empty() || unfolded <= 0.0 {
         return;
     }
+    // The one motion of the window: the layers unfold under their level. They are laid out at full size in a
+    // child, clipped to the part that has unfolded, and their height is remembered for the next frame.
+    let height_id = egui::Id::unique(("unfolded-height", level.digit()));
+    let known: f32 = ui.ctx().data(|d| d.get_temp(height_id)).unwrap_or(0.0);
     let top = ui.cursor().min;
-    ui.horizontal(|ui| {
+    let width = ui.available_width();
+    let shown = if unfolded >= 1.0 {
+        f32::MAX
+    } else {
+        known * unfolded
+    };
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+        top,
+        egui::vec2(width, f32::MAX / 4.0),
+    )));
+    child.set_clip_rect(
+        egui::Rect::from_min_size(top, egui::vec2(width, shown)).intersect(ui.clip_rect()),
+    );
+    child.horizontal(|ui| {
         ui.add_space(EDGE + 8.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -221,7 +270,14 @@ fn layers_ui(app: &mut NavesApp, ui: &mut egui::Ui, level: Level) {
             ui.add_space(4.0);
         });
     });
-    let bottom = ui.cursor().min.y;
-    let edge = egui::Rect::from_min_max(top, egui::pos2(top.x + EDGE, bottom));
+    let full = child.min_rect().height();
+    ui.ctx().data_mut(|d| d.insert_temp(height_id, full));
+    let height = if unfolded >= 1.0 {
+        full
+    } else {
+        known * unfolded
+    };
+    ui.allocate_space(egui::vec2(width, height));
+    let edge = egui::Rect::from_min_size(top, egui::vec2(EDGE, height));
     ui.painter().rect_filled(edge, 0.0, level.colour());
 }

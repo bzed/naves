@@ -80,7 +80,7 @@ impl Viewport for MapViewport {
         if let Some(pos) = response.hover_pos() {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll != 0.0 {
-                let factor = (-f64::from(scroll) * 0.002).exp();
+                let factor = MapView::wheel_factor(f64::from(scroll), frame.invert_zoom);
                 view.zoom_at(
                     f64::from(pos.x - rect.left()),
                     f64::from(pos.y - rect.top()),

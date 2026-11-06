@@ -10,9 +10,6 @@ use super::levels::LevelDef;
 use super::stack::LayerPanel;
 use super::viewport::VisibleLayer;
 
-/// How strongly the levels you are not working on are drawn.
-pub const FADE: f32 = 0.4;
-
 /// A layer as the stack shows it.
 pub struct LayerDef {
     /// Which layer.

@@ -7,6 +7,7 @@
 //! assignments and the stable ids are checked for the final set from the start. [`action_exists`] says what can
 //! be done today; a key whose action does not exist does nothing.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use eframe::egui::{self, InputState, Key, Modifiers};
@@ -133,14 +134,38 @@ impl fmt::Display for Binding {
     }
 }
 
+impl Binding {
+    /// Reads `Ctrl+Shift+B`, `F9`, `,` and the like. `None` for a key name that egui does not know.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Binding> {
+        let mut rest = text.trim();
+        let mut modifiers = Modifiers::NONE;
+        'prefixes: loop {
+            for prefix in ["ctrl+", "alt+", "shift+"] {
+                if let Some(head) = rest.get(..prefix.len())
+                    && head.eq_ignore_ascii_case(prefix)
+                    && let Some(tail) = rest.get(prefix.len()..)
+                    && !tail.is_empty()
+                {
+                    match prefix {
+                        "ctrl+" => modifiers.ctrl = true,
+                        "alt+" => modifiers.alt = true,
+                        _ => modifiers.shift = true,
+                    }
+                    rest = tail;
+                    continue 'prefixes;
+                }
+            }
+            break;
+        }
+        Key::from_name(rest).map(|key| Binding { key, modifiers })
+    }
+}
+
 /// One row of the table.
 #[derive(Debug, Clone, Copy)]
 pub struct Shortcut {
     /// Stable forever: the settings file refers to it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the settings file reads it (Task 10)")
-    )]
     pub id: &'static str,
     /// The default key.
     pub binding: Binding,
@@ -636,7 +661,8 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::Build
         | Action::Help
         | Action::HideLevel
-        | Action::ShowOthersInFull => true,
+        | Action::ShowOthersInFull
+        | Action::Settings => true,
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
         Action::Tool(tool) => app.has_tool(tool),
         Action::SearchItems => app.has_palette(),
@@ -651,8 +677,7 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::BrushWeaker
         | Action::BrushStronger
         | Action::Finish
-        | Action::Regenerate
-        | Action::Settings => false,
+        | Action::Regenerate => false,
     }
 }
 
@@ -682,18 +707,181 @@ fn fires_while_typing(binding: Binding) -> bool {
     ) || (ctrl && matches!(binding.key, Key::Tab | Key::B))
 }
 
+/// The keys in force: the defaults of [`SHORTCUTS`] with what the person changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bindings {
+    /// By shortcut id; `None` is "no key".
+    current: BTreeMap<&'static str, Option<Binding>>,
+}
+
+impl Default for Bindings {
+    fn default() -> Self {
+        Self::new(&BTreeMap::new()).0
+    }
+}
+
+impl Bindings {
+    /// The defaults with the `overrides` of the settings file (id to key text, `""` for no key). The second value
+    /// says, in words, what could not be read; such a key keeps its default. Ids this version does not know are
+    /// ignored here (the settings keep them).
+    #[must_use]
+    pub fn new(overrides: &BTreeMap<String, String>) -> (Bindings, Vec<String>) {
+        let mut notes = Vec::new();
+        let current = SHORTCUTS
+            .iter()
+            .map(|s| {
+                let binding = match overrides.get(s.id) {
+                    None => Some(s.binding),
+                    Some(text) if text.trim().is_empty() => None,
+                    Some(text) => Binding::parse(text).or_else(|| {
+                        notes.push(format!(
+                            "\"{text}\" is not a key I know for {}; the default {} stays.",
+                            s.label, s.binding
+                        ));
+                        Some(s.binding)
+                    }),
+                };
+                (s.id, binding)
+            })
+            .collect();
+        (Bindings { current }, notes)
+    }
+
+    fn get(&self, shortcut: &Shortcut) -> Option<Binding> {
+        self.current.get(shortcut.id).copied().flatten()
+    }
+
+    /// The key of the shortcut with this id, or `None` for no key.
+    #[must_use]
+    pub fn key_of(&self, id: &str) -> Option<Binding> {
+        self.current.get(id).copied().flatten()
+    }
+
+    /// The key that does `action` in `level`.
+    #[must_use]
+    pub fn key_for(&self, action: Action, level: Level) -> Option<Binding> {
+        SHORTCUTS
+            .iter()
+            .filter(|s| s.action == action && s.scope.applies(level))
+            .find_map(|s| self.get(s))
+    }
+
+    /// The key that does `action` in `level`, as text.
+    #[must_use]
+    pub fn key_text(&self, action: Action, level: Level) -> Option<String> {
+        self.key_for(action, level).map(|b| b.to_string())
+    }
+
+    /// Whether the shortcut differs from its default.
+    #[must_use]
+    pub fn is_changed(&self, shortcut: &Shortcut) -> bool {
+        self.get(shortcut) != Some(shortcut.binding)
+    }
+
+    /// The shortcut that already uses `new` where the shortcut `id` would use it: the same key and a scope in
+    /// common (a key used everywhere meets all levels; the same key in two levels is no conflict).
+    #[must_use]
+    pub fn conflict(&self, new: Binding, id: &str) -> Option<&'static Shortcut> {
+        let own = SHORTCUTS.iter().find(|s| s.id == id)?;
+        SHORTCUTS
+            .iter()
+            .filter(|s| s.id != id && scopes_meet(s.scope, own.scope))
+            .find(|s| self.get(s) == Some(new))
+    }
+
+    /// Gives the shortcut `id` a key.
+    pub fn set(&mut self, id: &str, binding: Binding) {
+        if let Some(slot) = self.slot(id) {
+            *slot = Some(binding);
+        }
+    }
+
+    /// Takes the key away from the shortcut `id`.
+    pub fn clear(&mut self, id: &str) {
+        if let Some(slot) = self.slot(id) {
+            *slot = None;
+        }
+    }
+
+    /// Gives the shortcut `id` its default again.
+    pub fn reset(&mut self, id: &str) {
+        let default = SHORTCUTS.iter().find(|s| s.id == id).map(|s| s.binding);
+        if let Some(slot) = self.slot(id) {
+            *slot = default;
+        }
+    }
+
+    /// All defaults again.
+    pub fn reset_all(&mut self) {
+        *self = Bindings::default();
+    }
+
+    fn slot(&mut self, id: &str) -> Option<&mut Option<Binding>> {
+        self.current
+            .iter_mut()
+            .find(|(k, _)| **k == id)
+            .map(|(_, v)| v)
+    }
+
+    /// What differs from the default, for the settings file: the id and the key as text, `""` for no key.
+    #[must_use]
+    pub fn overrides(&self) -> BTreeMap<String, String> {
+        SHORTCUTS
+            .iter()
+            .filter(|s| self.is_changed(s))
+            .map(|s| {
+                (
+                    s.id.to_string(),
+                    self.get(s).map(|b| b.to_string()).unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// Keys that two shortcuts share, in words. The first in the table wins when the key is pressed.
+    #[must_use]
+    pub fn duplicates(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, a) in SHORTCUTS.iter().enumerate() {
+            for b in SHORTCUTS.iter().skip(i + 1) {
+                if let Some(key) = self.get(a)
+                    && self.get(b) == Some(key)
+                    && scopes_meet(a.scope, b.scope)
+                {
+                    out.push(format!(
+                        "{key} is used for {} and for {}.",
+                        a.label, b.label
+                    ));
+                }
+            }
+        }
+        out
+    }
+}
+
+fn scopes_meet(a: Scope, b: Scope) -> bool {
+    match (a, b) {
+        (Scope::Everywhere, _) | (_, Scope::Everywhere) => true,
+        (Scope::Level(x), Scope::Level(y)) => x == y,
+    }
+}
+
 /// The action whose key was pressed in this frame, in the level `level`. Modifiers must match exactly, so that
 /// Ctrl+B is not B. While `typing`, only keys that cannot be typed fire.
 #[must_use]
-pub fn action_for(input: &InputState, level: Level, typing: bool) -> Option<Action> {
+pub fn action_for(
+    input: &InputState,
+    bindings: &Bindings,
+    level: Level,
+    typing: bool,
+) -> Option<Action> {
     SHORTCUTS
         .iter()
         .filter(|s| s.scope.applies(level))
-        .filter(|s| !typing || fires_while_typing(s.binding))
-        .find(|s| {
-            input.key_pressed(s.binding.key) && input.modifiers.matches_exact(s.binding.modifiers)
-        })
-        .map(|s| s.action)
+        .filter_map(|s| bindings.get(s).map(|b| (s, b)))
+        .filter(|(_, b)| !typing || fires_while_typing(*b))
+        .find(|(_, b)| input.key_pressed(b.key) && input.modifiers.matches_exact(b.modifiers))
+        .map(|(s, _)| s.action)
 }
 
 /// Whether a text field has the keyboard. A `DragValue` being typed in counts, since it is one.
@@ -702,18 +890,9 @@ pub fn typing(ctx: &egui::Context) -> bool {
     ctx.text_edit_focused()
 }
 
-/// The key that goes to a level, as text.
+/// The rows of the F1 sheet: what exists in `level`, everywhere first, with the key in force.
 #[must_use]
-pub fn key_text(action: Action, level: Level) -> Option<String> {
-    SHORTCUTS
-        .iter()
-        .find(|s| s.action == action && s.scope.applies(level))
-        .map(|s| s.binding.to_string())
-}
-
-/// The rows of the F1 sheet: what exists in `level`, everywhere first.
-#[must_use]
-pub fn sheet(app: &NavesApp, level: Level) -> Vec<&'static Shortcut> {
+pub fn sheet(app: &NavesApp, level: Level) -> Vec<(&'static str, String)> {
     let exists = |s: &&Shortcut| s.scope.applies(level) && action_exists(s.action, app);
     let everywhere = SHORTCUTS
         .iter()
@@ -723,5 +902,49 @@ pub fn sheet(app: &NavesApp, level: Level) -> Vec<&'static Shortcut> {
         .iter()
         .filter(|s| s.scope != Scope::Everywhere)
         .filter(exists);
-    everywhere.chain(own).collect()
+    everywhere
+        .chain(own)
+        .map(|s| {
+            let key = app
+                .bindings
+                .key_of(s.id)
+                .map_or_else(|| "no key".to_string(), |b| b.to_string());
+            (s.label, key)
+        })
+        .collect()
+}
+
+/// Whether the action is built at all, whatever the state of the window: the settings list these.
+#[must_use]
+pub fn action_built(action: Action, app: &NavesApp) -> bool {
+    match action {
+        Action::Level(level) => app.levels.iter().any(|d| d.level == level),
+        Action::Tool(tool) => app.levels.iter().any(|d| {
+            d.tools.iter().any(|t| t.tool == tool) || (tool == ToolId::SELECT && d.pick.is_some())
+        }),
+        Action::SwitchView => app.views.can_switch(),
+        Action::SearchItems => app.levels.iter().any(|d| !(d.items)(app).is_empty()),
+        Action::HideLevel
+        | Action::ShowOthersInFull
+        | Action::FrameSelection
+        | Action::FrameMap
+        | Action::Cancel
+        | Action::Build
+        | Action::NextProblem
+        | Action::PreviousProblem
+        | Action::Help
+        | Action::Settings => true,
+        Action::WorldAxes
+        | Action::FollowGround
+        | Action::Delete
+        | Action::Duplicate
+        | Action::Undo
+        | Action::Redo
+        | Action::BrushSmaller
+        | Action::BrushLarger
+        | Action::BrushWeaker
+        | Action::BrushStronger
+        | Action::Finish
+        | Action::Regenerate => false,
+    }
 }
