@@ -8,9 +8,11 @@
 //! one loud thing on the screen.
 
 mod imagery;
+mod layout;
 mod levels;
 mod map_view;
 mod settings;
+mod stack;
 #[cfg(test)]
 mod testing;
 mod theme;
@@ -25,18 +27,24 @@ use eframe::egui::{self, Color32, RichText};
 use naves_core::imagery::catalog::ImageryOption;
 use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
 use naves_core::render::Overlay;
-use naves_core::surface::SurfaceClass;
 use naves_export::build::BuildOutput;
 use naves_export::imagery_fetch::Http;
 use naves_export::tools::Tools;
 
 use imagery::{FetchJob, OwnFile};
+use levels::LevelDef;
 use settings::SettingsForm;
-use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
+use stack::LayerPanel;
+#[cfg(test)]
+use viewport::ViewEvent;
+use viewport::{ViewFrame, ViewportSet, default_views};
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
 
 use theme::{ERROR, GREEN, GROUND, INK, PANEL};
 const SETTINGS_WIDTH: f32 = 300.0;
+const RIGHT_WIDTH: f32 = 230.0;
+const BAND_HEIGHT: f32 = 3.0;
+const STATUS_HEIGHT: f32 = 26.0;
 
 type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
 
@@ -53,7 +61,12 @@ pub struct NavesApp {
     views: ViewportSet,
     /// Counts up with every new `MapData` and every change of what the pictures show.
     generation: u64,
-    overlay: Overlay,
+    /// The levels that are built, bottom first.
+    levels: Vec<&'static LevelDef>,
+    /// The base map and the active level.
+    panel: LayerPanel,
+    /// The left panel was opened by hand in a window that is too small for it.
+    left_open: bool,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -102,7 +115,9 @@ impl NavesApp {
             form,
             views: ViewportSet::new(default_views()),
             generation: 0,
-            overlay: Overlay::Hillshade,
+            levels: levels::BUILT.to_vec(),
+            panel: LayerPanel::default(),
+            left_open: false,
             heightmap: HeightmapState::NoDem,
             job: None,
             reload_wanted: false,
@@ -220,23 +235,85 @@ impl NavesApp {
         if self.building() || self.job.is_some() || self.fetch.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        egui::Panel::left("settings")
+        let fold = layout::fold_for(ui.max_rect().size());
+        egui::Panel::bottom("build")
+            .resizable(!fold.dock)
+            .default_size(if fold.dock { 40.0 } else { 150.0 })
+            .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
+            .show(ui, |ui| self.build_ui(ui, fold.dock));
+        if fold.left && !self.left_open {
+            egui::Panel::left("settings-strip")
+                .resizable(false)
+                .exact_size(22.0)
+                .frame(egui::Frame::new().fill(PANEL))
+                .show(ui, |ui| {
+                    if ui
+                        .button("›")
+                        .on_hover_text("Open the panel of this level")
+                        .clicked()
+                    {
+                        self.left_open = true;
+                    }
+                });
+        } else {
+            egui::Panel::left("settings")
+                .resizable(false)
+                .exact_size(SETTINGS_WIDTH)
+                .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.left_panel(ui));
+                });
+        }
+        egui::Panel::right("stack")
             .resizable(false)
-            .exact_size(SETTINGS_WIDTH)
+            .exact_size(RIGHT_WIDTH)
             .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .show(ui, |ui| self.settings_ui(ui));
+                    .show(ui, |ui| stack::stack_ui(self, ui));
             });
-        egui::Panel::bottom("build")
-            .resizable(true)
-            .default_size(150.0)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
-            .show(ui, |ui| self.build_ui(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(GROUND))
-            .show(ui, |ui| self.map_ui(ui));
+            .show(ui, |ui| self.middle(ui));
+    }
+
+    /// The panel of the active level.
+    fn left_panel(&mut self, ui: &mut egui::Ui) {
+        if let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) {
+            (def.panel)(self, ui);
+        }
+    }
+
+    /// The band, the view and the status line.
+    fn middle(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_rect_before_wrap();
+        let band =
+            egui::Rect::from_min_size(full.min, egui::vec2(full.width().max(0.0), BAND_HEIGHT));
+        ui.painter()
+            .rect_filled(band, 0.0, self.panel.band_colour());
+        let status_h = STATUS_HEIGHT.min((full.height() - BAND_HEIGHT).max(0.0));
+        let status =
+            egui::Rect::from_min_max(egui::pos2(full.min.x, full.max.y - status_h), full.max);
+        let map = egui::Rect::from_min_max(
+            egui::pos2(full.min.x, band.max.y),
+            egui::pos2(full.max.x, status.min.y.max(band.max.y)),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(map), |ui| self.map_ui(ui));
+        let text = self
+            .levels
+            .iter()
+            .find(|d| d.level == self.panel.active)
+            .map_or("", |d| d.status);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(text);
+            });
+        });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -325,7 +402,7 @@ impl NavesApp {
         }
     }
 
-    fn build_ui(&mut self, ui: &mut egui::Ui) {
+    fn build_ui(&mut self, ui: &mut egui::Ui, folded: bool) {
         ui.horizontal(|ui| {
             let can_build = !self.building() && self.form.error.is_none();
             let button = egui::Button::new(RichText::new("Build").color(Color32::WHITE).strong())
@@ -339,6 +416,9 @@ impl NavesApp {
                 ui.spinner();
             }
         });
+        if folded {
+            return;
+        }
         ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
@@ -364,21 +444,6 @@ impl NavesApp {
     }
 
     fn map_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.overlay, Overlay::Hillshade, "Hillshade");
-            ui.selectable_value(&mut self.overlay, Overlay::Slope, "Slope");
-            ui.selectable_value(&mut self.overlay, Overlay::Height, "Height");
-            ui.selectable_value(&mut self.overlay, Overlay::Surface, "Surface");
-            ui.selectable_value(&mut self.overlay, Overlay::Imagery, "Imagery");
-            if self.overlay == Overlay::Surface {
-                ui.add_space(12.0);
-                surface_legend(ui);
-            }
-            if self.overlay == Overlay::Imagery {
-                ui.add_space(12.0);
-                ui.label("Ground without imagery is checkered.");
-            }
-        });
         let data = match &self.heightmap {
             HeightmapState::Ready(data) => Arc::clone(data),
             HeightmapState::NoDem => {
@@ -398,7 +463,7 @@ impl NavesApp {
                 return;
             }
         };
-        if self.overlay == Overlay::Imagery && data.imagery.is_none() {
+        if self.panel.base == Overlay::Imagery && data.imagery.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     "No imagery yet. List GeoTIFF files in sources.imagery in naves.toml, then reopen the project.",
@@ -410,23 +475,25 @@ impl NavesApp {
         let frame = ViewFrame {
             data: &data,
             project: &self.form.project,
-            base: self.overlay,
+            base: self.panel.base,
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);
-        self.handle_events(events, rect);
-    }
-
-    fn handle_events(&mut self, events: Vec<ViewEvent>, rect: egui::Rect) {
         #[cfg(test)]
         {
             self.seen_events.extend(events);
             self.seen_rect = rect;
         }
         #[cfg(not(test))]
-        {
-            let _ = (events, rect); // tools and selection arrive with the tasks that read them
-        }
+        drop(events); // tools and selection read them in the tasks that add them
+    }
+
+    /// Adds a level that only tests build.
+    #[cfg(test)]
+    fn with_extra_level(mut self, def: &'static LevelDef) -> Self {
+        self.levels.push(def);
+        self.levels.sort_by_key(|d| d.level.digit());
+        self
     }
 
     #[cfg(test)]
@@ -444,22 +511,32 @@ impl NavesApp {
 /// The elevation, land cover and OpenStreetMap files of the project, with what to do when there are none.
 fn elevation_and_ground_files_ui(ui: &mut egui::Ui, p: &Project) {
     ui.label(RichText::new("Elevation files").strong());
+    dem_files_ui(ui, p);
+    ui.add_space(8.0);
+    ground_files_ui(ui, p);
+}
+
+/// The elevation files, or what to do when there are none.
+fn dem_files_ui(ui: &mut egui::Ui, p: &Project) {
     if p.sources.dem.is_empty() {
         ui.label("None yet. Add DEM files to sources.dem in naves.toml, then reopen the project.");
     }
     for file in &p.sources.dem {
         ui.label(file.display().to_string());
     }
-    ui.add_space(8.0);
+}
+
+/// The land cover and OpenStreetMap files, and what the ground follows when there are none.
+fn ground_files_ui(ui: &mut egui::Ui, p: &Project) {
     source_list(ui, "Land cover files", &p.sources.land_cover);
     ui.add_space(8.0);
     source_list(ui, "OpenStreetMap files", &p.sources.osm);
     if p.sources.land_cover.is_empty() && p.sources.osm.is_empty() {
         ui.add_space(4.0);
         ui.label(
-                "Without them the ground follows slope and altitude. List files in sources.land_cover and \
-                 sources.osm in naves.toml, then reopen the project.",
-            );
+            "Without them the ground follows slope and altitude. List files in sources.land_cover and \
+             sources.osm in naves.toml, then reopen the project.",
+        );
     }
 }
 
@@ -471,17 +548,6 @@ fn source_list(ui: &mut egui::Ui, title: &str, files: &[PathBuf]) {
     }
     for file in files {
         ui.label(file.display().to_string());
-    }
-}
-
-/// The ground classes with the colour they have in the surface overlay.
-fn surface_legend(ui: &mut egui::Ui) {
-    for class in SurfaceClass::ALL {
-        let [r, g, b] = class.rgb();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
-        ui.label(class.name());
     }
 }
 

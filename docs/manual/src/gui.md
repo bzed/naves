@@ -11,13 +11,43 @@ naves gui [<project folder>]
 ```
 
 opens the project in the current folder (or the one you name) in a window titled *Náves – (project name)*.
-The window has three parts. This first version shows the project and builds it; there is no object editing yet.
+There is no object editing yet; the window shows the project, reads the terrain and builds it.
 
 ![The map view: shaded relief of the Königssee area](images/map-hillshade.png)
 
-*The map view with the Hillshade overlay (the Königssee test area).*
+*The map with the Relief base map (the Königssee test area).*
 
-## Settings (left)
+## The stack (right)
+
+The right column is a stack of **levels**, drawn like a geologist's column: level 0, Project, at the bottom, and
+what lives on the ground above it. Click a level, or press its number, to work on it. The active level is
+the thick row in its own colour. A level appears when it can do something; today these are:
+
+| Key | Level | The left panel shows |
+|---|---|---|
+| 0 | Project | the project settings (below) |
+| 1 | Terrain | map size, vertex spacing, lowest and highest point, the elevation files |
+| 2 | Ground | the share of the map for each ground class, the land cover and OpenStreetMap files |
+
+A 3 px band in the active level's colour runs along the top of the map, and a line below the map says what
+you can do. The numbers never change, so key 4 will be Roads and paths even though it is not there yet.
+
+Above the stack are the **base maps**, one at a time: **Relief** (shaded, sun in the north-west), **Slope**
+(green flat to red at 45° and steeper; the surface painter makes ground above 35° rock), **Height**, **Ground**
+and **Imagery**.
+
+- **Ground** shows the ground classes Náves will paint (grass, rock, forest and soil), in the colours of the
+  satellite image, with a legend under the row. It is decided from the land cover and OpenStreetMap files
+  of the project, and from slope and altitude where they say nothing, exactly as the build does. The map takes
+  a little longer to appear when the project lists such files.
+- **Imagery** shows the satellite or aerial images of `sources.imagery`, merged as the build merges them, so
+  you can check the result before a long build. Ground that no file covers is drawn in a checkered grey, so
+  a gap cannot be mistaken for ground. Without imagery files the map says how to add them.
+
+On a small window the bottom dock folds to its button row (below 560 px of height), then the left panel to
+a thin strip with a button that opens it (below 900 px of width). The map stays.
+
+## Project settings (level 0, left)
 
 The fields of [`naves.toml`](project-file.md): name, centre, real extent, both scales and the two grid sizes. A
 change is checked at once and saved to `naves.toml` when it is valid. A value that is out of range is **not**
@@ -30,18 +60,8 @@ see [the project file](project-file.md#sources). Changing a list reloads the map
 
 ## Map (centre)
 
-A top-down view of the heightmap, north up.
-
-- **Drag** to move the map, **scroll** to zoom in and out around the pointer.
-- **Hillshade** shows relief with the sun in the north-west, **Slope** colours the ground from green (flat) to red
-  (45° and steeper; the surface painter makes ground above 35° rock), **Height** shades by height.
-- **Surface** shows the ground classes Náves will paint (grass, rock, forest and soil), in the colours of the
-  satellite image, with a legend next to the buttons. It is decided from the land cover and OpenStreetMap files
-  of the project, and from slope and altitude where they say nothing, exactly as the build does. The map takes
-  a little longer to appear when the project lists such files.
-- **Imagery** shows the satellite or aerial images of `sources.imagery`, merged as the build merges them, so
-  you can check the result before a long build. Ground that no file covers is drawn in a checkered grey, so
-  a gap cannot be mistaken for ground. Without imagery files the map says how to add them.
+A top-down view of the heightmap, north up. **Drag** to move the map, **scroll** to zoom in and out around the
+pointer.
 
 ![The slope overlay](images/map-slope.png)
 

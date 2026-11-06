@@ -32,28 +32,26 @@ fn digits_never_change() {
 
 #[test]
 fn colours_are_the_spec_s() {
-    let hex: Vec<[u8; 3]> = Level::ALL
+    let got: Vec<[u8; 3]> = Level::ALL
         .iter()
         .map(|l| {
             let c = l.colour();
             [c.r(), c.g(), c.b()]
         })
         .collect();
-    let expected = [
-        0x5a6660u32,
-        0x8c6a45,
-        0xa39a5c,
-        0x3f6f9e,
-        0x1d2924,
-        0x2e6a4c,
-        0x9a4f3c,
-        0x6b6f76,
-        0x7a4a7f,
-        0xb58a1e,
+    let want: [[u8; 3]; 10] = [
+        [0x5a, 0x66, 0x60],
+        [0x8c, 0x6a, 0x45],
+        [0xa3, 0x9a, 0x5c],
+        [0x3f, 0x6f, 0x9e],
+        [0x1d, 0x29, 0x24],
+        [0x2e, 0x6a, 0x4c],
+        [0x9a, 0x4f, 0x3c],
+        [0x6b, 0x6f, 0x76],
+        [0x7a, 0x4a, 0x7f],
+        [0xb5, 0x8a, 0x1e],
     ];
-    for (got, want) in hex.iter().zip(expected) {
-        assert_eq!(*got, [(want >> 16) as u8, (want >> 8) as u8, want as u8]);
-    }
+    assert_eq!(got, want);
 }
 
 #[test]

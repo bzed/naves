@@ -3,8 +3,9 @@
 
 //! The levels of the editor: what you are working on, from the source data up to what lives on it.
 
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 
+use super::NavesApp;
 use super::theme::{INK, contrast};
 
 /// A level of the stack. The digit is the key and never changes; a level appears in the editor when it is built.
@@ -34,6 +35,10 @@ pub enum Level {
 
 impl Level {
     /// All levels, bottom first.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the settings window lists them (Task 10)")
+    )]
     pub const ALL: [Level; 10] = [
         Level::Project,
         Level::Terrain,
@@ -83,6 +88,10 @@ impl Level {
 
     /// The stable id, used in the settings file.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the shortcut table uses it (Task 4)")
+    )]
     pub fn id(self) -> &'static str {
         match self {
             Level::Project => "level.project",
@@ -125,4 +134,54 @@ impl Level {
             INK
         }
     }
+}
+
+/// What the shell needs to know about a level that is built.
+pub struct LevelDef {
+    /// Which level.
+    pub level: Level,
+    /// The left panel, when the level has no items.
+    pub panel: fn(&mut NavesApp, &mut egui::Ui),
+    /// The status line while nothing else speaks.
+    pub status: &'static str,
+}
+
+/// The levels that are built, bottom first. A later plan adds its level here and nowhere else.
+pub const BUILT: &[&LevelDef] = &[&project::DEF, &terrain::DEF, &ground::DEF];
+
+pub mod ground;
+pub mod project;
+pub mod terrain;
+
+/// Right-aligned number next to its label, in a two-column grid.
+pub(super) fn number_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(label);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(value);
+    });
+    ui.end_row();
+}
+
+/// What a panel shows while the map has no data: what to do, or that it is being read.
+pub(super) fn waiting(
+    app: &NavesApp,
+    ui: &mut egui::Ui,
+) -> Option<std::sync::Arc<super::worker::MapData>> {
+    use super::worker::HeightmapState;
+    match &app.heightmap {
+        HeightmapState::Ready(data) => return Some(std::sync::Arc::clone(data)),
+        HeightmapState::NoDem => {
+            ui.label("Add elevation files to see the map.");
+        }
+        HeightmapState::Loading => {
+            ui.label("Reading the elevation data.");
+        }
+        HeightmapState::Failed(error) => {
+            ui.colored_label(
+                super::theme::ERROR,
+                format!("The map cannot be read: {error}"),
+            );
+        }
+    }
+    None
 }

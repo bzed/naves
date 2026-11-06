@@ -33,7 +33,7 @@ fn two_views(app: NavesApp) -> (NavesApp, FakeHandle) {
 }
 
 fn harness(app: NavesApp) -> Harness<'static, NavesApp> {
-    Harness::new_ui_state(|ui, app: &mut NavesApp| app.show(ui), app)
+    state_harness(app)
 }
 
 #[test]

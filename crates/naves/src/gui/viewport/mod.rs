@@ -6,6 +6,7 @@
 
 pub mod map;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use eframe::egui::{self, Modifiers};
@@ -84,6 +85,10 @@ pub struct ViewFrame<'a> {
 /// A way of looking at the map.
 pub trait Viewport {
     /// The name, for the status line and the shortcut sheet.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the shortcut sheet names it (Task 4)")
+    )]
     fn name(&self) -> &'static str;
     /// Draws the view into `rect` and reports what happened there.
     fn show(
@@ -97,6 +102,10 @@ pub trait Viewport {
     /// Moves the view to a place; before the first `show` it is remembered.
     fn set_focus(&mut self, focus: ViewFocus);
     /// Where a map point is on the screen inside `rect`, or `None` when it is not visible (also behind a camera).
+    #[expect(
+        dead_code,
+        reason = "the selection and problem markers use it (Tasks 6 and 7)"
+    )]
     fn project(&self, at: WorldPoint, rect: egui::Rect) -> Option<egui::Pos2>;
     /// Forgets the camera and every picture: the map under it has changed.
     fn reset(&mut self);
@@ -109,56 +118,72 @@ pub trait Viewport {
 
 /// The views of the editor and which one is shown.
 pub struct ViewportSet {
-    views: Vec<Box<dyn Viewport>>,
-    active: usize,
+    current: Box<dyn Viewport>,
+    others: VecDeque<Box<dyn Viewport>>,
 }
 
 impl ViewportSet {
-    /// A set of views; the first is shown.
+    /// A set of views; the first is shown. Without any, the map is shown.
     #[must_use]
     pub fn new(views: Vec<Box<dyn Viewport>>) -> Self {
-        Self { views, active: 0 }
+        let mut views = VecDeque::from(views);
+        let current = views
+            .pop_front()
+            .unwrap_or_else(|| Box::new(map::MapViewport::default()));
+        Self {
+            current,
+            others: views,
+        }
     }
 
     /// The view that is shown.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the shell asks for its name (Task 4)")
+    )]
     pub fn active(&self) -> &dyn Viewport {
-        self.views[self.active].as_ref()
+        self.current.as_ref()
     }
 
     /// The view that is shown.
     pub fn active_mut(&mut self) -> &mut dyn Viewport {
-        self.views[self.active].as_mut()
+        self.current.as_mut()
     }
 
     /// Whether there is another view to switch to.
     #[must_use]
+    #[cfg_attr(not(test), expect(dead_code, reason = "Ctrl+Tab uses it (Task 4)"))]
     pub fn can_switch(&self) -> bool {
-        self.views.len() > 1
+        !self.others.is_empty()
     }
 
     /// Shows the next view at the place the current one shows.
+    #[cfg_attr(not(test), expect(dead_code, reason = "Ctrl+Tab uses it (Task 4)"))]
     pub fn switch(&mut self) {
-        if !self.can_switch() {
+        let Some(mut next) = self.others.pop_front() else {
             return;
-        }
-        let focus = self.active().focus();
-        self.active = (self.active + 1) % self.views.len();
+        };
+        let focus = self.current.focus();
+        std::mem::swap(&mut self.current, &mut next);
+        self.others.push_back(next);
         if let Some(focus) = focus {
-            self.active_mut().set_focus(focus);
+            self.current.set_focus(focus);
         }
     }
 
     /// Resets every view.
     pub fn reset_all(&mut self) {
-        for view in &mut self.views {
+        self.current.reset();
+        for view in &mut self.others {
             view.reset();
         }
     }
 
     /// Drops the pictures of every view.
     pub fn invalidate_all(&mut self) {
-        for view in &mut self.views {
+        self.current.invalidate();
+        for view in &mut self.others {
             view.invalidate();
         }
     }

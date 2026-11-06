@@ -16,6 +16,7 @@ use naves_export::testing::FakeEnv;
 use super::*;
 
 mod levels;
+mod stack;
 mod viewport;
 
 /// A project with the Königssee DEM below `root`.
@@ -31,6 +32,20 @@ fn project(root: &Path) -> PathBuf {
     std::fs::copy(fixture, dir.join("dem/koenigssee.tif")).unwrap();
     p.save(&dir).unwrap();
     dir
+}
+
+/// The window of a normal session: wide and tall enough that nothing folds.
+fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
+    Harness::builder()
+        .with_size((1180.0, 760.0))
+        .build_ui(|ui| app.show(ui))
+}
+
+/// The same, with the app inside the harness so that tests can look at it between steps.
+fn state_harness(app: NavesApp) -> Harness<'static, NavesApp> {
+    Harness::builder()
+        .with_size((1180.0, 760.0))
+        .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app)
 }
 
 fn app(root: &Path, dir: &Path) -> NavesApp {
@@ -60,7 +75,7 @@ fn editing_the_name_saves_naves_toml() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     // the name is the first text field of the panel
     let field = harness
@@ -79,7 +94,7 @@ fn the_build_button_shows_progress_and_the_result() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     harness.get_by_label("Build").click();
     step_until(&mut harness, |h| {
@@ -101,7 +116,7 @@ fn a_failed_build_is_shown_in_the_log() {
         Box::new(|| Err("armake2 not found; set ARMAKE2".to_string())),
     )
     .unwrap();
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     harness.get_by_label("Build").click();
     step_until(&mut harness, |h| {
@@ -116,7 +131,7 @@ fn a_project_without_dem_says_what_to_do() {
     std::fs::create_dir_all(&dir).unwrap();
     Project::new("Empty", 1.0, 2.0, 1000.0).save(&dir).unwrap();
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(
         harness
@@ -130,7 +145,7 @@ fn the_land_grid_follows_the_terrain_grid() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(harness.query_by_label("32 × 32 land cells").is_some());
     harness.get_by_role(egui::accesskit::Role::ComboBox).click();
@@ -217,7 +232,7 @@ fn land_cover_files_are_listed() {
     let dir = project(root.path());
     add_sources(&dir);
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(harness.query_by_label("Land cover files").is_some());
     assert!(harness.query_by_label("landcover/koenigssee.tif").is_some());
@@ -230,7 +245,7 @@ fn a_project_without_sources_says_what_the_ground_follows() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(
         harness
@@ -260,9 +275,9 @@ fn the_surface_overlay_draws_once_the_map_is_ready() {
     let dir = project(root.path());
     add_sources(&dir);
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
-    harness.get_by_label("Surface").click();
+    harness.get_by_label("Ground").click();
     step_until(&mut harness, |h| h.query_by_label("Soil").is_some());
     assert!(
         harness.query_by_label("Forest").is_some(),
@@ -295,7 +310,7 @@ fn imagery_files_are_listed() {
     let dir = project(root.path());
     add_imagery(&dir, "Copernicus Sentinel data, free and open", false);
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(harness.query_by_label("Satellite imagery files").is_some());
     assert!(harness.query_by_label("imagery/s2.tif").is_some());
@@ -313,7 +328,7 @@ fn non_commercial_is_shown() {
     let dir = project(root.path());
     add_imagery(&dir, "CC BY-NC-SA 4.0", true);
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(harness.query_by_label("Non-commercial map").is_some());
     assert!(
@@ -330,7 +345,7 @@ fn a_project_without_imagery_says_what_the_satellite_image_follows() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(
         harness
@@ -360,7 +375,7 @@ fn the_imagery_brightness_is_set_in_the_panel() {
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
     {
-        let mut harness = Harness::new_ui(|ui| app.show(ui));
+        let mut harness = gui_harness(&mut app);
         harness.run_steps(4);
         assert!(
             harness.query_by_label("Imagery brightness").is_some(),
@@ -384,7 +399,7 @@ fn the_imagery_overlay_explains_a_gap_and_a_missing_list() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     harness.get_by_label("Imagery").click();
     step_until(&mut harness, |h| {
@@ -398,7 +413,7 @@ fn the_imagery_overlay_draws_once_the_map_is_ready() {
     let dir = project(root.path());
     add_imagery(&dir, "CC BY 4.0", false);
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     harness.get_by_label("Imagery").click();
     step_until(&mut harness, |h| {
@@ -419,7 +434,7 @@ fn build_warnings_are_shown_in_the_log() {
     p.sources.land_cover = vec!["landcover/koenigssee_west.tif".into()];
     p.save(&dir).unwrap();
     let mut app = app(root.path(), &dir);
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     harness.get_by_label("Build").click();
     step_until(&mut harness, |h| {
@@ -705,7 +720,7 @@ fn report_is_shown_per_file() {
         "{lines:?}"
     );
     // and in the window
-    let mut harness = Harness::new_ui(|ui| app.show(ui));
+    let mut harness = gui_harness(&mut app);
     harness.run_steps(4);
     assert!(harness.query_by_label_contains("covers").is_some());
 }

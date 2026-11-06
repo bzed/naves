@@ -82,3 +82,17 @@ impl Viewport for FakeViewport {
         false
     }
 }
+
+use super::NavesApp;
+use super::levels::{Level, LevelDef};
+
+/// A level 6 that only tests build.
+pub static FAKE_LEVEL: LevelDef = LevelDef {
+    level: Level::Buildings,
+    panel: fake_panel,
+    status: "Fake level: the status line of a level that tests add.",
+};
+
+fn fake_panel(_app: &mut NavesApp, ui: &mut egui::Ui) {
+    ui.label("The panel of the fake level.");
+}
