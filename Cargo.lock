@@ -1830,6 +1830,7 @@ dependencies = [
  "geotiff-reader",
  "image",
  "naves-core",
+ "naves-formats",
  "osmpbf",
  "proj4rs",
  "proptest",
@@ -1868,6 +1869,7 @@ dependencies = [
 name = "naves-formats"
 version = "0.1.0"
 dependencies = [
+ "naves-formats",
  "thiserror 2.0.21",
 ]
 

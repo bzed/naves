@@ -557,3 +557,68 @@ impl<'a> Cursor<'a> {
         self.skip(size, W)
     }
 }
+
+/// A writer for small synthetic models, for tests of the crates that read them (feature
+/// `test-util`). It writes the layout [`read_odol`] expects and no game data.
+#[cfg(feature = "test-util")]
+pub mod synthetic {
+    /// Resolution of the memory LOD as the game files store it.
+    const MEMORY_RESOLUTION: f32 = 999_999_986_991_104.0;
+
+    fn put_u32(out: &mut Vec<u8>, v: usize) {
+        out.extend_from_slice(&u32::try_from(v).unwrap_or(u32::MAX).to_le_bytes());
+    }
+
+    fn put_str(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(s.as_bytes());
+        out.push(0);
+    }
+
+    /// A version 56 model with one memory LOD. Each entry is a named selection holding one point.
+    #[must_use]
+    pub fn model_bytes(points: &[(&str, [f32; 3])]) -> Vec<u8> {
+        let mut lod = Vec::new();
+        lod.extend_from_slice(&[0; 12]); // proxies, sub-skeletons, skeleton map
+        lod.extend_from_slice(&[0; 56]);
+        lod.extend_from_slice(&[0; 4 * 4]); // textures, materials, two maps
+        lod.extend_from_slice(&[0; 10]); // faces
+        lod.extend_from_slice(&[0; 4]); // sections
+        put_u32(&mut lod, points.len());
+        for (i, (name, _)) in points.iter().enumerate() {
+            put_str(&mut lod, name);
+            lod.extend_from_slice(&[0; 4 + 5 + 4]);
+            put_u32(&mut lod, 1);
+            lod.extend_from_slice(&u16::try_from(i).unwrap_or(u16::MAX).to_le_bytes());
+            lod.extend_from_slice(&[0; 4]);
+        }
+        lod.extend_from_slice(&[0; 4]); // properties
+        lod.extend_from_slice(&[0; 4 + 17]); // key frames and the flags after them
+        lod.extend_from_slice(&[0; 4]);
+        lod.extend_from_slice(&[1, 0, 0, 0, 0]); // clip flags
+        lod.extend_from_slice(&[0; 16 + 4]); // UV range and vertex count
+        lod.extend_from_slice(&[1, 0, 0, 0, 0]);
+        put_u32(&mut lod, 1); // UV sets
+        put_u32(&mut lod, points.len());
+        for (_, p) in points {
+            for v in p {
+                lod.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        let mut file = Vec::new();
+        file.extend_from_slice(b"ODOL");
+        put_u32(&mut file, 56);
+        put_u32(&mut file, 1);
+        file.extend_from_slice(&MEMORY_RESOLUTION.to_le_bytes());
+        file.extend_from_slice(&[0; 48 + 24 + 96 + 5 + 28 + 14 + 1 + 1 + 1 + 4 + 34]);
+        put_str(&mut file, "road");
+        put_str(&mut file, "");
+        file.extend_from_slice(&[0; 6 + 1]);
+        let start = file.len() + 9;
+        put_u32(&mut file, start);
+        put_u32(&mut file, start + lod.len());
+        file.push(1);
+        file.extend_from_slice(&lod);
+        file
+    }
+}

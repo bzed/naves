@@ -20,7 +20,7 @@ naves-formats = { version = "0.1.0", path = "../naves-formats" }
 quick-xml = "0.42.0"
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tiff = { version = "0.11.3", default-features = false, features = ["deflate"] }
@@ -37,3 +37,4 @@ test-util = []
 [dev-dependencies]
 naves-export = { path = ".", features = ["test-util"] }
 naves-core = { path = "../naves-core", features = ["test-util"] }
+naves-formats = { path = "../naves-formats", features = ["test-util"] }

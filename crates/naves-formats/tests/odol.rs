@@ -482,3 +482,14 @@ fn a_material_inside_the_memory_lod_is_refused() {
     let e = read_odol(&file(56, &[(MEMORY, lod)])).unwrap_err();
     assert!(matches!(e, OdolError::Unsupported(_)), "{e}");
 }
+
+#[test]
+fn the_synthetic_writer_reads_back() {
+    let bytes = naves_formats::odol::synthetic::model_bytes(&[
+        ("lb", [-1.0, 0.0, -2.0]),
+        ("pe", [3.0, 0.5, 4.0]),
+    ]);
+    let m = read_odol(&bytes).unwrap();
+    assert_eq!(m.memory["lb"], vec![[-1.0, 0.0, -2.0]]);
+    assert_eq!(m.memory["pe"], vec![[3.0, 0.5, 4.0]]);
+}
