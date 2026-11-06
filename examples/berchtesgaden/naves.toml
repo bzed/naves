@@ -2,9 +2,9 @@ name = "Berchtesgaden"
 world = "berchtesgaden"
 
 [area]
-center_lat = 47.553
-center_lon = 12.972
-real_extent_m = 3000.0
+center_lat = 47.585
+center_lon = 12.965
+real_extent_m = 12800.0
 
 [scale]
 horizontal = 0.5
