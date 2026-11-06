@@ -47,6 +47,33 @@ fn find(haystack: &[u8], needle: &[u8]) -> usize {
         .unwrap()
 }
 
+/// A quarter turn about the vertical axis, worked out by hand: the model's x
+/// axis ends up pointing to map -z (`[0, 0, -1]`), its z axis to +x, and the
+/// first three stored floats are the image of the x axis, not the first row.
+#[test]
+fn transform_is_stored_column_by_column() {
+    let mut w = sample();
+    let quarter_turn = [
+        0.0, 0.0, -1.0, // image of x
+        0.0, 1.0, 0.0, // image of y
+        1.0, 0.0, 0.0, // image of z
+        5.0, 6.0, 7.0,
+    ];
+    w.objects[0].transform = quarter_turn;
+    let buf = encode(&w);
+    let mut expected = Vec::new();
+    for v in quarter_turn {
+        expected.extend_from_slice(&f32::to_le_bytes(v));
+    }
+    let at = find(&buf, &expected);
+    assert!(at > 0);
+    let back = EditableWorld::read(&mut &buf[..]).unwrap();
+    assert_eq!(
+        back.objects[0].transform.map(f32::to_bits),
+        quarter_turn.map(f32::to_bits)
+    );
+}
+
 #[test]
 fn roundtrip_small_world() {
     let w = sample();
