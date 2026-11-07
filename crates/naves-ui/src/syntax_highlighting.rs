@@ -1,6 +1,7 @@
-use crate::HasDesignTokens as _;
 use egui::text::{ByteIndex, LayoutJob};
 use egui::{Color32, Style, TextFormat, TextStyle};
+
+use crate::HasDesignTokens as _;
 
 // ----------------------------------------------------------------------------
 pub trait SyntaxHighlighting {
@@ -20,6 +21,9 @@ pub trait SyntaxHighlighting {
 pub struct SyntaxHighlightedBuilder {
     text: String,
     parts: smallvec::SmallVec<[SyntaxHighlightedPart; 1]>,
+
+    /// Set by [`Self::append_truncation_marker`].
+    truncated: bool,
 }
 
 /// Easily build syntax-highlighted [`LayoutJob`]s.
@@ -54,6 +58,7 @@ impl SyntaxHighlightedBuilder {
                     byte_range: s.byte_range,
                 })
                 .collect(),
+            truncated: false,
         }
     }
 
@@ -144,6 +149,19 @@ impl SyntaxHighlightedBuilder {
         }
     );
 
+    /// Append `…` (in syntax style) to mark that some content was left out.
+    ///
+    /// Always use this rather than appending a literal `…`, so that [`Self::is_truncated`] knows.
+    pub fn append_truncation_marker(&mut self) -> &mut Self {
+        self.truncated = true;
+        self.append_kind(SyntaxHighlightedStyle::Syntax, "…")
+    }
+
+    /// Was any content left out, i.e. was [`Self::append_truncation_marker`] called?
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
     /// Like [`Self::append_string_value`], but truncates to `max_chars` characters
     /// and appends `…` (in syntax style) when truncated.
     pub fn append_string_value_truncated(&mut self, portion: &str, max_chars: usize) -> &mut Self {
@@ -152,7 +170,7 @@ impl SyntaxHighlightedBuilder {
         if portion.len() > max_chars {
             let truncated = &portion[..portion.floor_char_boundary(max_chars)];
             self.append_kind(SyntaxHighlightedStyle::StringValue, truncated);
-            self.append_kind(SyntaxHighlightedStyle::Syntax, "…");
+            self.append_truncation_marker();
         } else {
             self.append_kind(SyntaxHighlightedStyle::StringValue, portion);
         }
@@ -198,14 +216,6 @@ impl SyntaxHighlightedBuilder {
         with_body_default,
         append_body_default,
         BodyDefault
-    );
-
-    impl_style_fns!(
-        "Body text in italics, e.g. for emphasis.",
-        body_italics,
-        with_body_italics,
-        append_body_italics,
-        BodyItalics
     );
 
     /// Append text with a custom format.
@@ -269,7 +279,6 @@ enum SyntaxHighlightedStyle {
     Syntax,
     Body,
     BodyDefault,
-    BodyItalics,
     Custom(Box<TextFormat>),
 }
 
@@ -285,7 +294,6 @@ impl std::fmt::Debug for SyntaxHighlightedStyle {
             Self::Syntax => write!(f, "Syntax"),
             Self::Body => write!(f, "Body"),
             Self::BodyDefault => write!(f, "BodyDefault"),
-            Self::BodyItalics => write!(f, "BodyItalics"),
             Self::Custom(_) => write!(f, "Custom(…)"),
         }
     }
@@ -342,15 +350,13 @@ impl SyntaxHighlightedStyle {
                     .unwrap_or_else(|| style.tokens().text_default);
                 format
             }
-            Self::BodyItalics => {
-                let mut format = Self::body(style);
-                format.italics = true;
-                format
-            }
             Self::Custom(format) => *format.clone(),
         }
     }
 }
+
+// ----------------------------------------------------------------------------
+
 macro_rules! impl_sh_primitive {
     ($t:ty, $to_string:path) => {
         impl SyntaxHighlighting for $t {

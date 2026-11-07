@@ -8,6 +8,7 @@
 //!   inside a collapsible details header, one per line. Structured log fields go in there too.
 //! - URLs in notification text are rendered as inline clickable links.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use egui::{NumExt as _, Widget as _};
@@ -16,7 +17,11 @@ pub use log::Level;
 
 use crate::{UiExt as _, icons};
 
-/// Minimal port of re_log's `LogMsg` (rerun 0.38.1, MIT OR Apache-2.0):
+/// The `re_log` key that marks a log record as (not) a GUI notification
+/// (ported from re_log 0.42.0, MIT OR Apache-2.0).
+pub const GUI_NOTIFICATION_FIELD: &str = "gui_notification";
+
+/// Minimal port of re_log's `LogMsg` (rerun 0.42.0, MIT OR Apache-2.0):
 /// a single log record passed to [`NotificationUi::add_log`].
 #[derive(Debug, Clone)]
 pub struct LogMsg {
@@ -34,7 +39,7 @@ pub struct LogMsg {
 }
 
 /// A value captured by structured logging.
-/// Ported from re_log's `FieldValue` (rerun 0.38.1, MIT OR Apache-2.0).
+/// Ported from re_log's `FieldValue` (rerun 0.42.0, MIT OR Apache-2.0).
 #[derive(Clone, Debug)]
 pub enum FieldValue {
     Bool(bool),
@@ -59,6 +64,12 @@ impl std::fmt::Display for FieldValue {
         }
     }
 }
+
+/// How many earlier occurrences of a repeated notification keep their details.
+///
+/// A failing request retried in a loop can repeat a notification thousands of times, and every
+/// occurrence carries its own trace id, so the details of old ones are dropped (but still counted).
+const MAX_EARLIER_OCCURRENCES: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NotificationLevel {
@@ -85,6 +96,16 @@ impl NotificationLevel {
             Self::Success => &icons::SUCCESS,
             Self::Warning => &icons::WARNING,
             Self::Error => &icons::ERROR,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Tip => "tip",
+            Self::Info => "info",
+            Self::Success => "success",
+            Self::Warning => "warning",
+            Self::Error => "error",
         }
     }
 
@@ -125,8 +146,17 @@ fn is_relevant(target: &str, level: log::Level) -> bool {
     )
 }
 
+/// Whether the event may become a notification, or asked to stay log-only.
+///
+/// See [`GUI_NOTIFICATION_FIELD`].
+fn show_in_gui(fields: &[(&'static str, FieldValue)]) -> bool {
+    !fields.iter().any(|(key, value)| {
+        *key == GUI_NOTIFICATION_FIELD && matches!(value, FieldValue::Bool(false))
+    })
+}
+
 fn notification_panel_popup_id() -> egui::Id {
-    egui::Id::new("notification_panel_popup")
+    egui::Id::unique("notification_panel_popup")
 }
 
 /// A link to some URL.
@@ -158,7 +188,19 @@ pub struct Notification {
     /// with one line per detail.
     ///
     /// Structured key-value fields end up here too, as `key: value` lines.
+    ///
+    /// For a repeated notification, these are the details of the latest occurrence.
     details: Vec<String>,
+
+    /// The details of earlier occurrences of this notification, oldest first.
+    ///
+    /// Repeats are merged into one notification by [`NotificationUi::add`].
+    /// At most [`MAX_EARLIER_OCCURRENCES`] are kept.
+    earlier_details: VecDeque<Vec<String>>,
+
+    /// How many times this notification was added, including the occurrences whose details were
+    /// dropped from [`Self::earlier_details`].
+    count: usize,
 
     link: Option<Link>,
 
@@ -166,7 +208,7 @@ pub struct Notification {
     /// if the user has dismissed it.
     permanent_dismiss_id: Option<egui::Id>,
 
-    /// When this notification was added to the list.
+    /// When this notification was last added to the list.
     created_at: Timestamp,
 
     /// Time to live for toasts, the notification itself lives until dismissed.
@@ -185,6 +227,8 @@ impl Notification {
             level,
             text: text.into(),
             details: Vec::new(),
+            earlier_details: VecDeque::new(),
+            count: 1,
             link: None,
             permanent_dismiss_id: None,
             created_at: Timestamp::now(),
@@ -203,13 +247,64 @@ impl Notification {
         &self.text
     }
 
-    /// The full text contents, including the details.
+    /// The full text contents, including the details of every kept occurrence.
+    ///
+    /// The lines all occurrences share come first, then one line per occurrence with the rest of
+    /// its details, newest first, so each detail stays with the occurrence it belongs to.
     fn copy_text(&self) -> String {
-        crate::error::StructuredError {
-            summary: self.text.clone(),
-            details: self.details.clone(),
+        let OccurrenceDetails {
+            shared,
+            own,
+            num_dropped: _,
+        } = OccurrenceDetails::new(self);
+        crate::error::StructuredError::from_summary(self.text.clone())
+            .with_details(shared)
+            .with_details(own.iter().map(|lines| lines.join(", ")))
+            .to_string()
+    }
+
+    /// The details of every kept occurrence, oldest first.
+    fn occurrence_details(&self) -> impl Iterator<Item = &Vec<String>> {
+        std::iter::chain(&self.earlier_details, std::iter::once(&self.details))
+    }
+
+    /// Whether `other` says the same thing as `self`, so it should be merged into it.
+    ///
+    /// Details are not compared: they tend to differ between repeats (trace ids, ids of the
+    /// affected entity, …).
+    fn is_repeated_by(&self, other: &Self) -> bool {
+        self.level == other.level
+            && self.text == other.text
+            && self.permanent_dismiss_id == other.permanent_dismiss_id
+            && self.link.as_ref().map(|link| &link.url) == other.link.as_ref().map(|link| &link.url)
+    }
+
+    /// Merge a repeat of this notification into it, which makes it unread and new again.
+    fn merge(&mut self, repeat: Self) {
+        let Self {
+            level: _,
+            text: _,
+            details,
+            earlier_details,
+            count,
+            link: _,
+            permanent_dismiss_id: _,
+            created_at,
+            toast_ttl,
+            is_unread: _,
+            unique_id: _,
+        } = repeat;
+
+        self.earlier_details
+            .push_back(std::mem::replace(&mut self.details, details));
+        self.earlier_details.extend(earlier_details);
+        while MAX_EARLIER_OCCURRENCES < self.earlier_details.len() {
+            self.earlier_details.pop_front();
         }
-        .to_string()
+        self.count += count;
+        self.created_at = created_at;
+        self.toast_ttl = self.toast_ttl.max(toast_ttl);
+        self.is_unread = true;
     }
 
     pub fn with_details(mut self, details: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -371,6 +466,8 @@ impl NotificationUi {
     /// ## Special cased text
     /// - If a notifications text has details (see [`crate::error::StructuredError`]), those are shown
     ///   inside a collapsible details header, one per line. Structured log fields go in there too.
+    /// - An event carrying [`GUI_NOTIFICATION_FIELD`] set to `false` is dropped: it is
+    ///   log-only, because whoever handles the failure reports it with more context.
     pub fn add_log(&mut self, log_msg: LogMsg) {
         let LogMsg {
             level,
@@ -378,6 +475,10 @@ impl NotificationUi {
             message,
             fields,
         } = log_msg;
+
+        if !show_in_gui(&fields) {
+            return;
+        }
 
         if is_relevant(&target, level) {
             let mut message = crate::error::StructuredError::parse(message);
@@ -413,6 +514,20 @@ impl NotificationUi {
             self.unread_notification_level = Some(notification.level);
         }
 
+        // Merge repeats, so a failure that keeps recurring shows up as one notification with a
+        // count, instead of burying everything else in the panel.
+        if let Some(index) = self
+            .notifications
+            .iter()
+            .rposition(|existing| existing.is_repeated_by(&notification))
+        {
+            // Keep the list sorted by `created_at`, which the merge bumps.
+            let mut existing = self.notifications.remove(index);
+            existing.merge(notification);
+            self.notifications.push(existing);
+            return;
+        }
+
         notification.unique_id = self.next_id;
         self.next_id += 1;
 
@@ -424,9 +539,15 @@ impl NotificationUi {
         let popup_id = notification_panel_popup_id();
 
         let is_panel_visible = egui::Popup::is_id_open(ui.ctx(), popup_id);
+
+        // The label names the unread level, since the dot that shows it is only painted.
+        let label = match self.unread_notification_level {
+            Some(level) => format!("Notification toggle, unread {}", level.name()),
+            None => "Notification toggle".to_owned(),
+        };
         let button_response = ui.medium_icon_toggle_button(
             &icons::NOTIFICATION,
-            "Notification toggle",
+            label,
             &mut is_panel_visible.clone(),
         );
 
@@ -560,7 +681,7 @@ impl Default for Toasts {
 impl Toasts {
     fn new() -> Self {
         Self {
-            id: egui::Id::new("__toasts"),
+            id: egui::Id::unique("__toasts"),
         }
     }
 
@@ -573,22 +694,26 @@ impl Toasts {
 
         let mut first_nonzero_ttl = None;
 
-        for (i, notification) in notifications
+        // Keyed by `unique_id`, not position: a repeat moves its notification to the end, and
+        // must not reset the state (e.g. open details) of the toasts around it.
+        for notification in notifications
             .iter_mut()
-            .enumerate()
-            .filter(|(_, n)| n.toast_ttl > Duration::ZERO)
+            .filter(|n| n.toast_ttl > Duration::ZERO)
         {
             first_nonzero_ttl.get_or_insert(notification.toast_ttl);
 
-            let response = egui::Area::new(self.id.with(i))
+            let response = egui::Area::new(self.id.with(notification.unique_id))
                 .anchor(egui::Align2::RIGHT_TOP, offset)
                 .order(egui::Order::Foreground)
                 .interactable(true)
                 .movable(false)
+                .role(egui::Role::Alert)
+                .accessible_name("Notification")
                 .show(egui_ctx, |ui| {
-                    show_notification(ui, notification, DisplayMode::Toast);
-                })
-                .response;
+                    show_notification(ui, notification, DisplayMode::Toast).0
+                });
+            let closed = response.inner.is_some();
+            let response = response.response;
 
             // Reading the details is what a toast is for; don't yank it away mid-read.
             let details_are_open = 0.0
@@ -605,7 +730,9 @@ impl Toasts {
 
             let response = response.on_hover_text("Click to close and copy contents");
 
-            if response.clicked() {
+            if closed {
+                notification.toast_ttl = Duration::ZERO;
+            } else if response.clicked() {
                 if let Some(link) = &notification.link {
                     egui_ctx.open_url(egui::OpenUrl::new_tab(link.url.clone()));
                 } else {
@@ -647,7 +774,7 @@ fn details_openness_id(unique_id: u64, mode: DisplayMode) -> egui::Id {
         DisplayMode::Panel => "panel",
         DisplayMode::Toast => "toast",
     };
-    egui::Id::new(("notification_details_openness", unique_id, mode))
+    egui::Id::unique(("notification_details_openness", unique_id, mode))
 }
 
 /// How open the details section of this notification is, from 0 (collapsed) to 1 (expanded).
@@ -664,6 +791,14 @@ const NARROW_WIDTH: f32 = 270.0;
 /// The width of the text column of a toast with its details expanded.
 const WIDE_WIDTH: f32 = 420.0;
 
+/// The height of the details section, beyond which it scrolls.
+const MAX_DETAILS_HEIGHT: f32 = 400.0;
+
+/// How many occurrences of a repeated notification show their details, newest first.
+///
+/// More would make a toast taller than the viewport. Copying the notification copies them all.
+const MAX_SHOWN_OCCURRENCES: usize = 10;
+
 /// Room to leave around a toast, so a wide one doesn't touch the edges of the viewport.
 const TOAST_MARGIN: f32 = 32.0;
 
@@ -675,7 +810,9 @@ fn show_notification(
     let Notification {
         level,
         text,
-        details,
+        details: _,
+        earlier_details: _,
+        count,
         link,
         permanent_dismiss_id,
         created_at,
@@ -710,7 +847,10 @@ fn show_notification(
         let mut reaction = None;
 
         let response = egui::Frame::window(ui.style())
-            .corner_radius(4)
+            .corner_radius(match mode {
+                DisplayMode::Panel => ui.tokens().small_corner_radius(),
+                DisplayMode::Toast => ui.tokens().window_corner_radius(),
+            })
             .inner_margin(10.0)
             .fill(background_color)
             .shadow(egui::Shadow::NONE)
@@ -725,12 +865,21 @@ fn show_notification(
                             if !text.is_empty() {
                                 label_with_inline_links(ui, text);
                             }
+                            if 1 < *count {
+                                ui.label(egui::RichText::new(format!("{count} times")).weak());
+                            }
 
+                            let details = OccurrenceDetails::new(notification);
                             if !details.is_empty() {
+                                let max_height = (ui.ctx().content_rect().height() / 2.0)
+                                    .at_most(MAX_DETAILS_HEIGHT);
                                 let response = ui.collapsing_header("Details", false, |ui| {
-                                    for detail in details {
-                                        ui.label(egui::RichText::new(detail).monospace().weak());
-                                    }
+                                    // The explicit minimum is needed: this is laid out in a row,
+                                    // which leaves the scroll area almost no height of its own.
+                                    egui::ScrollArea::vertical()
+                                        .max_height(max_height)
+                                        .min_scrolled_height(max_height)
+                                        .show(ui, |ui| details.ui(ui));
                                 });
 
                                 // Read one frame later, to widen the toast for the details.
@@ -740,13 +889,22 @@ fn show_notification(
                                 if response.openness != openness {
                                     ui.ctx().request_repaint();
                                 }
+                            } else if 0.0 < openness {
+                                // The details were dropped while open; an open section that is no
+                                // longer shown would keep the toast up forever.
+                                ui.data_mut(|data| data.remove::<f32>(openness_id));
                             }
                         });
 
                         ui.add_space(4.0);
                         match mode {
                             DisplayMode::Panel => notification_age_label(ui, *created_at),
-                            DisplayMode::Toast => {}
+                            DisplayMode::Toast => {
+                                // Open details keep a toast up, so it needs a way to go away.
+                                if ui.small_icon_button(&icons::CLOSE, "Close").clicked() {
+                                    reaction = Some(NotificationReaction::Dismissed);
+                                }
+                            }
                         }
                     });
 
@@ -787,6 +945,88 @@ fn show_notification(
         (reaction, response)
     })
     .inner
+}
+
+/// The details of a notification, with the lines that all its occurrences share shown once.
+struct OccurrenceDetails<'a> {
+    /// Lines that every kept occurrence has, in the order of the oldest one.
+    shared: Vec<&'a str>,
+
+    /// The rest of the lines of each kept occurrence, newest first.
+    ///
+    /// Empty for a notification that happened only once, or whose occurrences all said the same.
+    own: Vec<Vec<&'a str>>,
+
+    /// Occurrences that are counted, but whose details are no longer kept.
+    num_dropped: usize,
+}
+
+impl<'a> OccurrenceDetails<'a> {
+    fn new(notification: &'a Notification) -> Self {
+        let occurrences: Vec<&Vec<String>> = notification.occurrence_details().collect();
+        let first = occurrences
+            .first()
+            .map(|lines| lines.as_slice())
+            .unwrap_or_default();
+        let shared: Vec<&str> = first
+            .iter()
+            .filter(|line| occurrences.iter().all(|lines| lines.contains(line)))
+            .map(String::as_str)
+            .collect();
+        let own: Vec<Vec<&str>> = occurrences
+            .iter()
+            .rev()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|line| !shared.contains(line))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|lines| !lines.is_empty())
+            .collect();
+        Self {
+            shared,
+            own,
+            num_dropped: notification.count.saturating_sub(occurrences.len()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        let Self {
+            shared,
+            own,
+            num_dropped: _,
+        } = self;
+        shared.is_empty() && own.is_empty()
+    }
+
+    fn ui(&self, ui: &mut egui::Ui) {
+        let Self {
+            shared,
+            own,
+            num_dropped,
+        } = self;
+        let detail_label = |ui: &mut egui::Ui, line: &str| {
+            ui.label(egui::RichText::new(line).monospace().weak());
+        };
+        for line in shared {
+            detail_label(ui, line);
+        }
+        for (i, lines) in own.iter().take(MAX_SHOWN_OCCURRENCES).enumerate() {
+            if 0 < i || !shared.is_empty() {
+                ui.separator();
+            }
+            for line in lines {
+                detail_label(ui, line);
+            }
+        }
+        let num_hidden = own.len().saturating_sub(MAX_SHOWN_OCCURRENCES) + num_dropped;
+        if 0 < num_hidden && !own.is_empty() {
+            ui.separator();
+            ui.weak(format!("…and {num_hidden} earlier"));
+        }
+    }
 }
 
 fn notification_age_label(ui: &mut egui::Ui, created_at: Timestamp) {
@@ -896,5 +1136,81 @@ mod tests {
             .expect("the log should have become a notification");
         assert_eq!(notification.text(), "it failed");
         assert_eq!(notification.details, ["the fine print"]);
+    }
+
+    fn notification(level: NotificationLevel, text: &str, detail: &str) -> Notification {
+        Notification::new(level, text).with_details([detail])
+    }
+
+    /// Repeats merge into one notification that moves to the end, keeping every occurrence's
+    /// details; anything that differs in level or text stays separate.
+    #[test]
+    fn test_repeats_are_merged() {
+        let mut ui = NotificationUi::new(egui::Context::default());
+        ui.add(notification(NotificationLevel::Error, "Timed out", "a"));
+        ui.add(notification(NotificationLevel::Error, "Other", "b"));
+        ui.add(notification(NotificationLevel::Warning, "Timed out", "c"));
+        ui.add(notification(NotificationLevel::Error, "Timed out", "d"));
+
+        let summary: Vec<_> = ui
+            .notifications()
+            .iter()
+            .map(|n| (n.level(), n.text(), n.count))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (NotificationLevel::Error, "Other", 1),
+                (NotificationLevel::Warning, "Timed out", 1),
+                (NotificationLevel::Error, "Timed out", 2),
+            ]
+        );
+        let merged = &ui.notifications()[2];
+        assert_eq!(merged.copy_text(), "Timed out\n- d\n- a");
+    }
+
+    /// Lines every occurrence has are shown once; the rest are grouped newest first, and
+    /// occurrences whose details were dropped are still counted.
+    #[test]
+    fn test_occurrence_details() {
+        let mut merged = Notification::new(NotificationLevel::Error, "Timed out")
+            .with_details(["server: x", "trace-id: 0"]);
+        for i in 1..=MAX_EARLIER_OCCURRENCES + 2 {
+            merged.merge(
+                Notification::new(NotificationLevel::Error, "Timed out")
+                    .with_details(["server: x".to_owned(), format!("trace-id: {i}")]),
+            );
+        }
+
+        let details = OccurrenceDetails::new(&merged);
+        assert_eq!(merged.count, MAX_EARLIER_OCCURRENCES + 3);
+        assert_eq!(details.shared, ["server: x"]);
+        assert_eq!(details.own.len(), MAX_EARLIER_OCCURRENCES + 1);
+        assert_eq!(
+            details.own.first(),
+            Some(&vec![
+                format!("trace-id: {}", MAX_EARLIER_OCCURRENCES + 2).as_str()
+            ])
+        );
+        assert_eq!(details.num_dropped, 2);
+    }
+
+    /// A log-only event must not reach the panel, or the user sees one failure twice: once from
+    /// where it was noticed, once from where it was handled.
+    #[test]
+    fn test_log_only_event_is_not_notified() {
+        let mut ui = NotificationUi::new(egui::Context::default());
+
+        ui.add_log(LogMsg {
+            level: log::Level::Warn,
+            target: "re_ui".to_owned(),
+            message: "gRPC streaming response failed".to_owned(),
+            fields: vec![
+                (GUI_NOTIFICATION_FIELD, FieldValue::Bool(false)),
+                ("endpoint", FieldValue::String("/FetchChunks".to_owned())),
+            ],
+        });
+
+        assert!(ui.notifications().is_empty());
     }
 }

@@ -7,7 +7,7 @@ use crate::{DesignTokens, TopBarStyle};
 struct TestMarker;
 
 fn test_marker_id() -> egui::Id {
-    egui::Id::new("__rerun_test_marker")
+    egui::Id::unique("__rerun_test_marker")
 }
 
 /// Extension trait for [`egui::Context`].
@@ -16,6 +16,12 @@ fn test_marker_id() -> egui::Id {
 /// context.
 pub trait ContextExt {
     fn ctx(&self) -> &egui::Context;
+
+    /// A [`crate::async_runtime::UiWaker`] that requests a repaint of this context.
+    fn ui_waker(&self) -> crate::async_runtime::UiWaker {
+        let egui_ctx = self.ctx().clone();
+        crate::async_runtime::UiWaker::new(move || egui_ctx.request_repaint())
+    }
 
     fn tokens(&self) -> &'static DesignTokens {
         crate::design_tokens_of(self.ctx().theme())

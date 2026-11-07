@@ -19,10 +19,15 @@
 
 use std::collections::BTreeSet;
 
+use crate::{ButtonExt as _, UiExt as _};
+
+use crate::fuzzy::{FuzzyMatch, FuzzyQuery};
 use egui::text::LayoutJob;
 use egui::{Key, NumExt as _};
 
-use crate::fuzzy::{FuzzyMatch, FuzzyQuery};
+fn command_palette_modal_id() -> egui::Id {
+    egui::Id::unique("command_palette_modal")
+}
 
 /// The visual content of a single command-palette row, as produced by a
 /// [`CommandPaletteProvider`].
@@ -71,9 +76,8 @@ pub fn paint_command_row(ui: &mut egui::Ui, row: CmdRow, state: RowState) -> egu
     let selected = state == RowState::Selected;
     let enabled = state != RowState::Disabled;
 
-    // Pad the row vertically so the selection background extends a bit beyond the text,
-    // keeping the match-highlighting underline clearly visible on the selected row:
-    ui.spacing_mut().button_padding.y = 2.0;
+    // Keep the rows apart, so the match-highlighting underline on the selected row stays clear
+    // of the row below it:
     ui.spacing_mut().item_spacing.y = 2.0;
 
     // Wrap the (possibly long) text to the available width, so long entity/component
@@ -139,14 +143,40 @@ impl<Cmd> MatchedCmd<Cmd> {
 /// Commands in a group, that somehow belong together.
 pub type MatchGroup<Cmd> = Vec<MatchedCmd<Cmd>>;
 
+/// Whether input searches commands or is submitted as an agent prompt.
+#[derive(Default, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    Search,
+    Agent,
+}
+
 /// One source of commands.
 ///
 /// The type of the command is up to the user to provide.
 ///
 /// For instance: match file names, and return a `Cmd::OpenFile(Path)`.
 pub trait CommandPaletteProvider<Cmd> {
-    /// Show when the query field is empty (the user hasn't typed anything yet).
-    fn initial_hint_ui(&mut self, _ui: &mut egui::Ui) {}
+    /// Enables switching between search and agent modes with Tab.
+    fn agent_enabled(&self) -> bool {
+        false
+    }
+
+    /// Action for opening agent setup, if setup is required before submitting prompts.
+    fn agent_setup_action(&self) -> Option<Cmd> {
+        None
+    }
+
+    /// Submit an agent prompt, rejecting blank input.
+    /// Return `None` to keep the palette open without clearing the input.
+    fn submit_agent_prompt(&mut self, _query: &str) -> Option<Cmd> {
+        None
+    }
+
+    /// Placeholder shown when the search field is empty.
+    fn search_hint(&self) -> &'static str {
+        "Search commands"
+    }
 
     /// Find commands that matches this query.
     fn all_matching(&mut self, query: &FuzzyQuery) -> Vec<MatchGroup<Cmd>>;
@@ -169,12 +199,17 @@ pub struct CommandPalette {
     /// The raw thing the user entered
     raw_query: String,
 
+    /// How to use the input ([`Mode::Search`], [`Mode::Agent`], …).
+    mode: Mode,
+
     /// Within the selected provider
     selected_alternative: usize,
 
     /// Groups (by index) whose full contents should be shown,
     /// because the user clicked their "+ N more" button.
     expanded_groups: BTreeSet<usize>,
+
+    animation_started_at: Option<f64>,
 }
 
 impl CommandPalette {
@@ -204,7 +239,23 @@ impl CommandPalette {
         let width = 640.0.at_most(0.9 * screen_rect.width());
         let max_height = 320.0.at_most(screen_rect.height());
 
+        let animation_started_at = *self
+            .animation_started_at
+            .get_or_insert_with(|| egui_ctx.input(|input| input.time));
+        let scale = crate::motion::scale_for_opened_at(egui_ctx, animation_started_at);
+
+        let modal_response = egui::Modal::new(command_palette_modal_id())
+            .backdrop_color(egui::Color32::TRANSPARENT)
+            .frame(egui::Frame::NONE)
+            .show(egui_ctx, |_| {});
+
+        let window_id = egui::Id::unique("Command Palette");
+        let window_layer_id = egui::LayerId::new(egui::Order::Foreground, window_id);
+        egui_ctx.set_sublayer(modal_response.response.layer_id, window_layer_id);
+
         let response = egui::Window::new("Command Palette")
+            .id(window_id)
+            .order(egui::Order::Foreground)
             .fixed_pos(screen_rect.center() - 0.5 * max_height * egui::Vec2::Y)
             .fixed_size([width, max_height])
             .pivot(egui::Align2::CENTER_TOP)
@@ -212,6 +263,17 @@ impl CommandPalette {
             .scroll(false)
             .title_bar(false)
             .show(egui_ctx, |ui| self.window_content_ui(ui, provider))?;
+
+        if scale < 1.0 {
+            egui_ctx.transform_layer_shapes_after_rounding(
+                response.response.layer_id,
+                crate::motion::scale_transform(response.response.rect.center(), scale),
+            );
+        }
+
+        if !self.visible {
+            return response.inner?;
+        }
 
         // Clicking or dragging anywhere outside the palette closes it.
         // We check the press (not the click) so that starting a drag outside also closes it:
@@ -236,43 +298,127 @@ impl CommandPalette {
         ui: &mut egui::Ui,
         provider: &mut dyn CommandPaletteProvider<Cmd>,
     ) -> Option<Cmd> {
+        // Allow switching to agent mode via Tab, if possible.
+        let agent_enabled = provider.agent_enabled();
+        if !agent_enabled {
+            self.mode = Mode::Search;
+        }
+        let mode_changed = agent_enabled
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Tab));
+        if mode_changed {
+            self.mode = match self.mode {
+                Mode::Search => Mode::Agent,
+                Mode::Agent => Mode::Search,
+            };
+        }
+
         // Consume these _before_ we add the `TextEdit`, so it doesn't steal them
         // (e.g. arrow keys would otherwise move the text cursor instead of the selection).
         let (enter_pressed, up, down) = ui.input_mut(|i| {
             (
                 i.consume_key(Default::default(), Key::Enter),
-                i.count_and_consume_key(Default::default(), Key::ArrowUp),
-                i.count_and_consume_key(Default::default(), Key::ArrowDown),
+                if self.mode == Mode::Agent {
+                    // No search suggestions in agent mode.
+                    0
+                } else {
+                    i.count_and_consume_key(Default::default(), Key::ArrowUp)
+                },
+                if self.mode == Mode::Agent {
+                    0
+                } else {
+                    i.count_and_consume_key(Default::default(), Key::ArrowDown)
+                },
             )
         });
 
-        let text_response = ui.add(
-            egui::TextEdit::singleline(&mut self.raw_query)
-                .desired_width(f32::INFINITY)
-                .lock_focus(true),
-        );
+        let query_id = ui.make_persistent_id("query");
+        let (icon, hint, name) = match self.mode {
+            Mode::Search => (
+                &crate::icons::SEARCH,
+                provider.search_hint(),
+                "Search commands",
+            ),
+            Mode::Agent => (
+                &crate::icons::AGENT,
+                "Ask a question or describe what you’d like to do.",
+                "Prompt",
+            ),
+        };
+        let text_edit = egui::TextEdit::singleline(&mut self.raw_query)
+            .id(query_id)
+            .hint_text(hint)
+            .prefix(
+                icon.as_image()
+                    .fit_to_exact_size(ui.tokens().small_icon_size)
+                    .tint(ui.tokens().text_strong),
+            )
+            .desired_width(f32::INFINITY)
+            .lock_focus(true);
+        // TextEdit uses the themed weak color for placeholders, overriding RichText colors.
+        ui.visuals_mut().weak_text_color = Some(ui.tokens().text_subdued);
+        let text_response = ui.add(text_edit).accessible_name(name);
         text_response.request_focus();
-        let scroll_to_selected_alternative = if text_response.changed() {
+        let scroll_to_selected_alternative = mode_changed || text_response.changed();
+        if scroll_to_selected_alternative {
             self.selected_alternative = 0;
             self.expanded_groups.clear();
-            true
-        } else {
-            false
-        };
+        }
 
-        let selected_command = egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                self.alternatives_ui(
-                    ui,
-                    provider,
-                    enter_pressed,
-                    up,
-                    down,
-                    scroll_to_selected_alternative,
-                )
-            })
-            .inner;
+        if agent_enabled {
+            let (hint, icon) = match self.mode {
+                Mode::Search => ("Press Tab to switch to agent mode", &crate::icons::AGENT),
+                Mode::Agent => ("Press Tab to switch to search mode", &crate::icons::SEARCH),
+            };
+            ui.horizontal_wrapped(|ui| {
+                ui.weak(hint);
+                ui.add(
+                    icon.as_image()
+                        .fit_to_exact_size(ui.tokens().small_icon_size)
+                        .tint(ui.visuals().weak_text_color()),
+                );
+            });
+        }
+
+        let selected_command = if self.mode == Mode::Agent {
+            // Check first if an agent is configured, otherwise guide the user to setup.
+            if let Some(setup_action) = provider.agent_setup_action() {
+                crate::alert::Alert::info()
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        egui::Sides::new()
+                            .show(
+                                ui,
+                                |ui| ui.label("Set up an agent to send prompts."),
+                                |ui| {
+                                    ui.add(egui::Button::new("Set up agent").primary().size_small())
+                                        .clicked()
+                                },
+                            )
+                            .1
+                    })
+                    .inner
+                    .then_some(setup_action)
+            } else {
+                enter_pressed
+                    .then(|| provider.submit_agent_prompt(&self.raw_query))
+                    .flatten()
+            }
+        } else {
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    self.alternatives_ui(
+                        ui,
+                        provider,
+                        enter_pressed,
+                        up,
+                        down,
+                        scroll_to_selected_alternative,
+                    )
+                })
+                .inner
+        };
 
         if selected_command.is_some() {
             self.reset();
@@ -293,10 +439,6 @@ impl CommandPalette {
         mut scroll_to_selected_alternative: bool,
     ) -> Option<Cmd> {
         let query = FuzzyQuery::new(self.raw_query.clone());
-
-        if query.is_empty() {
-            provider.initial_hint_ui(ui);
-        }
 
         let mut groups = provider.all_matching(&query);
 
@@ -449,5 +591,79 @@ impl CommandPalette {
         }
 
         selected_command
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EmptyProvider;
+
+    impl CommandPaletteProvider<()> for EmptyProvider {
+        fn all_matching(&mut self, _query: &FuzzyQuery) -> Vec<MatchGroup<()>> {
+            Vec::new()
+        }
+
+        fn cmd_row(&self, _ui: &egui::Ui, _cmd: &MatchedCmd<()>, _selected: bool) -> CmdRow {
+            unreachable!("the empty provider has no command rows")
+        }
+    }
+
+    /// Returns whether any painted shape is scaled by the opening animation.
+    fn render_palette(ctx: &egui::Context, palette: &mut CommandPalette, time: f64) -> bool {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                assert!(palette.show(ui.ctx(), &mut EmptyProvider).is_none());
+            },
+        );
+        output.textures_delta.clear();
+
+        output
+            .shapes
+            .iter()
+            .any(|clipped| clipped.transform_after_tessellation.scaling < 1.0)
+    }
+
+    #[test]
+    fn command_palette_animation_restarts_after_closing() {
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| style.animation_time = 0.2);
+        let mut palette = CommandPalette::default();
+
+        palette.toggle();
+        render_palette(&ctx, &mut palette, 0.0);
+        assert!(
+            render_palette(&ctx, &mut palette, 0.016),
+            "the opening command palette should be scaled"
+        );
+        assert_eq!(
+            ctx.memory(|memory| memory.top_modal_layer()),
+            Some(egui::LayerId::new(
+                egui::Order::Foreground,
+                command_palette_modal_id(),
+            )),
+            "the command palette should block interaction with lower layers"
+        );
+
+        palette.toggle();
+        assert!(!render_palette(&ctx, &mut palette, 0.032));
+
+        palette.toggle();
+        render_palette(&ctx, &mut palette, 0.048);
+        assert!(
+            render_palette(&ctx, &mut palette, 0.064),
+            "the reopened command palette should restart its animation"
+        );
+
+        assert!(!render_palette(&ctx, &mut palette, 1.0));
     }
 }

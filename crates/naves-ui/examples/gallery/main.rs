@@ -1,4 +1,6 @@
-// Run the example with `cargo r -p naves_ui --example naves_ui_example`
+// Run the example with `cargo r -p re_ui --example re_ui_example`
+
+#![expect(clippy::print_stdout)] // Example
 
 mod drag_and_drop;
 mod hierarchical_drag_and_drop;
@@ -124,10 +126,10 @@ pub struct ExampleApp {
 impl ExampleApp {
     fn new(ctx: egui::Context) -> Self {
         let (log_tx, text_log_rx) = crossbeam::channel::bounded(256);
-        log::set_boxed_logger(Box::new(ChannelLogger(log_tx))).expect("Failed to set logger");
+        log::set_boxed_logger(Box::new(ChannelLogger(log_tx))).ok(); // fails if a logger is already set
         log::set_max_level(log::LevelFilter::Info);
 
-        let tree = egui_tiles::Tree::new_tabs("my_tree", vec![1, 2, 3]);
+        let tree = egui_tiles::Tree::new_tabs(egui::Id::unique("my_tree"), vec![1, 2, 3]);
 
         let (command_sender, command_receiver) = command_channel();
 
@@ -228,13 +230,13 @@ impl eframe::App for ExampleApp {
         // bottom section closure
         let left_panel_bottom_section_ui = |ui: &mut egui::Ui| {
             ui.horizontal(|ui| {
-                ui.label("Theme:");
+                ui.label("Theme");
                 egui::global_theme_preference_buttons(ui);
             });
 
             ui.horizontal(|ui| {
-                ui.label("Toggle switch:");
-                ui.toggle_switch(8.0, &mut self.dummy_bool);
+                ui.label("Toggle switch");
+                ui.toggle_switch(8.0, &mut self.dummy_bool, "Dummy toggle");
                 ui.help_button(|ui| {
                     ui.label("This some help text.");
                 });
@@ -292,11 +294,11 @@ impl eframe::App for ExampleApp {
             ui.section_collapsing_header("Blueprint").show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.label("Some blueprint stuff here, that might be wide.");
-                ui.re_checkbox(&mut self.dummy_bool, "Checkbox");
+                ui.checkbox(&mut self.dummy_bool, "Checkbox");
 
                 ui.collapsing_header("Collapsing header", true, |ui| {
                     ui.label("Some data here");
-                    ui.re_checkbox(&mut self.dummy_bool, "Checkbox");
+                    ui.checkbox(&mut self.dummy_bool, "Checkbox");
                 });
             });
 
@@ -305,8 +307,7 @@ impl eframe::App for ExampleApp {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
                 ui.full_span_separator();
-                self.filter_state
-                    .section_title_ui(ui, egui::RichText::new("Filter demo").strong());
+                self.filter_state.section_title_ui(ui, "Filter demo");
                 ui.full_span_separator();
 
                 let names = vec![
@@ -321,6 +322,7 @@ impl eframe::App for ExampleApp {
                             ui.ctx(),
                             name,
                             hierarchy_ranges.remove(0).into_iter().flatten(),
+                            &egui::TextStyle::Body,
                             None,
                         );
                         ui.list_item_flat_noninteractive(list_item::LabelContent::new(widget_text));
@@ -346,7 +348,7 @@ impl eframe::App for ExampleApp {
                     egui::Panel::top("left_panel_top_bar")
                         .exact_size(tokens.title_bar_height())
                         .frame(egui::Frame {
-                            inner_margin: egui::Margin::symmetric(tokens.view_padding(), 0),
+                            inner_margin: tokens.panel_margin(),
                             ..Default::default()
                         })
                         .show(ui, left_panel_top_section_ui);
@@ -355,8 +357,11 @@ impl eframe::App for ExampleApp {
                     egui::ScrollArea::both()
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
+                            let mut inner_margin = tokens.panel_margin();
+                            inner_margin.top = tokens.view_padding();
+                            inner_margin.bottom = tokens.view_padding();
                             egui::Frame {
-                                inner_margin: egui::Margin::same(tokens.view_padding()),
+                                inner_margin,
                                 ..Default::default()
                             }
                             .show(ui, left_panel_bottom_section_ui);
@@ -413,17 +418,17 @@ impl eframe::App for ExampleApp {
             self.latest_cmd = cmd.text().to_owned();
 
             match cmd {
-                UICommand::ZoomIn => {
+                UICommand::ZoomInUi => {
                     let mut zoom_factor = ui.zoom_factor();
                     zoom_factor += 0.1;
                     ui.set_zoom_factor(zoom_factor);
                 }
-                UICommand::ZoomOut => {
+                UICommand::ZoomOutUi => {
                     let mut zoom_factor = ui.zoom_factor();
                     zoom_factor -= 0.1;
                     ui.set_zoom_factor(zoom_factor);
                 }
-                UICommand::ZoomReset => {
+                UICommand::ResetUiZoom => {
                     ui.set_zoom_factor(1.0);
                 }
                 _ => {}
@@ -446,7 +451,8 @@ impl ExampleApp {
     }
 
     fn top_bar(&mut self, _frame: &eframe::Frame, ui: &mut egui::Ui) {
-        // Port note: top_bar_style no longer takes the eframe frame (traffic-light measuring removed).
+        // Port note: upstream passes `frame` here; the port's `top_bar_style` does not
+        // take it (see `ContextExt::top_bar_style`).
         let top_bar_style = ui.top_bar_style(false);
 
         let window_frame = self.window_frame_config(ui.ctx());
@@ -461,15 +467,13 @@ impl ExampleApp {
                     // (last added widget has priority for input).
                     let title_bar_response = ui.interact(
                         ui.max_rect(),
-                        ui.id().with("background"),
-                        egui::Sense::click(),
+                        ui.make_persistent_id("background"),
+                        egui::Sense::click_and_drag(),
                     );
                     if title_bar_response.double_clicked() {
                         let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
                         ui.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                    } else if title_bar_response.is_pointer_button_down_on() {
-                        // TODO(emilk): This should probably only run on `title_bar_response.drag_started_by(PointerButton::Primary)`,
-                        // see https://github.com/emilk/egui/pull/4656
+                    } else if title_bar_response.drag_started_by(egui::PointerButton::Primary) {
                         ui.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                     }
                 }
@@ -519,7 +523,7 @@ impl ExampleApp {
 }
 
 fn file_menu(ui: &mut egui::Ui, command_sender: &CommandSender) {
-    UICommand::Open.menu_button_ui(ui, command_sender);
+    UICommand::OpenFile.menu_button_ui(ui, command_sender);
     UICommand::Quit.menu_button_ui(ui, command_sender);
 }
 
@@ -561,7 +565,7 @@ impl egui_tiles::Behavior<Tab> for MyTileTreeBehavior {
 
             ui.label(
                 egui::RichText::new("Welcome to the ReUi example")
-                    .text_style(DesignTokens::welcome_screen_h1()),
+                    .text_style(DesignTokens::heading_1()),
             );
 
             ui.error_label("This is an example of a long error label.");
@@ -582,7 +586,7 @@ impl egui_tiles::Behavior<Tab> for MyTileTreeBehavior {
                 .popup_style(menu_style())
                 .height(300.0)
                 .show_ui(ui, |ui| {
-                    ui.add(ComboItemHeader::new("Recommended:"));
+                    ui.add(ComboItemHeader::new("Recommended"));
 
                     ComboItem::new("vertex_normals")
                         .error(Some("Invalid selector".to_owned()))
@@ -596,7 +600,7 @@ impl egui_tiles::Behavior<Tab> for MyTileTreeBehavior {
                         .append_primitive("0.000")
                         .append_syntax("]");
 
-                    ui.add(ComboItemHeader::new("Other values:"));
+                    ui.add(ComboItemHeader::new("Other values"));
                     ComboItem::new("vertex_positions").ui(ui);
                     ComboItem::new("Rerun default")
                         .value(code.into_widget_text(ui.style()))

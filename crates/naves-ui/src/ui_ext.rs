@@ -1,24 +1,49 @@
+use egui::Role;
+use egui::class::HasClasses as _;
 use egui::{
     CollapsingResponse, Color32, IntoAtoms, Margin, NumExt as _, Rangef, Rect, StrokeKind,
-    UiBuilder, Widget as _, WidgetInfo, WidgetText, pos2,
+    UiBuilder, WidgetInfo, WidgetText, pos2,
 };
 use egui::{CornerRadius, emath::GuiRounding as _};
 
 use crate::alert::Alert;
-use crate::button::ReButton;
+use crate::button::{ButtonExt as _, with_hover_icon_button};
 use crate::list_item::{self, LabelContent};
 use crate::{ContextExt as _, DesignTokens, Icon, Size, Variant, icons};
 
 static FULL_SPAN_TAG: &str = "rerun_full_span";
+pub static RESIZABLE_CONTAINER_TAG: &str = "rerun_resizable_container";
 
 fn error_label_bg_color(fg_color: Color32) -> Color32 {
     fg_color.gamma_multiply(0.35)
+}
+
+/// Style the scope for radio buttons.
+///
+/// Checkboxes get the same fills from [`crate::ReTheme`].
+fn set_radio_button_visuals(ui: &mut egui::Ui) {
+    let tokens = ui.tokens();
+    let widgets = &mut ui.visuals_mut().widgets;
+    for (visuals, fill) in [
+        (&mut widgets.inactive, tokens.control_fill),
+        (&mut widgets.hovered, tokens.control_fill_hovered),
+        (&mut widgets.active, tokens.control_fill_pressed),
+        (&mut widgets.open, tokens.control_fill_hovered),
+    ] {
+        visuals.expansion = 0.0;
+        visuals.bg_fill = fill;
+    }
 }
 
 /// Rerun custom extensions to [`egui::Ui`].
 pub trait UiExt {
     fn ui(&self) -> &egui::Ui;
     fn ui_mut(&mut self) -> &mut egui::Ui;
+
+    /// A [`crate::async_runtime::UiWaker`] that requests a repaint of this ui's context.
+    fn ui_waker(&self) -> crate::async_runtime::UiWaker {
+        self.ui().ctx().ui_waker()
+    }
 
     fn tokens(&self) -> &'static DesignTokens {
         crate::design_tokens_of(self.ui().theme())
@@ -45,7 +70,12 @@ pub trait UiExt {
 
     /// Show an animated loading indicator.
     ///
-    /// `reason` describes why we are loading. In debug builds, it is shown on hover.
+    /// `reason` describes why we are loading. It labels the indicator for screen readers and
+    /// tests, and is shown on hover in debug builds, so it must not be empty.
+    ///
+    /// Only show it while the user is waiting: something is loading, or work is running that the
+    /// user waits for. Never while the app is waiting on the user, e.g. for an answer or a
+    /// confirmation: then nothing is in progress from the user's point of view.
     ///
     /// This will also cause the UI to re-render every frame,
     /// so only use this when you actually have something loading and expect it to finish!
@@ -56,6 +86,11 @@ pub trait UiExt {
 
     /// Like [`Self::loading_indicator`], but as tall as one line of text, so a label can take its
     /// place without changing layout.
+    ///
+    /// `reason` describes why we are loading. It labels the indicator for screen readers and
+    /// tests, and is shown on hover in debug builds, so it must not be empty.
+    ///
+    /// The same rules as for [`Self::loading_indicator`] apply: only while the user is waiting.
     #[doc(alias = "spinner")]
     fn inline_loading_indicator(&mut self, reason: &str) -> egui::Response {
         crate::loading_indicator::inline_loading_indicator_ui(self.ui_mut(), reason)
@@ -112,6 +147,27 @@ pub trait UiExt {
         error_label_bg_color(self.ui().style().visuals.error_fg_color)
     }
 
+    /// Shows the summary of an error, with its details (see [`crate::error::StructuredError`]) in a
+    /// collapsed "Details" section.
+    ///
+    /// Both are selectable, so they can be copied.
+    fn structured_error_ui(&mut self, error: &crate::error::StructuredError) {
+        let crate::error::StructuredError { summary, details } = error;
+        let ui = self.ui_mut();
+        ui.add(egui::Label::new(summary).wrap().selectable(true));
+        if !details.is_empty() {
+            ui.collapsing_header("Details", false, |ui| {
+                for detail in details {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(detail).monospace().weak())
+                            .wrap()
+                            .selectable(true),
+                    );
+                }
+            });
+        }
+    }
+
     /// Shows an error label with the entire error text and copies the text to the clipboard on click.
     ///
     /// If the text has a details section (see [`crate::error::StructuredError`]), the details are
@@ -141,12 +197,31 @@ pub trait UiExt {
         icon: &'a Icon,
         alt_text: impl Into<String>,
     ) -> egui::Button<'a> {
-        egui::Button::image(
-            icon.as_image()
-                .fit_to_exact_size(self.tokens().small_icon_size)
-                .alt_text(alt_text),
+        egui::Button::opt_image_and_text(
+            Some(
+                icon.as_image()
+                    .fit_to_exact_size(self.tokens().small_icon_size)
+                    .alt_text(alt_text),
+            ),
+            None,
         )
-        .image_tint_follows_text_color(true)
+        .icon_button()
+    }
+
+    /// A button showing an image you styled yourself, e.g. resized or tinted.
+    ///
+    /// Reach for [`Self::small_icon_button`] or [`crate::ButtonExt::icon`] where a plain icon
+    /// will do; this is the escape hatch that still guarantees an accessible name.
+    ///
+    /// `alt_text` is the button's accessible name: what a screen reader announces, what
+    /// `Harness::get_by_label` finds, and the only thing the MCP UI tools can search an icon
+    /// button by.
+    fn image_button_widget<'a>(
+        &self,
+        image: egui::Image<'a>,
+        alt_text: impl Into<String>,
+    ) -> egui::Button<'a> {
+        egui::Button::opt_image_and_text(Some(image.alt_text(alt_text)), None)
     }
 
     /// Adds a non-interactive, optionally tinted small icon.
@@ -179,19 +254,21 @@ pub trait UiExt {
             self.ui().visuals().widgets.noninteractive.fg_stroke.color
         };
         let alt_text = alt_text.into();
-        let mut response = self.ui_mut().add(egui::Button::new(
-            icon.as_image()
-                .fit_to_exact_size(size_points)
-                .alt_text(alt_text.clone())
-                .tint(tint),
-        ));
+        let mut response = self.ui_mut().add(
+            egui::Button::new(
+                icon.as_image()
+                    .fit_to_exact_size(size_points)
+                    .alt_text(alt_text.clone())
+                    .tint(tint),
+            )
+            .icon_button(),
+        );
         if response.clicked() {
             *selected = !*selected;
             response.mark_changed();
         }
-        response.widget_info(|| {
-            WidgetInfo::selected(egui::WidgetType::Button, true, *selected, alt_text.clone())
-        });
+        response
+            .widget_info(|| WidgetInfo::selected(Role::Button, true, *selected, alt_text.clone()));
         response
     }
 
@@ -210,8 +287,8 @@ pub trait UiExt {
         let alt_text = alt_text.into();
         let response = ui
             .add(
-                egui::Button::image(icon.as_image().alt_text(alt_text.clone()))
-                    .image_tint_follows_text_color(true)
+                icon.as_button(alt_text.clone())
+                    .icon_button()
                     .selected(selected),
             )
             .on_hover_text(&alt_text);
@@ -221,116 +298,40 @@ pub trait UiExt {
         response
     }
 
-    fn large_button_impl(
-        &mut self,
-        icon: &Icon,
-        bg_fill: Option<Color32>,
-        tint: Option<Color32>,
-    ) -> egui::Response {
-        let tokens = self.tokens();
-        let button_size = tokens.large_button_size;
-        let icon_size = tokens.large_button_icon_size; // centered inside the button
-        let corner_radius = tokens.large_button_corner_radius;
-
-        let ui = self.ui_mut();
-
-        let prev_style = ui.style().clone();
-        {
-            // For big buttons we have a background color even when inactive:
-            let visuals = ui.visuals_mut();
-            visuals.widgets.inactive.weak_bg_fill = visuals.widgets.inactive.bg_fill;
-
-            // no expansion effect
-            visuals.widgets.hovered.expansion = 0.0;
-            visuals.widgets.active.expansion = 0.0;
-            visuals.widgets.open.expansion = 0.0;
-        }
-
-        let (rect, response) = ui.allocate_exact_size(button_size, egui::Sense::click());
-        response.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::Button));
-
-        if ui.is_rect_visible(rect) {
-            let visuals = ui.style().interact(&response);
-            let bg_fill = bg_fill.unwrap_or(visuals.bg_fill);
-            let tint = tint.unwrap_or(visuals.fg_stroke.color);
-
-            let image_rect = egui::Align2::CENTER_CENTER.align_size_within_rect(icon_size, rect);
-            // let image_rect = image_rect.expand2(expansion); // can make it blurry, so let's not
-
-            ui.painter()
-                .rect_filled(rect.expand(visuals.expansion), corner_radius, bg_fill);
-
-            icon.as_image().tint(tint).paint_at(ui, image_rect);
-        }
-
-        ui.set_style(prev_style);
-
-        response
-    }
-
     fn primary_button<'a>(&mut self, atoms: impl IntoAtoms<'a>) -> egui::Response {
-        self.ui_mut().add(ReButton::new(atoms).primary())
+        self.ui_mut()
+            .add(egui::Button::new(atoms).primary().size_small())
     }
 
     fn secondary_button<'a>(&mut self, atoms: impl IntoAtoms<'a>) -> egui::Response {
-        self.ui_mut().add(ReButton::new(atoms).secondary())
+        self.ui_mut()
+            .add(egui::Button::new(atoms).secondary().size_small())
     }
 
-    fn re_checkbox<'a>(
-        &mut self,
-        checked: &'a mut bool,
-        text: impl IntoAtoms<'a>,
-    ) -> egui::Response {
-        self.checkbox_indeterminate(checked, text.into_atoms(), false)
-    }
-
+    /// A radio button with Rerun's control fills.
     #[allow(clippy::disallowed_types)]
-    fn checkbox_indeterminate<'a>(
-        &mut self,
-        checked: &'a mut bool,
-        text: impl IntoAtoms<'a>,
-        indeterminate: bool,
-    ) -> egui::Response {
+    fn re_radio<'a>(&mut self, selected: bool, text: impl IntoAtoms<'a>) -> egui::Response {
         self.ui_mut()
             .scope(|ui| {
-                ui.visuals_mut().widgets.hovered.expansion = 0.0;
-                ui.visuals_mut().widgets.active.expansion = 0.0;
-                ui.visuals_mut().widgets.open.expansion = 0.0;
+                set_radio_button_visuals(ui);
 
-                egui::Checkbox::new(checked, text)
-                    .indeterminate(indeterminate)
-                    .ui(ui)
+                ui.add(egui::RadioButton::new(selected, text))
             })
             .inner
     }
 
-    #[allow(clippy::disallowed_methods)]
-    fn re_radio_value<Value: PartialEq>(
+    fn re_radio_value<'a, Value: PartialEq>(
         &mut self,
         current_value: &mut Value,
         alternative: Value,
-        text: impl Into<egui::WidgetText>,
+        text: impl IntoAtoms<'a>,
     ) -> egui::Response {
-        self.ui_mut()
-            .scope(|ui| {
-                ui.visuals_mut().widgets.hovered.expansion = 0.0;
-                ui.visuals_mut().widgets.active.expansion = 0.0;
-                ui.visuals_mut().widgets.open.expansion = 0.0;
-
-                ui.radio_value(current_value, alternative, text)
-            })
-            .inner
-    }
-
-    fn large_button(&mut self, icon: &Icon) -> egui::Response {
-        self.large_button_impl(icon, None, None)
-    }
-
-    fn large_button_selected(&mut self, icon: &Icon, selected: bool) -> egui::Response {
-        let ui = self.ui();
-        let bg_fill = selected.then(|| ui.visuals().selection.bg_fill);
-        let tint = selected.then(|| ui.visuals().selection.stroke.color);
-        self.large_button_impl(icon, bg_fill, tint)
+        let mut response = self.re_radio(*current_value == alternative, text);
+        if response.clicked() && *current_value != alternative {
+            *current_value = alternative;
+            response.mark_changed();
+        }
+        response
     }
 
     fn visibility_toggle_button(&mut self, visible: &mut bool) -> egui::Response {
@@ -408,6 +409,20 @@ pub trait UiExt {
         ret
     }
 
+    /// Name this [`egui::Ui`] as a panel in the accessibility tree.
+    ///
+    /// Every `Ui` is an anonymous [`Role::GenericContainer`] by default, so
+    /// without this a screen reader — or an agent driving the viewer over MCP — sees nothing but a
+    /// deep tree of nameless boxes. Naming the regions a user would name (the top bar, the panels,
+    /// the viewport) is what gives that tree a shape.
+    ///
+    /// The name is user-facing: use the same words as the docs and the tooltips.
+    fn name_panel(&self, name: &str) {
+        self.ui()
+            .response()
+            .widget_info(|| egui::WidgetInfo::labeled(Role::Pane, true, name));
+    }
+
     // TODO(ab): this used to be used for inner margin, after registering full span range in panels.
     // It's highly likely that all these use are now redundant.
     fn panel_content<R>(&mut self, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -421,20 +436,14 @@ pub trait UiExt {
 
     /// Static title bar used to separate panels into section.
     ///
-    /// This title bar is meant to be used in a panel with proper inner margin and clip rectangle
-    /// set.
-    ///
-    /// Shorthand for [`crate::PanelTitleBar`], which also supports buttons.
+    /// Shorthand for [`crate::PanelTitleBar`].
     fn panel_title_bar(&mut self, label: &str, hover_text: Option<&str>) {
         self.panel_title_bar_with_buttons(label, hover_text, |_ui| {});
     }
 
     /// Static title bar used to separate panels into section, with buttons at its right edge.
     ///
-    /// This title bar is meant to be used in a panel with proper inner margin and clip rectangle
-    /// set.
-    ///
-    /// Shorthand for [`crate::PanelTitleBar`], which also supports buttons after the label.
+    /// Shorthand for [`crate::PanelTitleBar::show_with_right_buttons`].
     fn panel_title_bar_with_buttons<R>(
         &mut self,
         label: &str,
@@ -488,11 +497,7 @@ pub trait UiExt {
 
         let mut header_response = ui.interact(rect, id, egui::Sense::click());
         header_response.widget_info(|| {
-            egui::WidgetInfo::labeled(
-                egui::WidgetType::CollapsingHeader,
-                ui.is_enabled(),
-                galley.text(),
-            )
+            egui::WidgetInfo::labeled(Role::DisclosureTriangle, ui.is_enabled(), galley.text())
         });
         let text_pos = pos2(
             text_pos.x,
@@ -643,7 +648,7 @@ pub trait UiExt {
     #[inline]
     fn list_item_scope<R>(
         &mut self,
-        id_salt: impl egui::AsId,
+        id_salt: impl egui::AsIdSalt,
         content: impl FnOnce(&mut egui::Ui) -> R,
     ) -> egui::InnerResponse<R> {
         list_item::list_item_scope(self.ui_mut(), id_salt, content)
@@ -679,7 +684,7 @@ pub trait UiExt {
         children_ui: impl FnOnce(&mut egui::Ui) -> R,
     ) -> Option<R> {
         let label = label.into();
-        let id = self.ui().id().with(egui::Id::new(label.text()));
+        let id = self.ui().make_persistent_id(label.text());
         self.list_item()
             .interactive(false)
             .show_hierarchical_with_children(
@@ -712,7 +717,8 @@ pub trait UiExt {
         let raw_text = text.text().to_owned();
 
         let button = || {
-            ReButton::from_button(egui::Button::new((icon, text.clone())).selected(selected))
+            egui::Button::new((icon, text.clone()))
+                .selected(selected)
                 .size(Size::Tiny)
                 .variant(Variant::Ghost)
         };
@@ -724,8 +730,12 @@ pub trait UiExt {
             return button().atom_ui(ui).response;
         }
 
-        let (response, copy_response) =
-            ReButton::with_hover_icon_button(ui, ReButton::icon(icons::COPY), button);
+        let (response, copy_response) = with_hover_icon_button(
+            ui,
+            egui::Button::icon(icons::COPY, "Copy"),
+            button,
+            Size::Tiny,
+        );
         if copy_response.is_some_and(|resp| resp.clicked()) {
             log::info!("Copied {raw_text:?}");
             ui.copy_text(raw_text);
@@ -780,8 +790,9 @@ pub trait UiExt {
                 .inner
             })
         } else {
-            // Reuse the header text as the loading reason shown on hover in debug builds.
-            let reason = header.text().to_owned();
+            // Names the indicator (and is shown on hover in debug builds). Includes the source
+            // so it does not collide with the header label right below it.
+            let reason = format!("{} {}", header.text(), source.text());
             self.loading_screen_ui(&reason, |ui| {
                 ui.label(header.heading().color(ui.style().visuals.weak_text_color()));
                 ui.strong(source);
@@ -912,8 +923,10 @@ pub trait UiExt {
 
     /// Binary toggle switch.
     ///
+    /// A small on/off switch. `label` names it in the accessibility tree.
+    ///
     /// Adapted from `egui_demo_lib/src/demo/toggle_switch.rs`
-    fn toggle_switch(&mut self, height: f32, on: &mut bool) -> egui::Response {
+    fn toggle_switch(&mut self, height: f32, on: &mut bool, label: &str) -> egui::Response {
         let ui = self.ui_mut();
         let width = (height / 2. * 3.).ceil();
         let size = egui::vec2(width, height); // 12x7 in figma, but 12x8 looks _much_ better in epaint
@@ -927,7 +940,7 @@ pub trait UiExt {
             response.mark_changed();
         }
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, "")
+            egui::WidgetInfo::selected(Role::CheckBox, ui.is_enabled(), *on, label)
         });
 
         if ui.is_rect_visible(visual_rect) {
@@ -1115,7 +1128,7 @@ pub trait UiExt {
         let ui = self.ui_mut();
 
         // Have we ever shown any help UI anywhere?
-        let has_shown_help_id = egui::Id::new("has_shown_help");
+        let has_shown_help_id = egui::Id::unique("has_shown_help");
         let user_has_clicked_any_help_button: bool =
             ui.data_mut(|d| *d.get_persisted_mut_or_default(has_shown_help_id));
 
@@ -1145,6 +1158,10 @@ pub trait UiExt {
                             ui.data_mut(|d| {
                                 d.insert_persisted(has_shown_help_id, true);
                             });
+
+                            // Port note: upstream records an analytics event here
+                            // (`re_analytics::event::HelpButtonFirstClicked`); the port has no
+                            // analytics.
                         }
                     }
                 })
@@ -1153,17 +1170,15 @@ pub trait UiExt {
             if let Some(where_to_paint_background) = where_to_paint_background
                 && !button_response.hovered()
             {
-                let mut bg_rect = button_response.rect.expand(2.0);
-
-                // Hack: ensure we don't paint outside the lines on the Y-axis.
-                // Yes, we only do so for the Y axis, because if we do it for the X axis too
-                // then the background won't be centered behind the help icon.
-                bg_rect.min.y = bg_rect.min.y.max(ui.max_rect().min.y);
-                bg_rect.max.y = bg_rect.max.y.min(ui.max_rect().max.y);
-
+                // The same footprint the button's own hover fill has, so the two read as one
+                // button rather than two sizes of it.
                 ui.painter().set(
                     where_to_paint_background,
-                    egui::Shape::rect_filled(bg_rect, 4.0, ui.tokens().highlight_color),
+                    egui::Shape::rect_filled(
+                        button_response.rect,
+                        ui.tokens().normal_corner_radius(),
+                        ui.tokens().highlight_color,
+                    ),
                 );
             }
 
@@ -1177,6 +1192,18 @@ pub trait UiExt {
     }
 
     /// Show some markdown
+    /// Show UI built by a crate we don't control, such as `egui_commonmark`.
+    ///
+    /// See [`crate::theme::class::UNCONTROLLED_EXTERNAL_UI`].
+    fn uncontrolled_external_ui<R>(&mut self, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        self.ui_mut()
+            .scope_builder(
+                egui::UiBuilder::new().with_class(crate::theme::class::UNCONTROLLED_EXTERNAL_UI),
+                add_contents,
+            )
+            .inner
+    }
+
     fn markdown_ui(&mut self, markdown: &str) {
         use std::sync::Arc;
 
@@ -1185,12 +1212,18 @@ pub trait UiExt {
         let ui = self.ui_mut();
         let commonmark_cache = ui.data_mut(|data| {
             data.get_temp_mut_or_default::<Arc<Mutex<egui_commonmark::CommonMarkCache>>>(
-                egui::Id::new("global_egui_commonmark_cache"),
+                egui::Id::unique("global_egui_commonmark_cache"),
             )
             .clone()
         });
 
-        egui_commonmark::CommonMarkViewer::new().show(ui, &mut commonmark_cache.lock(), markdown);
+        ui.uncontrolled_external_ui(|ui| {
+            egui_commonmark::CommonMarkViewer::new().show(
+                ui,
+                &mut commonmark_cache.lock(),
+                markdown,
+            );
+        });
     }
 
     /// A drop-down menu with a list of options.
@@ -1201,18 +1234,33 @@ pub trait UiExt {
     fn drop_down_menu(
         &mut self,
         id_salt: impl egui::AsIdSalt,
-        selected_text: String,
+        selected_text: impl Into<egui::WidgetText>,
         content: impl FnOnce(&mut egui::Ui),
     ) -> egui::Response {
         // TODO(emilk): make the button itself a `ListItem2`
         let response = egui::ComboBox::from_id_salt(id_salt)
-            .selected_text(selected_text.clone())
+            .selected_text(selected_text)
             .show_ui(self.ui_mut(), |ui| {
                 list_item::list_item_scope(ui, "inner_scope", |ui| {
                     content(ui);
                 });
             });
         response.response
+    }
+
+    /// Declare that the user can make this content wider, e.g. by dragging a splitter.
+    ///
+    /// List items inside truncate long values to the width they are given, instead of asking for
+    /// the width their content wants.
+    fn resizable_container_scope<R>(&mut self, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        self.ui_mut()
+            .scope_builder(
+                egui::UiBuilder::new().ui_stack_info(
+                    egui::UiStackInfo::default().with_tag_value(RESIZABLE_CONTAINER_TAG, true),
+                ),
+                content,
+            )
+            .inner
     }
 
     /// Use the provided range as full span for the nested content.
@@ -1287,25 +1335,26 @@ pub trait UiExt {
             ..Default::default()
         }
         .show(ui, |ui| {
-            ui.visuals_mut().widgets.hovered.expansion = 0.0;
-            ui.visuals_mut().widgets.active.expansion = 0.0;
-            ui.visuals_mut().widgets.inactive.expansion = 0.0;
+            // The active segment is a neutral pill, not an accent-blue one: the frame around the
+            // group is what says these buttons belong together, so the accent would read as one
+            // odd button rather than as the current choice. The segments are built by the caller,
+            // so the classes go on the `Ui` they sit in and they inherit them, including a size
+            // that keeps the segments the same wherever the toggle is placed.
+            ui.scope_builder(
+                UiBuilder::new()
+                    .with_class(crate::theme::class::SELECTED_NEUTRAL)
+                    .with_class(Size::Tiny.class_name()),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
 
-            ui.visuals_mut().selection.bg_fill = ui.visuals_mut().widgets.inactive.bg_fill;
-            ui.visuals_mut().selection.stroke = ui.visuals_mut().widgets.inactive.fg_stroke;
-            ui.visuals_mut().widgets.hovered.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    // `ui.horizontal` makes its row `interact_size.y` tall. The row is as tall as
+                    // the segments, so the toggle is centered in a centered layout.
+                    ui.spacing_mut().interact_size.y = Size::Tiny.height();
 
-            ui.visuals_mut().widgets.hovered.fg_stroke.color =
-                ui.visuals().widgets.inactive.fg_stroke.color;
-            ui.visuals_mut().widgets.active.fg_stroke.color =
-                ui.visuals().widgets.inactive.fg_stroke.color;
-            ui.visuals_mut().widgets.inactive.fg_stroke.color =
-                ui.visuals().widgets.noninteractive.fg_stroke.color;
-
-            ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
-            ui.spacing_mut().item_spacing.x = 3.0;
-
-            ui.horizontal(content).inner
+                    ui.horizontal(content).inner
+                },
+            )
+            .inner
         })
     }
 
@@ -1332,8 +1381,10 @@ pub trait UiExt {
         let show_extras = ui.show_extras();
 
         let content_changed = ui.data_mut(|data| {
-            let stored_show_extras = data
-                .get_temp_mut_or_insert_with(ui.id().with("__stored_show_extra__"), || show_extras);
+            let stored_show_extras = data.get_temp_mut_or_insert_with(
+                ui.make_persistent_id("__stored_show_extra__"),
+                || show_extras,
+            );
             if *stored_show_extras == show_extras {
                 false
             } else {
@@ -1368,18 +1419,6 @@ pub trait UiExt {
         ))
     }
 
-    /// Set the current style for a text field that has invalid content.
-    fn style_invalid_field(&mut self) {
-        let ui = self.ui_mut();
-        ui.visuals_mut().selection.stroke.color = ui.visuals().error_fg_color;
-        ui.visuals_mut().widgets.active.bg_stroke =
-            egui::Stroke::new(1.0, ui.visuals().error_fg_color);
-        ui.visuals_mut().widgets.hovered.bg_stroke =
-            egui::Stroke::new(1.0, ui.visuals().error_fg_color);
-        ui.visuals_mut().widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0, ui.visuals().error_fg_color);
-    }
-
     /// Show `contents` as one wrapping unit inside a [`egui::Ui::horizontal_wrapped`] layout.
     ///
     /// Don't use too many of these in the same layout, as it could take a frame per row and wrap
@@ -1404,7 +1443,7 @@ pub trait UiExt {
         }
 
         let layout = ui.layout().with_main_wrap(false);
-        let response = ui.scope_builder(UiBuilder::new().id(id).layout(layout), contents);
+        let response = ui.scope_builder(UiBuilder::new().scope_id(id).layout(layout), contents);
 
         // The contents have a width we did not know about when we placed them.
         // Ask for one more pass, so the next one puts them on the correct row.

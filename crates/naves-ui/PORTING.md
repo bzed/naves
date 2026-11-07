@@ -1,6 +1,6 @@
 # Porting Guide
 
-How `naves_ui` is produced from upstream [`re_ui`](https://github.com/rerun-io/rerun/tree/main/crates/viewer_support/re_ui),
+How `naves_ui` is produced from upstream [`re_ui`](https://github.com/rerun-io/rerun/tree/main/crates/ui_tools/re_ui),
 and how to re-port when a new upstream version is needed.
 
 ## 1. Port snapshot
@@ -8,8 +8,8 @@ and how to re-port when a new upstream version is needed.
 | | |
 |---|---|
 | Upstream repo | `rerun-io/rerun` |
-| Upstream pin | tag `0.38.1` (previous port: `0.30.2`) |
-| Primary source | `crates/viewer_support/re_ui` (moved from `crates/viewer/re_ui` in 0.35–0.38) |
+| Upstream pin | tag `0.42.0` (previous ports: `0.38.1`, `0.30.2`) |
+| Primary source | `crates/ui_tools/re_ui` (moved from `crates/viewer_support/re_ui` between 0.38 and 0.42) |
 | Secondary sources | `crates/utils/re_format` (→ `src/format/`), `crates/utils/re_error` (→ `src/error.rs`), `crates/utils/re_span` (→ `src/span.rs`), `re_log_types`/`re_types_core` time types (→ `src/time_types.rs`), `re_log_types` ids + `re_uri` (→ `src/ids.rs`), `re_async` (→ `src/async_runtime.rs`), `re_log::LogMsg`/`FieldValue` (→ `src/notifications.rs`) |
 | egui alignment | egui **0.36** (matches `bevy_egui` 0.42 for bevy 0.19) |
 
@@ -26,15 +26,15 @@ document tells you what we change. Without the pin, the ledger is unreadable.
 
 | This crate | Upstream |
 |---|---|
-| `src/*.rs`, `src/egui_ext/`, `src/list_item/`, `src/command/`, `src/re_form/` | `crates/viewer_support/re_ui/src/…` (1:1) |
+| `src/*.rs`, `src/egui_ext/`, `src/list_item/`, `src/command/`, `src/re_form/` | `crates/ui_tools/re_ui/src/…` (1:1) |
 | `src/format/{mod,duration,plural,time}.rs` | `crates/utils/re_format/src/{lib,duration,plural,time}.rs` |
 | `src/error.rs` | `crates/utils/re_error/src/structured_error.rs` (verbatim) |
 | `src/span.rs` | `crates/utils/re_span/src/lib.rs` (verbatim) |
 | `src/time_types.rs` | hand-minimized port of `re_log_types` + `re_types_core::datatypes` |
 | `src/ids.rs` | hand-minimized port of `re_log_types::{StoreId, EntryId}` + `re_uri::{Origin, Scheme}` |
 | `src/async_runtime.rs` | hand-minimized port of `re_async::{AsyncRuntimeHandle, WasmNotSend}` |
-| `data/` | `crates/viewer_support/re_ui/data/` verbatim, **except** `logo_*.png` and `icons/rerun_logo.png` / `icons/rerun_wordmark.svg` (rerun brand assets) |
-| `examples/naves_ui_example/` | `crates/viewer_support/re_ui/examples/re_ui_example/` (adapted, see §7) |
+| `data/` | `crates/ui_tools/re_ui/data/` verbatim, **except** `logo_*.png` and `icons/rerun_logo.png` / `icons/rerun_wordmark.svg` (rerun brand assets) |
+| `examples/naves_ui_example/` | `crates/ui_tools/re_ui/examples/re_ui_example/` (adapted, see §7) |
 
 ## 3. Dependency substitution table
 
@@ -181,7 +181,7 @@ and primitive impls kept.
 
 ## 8. Re-port procedure (next upstream version)
 
-1. Fetch the new upstream tree: `crates/viewer_support/re_ui/{src,data,examples}`
+1. Fetch the new upstream tree: `crates/ui_tools/re_ui/{src,data,examples}`
    plus `crates/utils/re_format/src`, `re_error/src/structured_error.rs`,
    `re_span/src/lib.rs` at the target tag. (Check whether `re_ui` moved again.)
 2. Diff upstream old-pin → new-pin first; files unchanged upstream need no work.
@@ -209,3 +209,31 @@ Same license as upstream: MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).
 The bundled Inter font is OFL-1.1 (`data/OFL.txt`). Every shim/ported file
 carries a header comment citing its upstream crate, the pinned version, and the
 license — keep these headers accurate when bumping the pin.
+
+## 9. Re-port to 0.42.0 (2026-11-07) — what this pass found
+
+- Upstream moved: `crates/viewer_support/re_ui` → `crates/ui_tools/re_ui`; `re_format` gained
+  `timestamp_format.rs`; `re_ui` gained `theme/` (button, checkbox, class, text_edit), `motion.rs`,
+  `progress_ring.rs`, `ui_layout.rs`; upstream removed `relative_time_range.rs`,
+  `time_drag_value.rs`, `command/recording_command.rs`, `command/redap_server_command.rs` — all
+  gone here too. `wayland.rs` and `testing/` were re-copied by rsync and re-deleted.
+- New substitutions beyond §3:
+  - `re_int::UnsignedAbs` → vendored into `src/format/mod.rs` (~20 lines, upstream is a std
+    wrapper; num-traits issue #315 is the upstream TODO).
+  - `re_async::UiWaker` → ported near-verbatim into `src/async_runtime.rs` (std-only).
+  - `re_log::{debug_assert, debug_assert_eq}` → the std macros; `re_log::{warn_once,
+    debug_warn_once}` → `crate::{warn_once, debug_warn_once}` macros in `lib.rs`
+    (`std::sync::Once`-guarded `log::warn!`).
+  - `re_log::{LogMsg, FieldValue, GUI_NOTIFICATION_FIELD}` → local ports in
+    `src/notifications.rs` (§5.2, re-applied to the 0.42.0 shape).
+- egui 0.37 needs the `experimental` feature for `egui::theme` (`StyleProvider`); upstream enables
+  it, the kit's 0.36 base did not need it.
+- `build.rs`: upstream decides the `hot_reload_design_tokens` cfg with `re_build_tools`; the port
+  keeps a build script with only the `rustc-check-cfg` line (the hot-reload branches are deleted).
+- Fonts changed upstream: `Inter-Medium.otf` → `Inter-Variable.ttf`, and `JetBrainsMono-Variable.ttf`
+  was added (both under `data/OFL.txt`).
+- Snapshot tests (§7) re-ignored at their new homes: `alert.rs`, `combo_item.rs` ×2, `tab_bar.rs` ×2.
+- The kit's rustfmt pass (our `make fmt-check`) is a global transformation: the whole tree is
+  formatted with our rustfmt, which is noise in any diff against raw upstream.
+- `top_bar_style` (§6.1) and the brand-asset removals (§6.3) had to be re-applied: the rsync
+  re-copied upstream's `eframe::Frame` measuring and `include_bytes` logo registrations.

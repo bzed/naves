@@ -19,7 +19,7 @@ use crate::DesignTokens;
 /// As a clickable button that follows the text color:
 /// ```
 /// # egui::__run_test_ui(|ui| {
-/// if ui.add(naves_ui::icons::PLAY.as_button()).clicked() {
+/// if ui.add(naves_ui::icons::PLAY.as_button("Play")).clicked() {
 ///     // …
 /// }
 /// # });
@@ -77,6 +77,12 @@ impl Icon {
         self.uri
     }
 
+    /// The raw contents of the icon's PNG or SVG file.
+    #[inline]
+    pub fn image_bytes(&self) -> &'static [u8] {
+        self.image_bytes
+    }
+
     #[inline]
     pub fn as_image_source(&self) -> ImageSource<'static> {
         ImageSource::Bytes {
@@ -108,9 +114,15 @@ impl Icon {
         Image::new(self.as_image_source()).fit_to_original_size(scale)
     }
 
+    /// An icon-only button.
+    ///
+    /// `alt_text` is the button's accessible name: what a screen reader announces, what
+    /// `Harness::get_by_label` finds, and the only thing the MCP UI tools can search an icon
+    /// button by. A button without one is unreachable by name, so it is required here.
     #[inline]
-    pub fn as_button(&self) -> egui::Button<'_> {
-        egui::Button::image(self.as_image()).image_tint_follows_text_color(true)
+    pub fn as_button(&self, alt_text: impl Into<String>) -> egui::Button<'_> {
+        egui::Button::opt_image_and_text(Some(self.as_image().alt_text(alt_text)), None)
+            .image_tint_follows_text_color(true)
     }
 
     #[inline]
@@ -162,6 +174,7 @@ pub const HELP: Icon = icon_from_path!("../data/icons/help.svg");
 pub const PLAY: Icon = icon_from_path!("../data/icons/play.svg");
 pub const PLAYHEAD_NAV: Icon = icon_from_path!("../data/icons/playhead_nav.svg");
 pub const PAUSE: Icon = icon_from_path!("../data/icons/pause.svg");
+pub const STOP: Icon = icon_from_path!("../data/icons/stop.svg");
 pub const SKIP_TO_END: Icon = icon_from_path!("../data/icons/skip_to_end.svg");
 pub const CHEVRON: Icon = icon_from_path!("../data/icons/chevron.svg");
 pub const ARROW_LEFT: Icon = icon_from_path!("../data/icons/arrow_left.svg");
@@ -175,6 +188,7 @@ pub const LOOP: Icon = icon_from_path!("../data/icons/loop.svg");
 pub const FILTER: Icon = icon_from_path!("../data/icons/filter.svg");
 
 pub const NOTIFICATION: Icon = icon_from_path!("../data/icons/notification.svg");
+pub const SHARE: Icon = icon_from_path!("../data/icons/share.svg");
 pub const RIGHT_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/right_panel_toggle.svg");
 pub const BOTTOM_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/bottom_panel_toggle.svg");
 pub const LEFT_PANEL_TOGGLE: Icon = icon_from_path!("../data/icons/left_panel_toggle.svg");
@@ -215,7 +229,7 @@ pub const CHROME_CLOSE: Icon = icon_from_path!("../data/icons/chrome_close.svg")
 /// Used for HTTP URLs that lead out of the app.
 ///
 /// Remember to also use `.on_hover_cursor(egui::CursorIcon::PointingHand)`,
-/// but don't add `.on_hover_text(url)`.
+/// but don't add `.on_hover_text(url)` unless the label is elided.
 pub const EXTERNAL_LINK: Icon = icon_from_path!("../data/icons/external_link.svg");
 pub const DISCORD: Icon = icon_from_path!("../data/icons/discord.svg");
 
@@ -227,6 +241,7 @@ pub const CONTAINER_TABS: Icon = icon_from_path!("../data/icons/container_tabs.s
 pub const CONTAINER_VERTICAL: Icon = icon_from_path!("../data/icons/container_vertical.svg");
 
 pub const VIEW_2D: Icon = icon_from_path!("../data/icons/view_2d.svg");
+pub const VIEW_AUDIO: Icon = icon_from_path!("../data/icons/view_audio.svg");
 pub const VIEW_3D: Icon = icon_from_path!("../data/icons/view_3d.svg");
 pub const VIEW_DATAFRAME: Icon = icon_from_path!("../data/icons/view_dataframe.svg");
 pub const VIEW_GRAPH: Icon = icon_from_path!("../data/icons/view_graph.svg");
@@ -239,6 +254,7 @@ pub const VIEW_TENSOR: Icon = icon_from_path!("../data/icons/view_tensor.svg");
 pub const VIEW_TEXT: Icon = icon_from_path!("../data/icons/view_text.svg");
 pub const VIEW_TIMESERIES: Icon = icon_from_path!("../data/icons/view_timeseries.svg");
 pub const VIEW_UNKNOWN: Icon = icon_from_path!("../data/icons/view_unknown.svg");
+pub const TERMINAL: Icon = icon_from_path!("../data/icons/terminal.svg");
 
 //pub const GROUP: Icon = icon_from_path!("../data/icons/group.svg");
 pub const ENTITY: Icon = icon_from_path!("../data/icons/entity.svg");
@@ -296,6 +312,11 @@ pub const FOLDER: Icon = icon_from_path!("../data/icons/folder.svg");
 pub const SEARCH: Icon = icon_from_path!("../data/icons/search.svg");
 pub const SETTINGS: Icon = icon_from_path!("../data/icons/settings.svg");
 
+// Theme preference:
+pub const SUN: Icon = icon_from_path!("../data/icons/sun.svg");
+pub const MOON: Icon = icon_from_path!("../data/icons/moon.svg");
+pub const SUN_MOON: Icon = icon_from_path!("../data/icons/sun_moon.svg");
+
 // Shortcuts:
 pub const LEFT_MOUSE_CLICK: Icon = icon_from_path!("../data/icons/lmc.svg");
 pub const RIGHT_MOUSE_CLICK: Icon = icon_from_path!("../data/icons/rmc.svg");
@@ -318,4 +339,3 @@ pub const TABLE_ROW_VIEW: Icon = icon_from_path!("../data/icons/table_row_view.s
 pub const TABLE_GRID_VIEW: Icon = icon_from_path!("../data/icons/table_grid_view.svg");
 pub const TABLE_COLUMNS: Icon = icon_from_path!("../data/icons/columns.svg");
 pub const FLAG_UNTOGGLED: Icon = icon_from_path!("../data/icons/flag_untoggled.svg");
-pub const FLAG_TOGGLED: Icon = icon_from_path!("../data/icons/flag_toggled.svg");

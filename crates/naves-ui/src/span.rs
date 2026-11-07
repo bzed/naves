@@ -4,8 +4,6 @@
 //! Taking a `Range` by argument thus means the callee must check for this eventuality and return an error.
 //!
 //! In contrast, [`Span`] always has a non-negative length, i.e. `len >= 0`.
-//!
-//! Vendored from re_span 0.38.1 (<https://github.com/rerun-io/rerun>), MIT OR Apache-2.0.
 
 use std::ops::Range;
 
@@ -151,7 +149,7 @@ impl<Idx: Unsigned + Copy> Span<Idx> {
     /// see [`Self::saturating_add`] for a clamping version.
     #[inline]
     #[must_use]
-    #[allow(clippy::should_implement_trait)]
+    #[expect(clippy::should_implement_trait)]
     pub fn add(self, rhs: Idx) -> Self {
         let Self { start, len } = self;
         Self {
@@ -166,7 +164,7 @@ impl<Idx: Unsigned + Copy> Span<Idx> {
     /// see [`Self::saturating_sub`] for a clamping version.
     #[inline]
     #[must_use]
-    #[allow(clippy::should_implement_trait)]
+    #[expect(clippy::should_implement_trait)]
     pub fn sub(self, rhs: Idx) -> Self {
         let Self { start, len } = self;
         Self {
@@ -246,6 +244,15 @@ impl Span<usize> {
             len: len as u64,
         }
     }
+
+    /// The elements of `slice` covered by this span.
+    ///
+    /// Returns `None` if the span overflows `usize` or reaches past the end of `slice`.
+    #[inline]
+    pub fn try_slice<T>(self, slice: &[T]) -> Option<&[T]> {
+        let Self { start, len } = self;
+        slice.get(start..start.checked_add(len)?)
+    }
 }
 
 impl Span<u64> {
@@ -300,8 +307,29 @@ impl<Idx: Unsigned + Copy> From<Span<Idx>> for Range<Idx> {
     }
 }
 
+impl<Idx: Unsigned + Copy> From<Span<Idx>> for core::range::Range<Idx> {
+    #[inline]
+    fn from(value: Span<Idx>) -> Self {
+        let Range { start, end } = value.range();
+        Self { start, end }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_try_slice() {
+        let data = [10, 20, 30, 40];
+        assert_eq!(
+            Span::from_start_len(1, 2).try_slice(&data),
+            Some(&[20, 30][..])
+        );
+        assert_eq!(Span::from_start_len(4, 0).try_slice(&data), Some(&[][..]));
+        assert_eq!(Span::from_start_len(3, 2).try_slice(&data), None);
+        assert_eq!(Span::from_start_len(5, 0).try_slice(&data), None);
+        assert_eq!(Span::from_start_len(usize::MAX, 1).try_slice(&data), None);
+    }
+
     use super::Span;
 
     #[test]

@@ -27,6 +27,7 @@ use crate::{DesignTokens, UiExt as _};
 /// ```
 pub struct ModalHandler {
     modal: Option<ModalWrapper>,
+    animation_started_at: Option<f64>,
     allow_escape: bool,
     should_open: bool,
     should_close: bool,
@@ -36,6 +37,7 @@ impl Default for ModalHandler {
     fn default() -> Self {
         Self {
             modal: None,
+            animation_started_at: None,
             allow_escape: true,
             should_open: false,
             should_close: false,
@@ -69,14 +71,20 @@ impl ModalHandler {
     ) -> Option<R> {
         if self.modal.is_none() && self.should_open {
             self.modal = Some(make_modal());
+            self.animation_started_at = Some(ctx.input(|input| input.time));
             self.should_open = false;
         }
 
         if let Some(modal) = &mut self.modal {
-            let response = modal.ui(ctx, content_ui);
+            let animation_started_at = *self
+                .animation_started_at
+                .get_or_insert_with(|| ctx.input(|input| input.time));
+            let scale = crate::motion::scale_for_opened_at(ctx, animation_started_at);
+            let response = modal.ui_with_scale(ctx, scale, content_ui);
 
             if self.should_close || (self.allow_escape && response.should_close()) {
                 self.modal = None;
+                self.animation_started_at = None;
                 self.should_close = false;
             }
 
@@ -144,6 +152,8 @@ impl ModalWrapper {
     }
 
     /// Set the maximum width of the modal window.
+    ///
+    /// The modal is never wider than the window.
     #[inline]
     pub fn max_width(mut self, max_width: f32) -> Self {
         self.max_width = Some(max_width);
@@ -151,6 +161,9 @@ impl ModalWrapper {
     }
 
     /// Set the maximum height of the modal window.
+    ///
+    /// The modal is never taller than the window, so `f32::INFINITY` makes it as tall as the window
+    /// allows.
     #[inline]
     pub fn max_height(mut self, max_height: f32) -> Self {
         self.max_height = Some(max_height);
@@ -203,10 +216,18 @@ impl ModalWrapper {
         ctx: &egui::Context,
         content_ui: impl FnOnce(&mut egui::Ui) -> R,
     ) -> ModalResponse<R> {
-        let tokens = ctx.tokens();
-        let id = egui::Id::new(&self.title);
+        self.ui_with_scale(ctx, 1.0, content_ui)
+    }
 
-        let mut area = egui::Modal::default_area(id);
+    fn ui_with_scale<R>(
+        &self,
+        ctx: &egui::Context,
+        scale: f32,
+        content_ui: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> ModalResponse<R> {
+        let tokens = ctx.tokens();
+        let id = egui::Id::unique(&self.title);
+        let mut area = egui::Modal::default_area(id).accessible_name(&self.title);
         if let Some(default_height) = self.default_height {
             area = area.default_height(default_height);
         }
@@ -217,144 +238,191 @@ impl ModalWrapper {
             .area(area)
             .show(ctx, |ui| {
                 prevent_shrinking(ui);
-                egui::Frame {
-                    fill: ctx.global_style().visuals.panel_fill,
-                    corner_radius: ctx.global_style().visuals.window_corner_radius,
-                    ..Default::default()
-                }
-                .show(ui, |ui| {
-                    ui.set_clip_rect(ui.max_rect());
 
-                    let item_spacing_y = ui.spacing().item_spacing.y;
-                    ui.spacing_mut().item_spacing.y = 0.0;
+                // Only the surface may be scaled, not the full-screen backdrop sharing the modal's
+                // layer, so the opening animation draws into a sublayer. Pointer hit-testing only
+                // sees the modal's own layer, so scroll areas only receive the mouse wheel once
+                // the content is back in that layer.
+                let is_animating = scale < 1.0;
+                let content_layer_id = if is_animating {
+                    let content_layer_id = self.content_layer_id();
+                    ctx.set_sublayer(ui.layer_id(), content_layer_id);
+                    content_layer_id
+                } else {
+                    ui.layer_id()
+                };
 
-                    if let Some(min_width) = self.min_width {
-                        ui.set_min_width(min_width);
-                    }
-                    if let Some(max_width) = self.max_width {
-                        ui.set_max_width(max_width);
-                    } else {
-                        ui.set_max_width(tokens.default_modal_width);
-                    }
-
-                    if let Some(min_height) = self.min_height {
-                        ui.set_min_height(min_height);
-                    }
-                    if let Some(max_height) = self.max_height {
-                        ui.set_max_height(max_height);
-                    }
-
-                    //
-                    // Title bar
-                    //
-
-                    // Slim title bar matching the other floating windows:
-                    // 12px sides, 6px top, 4px below, no separator.
-                    view_padding_frame(
-                        tokens,
-                        &ViewPaddingFrameParams {
-                            left_and_right: true,
-                            top: false,
-                            bottom: false,
-                        },
-                    )
-                    .show(ui, |ui| {
-                        ui.add_space(6.0);
-                        Self::title_bar(ui, &self.title);
-                        ui.add_space(4.0);
-                    });
-
-                    //
-                    // Inner content
-                    //
-
-                    let wrapped_content_ui = |ui: &mut egui::Ui| -> R {
-                        // We always have side margin, but these must happen _inside_ the scroll area
-                        // (if any). Otherwise, the scroll bar is not snug with the right border and
-                        // may interfere with the action buttons of `ListItem`s.
-                        view_padding_frame(
-                            tokens,
-                            &ViewPaddingFrameParams {
-                                left_and_right: self.set_side_margins,
-                                top: false,
-                                bottom: false,
-                            },
-                        )
+                let (inner, surface_rect) = ui
+                    .scope_builder(egui::UiBuilder::new().layer_id(content_layer_id), |ui| {
+                        let response = egui::Frame {
+                            fill: ctx.global_style().visuals.panel_fill,
+                            corner_radius: tokens.window_corner_radius().into(),
+                            ..Default::default()
+                        }
                         .show(ui, |ui| {
-                            if self.full_span_content {
-                                // no further spacing for the content UI
-                                content_ui(ui)
-                            } else {
-                                // we must restore vertical spacing and add view padding at the bottom
-                                ui.add_space(item_spacing_y);
+                            ui.set_clip_rect(ui.max_rect());
 
+                            let item_spacing_y = ui.spacing().item_spacing.y;
+                            ui.spacing_mut().item_spacing.y = 0.0;
+
+                            /// The space kept free between the modal and each edge of the window.
+                            const WINDOW_MARGIN: f32 = 20.0;
+
+                            // The modal never grows past the window, also when the window shrinks
+                            // while the modal is open.
+                            let window_size = (ui.content_rect().size()
+                                - Vec2::splat(2.0 * WINDOW_MARGIN))
+                            .max(Vec2::ZERO);
+
+                            if let Some(min_width) = self.min_width {
+                                ui.set_min_width(min_width.min(window_size.x));
+                            }
+                            ui.set_max_width(
+                                self.max_width
+                                    .unwrap_or(tokens.default_modal_width)
+                                    .min(window_size.x),
+                            );
+
+                            if let Some(min_height) = self.min_height {
+                                ui.set_min_height(min_height.min(window_size.y));
+                            }
+                            if let Some(max_height) = self.max_height {
+                                ui.set_max_height(max_height.min(window_size.y));
+                            }
+
+                            //
+                            // Title bar
+                            //
+
+                            view_padding_frame(
+                                tokens,
+                                &ViewPaddingFrameParams {
+                                    left_and_right: true,
+                                    top: true,
+                                    bottom: false,
+                                },
+                            )
+                            .show(ui, |ui| {
+                                Self::title_bar(ui, &self.title);
+                                ui.add_space(tokens.view_padding() as f32);
+                                ui.full_span_separator();
+                            });
+
+                            //
+                            // Inner content
+                            //
+
+                            let wrapped_content_ui = |ui: &mut egui::Ui| -> R {
+                                // We always have side margin, but these must happen _inside_ the scroll area
+                                // (if any). Otherwise, the scroll bar is not snug with the right border and
+                                // may interfere with the action buttons of `ListItem`s.
                                 view_padding_frame(
                                     tokens,
                                     &ViewPaddingFrameParams {
-                                        left_and_right: false,
+                                        left_and_right: self.set_side_margins,
                                         top: false,
-                                        bottom: true,
+                                        bottom: false,
                                     },
                                 )
                                 .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.y = item_spacing_y;
-                                    content_ui(ui)
+                                    if self.full_span_content {
+                                        // no further spacing for the content UI
+                                        content_ui(ui)
+                                    } else {
+                                        // we must restore vertical spacing and add view padding at the bottom
+                                        ui.add_space(item_spacing_y);
+
+                                        view_padding_frame(
+                                            tokens,
+                                            &ViewPaddingFrameParams {
+                                                left_and_right: false,
+                                                top: false,
+                                                bottom: true,
+                                            },
+                                        )
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = item_spacing_y;
+                                            content_ui(ui)
+                                        })
+                                        .inner
+                                    }
                                 })
                                 .inner
+                            };
+
+                            //
+                            // Optional scroll area
+                            //
+
+                            if self.scrollable.any() {
+                                // Make the modal size less jumpy and work around https://github.com/emilk/egui/issues/5138
+                                let max_height = 0.85 * ui.content_rect().height();
+                                let min_height =
+                                    0.3 * ui.content_rect().height().at_most(max_height);
+
+                                egui::ScrollArea::new(self.scrollable)
+                                    .min_scrolled_height(max_height)
+                                    .max_height(max_height)
+                                    .show(ui, |ui| {
+                                        let res = wrapped_content_ui(ui);
+
+                                        if ui.min_rect().height() < min_height {
+                                            ui.add_space(min_height - ui.min_rect().height());
+                                        }
+
+                                        res
+                                    })
+                                    .inner
+                            } else {
+                                wrapped_content_ui(ui)
                             }
-                        })
-                        .inner
-                    };
+                        });
 
-                    //
-                    // Optional scroll area
-                    //
+                        (response.inner, response.response.rect)
+                    })
+                    .inner;
 
-                    if self.scrollable.any() {
-                        // Make the modal size less jumpy and work around https://github.com/emilk/egui/issues/5138
-                        let max_height = 0.85 * ui.content_rect().height();
-                        let min_height = 0.3 * ui.content_rect().height().at_most(max_height);
+                if is_animating {
+                    ctx.transform_layer_shapes_after_rounding(
+                        content_layer_id,
+                        crate::motion::scale_transform(surface_rect.center(), scale),
+                    );
+                }
 
-                        egui::ScrollArea::new(self.scrollable)
-                            .min_scrolled_height(max_height)
-                            .max_height(max_height)
-                            .show(ui, |ui| {
-                                let res = wrapped_content_ui(ui);
-
-                                if ui.min_rect().height() < min_height {
-                                    ui.add_space(min_height - ui.min_rect().height());
-                                }
-
-                                res
-                            })
-                            .inner
-                    } else {
-                        wrapped_content_ui(ui)
-                    }
-                })
-                .inner
+                inner
             })
+    }
+
+    fn content_layer_id(&self) -> egui::LayerId {
+        egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::unique(&self.title).with("content"),
+        )
     }
 
     /// Display a title bar in our own style.
     fn title_bar(ui: &mut egui::Ui, title: &str) {
-        ui.horizontal(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new(title).strong()).selectable(false));
-
-            ui.add_space(16.0);
-
-            let mut ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(ui.max_rect())
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        // The row is as tall as the close button, so the title centers on it rather than the
+        // button hanging below a shorter row.
+        egui::Sides::new()
+            .height(crate::Size::inherited(ui).height())
+            .spacing(16.0)
+            .shrink_left()
+            .truncate()
+            .show(
+                ui,
+                |ui| {
+                    ui.strong(title);
+                },
+                |ui| {
+                    if ui
+                        .small_icon_button(&crate::icons::CLOSE, "Close")
+                        .clicked()
+                    {
+                        ui.close();
+                    }
+                },
             );
-            if ui
-                .small_icon_button(&crate::icons::CLOSE, "Close")
-                .clicked()
-            {
-                ui.close();
-            }
-        });
     }
 }
 
@@ -409,7 +477,7 @@ pub fn prevent_shrinking(ui: &mut egui::Ui) {
         screen_size = Vec2::ZERO;
     }
 
-    let id = ui.id().with("prevent_shrinking");
+    let id = ui.make_persistent_id("prevent_shrinking");
     let screen_size_changed = ui.data_mut(|d| {
         let last_screen_size = d.get_temp_mut_or_insert_with(id, || screen_size);
         let changed = *last_screen_size != screen_size;
@@ -421,5 +489,62 @@ pub fn prevent_shrinking(ui: &mut egui::Ui) {
         let min_size = ui.min_size();
         // Set the min size, respecting the current min size.
         ui.set_min_size(egui::Vec2::max(last_rect.size(), min_size));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modal_animation_only_transforms_the_surface_layer() {
+        let ctx = egui::Context::default();
+        let modal = ModalWrapper::new("Animated modal").min_width(240.0);
+        let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 700.0));
+
+        let render = || {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen_rect),
+                    ..Default::default()
+                },
+                |ui| {
+                    modal.ui_with_scale(ui.ctx(), 0.5, |ui| {
+                        ui.add_sized(egui::vec2(200.0, 160.0), egui::Button::new("Action"));
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+
+        // The first frame is an invisible sizing pass.
+        render();
+        let output = render();
+
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|clipped| clipped.transform_after_tessellation.scaling == 0.5),
+            "the modal surface should be scaled"
+        );
+        let backdrop = output
+            .shapes
+            .iter()
+            .find(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Rect(rect) if rect.rect == screen_rect)
+            })
+            .expect("the modal should paint a full-screen backdrop");
+        assert_eq!(
+            backdrop.transform_after_tessellation,
+            egui::emath::TSTransform::IDENTITY,
+            "the full-screen backdrop must not be scaled"
+        );
+        assert_eq!(
+            ctx.layer_transform_to_global(modal.content_layer_id()),
+            None,
+            "the animation must not move the surface's pixel grid or input coordinates"
+        );
     }
 }

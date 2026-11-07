@@ -340,7 +340,7 @@ impl<'a> CompletionPopup<'a> {
             .kind(PopupKind::Popup)
             .open(is_open)
             .align(align)
-            .align_alternatives(&[align.flip_y()])
+            .align_alternatives(&[align.flipped_y()])
             .width(width)
             .show(|ui| {
                 ui.set_max_width(ui.available_width().min(width));
@@ -447,7 +447,7 @@ fn word_range_before_cursor(
 
 #[cfg(test)]
 mod tests {
-    use egui::accesskit::Role;
+    use egui::Role;
     use egui::{KeyboardShortcut, Modifiers};
     use egui_kittest::{Harness, kittest::Queryable as _};
 
@@ -463,7 +463,7 @@ mod tests {
     ];
 
     fn id() -> Id {
-        Id::new("prompt")
+        Id::unique("prompt")
     }
 
     /// Commands are only valid at the start of the prompt.
@@ -486,13 +486,14 @@ mod tests {
     }
 
     fn harness<'a>() -> Harness<'a, State> {
-        harness_with(|text| TextEdit::singleline(text))
+        harness_with(|text| TextEdit::singleline(text).hint_text("Prompt"))
     }
 
     /// A chat composer: multiline, Shift+Enter for newline, Enter to send.
     fn chat_harness<'a>() -> Harness<'a, State> {
         harness_with(|text| {
             TextEdit::multiline(text)
+                .hint_text("Prompt")
                 .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
         })
     }
@@ -500,28 +501,33 @@ mod tests {
     fn harness_with<'a>(
         make_text_edit: impl for<'t> Fn(&'t mut dyn TextBuffer) -> TextEdit<'t> + 'a,
     ) -> Harness<'a, State> {
-        let mut harness = Harness::new_ui_state(
-            move |ui, state: &mut State| {
-                let output = CompletionPopup::new(id()).show(
-                    ui,
-                    &mut state.text,
-                    &make_text_edit,
-                    suggest_commands,
-                );
-                state.popup_open = output.is_open;
-                let response = &output.text_edit.response.response;
-                let enter = response.has_focus()
-                    && ui.input_mut(|input| {
-                        !input.modifiers.shift && input.consume_key(Modifiers::NONE, Key::Enter)
-                    });
-                if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) || enter
-                {
-                    response.request_focus();
-                    state.submitted = Some(core::mem::take(&mut state.text));
-                }
-            },
-            State::default(),
-        );
+        let mut harness = Harness::builder()
+            .with_context_setup(crate::apply_style_and_install_loaders)
+            .build_ui_state(
+                move |ui, state: &mut State| {
+                    // Without any font, `TextEdit` lays out an empty galley and clamps the cursor to 0.
+
+                    let output = CompletionPopup::new(id()).show(
+                        ui,
+                        &mut state.text,
+                        &make_text_edit,
+                        suggest_commands,
+                    );
+                    state.popup_open = output.is_open;
+                    let response = &output.text_edit.response.response;
+                    let enter = response.has_focus()
+                        && ui.input_mut(|input| {
+                            !input.modifiers.shift && input.consume_key(Modifiers::NONE, Key::Enter)
+                        });
+                    if response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
+                        || enter
+                    {
+                        response.request_focus();
+                        state.submitted = Some(core::mem::take(&mut state.text));
+                    }
+                },
+                State::default(),
+            );
         harness.run();
         text_input(&harness).focus();
         harness.run();
@@ -671,6 +677,7 @@ mod tests {
     fn long_descriptions_stay_within_the_text_edit() {
         let mut text = String::new();
         let mut harness = Harness::builder()
+            .with_context_setup(crate::apply_style_and_install_loaders)
             .with_size(egui::vec2(1600.0, 900.0))
             .build_ui_state(
                 |ui, text_edit_rect: &mut egui::Rect| {
@@ -680,7 +687,11 @@ mod tests {
                             let output = CompletionPopup::new(id()).show(
                                 ui,
                                 &mut text,
-                                |text| TextEdit::multiline(text).desired_width(f32::INFINITY),
+                                |text| {
+                                    TextEdit::multiline(text)
+                                        .hint_text("Prompt")
+                                        .desired_width(f32::INFINITY)
+                                },
                                 |query| {
                                     if !query.word.starts_with('/') {
                                         return vec![];

@@ -1,69 +1,28 @@
-use egui::{InnerResponse, Popup, Response, SetOpenCommand};
-
-use crate::menu::menu_style;
-
 pub trait ResponseExt {
-    fn response(&self) -> &Response;
+    /// Like [`egui::Response::on_hover_ui`], but the tooltip stays open while the user scrolls
+    /// inside it, so `add_contents` can contain an [`egui::ScrollArea`].
+    // TODO(emilk/egui#4781): egui closes every tooltip on scroll. Replace with `on_hover_ui` once
+    // egui keeps a hovered interactive tooltip open.
+    fn on_scrollable_hover_ui(self, add_contents: impl FnOnce(&mut egui::Ui)) -> Self;
+}
 
-    /// Is this response or any child widgets hovered?
-    ///
-    /// Will return false if some other area is covering the given layer, or if anything is being
-    /// dragged.
-    ///
-    /// This calls [`egui::Context::rect_contains_pointer`]. See also [`Response::hovered`].
-    fn container_hovered(&self) -> bool {
-        self.response().ctx.dragged_id().is_none() && self.container_contains_pointer()
-    }
-
-    /// Does this response or any child widgets contain the mouse pointer?
-    ///
-    /// Will return false if some other area is covering the given layer.
-    ///
-    /// This calls [`egui::Context::rect_contains_pointer`]. See also [`Response::contains_pointer`].
-    fn container_contains_pointer(&self) -> bool {
-        self.response()
-            .ctx
-            .rect_contains_pointer(self.response().layer_id, self.response().interact_rect)
-    }
-
-    /// Were this container or any of its child widgets clicked?
-    fn container_clicked(&self) -> bool {
-        self.container_contains_pointer()
-            && self.response().ctx.input(|i| i.pointer.primary_clicked())
-    }
-
-    /// Were this container or any of its child widgets secondary clicked?
-    ///
-    /// Does not check for long-press right now (since egui doesn't publicly expose that information).
-    fn container_secondary_clicked(&self) -> bool {
-        self.container_contains_pointer()
-            && self.response().ctx.input(|i| i.pointer.secondary_clicked())
-    }
-
-    /// Show a context menu on right clicks anywhere within this widget, even if covered by a click
-    /// sensing widget on the same layer.
-    fn container_context_menu<R>(
-        &self,
-        add_contents: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> Option<InnerResponse<R>> {
-        Popup::menu(self.response())
-            .open_memory(if self.container_secondary_clicked() {
-                Some(SetOpenCommand::Bool(true))
-            } else if self.response().container_clicked() {
-                // Explicitly close the menu if the widget was clicked
-                // Without this, the context menu would stay open if the user clicks the widget
-                Some(SetOpenCommand::Bool(false))
-            } else {
-                None
-            })
-            .style(menu_style())
-            .at_pointer_fixed()
-            .show(add_contents)
+impl ResponseExt for egui::Response {
+    fn on_scrollable_hover_ui(self, add_contents: impl FnOnce(&mut egui::Ui)) -> Self {
+        let mut tooltip = egui::Tooltip::for_enabled(&self);
+        if !tooltip.popup.is_open() && is_pointer_in_tooltip(&self.ctx, self.id) {
+            tooltip.popup = tooltip.popup.open(true);
+        }
+        tooltip.show(add_contents);
+        self
     }
 }
 
-impl ResponseExt for Response {
-    fn response(&self) -> &Response {
-        self
-    }
+/// Was the tooltip of `widget_id` open last frame, with the pointer now inside it?
+fn is_pointer_in_tooltip(ctx: &egui::Context, widget_id: egui::Id) -> bool {
+    let Some(pointer) = ctx.pointer_hover_pos() else {
+        return false;
+    };
+    egui::Tooltip::was_tooltip_open_last_frame(ctx, widget_id)
+        && egui::AreaState::load(ctx, egui::Tooltip::tooltip_id(widget_id, 0))
+            .is_some_and(|area| area.rect().contains(pointer))
 }

@@ -38,7 +38,12 @@ pub struct AlertText {
 
 impl egui::Widget for AlertText {
     fn ui(self, ui: &mut Ui) -> Response {
-        self.alert.show_text(ui, self.visible_text, self.full_text)
+        let Self {
+            alert,
+            visible_text,
+            full_text,
+        } = self;
+        alert.show_text(ui, visible_text, full_text)
     }
 }
 
@@ -82,6 +87,24 @@ impl Alert {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(4.0);
                 ui.small_icon(&self.kind.icon(), Some(self.kind.colors(ui).icon));
+                content(ui)
+            })
+            .inner
+        })
+    }
+
+    /// An error's summary, with its details in a collapsed "Details" section (see
+    /// [`crate::UiExt::structured_error_ui`]), followed by `content`.
+    pub fn show_structured_error<T>(
+        self,
+        ui: &mut Ui,
+        error: &crate::error::StructuredError,
+        content: impl FnOnce(&mut Ui) -> T,
+    ) -> InnerResponse<T> {
+        self.show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.set_min_width(ui.available_width());
+                ui.structured_error_ui(error);
                 content(ui)
             })
             .inner
@@ -148,19 +171,20 @@ mod tests {
 
     use crate::UiExt as _;
 
-    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     #[test]
+    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     fn test_alert() {
         let mut results = SnapshotResults::new();
         for theme in [egui::Theme::Dark, egui::Theme::Light] {
-            let mut harness = Harness::builder().with_theme(theme).build_ui(|ui| {
-                crate::apply_style_and_install_loaders(ui.ctx());
-
-                ui.info_label("This is an info alert.");
-                ui.success_label("This is a success alert.");
-                ui.warning_label("This is a warning alert.");
-                ui.error_label("This is an error alert.");
-            });
+            let mut harness = Harness::builder()
+                .with_context_setup(crate::apply_style_and_install_loaders)
+                .with_theme(theme)
+                .build_ui(|ui| {
+                    ui.info_label("This is an info alert.");
+                    ui.success_label("This is a success alert.");
+                    ui.warning_label("This is a warning alert.");
+                    ui.error_label("This is an error alert.");
+                });
 
             harness.run();
             harness.fit_contents();

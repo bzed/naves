@@ -143,7 +143,7 @@ impl CardLayout {
 
         // Read cached row heights from previous frame.
         // For rows without cached data, use the nearest known row height (or 100 as a last resort).
-        let stats_id = ui.id().with("card_layout_row");
+        let stats_id = ui.make_persistent_id("card_layout_row");
         let mut last_known_height = 100.0;
         let row_heights: Vec<f32> = (0..rows.len())
             .map(|i| {
@@ -211,7 +211,7 @@ impl CardLayout {
                 // the press and the release to land on one id.
                 let mut child_ui = ui.new_child(
                     egui::UiBuilder::new()
-                        .id(ui.id().with(("card", i)))
+                        .scope_id(ui.make_persistent_id(("card", i)))
                         .max_rect(card_rect)
                         .layout(egui::Layout::left_to_right(egui::Align::Min))
                         .sense(if item_clickable {
@@ -333,6 +333,7 @@ mod tests {
     /// itself.
     fn harness(item_clickable: Option<bool>) -> Harness<'static, Clicks> {
         let mut harness = Harness::builder()
+            .with_context_setup(crate::apply_style_and_install_loaders)
             .with_size(egui::vec2(300.0, 120.0))
             .build_ui_state(
                 move |ui, clicks| {
@@ -415,6 +416,7 @@ mod tests {
         const CARD_CONTENT_HEIGHT: f32 = 200.0;
 
         let mut harness = Harness::builder()
+            .with_context_setup(crate::apply_style_and_install_loaders)
             .with_size(egui::vec2(300.0, 400.0))
             .build_ui_state(
                 |ui, state: &mut ClippedCard| {

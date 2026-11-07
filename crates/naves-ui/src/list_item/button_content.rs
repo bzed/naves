@@ -42,7 +42,11 @@ impl<'a> ButtonContent<'a> {
 }
 
 impl ListItemContent for ButtonContent<'_> {
-    fn ui(self: Box<Self>, ui: &mut egui::Ui, context: &ContentContext<'_>) {
+    fn ui(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        context: &ContentContext<'_>,
+    ) -> Option<egui::Response> {
         let Self {
             label,
             enabled,
@@ -58,7 +62,7 @@ impl ListItemContent for ButtonContent<'_> {
 
         // Compensate for the button padding such that the button text is aligned with other list
         // item contents.
-        ui.add_space(-ui.spacing().button_padding.x);
+        ui.add_space(-crate::Size::inherited(&ui).padding().x);
 
         let response = ui.add_enabled(enabled, egui::Button::new(label));
         if let Some(on_click) = on_click
@@ -70,5 +74,7 @@ impl ListItemContent for ButtonContent<'_> {
         if let Some(hover_text) = hover_text {
             response.on_hover_text(hover_text);
         }
+
+        None
     }
 }

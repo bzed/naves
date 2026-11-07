@@ -17,6 +17,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Build: re-port naves-ui to Rerun's re_ui 0.42.0 on egui 0.37.
 - Build: vendor Rerun's design system (from rerun_ui_kit's re_ui 0.38.1 extraction, MIT OR Apache-2.0) as the workspace crate naves-ui; not yet used by the GUI.
 - Build: the Rust toolchain pin moved from 1.95 to 1.99 (required by the vendored design system).
 

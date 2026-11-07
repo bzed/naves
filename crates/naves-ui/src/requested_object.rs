@@ -111,6 +111,8 @@ impl<T: Send + 'static, E: std::fmt::Debug + Send + 'static> RequestedObject<T, 
     {
         if matches!(self, Self::NotYetRequested { .. }) {
             let previous = std::mem::take(self).take_latest();
+            // Port note: upstream uses `re_quota_channel` here; the port uses a plain
+            // crossbeam channel (the quota machinery is rerun-platform specific).
             let (tx, rx) = crossbeam::channel::bounded(1);
             *self = Self::Pending { rx, previous };
 
@@ -194,4 +196,10 @@ impl<T: Send + 'static, E: std::fmt::Debug + Send + 'static> RequestedObject<T, 
 
         *self = Self::NotYetRequested { previous }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // Port note: upstream has a `static_assertions` meta-test here asserting that
+    // `RequestedObject` does not implement `Clone`; the dev-dependency is not vendored.
 }

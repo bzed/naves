@@ -1,11 +1,34 @@
 //! Rerun GUI theme and helpers, built around [`egui`](https://www.egui.rs/).
 //!
-//! Vendored from re_ui 0.38.1 (<https://github.com/rerun-io/rerun>),
+//! Vendored from re_ui 0.42.0 (<https://github.com/rerun-io/rerun>),
 //! MIT OR Apache-2.0, with the rerun data stack removed.
 
 /// Re-exported so consumers can name egui types used in this crate's API
 /// without depending on egui directly (same version as this crate's egui).
 pub use egui;
+
+/// `re_log::warn_once!` in the port (rerun 0.42.0, MIT OR Apache-2.0):
+/// a `log::warn!` that fires only the first time each call site runs.
+#[macro_export]
+macro_rules! warn_once {
+    ($($arg:tt)*) => {{
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| log::warn!($($arg)*));
+    }};
+}
+
+/// `re_log::debug_warn_once!` in the port (rerun 0.42.0, MIT OR Apache-2.0):
+/// [`crate::warn_once!`], and only in debug builds.
+#[macro_export]
+macro_rules! debug_warn_once {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| log::warn!($($arg)*));
+        }
+    }};
+}
 
 pub mod alert;
 pub mod async_runtime;
@@ -33,9 +56,10 @@ pub mod loading_indicator;
 mod markdown_utils;
 pub mod menu;
 pub mod modal;
+mod motion;
 pub mod notifications;
 mod panel_title_bar;
-mod relative_time_range;
+mod progress_ring;
 mod requested_object;
 mod section_collapsing_header;
 pub mod span;
@@ -43,7 +67,6 @@ pub mod syntax_highlighting;
 mod tab_bar;
 pub mod text_edit;
 pub mod time;
-mod time_drag_value;
 pub mod time_types;
 mod ui_ext;
 mod ui_layout;
@@ -52,17 +75,15 @@ mod url_decorator;
 mod button;
 mod combo_item;
 pub mod re_form;
+pub mod theme;
 
-use egui::style::WidgetVisuals;
-use egui::{NumExt as _, Style};
+use egui::NumExt as _;
 
 pub use self::button::*;
 pub use self::combo_item::*;
 pub use self::command::{
-    CommandEnvironment, RecordingCommand, RecordingCommandKind, RecordingCommandSender,
-    RedapServerCommand, RedapServerCommandKind, RedapServerCommandSender, ResolvedCommand,
-    SetPlaybackSpeed, TableCommand, TableCommandKind, TableCommandSender, UICommand,
-    UICommandSender, consume_timeline_shortcut, listen_for_kb_shortcuts, refresh_shortcuts,
+    UICommand, UICommandSender, conflicts_with_text_editing, consume_best_shortcut,
+    format_shortcut, key_symbol_or_name,
 };
 pub use self::command_palette::{
     CmdRow, CommandPalette, CommandPaletteProvider, MatchGroup, MatchedCmd, RowState,
@@ -70,8 +91,8 @@ pub use self::command_palette::{
 };
 pub use self::context_ext::ContextExt;
 pub use self::design_tokens::{
-    AlertVisuals, ButtonVisuals, DesignTokens, MetaLineVisuals, Outlines, TabVisuals, TableStyle,
-    TextEditVisuals, WindowFrameConfig,
+    AlertVisuals, ButtonVisuals, DesignTokens, ListItemDensity, MetaLineVisuals, Outlines,
+    TabVisuals, TableStyle, TextEditVisuals, WindowFrameConfig,
 };
 pub use self::egui_ext::widget_ext::*;
 pub use self::fuzzy::{FuzzyMatch, FuzzyQuery};
@@ -83,20 +104,21 @@ pub use self::link_button::LinkButton;
 pub use self::markdown_utils::*;
 pub use self::notifications::Link;
 pub use self::panel_title_bar::PanelTitleBar;
-pub use self::relative_time_range::{
-    RelativeTimeRange, relative_time_range_boundary_label_text, relative_time_range_label_text,
-};
+pub use self::progress_ring::ProgressRing;
 pub use self::requested_object::{RequestedObject, ServerValue};
 pub use self::section_collapsing_header::SectionCollapsingHeader;
 pub use self::syntax_highlighting::SyntaxHighlighting;
 pub use self::tab_bar::{TAB_TOOLBAR_HEIGHT, TAB_TOOLBAR_MARGIN_Y, TabBar};
-pub use self::time_drag_value::TimeDragValue;
+pub use self::theme::ReTheme;
 pub use self::ui_ext::UiExt;
 pub use self::ui_layout::UiLayout;
 pub use self::url_decorator::{UrlDecorator, UrlDecoratorFn};
 use crate::egui_ext::garbage_collect::EguiMemoryGarbageCollector;
 
 // ---------------------------------------------------------------------------
+
+/// Width of the flag button, and the height it takes where the row has room for it.
+pub const FLAG_BUTTON_SIZE: f32 = 30.0;
 
 /// If true, we fill the entire window, except for the close/maximize/minimize buttons in the top-left.
 /// See <https://github.com/emilk/egui/pull/2049>
@@ -138,9 +160,10 @@ pub fn viewport_with_window_chrome(
 
 /// Whether custom (client-drawn) window decorations should be the default on this system.
 ///
-/// Port note: upstream probes the Wayland compositor via `xdg-decoration-unstable-v1`
-/// (see `wayland.rs` upstream, pulled in `wayland-client`); that machinery is not vendored,
-/// so on Linux we always default to custom decorations here.
+/// Port note: on Linux + Wayland upstream negotiates with the compositor via
+/// `xdg-decoration-unstable-v1` (`wayland.rs`, deleted in this port) and returns `false`
+/// when the compositor commits to drawing server-side decorations; the port always draws
+/// its own decorations.
 pub fn custom_window_decorations_default() -> bool {
     cfg_select! {
         target_os = "linux" => {
@@ -226,6 +249,7 @@ pub fn try_set_design_tokens(
 
 /// Apply the Rerun design tokens to the given egui context and install image loaders.
 pub fn apply_style_and_install_loaders(egui_ctx: &egui::Context) {
+    egui_ctx.add_plugin(motion::PopupAnimationPlugin);
     egui_extras::install_image_loaders(egui_ctx);
 
     egui_ctx.options_mut(|o| {
@@ -234,10 +258,60 @@ pub fn apply_style_and_install_loaders(egui_ctx: &egui::Context) {
 
     set_themes(egui_ctx);
 
+    #[cfg(hot_reload_design_tokens)]
+    {
+        let egui_ctx = egui_ctx.clone();
+        hot_reload_design_tokens::install_hot_reload(move || {
+            log::debug!("Hot-reloading design tokens…");
+            hot_reload_design_tokens::hot_reload_design_tokens();
+            set_themes(&egui_ctx);
+            egui_ctx.request_repaint();
+        });
+    }
+
     egui_ctx.add_plugin(EguiMemoryGarbageCollector::default());
 }
 
+/// Draw the characters a dependency writes as text, but that no bundled font covers, from our own SVG icons.
+///
+/// Without this they fall back to whatever the system (or the browser) has, which differs
+/// between platforms and is absent on font-less CI machines.
+/// Our own SVG renders the same everywhere, so snapshots and UI stay predictable.
+// TODO(#3539): paint these in `egui_commonmark` itself, and drop this.
+fn set_svg_glyphs(egui_ctx: &egui::Context) {
+    // `add_glyph_rasterizer` appends and requests a repaint every time, so calling this each
+    // frame (as tests do) would never let the UI settle. Install the glyphs only once.
+    let installed_id = egui::Id::unique("re_ui_svg_glyphs_installed");
+    let already_installed = egui_ctx.data_mut(|data| {
+        std::mem::replace(data.get_temp_mut_or_default::<bool>(installed_id), true)
+    });
+    if already_installed {
+        return;
+    }
+
+    // The code-block copy button in `egui_commonmark_backend`, in its two states.
+    for (cluster, icon) in [("\u{1f5d0}", &icons::COPY), ("\u{2714}", &icons::CHECKED)] {
+        match egui_extras::SvgGlyph::from_bytes(icon.image_bytes()) {
+            Ok(glyph) => {
+                egui_ctx.add_glyph_rasterizer(glyph.into_rasterizer(cluster));
+            }
+            Err(err) => {
+                crate::warn_once!(
+                    "Failed to read icon as a glyph: {err}\nIcon: {}",
+                    icon.uri()
+                );
+            }
+        }
+    }
+}
+
 fn set_themes(egui_ctx: &egui::Context) {
+    ReTheme::install(egui_ctx);
+
+    // Before the fonts: when no font is loaded yet, egui applies the new fonts right away,
+    // and the fonts pick up the rasterizers registered so far.
+    set_svg_glyphs(egui_ctx);
+
     // It's the same fonts in dark/light mode:
     design_tokens_of(egui::Theme::Dark).set_fonts(egui_ctx);
 
@@ -297,20 +371,28 @@ fn format_with_decimals_in_range(
     format_with_decimals(value, max_decimals)
 }
 
-/// Is this Ui in a resizable panel?
+/// Is this Ui in a resizable container?
 ///
 /// Used as a heuristic to figure out if it is safe to truncate text.
 ///
-/// In a resizable panel, it is safe to truncate text if it doesn't fit,
-/// because the user can just make the panel wider to see the full text.
+/// In a resizable container, it is safe to truncate text if it doesn't fit,
+/// because the user can just make the container wider to see the full text.
 ///
 /// In other places, we should never truncate text, because then the user
-/// cannot read it all. In those places (when this functions returns `false`)
+/// cannot read it all. In those places (when this function returns `false`)
 /// you should either wrap the text or let it grow the Ui it is in.
-fn is_in_resizable_panel(ui: &egui::Ui) -> bool {
+///
+/// Side panels and scopes marked with [`UiExt::resizable_container_scope`] qualify.
+fn is_in_resizable_container(ui: &egui::Ui) -> bool {
+    use crate::ui_ext::RESIZABLE_CONTAINER_TAG;
+
     let mut is_in_side_panel = false;
 
     for frame in ui.stack().iter() {
+        if frame.tags().contains(RESIZABLE_CONTAINER_TAG) {
+            return true;
+        }
+
         if let Some(kind) = frame.kind() {
             if kind.is_area() {
                 return false; // Our popups (tooltips etc) aren't resizable
@@ -326,12 +408,4 @@ fn is_in_resizable_panel(ui: &egui::Ui) -> bool {
     } else {
         false // Safe fallback
     }
-}
-
-fn all_visuals(style: &mut Style, f: impl Fn(&mut WidgetVisuals)) {
-    f(&mut style.visuals.widgets.active);
-    f(&mut style.visuals.widgets.hovered);
-    f(&mut style.visuals.widgets.inactive);
-    f(&mut style.visuals.widgets.noninteractive);
-    f(&mut style.visuals.widgets.open);
 }

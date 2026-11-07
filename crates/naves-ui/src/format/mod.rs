@@ -2,15 +2,52 @@
 //!
 //! TODO(emilk): move some of this numeric formatting into `emath` so we can use it in `egui_plot`.
 
+/// Ported from `re_int::UnsignedAbs` (rerun 0.42.0, MIT OR Apache-2.0):
+/// compute the absolute value of a signed integer without any wrapping or panicking.
+/// Waiting for <https://github.com/rust-num/num-traits/issues/315> to land.
+pub trait UnsignedAbs {
+    /// An unsigned type which is large enough to hold the absolute value of `Self`.
+    type Unsigned;
+
+    /// Computes the absolute value of `self` without any wrapping or panicking.
+    fn unsigned_abs(self) -> Self::Unsigned;
+}
+
+macro_rules! impl_unsigned_abs {
+    ($($signed:ty => $unsigned:ty),* $(,)?) => {
+        $(
+            impl UnsignedAbs for $signed {
+                type Unsigned = $unsigned;
+
+                #[inline]
+                fn unsigned_abs(self) -> Self::Unsigned {
+                    self.unsigned_abs()
+                }
+            }
+        )*
+    };
+}
+
+impl_unsigned_abs!(
+    i8 => u8,
+    i16 => u16,
+    i32 => u32,
+    i64 => u64,
+    i128 => u128,
+    isize => usize,
+);
+
 mod duration;
 mod plural;
 pub mod time;
+mod timestamp_format;
 
 use std::cmp::PartialOrd;
 use std::fmt::Display;
 
 pub use self::duration::DurationFormatOptions;
 pub use self::plural::{format_plural_s, format_plural_signed_s};
+pub use self::timestamp_format::{DateVisibility, TimestampFormat, TimestampFormatKind};
 
 // --- Numbers ---
 
@@ -34,69 +71,6 @@ pub fn strip_whitespace_and_normalize(text: &str) -> String {
         .collect()
 }
 
-// TODO(rust-num/num-traits#315): waiting for https://github.com/rust-num/num-traits/issues/315 to land
-pub trait UnsignedAbs {
-    /// An unsigned type which is large enough to hold the absolute value of `Self`.
-    type Unsigned;
-
-    /// Computes the absolute value of `self` without any wrapping or panicking.
-    fn unsigned_abs(self) -> Self::Unsigned;
-}
-
-impl UnsignedAbs for i8 {
-    type Unsigned = u8;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
-impl UnsignedAbs for i16 {
-    type Unsigned = u16;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
-impl UnsignedAbs for i32 {
-    type Unsigned = u32;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
-impl UnsignedAbs for i64 {
-    type Unsigned = u64;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
-impl UnsignedAbs for i128 {
-    type Unsigned = u128;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
-impl UnsignedAbs for isize {
-    type Unsigned = usize;
-
-    #[inline]
-    fn unsigned_abs(self) -> Self::Unsigned {
-        self.unsigned_abs()
-    }
-}
-
 /// Pretty format a signed number by using thousands separators for readability.
 ///
 /// The returned value is for human eyes only, and can not be parsed
@@ -117,7 +91,7 @@ where
 ///
 /// The returned value is for human eyes only, and can not be parsed
 /// by the normal `usize::from_str` function.
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub fn format_uint<Uint>(number: Uint) -> String
 where
     Uint: Display + num_traits::Unsigned,
@@ -344,10 +318,9 @@ pub fn format_f32(value: f32) -> String {
     FloatFormatOptions::DEFAULT_f32.format(value)
 }
 
-/// Format a number with about 5 decimals of precision.
-///
-/// The returned value is for human eyes only, and can not be parsed
-/// by the normal `f64::from_str` function.
+// Port note: upstream also has `format_f16` for `half::f16` here; the port has no `half`
+// dependency, so it is not vendored.
+
 /// Format a latitude or longitude value.
 ///
 /// For human eyes only.
@@ -406,14 +379,14 @@ fn test_format_f64() {
         (-4.20, "−4.2"),
         (123_456_789.0, "123 456 789"),
         (123_456_789.123_45, "123 456 789.12345"), // min_decimals_for_thousands_separators
-        (0.0000123456789, "0.000 012 345 678 9"),
-        (0.123456789, "0.123 456 789"),
-        (1.23456789, "1.234 567 89"),
-        (12.3456789, "12.345 678 9"),
-        (123.456789, "123.456 789"),
-        (1234.56789, "1 234.56789"), // min_decimals_for_thousands_separators
-        (12345.6789, "12 345.6789"), // min_decimals_for_thousands_separators
-        (78.4321, "78.4321"),        // min_decimals_for_thousands_separators
+        (0.000_012_345_678_9, "0.000 012 345 678 9"),
+        (0.123_456_789, "0.123 456 789"),
+        (1.234_567_89, "1.234 567 89"),
+        (12.345_678_9, "12.345 678 9"),
+        (123.456_789, "123.456 789"),
+        (1_234.567_89, "1 234.56789"), // min_decimals_for_thousands_separators
+        (12_345.678_9, "12 345.6789"), // min_decimals_for_thousands_separators
+        (78.4321, "78.4321"),          // min_decimals_for_thousands_separators
         (-std::f64::consts::PI, "−3.141 592 653 589 79"),
         (-std::f64::consts::PI * 1e6, "−3 141 592.653 589 79"),
         (-std::f64::consts::PI * 1e20, "−3.14159265358979e20"), // We switch to scientific notation to not show false precision
@@ -426,6 +399,8 @@ fn test_format_f64() {
         );
     }
 }
+
+// Port note: upstream has a `test_format_f16` here; `half` is not vendored.
 
 #[test]
 fn test_format_f64_custom() {
@@ -545,6 +520,40 @@ pub fn format_bytes(number_of_bytes: f64) -> String {
     } else {
         let decimals = (10.0 * number_of_bytes < 40.0_f64.exp2()) as usize;
         format!("{:.*} GiB", decimals, number_of_bytes / 30.0_f64.exp2())
+    }
+}
+
+/// Pretty format a bitrate (bits per second) using decimal SI notation (base 10).
+///
+/// Note: bitrate is conventionally given in decimal (base 1000) units, not binary (base 1024) units.
+///
+/// ```
+/// # use naves_ui::format::format_bits_per_second;
+/// assert_eq!(format_bits_per_second(123.0), "123 bit/s");
+/// assert_eq!(format_bits_per_second(12_345.0), "12.3 kbit/s");
+/// assert_eq!(format_bits_per_second(1_234_567.0), "1.2 Mbit/s");
+/// assert_eq!(format_bits_per_second(1_234_567_890.0), "1.2 Gbit/s");
+/// ```
+pub fn format_bits_per_second(bits_per_second: f64) -> String {
+    if bits_per_second < 0.0 {
+        return format!("{MINUS}{}", format_bits_per_second(-bits_per_second));
+    }
+
+    // Bitrate is conventionally given in decimal (base 1000) units.
+    let (value, unit) = if bits_per_second < 1e3 {
+        (bits_per_second, "bit/s")
+    } else if bits_per_second < 1e6 {
+        (bits_per_second / 1e3, "kbit/s")
+    } else if bits_per_second < 1e9 {
+        (bits_per_second / 1e6, "Mbit/s")
+    } else {
+        (bits_per_second / 1e9, "Gbit/s")
+    };
+
+    if unit == "bit/s" {
+        format!("{value:.0} {unit}")
+    } else {
+        format!("{value:.1} {unit}")
     }
 }
 

@@ -8,10 +8,9 @@ struct ItemId(u32);
 
 impl ItemId {
     fn new() -> Self {
-        // Locally-unique is enough for this demo (no crypto RNG needed).
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static COUNTER: AtomicU32 = AtomicU32::new(0);
-        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+        // Port note: upstream uses `rand::random()`; the example has no `rand` dev-dependency.
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        Self(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }
 }
 
@@ -23,7 +22,7 @@ impl std::fmt::Debug for ItemId {
 
 impl From<ItemId> for egui::Id {
     fn from(id: ItemId) -> Self {
-        Self::new(id)
+        Self::unique(id)
     }
 }
 
@@ -274,7 +273,7 @@ impl HierarchicalDragAndDrop {
     fn container_ui(&self, ui: &mut egui::Ui, item_id: ItemId, children: &Vec<ItemId>) {
         // Globally unique id - should only be one of these in view at one time.
         // We do this so that we can support "collapse/expand all" command.
-        let id = egui::Id::new(item_id);
+        let id = egui::Id::unique(item_id);
 
         let response = list_item::ListItem::new()
             .selected(self.selected(item_id))
@@ -403,7 +402,7 @@ impl HierarchicalDragAndDrop {
             &item_desc,
             response.rect,
             body_response.map(|r| r.rect),
-            DesignTokens::list_item_height(),
+            DesignTokens::list_item_height(naves_ui::ListItemDensity::Spacious),
         );
 
         if let Some(drop_target) = drop_target {

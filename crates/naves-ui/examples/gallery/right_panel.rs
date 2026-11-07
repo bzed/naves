@@ -1,9 +1,9 @@
 use crate::{drag_and_drop, hierarchical_drag_and_drop};
-use eframe::emath::Align;
+use eframe::emath::Align2;
 use egui::{Atom, AtomExt as _, AtomKind, Button, DragValue, RichText, TextEdit, Ui, Vec2};
 use naves_ui::list_item::{ListItemContentButtonsExt as _, PropertyContent};
 use naves_ui::re_form::{ConstructFormStrip as _, FormFields, SelectableStrip};
-use naves_ui::{TabBar, UiExt as _, icons, list_item};
+use naves_ui::{DesignTokens, TabBar, UiExt as _, icons, list_item};
 
 #[derive(PartialEq)]
 enum DemoTab {
@@ -58,8 +58,12 @@ impl RightPanel {
                 let show_hierarchical = self.show_hierarchical_demo;
                 ui.section_collapsing_header("Drag and drop")
                     .with_buttons(|ui| {
-                        ui.toggle_switch(8.0, &mut self.show_hierarchical_demo);
-                        ui.label("Hierarchical:");
+                        ui.toggle_switch(
+                            8.0,
+                            &mut self.show_hierarchical_demo,
+                            "Hierarchical demo",
+                        );
+                        ui.label("Hierarchical");
                     })
                     .show(ui, |ui| {
                         if show_hierarchical {
@@ -163,7 +167,7 @@ impl RightPanel {
             ui,
             ui.make_persistent_id("label content features"),
             true,
-            list_item::LabelContent::new("LabelContent features:"),
+            list_item::LabelContent::new("LabelContent features"),
             |ui| {
                 ui.list_item()
                     .show_hierarchical(ui, list_item::LabelContent::new("LabelContent"));
@@ -212,7 +216,6 @@ impl RightPanel {
                         ui,
                         list_item::LabelContent::new("LabelContent with custom styling")
                             .subdued(true)
-                            .italics(true)
                             .with_icon(&naves_ui::icons::VIEW_2D),
                     )
                     .on_hover_text("The styling applies to the icon.");
@@ -241,7 +244,7 @@ impl RightPanel {
             ui,
             ui.make_persistent_id("property content features"),
             true,
-            list_item::PropertyContent::new("PropertyContent features:")
+            list_item::PropertyContent::new("PropertyContent features")
                 .value_text("bunch of properties"),
             |ui| {
                 // By using an inner scope, we allow the nested properties to not align themselves
@@ -298,7 +301,7 @@ impl RightPanel {
             ui,
             ui.make_persistent_id("property content right button reserve"),
             true,
-            list_item::PropertyContent::new("PropertyContent action button:")
+            list_item::PropertyContent::new("PropertyContent action button")
                 .value_text("demo of right gutter"),
             |ui| {
                 // By using an inner scope, we allow the nested properties to not align themselves
@@ -307,7 +310,7 @@ impl RightPanel {
                     fn demo_item(ui: &mut egui::Ui) {
                         ui.list_item().show_hierarchical(
                             ui,
-                            list_item::PropertyContent::new("Some item:").value_fn(|ui, _| {
+                            list_item::PropertyContent::new("Some item").value_fn(|ui, _| {
                                 ui.debug_painter().debug_rect(
                                     ui.max_rect(),
                                     egui::Color32::LIGHT_BLUE,
@@ -341,7 +344,7 @@ impl RightPanel {
             ui,
             ui.make_persistent_id("other features"),
             true,
-            list_item::LabelContent::new("Other contents:"),
+            list_item::LabelContent::new("Other contents"),
             |ui| {
                 ui.list_item().show_hierarchical(
                     ui,
@@ -388,19 +391,16 @@ impl RightPanel {
                         ui,
                         ui.next_auto_id(),
                         false,
-                        // Port note: `.show_only_when_collapsed(false)` added so the value stays
-                        // visible when the row is expanded (upstream's demo hides it, which looks
-                        // broken with the empty children closure used here).
-                        content
-                            .show_only_when_collapsed(false)
-                            .with_action_button(&icons::MORE, "more", || {}).with_always_show_buttons(true),
+                        content.with_action_button(&icons::MORE, "more", || {}).with_always_show_buttons(true),
                         |_ui| {},
                     );
                 };
 
                 let subdued = ui.tokens().text_subdued;
                 let suffix = |suffix: &str| {
-                    RichText::new(suffix).color(subdued).size(10.0)
+                    RichText::new(suffix)
+                        .color(subdued)
+                        .text_style(DesignTokens::small())
                 };
 
                 // The drag value hardcodes it's gap to 0 so we need to add some space
@@ -510,7 +510,7 @@ impl RightPanel {
                     PropertyContent::new("name")
                         .value_fn(|ui, _vis| {
                             FormFields::single(ui, TextEdit::singleline(&mut "Temperature".to_owned())
-                                .vertical_align(Align::Center));
+                                .align(Align2::LEFT_CENTER));
                         }),
                 );
 

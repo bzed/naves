@@ -1,7 +1,4 @@
 //! An error message split into a summary and a list of details.
-//!
-//! Vendored from re_error 0.38.1 (<https://github.com/rerun-io/rerun>), MIT OR Apache-2.0.
-//! Only the parts used by re_ui are kept: `StructuredError` and `format_with_details`.
 
 /// The prefix that marks a line of an error message as a detail rather than part of the summary.
 ///

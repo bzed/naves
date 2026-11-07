@@ -1,7 +1,7 @@
 use egui::layers::ShapeIdx;
 use egui::{
-    Align, AtomLayout, Frame, IntoAtoms, Layout, Margin, Rangef, Rect, Response, Sense, Shape, Ui,
-    UiBuilder, WidgetInfo, WidgetType,
+    Align, Frame, IntoAtoms, Layout, Margin, Rangef, Rect, Response, Sense, Shape, Ui, UiBuilder,
+    WidgetAtom, WidgetInfo,
 };
 
 use crate::UiExt as _;
@@ -127,7 +127,7 @@ impl<'a> TabBar<'a> {
         let (left, right) = if ui.is_sizing_pass() {
             (selected_rect.left(), selected_rect.right())
         } else {
-            let id = ui.id().with("tab_underline");
+            let id = ui.make_persistent_id("tab_underline");
             let animation_time = ui.style().animation_time * 0.5;
             let animate = |salt: &str, x: f32| {
                 bar_left
@@ -196,7 +196,7 @@ fn tab_ui<'a>(ui: &mut Ui, atoms: impl IntoAtoms<'a>, selected: bool) -> Respons
 
     // A tab is as wide as its label: no horizontal padding, so the underline matches the word and
     // `TAB_SPACING` is the whole gap between two of them.
-    let mut layout = AtomLayout::new(atoms)
+    let mut layout = WidgetAtom::new(atoms)
         .frame(Frame::new().inner_margin(Margin {
             left: 0,
             right: 0,
@@ -223,7 +223,7 @@ fn tab_ui<'a>(ui: &mut Ui, atoms: impl IntoAtoms<'a>, selected: bool) -> Respons
 
     response.widget_info(|| {
         WidgetInfo::selected(
-            WidgetType::SelectableLabel,
+            egui::Role::Button,
             ui.is_enabled(),
             selected,
             label.as_deref().unwrap_or_default(),
@@ -248,18 +248,17 @@ mod tests {
         Schema,
     }
 
-    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     #[test]
+    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     fn test_tab_bar() {
         let mut results = SnapshotResults::new();
 
         for theme in [Theme::Dark, Theme::Light] {
             let mut harness = Harness::builder()
+                .with_context_setup(crate::apply_style_and_install_loaders)
                 .with_theme(theme)
                 .with_size(egui::vec2(400.0, 60.0))
                 .build_ui(|ui| {
-                    crate::apply_style_and_install_loaders(ui.ctx());
-
                     let mut tab = Tab::Assets;
                     TabBar::new(ui)
                         .selectable_value(&mut tab, Tab::Segments, "Segments")
@@ -281,16 +280,15 @@ mod tests {
 
     /// Selecting another tab slides the underline over instead of moving it in one jump, so a few
     /// frames after the click it should sit between the two tabs.
-    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     #[test]
+    #[ignore = "snapshot reference images were not vendored from the rerun repo"]
     fn test_tab_bar_underline_animation() {
         let mut harness = Harness::builder()
+            .with_context_setup(crate::apply_style_and_install_loaders)
             .with_size(egui::vec2(400.0, 60.0))
             .with_step_dt(1.0 / 60.0)
             .build_ui_state(
                 |ui, tab| {
-                    crate::apply_style_and_install_loaders(ui.ctx());
-
                     TabBar::new(ui)
                         .selectable_value(tab, Tab::Segments, "Segments")
                         .selectable_value(tab, Tab::Assets, "Assets")

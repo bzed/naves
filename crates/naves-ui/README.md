@@ -8,7 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 The design system of the Náves GUI: Rerun's `re_ui`, vendored as a standalone crate.
 
-Vendored from [`rerun_ui_kit` 0.38.1-base](https://github.com/jiangheng90-opensource/rerun_ui_kit)
+Vendored from [`rerun_ui_kit`](https://github.com/jiangheng90-opensource/rerun_ui_kit) (re-ported to re_ui 0.42.0)
 (extraction of [rerun](https://github.com/rerun-io/rerun)'s `re_ui`, MIT OR Apache-2.0), with the
 rerun data stack removed so it depends only on egui and small pure-Rust crates. See
 [`PORTING.md`](PORTING.md) for the porting ledger: what was changed against upstream, and how to
