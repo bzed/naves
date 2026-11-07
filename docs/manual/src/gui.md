@@ -51,6 +51,8 @@ the DayZ Server install: without a tool the panel says which and has a button th
 driven, and where it was generated from. What is wrong with the roads is listed under Problems, each with its
 position.
 
+![Roads, paths and drivability over the hillshade](images/map-layers.png)
+
 The levels you are not working on are drawn faded, at 40 %, so that you see what you work against. **H** hides the
 active level, **Shift+H** shows the others in full; making a hidden level active shows it again. Layers and the
 active level belong to the window and are not saved in `naves.toml`. Switching, fading and hiding draw nothing
