@@ -15,4 +15,5 @@ pub mod prefs;
 pub mod project;
 pub mod projection;
 pub mod render;
+pub mod roadnet;
 pub mod surface;
