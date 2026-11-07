@@ -23,6 +23,7 @@ mod rail;
 mod selection;
 mod shortcuts;
 mod stack;
+mod theme;
 mod viewport;
 
 /// A project with the Königssee DEM below `root`.

@@ -22,6 +22,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["default_fo
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 naves-core = { version = "0.1.0", path = "../naves-core" }
 naves-export = { version = "0.1.0", path = "../naves-export" }
+naves-ui = { version = "0.2.0", path = "../naves-ui" }
 rmcp = { version = "3.8.0", features = ["server", "macros", "transport-io"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

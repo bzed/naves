@@ -13,7 +13,7 @@ use super::NavesApp;
 use super::levels::Level;
 use super::shortcuts::{self, Action, Binding, SHORTCUTS, Scope, Shortcut};
 use super::stack::{BASE_MAPS, overlay_id};
-use super::theme::{ERROR, GROUND, INK};
+use super::theme::ERROR;
 use naves_core::render::MapLayer;
 
 /// The tabs, in the order of the spec.
@@ -137,9 +137,7 @@ pub fn show(app: &mut NavesApp, ctx: &egui::Context) {
     }
     let modal = egui::Modal::new(egui::Id::unique("settings")).frame(
         egui::Frame::window(&ctx.global_style())
-            .fill(GROUND)
             .shadow(egui::Shadow::NONE)
-            .stroke(egui::Stroke::new(1.5, INK))
             .inner_margin(16.0),
     );
     let response = modal.show(ctx, |ui| {

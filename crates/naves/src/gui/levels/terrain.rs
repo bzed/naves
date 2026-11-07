@@ -11,7 +11,6 @@ use naves_core::heightmap::MapGeo;
 use super::{Level, LevelDef, no_items, number_row, ready_data, waiting};
 use crate::gui::layers::LayerDef;
 use crate::gui::selection::Selection;
-use crate::gui::theme::INK;
 use crate::gui::viewport::WorldPoint;
 use crate::gui::{NavesApp, dem_files_ui};
 
@@ -40,7 +39,7 @@ fn steep_key(ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 12.0), egui::Sense::hover());
         let painter = ui.painter().with_clip_rect(rect);
-        let stroke = egui::Stroke::new(1.5, INK);
+        let stroke = egui::Stroke::new(1.5, egui::Color32::BLACK);
         let mut x = rect.left() - rect.height();
         while x < rect.right() {
             painter.line_segment(

@@ -13,9 +13,9 @@ naves gui [<project folder>]
 opens the project in the current folder (or the one you name) in a window titled *Náves – (project name)*.
 There is no object editing yet; the window shows the project, reads the terrain and builds it.
 
-![The editor: Terrain level with the layer Too steep to walk, the Ground base map and the dock](images/editor.png)
+![The editor: the Terrain level with the map, the project panel and the dock](images/editor.png)
 
-*Level 1, Terrain, with the Ground base map and the layer Too steep to walk switched on. The data is the Königssee crop of the test fixtures (`tests/fixtures`: Copernicus GLO-30, ESA WorldCover, OpenStreetMap); the hatching is in the top left, where the ground is steeper than 60°.*
+*Level 1, Terrain. The chrome is Rerun's design system (`naves-ui`): light and dark both follow the system theme, the font is Inter. The data is the Königssee crop of the test fixtures (`tests/fixtures`: Copernicus GLO-30); the map is the heightmap render.*
 
 ## The stack (right)
 
@@ -83,7 +83,7 @@ A top-down view of the heightmap, north up.
   the highest level that has something there and switches to it. Levels you hid (H) pick nothing. **Esc** clears it.
 - **F** centres the map on the selected point, **Shift+F** shows the whole map.
 
-![The slope overlay](images/map-slope.png)
+![The map close up, with the slope hatching where the ground is steeper than 60°](images/map-slope.png)
 
 The project panel has a section **Satellite imagery files**:
 

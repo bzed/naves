@@ -2311,6 +2311,7 @@ dependencies = [
  "image",
  "naves-core",
  "naves-export",
+ "naves-ui",
  "proptest",
  "rmcp",
  "serde",
