@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # naves-ui: Rerun's Design System in the Náves GUI Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

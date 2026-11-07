@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Build: the Rust toolchain pin moved from 1.95 to 1.99 (required by the vendored design system).
+
 ### Added
 
 - A settings window in the GUI (the Settings button in the dock, or F2) with Keyboard, Map and External tools. Every shortcut can be changed; a key already in use asks before it is replaced; Esc, Enter and F1 cannot be changed and Tab and Shift+Tab cannot be assigned. The Map tab sets the wheel direction, how strongly the other levels fade, the interface scale, whether the stack unfolds with animation, and the base map and layers a project opens with. External tools shows each path and where it comes from. Everything is saved at once in the per-user `settings.toml`; a damaged file is shown and never overwritten. New manual page "Settings".
