@@ -11,8 +11,11 @@
 //! alternate for a fixed 30 rounds, so that the result is deterministic. A chain that ends on a road placed
 //! earlier takes its height there and keeps it; where that makes the limits impossible, the ends win and a
 //! [`GradeExcess`] is reported.
+//!
+//! Then roads that run closer together than the terrain grid can tell apart are brought to one height (the step
+//! called settling): without that, the terrain under one of them is wrong however it is shaped.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::Family;
 use crate::conform::FILL_SLOPE;
@@ -25,10 +28,6 @@ const ROUNDS: usize = 30;
 const SMOOTHNESS: f64 = 30.0;
 /// A chain end this close to a joint of an earlier chain takes its height.
 const JOIN_RADIUS_M: f64 = 10.0;
-/// Joints of one road must be this far apart along it to count as different parts for the switchback pass.
-const SWITCHBACK_ALONG_M: f64 = 50.0;
-/// Rounds of the switchback pass.
-const SWITCHBACK_ROUNDS: usize = 3;
 
 /// The steepest grade a road of this family is aimed at (rise over run).
 #[must_use]
@@ -102,6 +101,21 @@ pub struct Profiles {
     pub strips: Vec<RoadStrip>,
     /// Where the limits are exceeded.
     pub excesses: Vec<GradeExcess>,
+}
+
+/// What a chain solved to, kept for [`settle`].
+struct Solved {
+    /// The variable of each joint of the strip.
+    joint_variable: Vec<usize>,
+    /// The height of each variable.
+    heights: Vec<f64>,
+    /// The distance from each variable to the next.
+    spacing: Vec<f64>,
+    limits: Limits,
+    /// The joint, as an index into the joints solved before this chain, that each end lies on.
+    joins: [Option<usize>; 2],
+    /// The heights as first solved: [`settle`] moves a variable only so far from them.
+    origin: Vec<f64>,
 }
 
 /// The variables of a chain: one per joint, except that a junction has one height along its length.
@@ -336,14 +350,36 @@ fn solve_chain(
     heights
 }
 
-/// The height of a chain end that lies on a chain solved earlier: that of its nearest joint.
-fn joined_height(solved: &[(f64, f64, f64)], at: (f64, f64)) -> Option<f64> {
+/// The joint of a chain solved earlier that a chain end lies on: the nearest one, as an index into `solved`.
+fn joined_joint(solved: &[(f64, f64, f64)], at: (f64, f64)) -> Option<usize> {
     solved
         .iter()
-        .map(|joint| ((joint.0 - at.0).hypot(joint.1 - at.1), joint.2))
+        .enumerate()
+        .map(|(index, joint)| ((joint.0 - at.0).hypot(joint.1 - at.1), index))
         .filter(|(distance, _)| *distance <= JOIN_RADIUS_M)
         .min_by(|left, right| left.0.total_cmp(&right.0))
-        .map(|(_, height)| height)
+        .map(|(_, index)| index)
+}
+
+/// The fixed heights of a chain's variables and the joints its ends lie on: an end on a chain solved earlier
+/// takes that chain's height.
+fn end_joins(chain: &Chain, solved: &[(f64, f64, f64)]) -> (Vec<Option<f64>>, [Option<usize>; 2]) {
+    let count = chain.at.len();
+    let mut fixed = vec![None; count];
+    let mut ends_on = [None, None];
+    for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
+        let landing = chain
+            .at
+            .get(end)
+            .and_then(|point| joined_joint(solved, *point));
+        if let (Some(slot), Some(index)) = (fixed.get_mut(end), landing) {
+            *slot = solved.get(index).map(|j| j.2);
+        }
+        if let Some(slot) = ends_on.get_mut(side) {
+            *slot = landing;
+        }
+    }
+    (fixed, ends_on)
 }
 
 /// The profile of one chain and where its limits are exceeded.
@@ -352,7 +388,7 @@ fn profile_chain(
     roads: &[usize],
     hm: &Heightmap,
     solved: &[(f64, f64, f64)],
-) -> Option<(RoadStrip, Vec<GradeExcess>)> {
+) -> Option<(RoadStrip, Vec<GradeExcess>, Solved)> {
     let chain = chain_of(net, roads)?;
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
@@ -374,12 +410,7 @@ fn profile_chain(
             _ => 1.0,
         })
         .collect();
-    let mut fixed = vec![None; count];
-    for end in [0, count.saturating_sub(1)] {
-        if let (Some(point), Some(slot)) = (chain.at.get(end), fixed.get_mut(end)) {
-            *slot = joined_height(solved, *point);
-        }
-    }
+    let (fixed, ends_on) = end_joins(&chain, solved);
     let heights = if count == 1 {
         targets
     } else {
@@ -440,7 +471,15 @@ fn profile_chain(
         half_width: first.width / 2.0,
         rank: rank(family),
     };
-    Some((strip, excesses))
+    let variables = Solved {
+        joint_variable: chain.joints.iter().map(|j| j.2).collect(),
+        joins: ends_on,
+        origin: heights.clone(),
+        heights,
+        spacing,
+        limits,
+    };
+    Some((strip, excesses, variables))
 }
 
 /// Computes the profile of every chain of `net`, in placement order, on the terrain `hm`.
@@ -449,53 +488,94 @@ pub fn solve_profiles(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
     let mut out = Profiles::default();
     // every joint solved so far, with its height, to find what a chain end joins
     let mut solved: Vec<(f64, f64, f64)> = Vec::new();
+    let mut variables: Vec<Solved> = Vec::new();
+    // which chain and joint each entry of `solved` is
+    let mut owners: Vec<(usize, usize)> = Vec::new();
     for roads in &net.chains {
-        let Some((strip, excesses)) = profile_chain(net, roads, hm, &solved) else {
+        let Some((strip, excesses, vars)) = profile_chain(net, roads, hm, &solved) else {
             continue;
         };
         solved.extend(strip.joints.iter().copied());
+        owners.extend((0..strip.joints.len()).map(|joint| (out.strips.len(), joint)));
         out.excesses.extend(excesses);
         out.strips.push(strip);
+        variables.push(vars);
     }
-    switchbacks(&mut out.strips, hm.cell_m);
+    settle(&mut out.strips, &mut variables, &owners, hm.cell_m);
     out
 }
 
-/// Holds joints of different parts of the network (and of one road that doubles back) to
-/// `|Δh| ≤ distance × FILL_SLOPE` when they are close: two legs squeezed together would otherwise
-/// ask for a wall between them.
-fn switchbacks(strips: &mut [RoadStrip], cell: f32) {
-    struct Joint {
-        strip: usize,
-        index: usize,
-        x: f64,
-        y: f64,
-        along: f64,
-        half_width: f64,
-    }
-    let mut joints: Vec<Joint> = Vec::new();
+/// Two roads whose footprints share terrain vertices cannot differ in height by more than this.
+const MATCH_M: f64 = 0.1;
+/// Spacing of the points at which close roads are compared, in metres.
+const SAMPLE_M: f64 = 3.0;
+/// Rounds of [`settle`].
+const SETTLE_ROUNDS: usize = 10;
+/// How far [`settle`] may move a road from where it was first solved; roads that differ by more cross at
+/// different levels or are a conflict.
+const MAX_SETTLE_M: f64 = 5.0;
+
+/// A point on a strip: between joint `segment` and the next, `t` of the way.
+struct Spot {
+    strip: usize,
+    segment: usize,
+    t: f64,
+    x: f64,
+    y: f64,
+    along: f64,
+}
+
+fn spots(strips: &[RoadStrip]) -> Vec<Spot> {
+    let mut spots = Vec::new();
     for (si, strip) in strips.iter().enumerate() {
         let mut along = 0.0;
-        let mut prev: Option<(f64, f64)> = None;
-        for (ji, j) in strip.joints.iter().enumerate() {
-            if let Some(p) = prev {
-                along += (j.0 - p.0).hypot(j.1 - p.1);
+        for (segment, pair) in strip.joints.windows(2).enumerate() {
+            let [from, to] = pair else { continue };
+            let length = (to.0 - from.0).hypot(to.1 - from.1);
+            let is_bridge = strip.bridge.get(segment).copied().unwrap_or(false);
+            if !is_bridge {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a sample count from a length"
+                )]
+                let count = ((length / SAMPLE_M).ceil() as usize).max(1);
+                for k in 0..=count {
+                    #[expect(clippy::cast_precision_loss, reason = "small counts")]
+                    let t = k as f64 / count as f64;
+                    spots.push(Spot {
+                        strip: si,
+                        segment,
+                        t,
+                        x: from.0 + t * (to.0 - from.0),
+                        y: from.1 + t * (to.1 - from.1),
+                        along: along + t * length,
+                    });
+                }
             }
-            prev = Some((j.0, j.1));
-            joints.push(Joint {
-                strip: si,
-                index: ji,
-                x: j.0,
-                y: j.1,
-                along,
-                half_width: strip.half_width,
-            });
+            along += length;
         }
     }
-    let widest = joints.iter().map(|j| j.half_width).fold(0.0, f64::max);
-    let reach = widest * 2.0 + 3.0 * f64::from(cell);
-    if reach <= 0.0 || joints.len() < 2 {
-        return;
+    spots
+}
+
+/// Two spots of roads that are close enough to share terrain cells.
+struct Pair {
+    first: usize,
+    second: usize,
+    /// How far apart they are.
+    distance: f64,
+    /// The distance below which they cannot differ in height.
+    gap: f64,
+}
+
+/// The pairs of spots of different roads, or of parts of one road that double back, that are close enough
+/// to be compared.
+fn close_pairs(spots: &[Spot], strips: &[RoadStrip], cell: f64) -> Vec<Pair> {
+    let widest = strips.iter().map(|s| s.half_width).fold(0.0, f64::max);
+    let reach = widest * 2.0 + 3.0 * cell + 12.0;
+    if reach <= 0.0 {
+        return Vec::new();
     }
     let bucket = |v: f64| {
         #[expect(
@@ -506,57 +586,190 @@ fn switchbacks(strips: &mut [RoadStrip], cell: f32) {
         b
     };
     let mut grid: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
-    for (i, j) in joints.iter().enumerate() {
-        grid.entry((bucket(j.x), bucket(j.y))).or_default().push(i);
+    for (i, spot) in spots.iter().enumerate() {
+        grid.entry((bucket(spot.x), bucket(spot.y)))
+            .or_default()
+            .push(i);
     }
-    for _ in 0..SWITCHBACK_ROUNDS {
-        for a in 0..joints.len() {
-            let Some(ja) = joints.get(a) else { continue };
-            let (cx, cy) = (bucket(ja.x), bucket(ja.y));
-            for gx in cx - 1..=cx + 1 {
-                for gy in cy - 1..=cy + 1 {
-                    let Some(cell_joints) = grid.get(&(gx, gy)) else {
+    let half_width = |strip: usize| strips.get(strip).map_or(0.0, |s| s.half_width);
+    let mut pairs = Vec::new();
+    for (first, a) in spots.iter().enumerate() {
+        let (cx, cy) = (bucket(a.x), bucket(a.y));
+        for gx in cx - 1..=cx + 1 {
+            for gy in cy - 1..=cy + 1 {
+                for &second in grid.get(&(gx, gy)).map_or(&[][..], Vec::as_slice) {
+                    let Some(b) = spots.get(second).filter(|_| second > first) else {
                         continue;
                     };
-                    for &b in cell_joints {
-                        if b <= a {
-                            continue;
-                        }
-                        let (Some(ja), Some(jb)) = (joints.get(a), joints.get(b)) else {
-                            continue;
-                        };
-                        let d = (ja.x - jb.x).hypot(ja.y - jb.y);
-                        let local = ja.half_width.max(jb.half_width) * 2.0 + 3.0 * f64::from(cell);
-                        if d > local || d < 1e-9 {
-                            continue;
-                        }
-                        if ja.strip == jb.strip && (ja.along - jb.along).abs() <= SWITCHBACK_ALONG_M
-                        {
-                            continue;
-                        }
-                        let ha = strips
-                            .get(ja.strip)
-                            .and_then(|s| s.joints.get(ja.index))
-                            .map_or(0.0, |j| j.2);
-                        let hb = strips
-                            .get(jb.strip)
-                            .and_then(|s| s.joints.get(jb.index))
-                            .map_or(0.0, |j| j.2);
-                        let allowed = d * FILL_SLOPE;
-                        let excess = (ha - hb).abs() - allowed;
-                        if excess > 0.0 {
-                            let shift = excess / 2.0 * (ha - hb).signum();
-                            let (sa, ia, sb, ib) = (ja.strip, ja.index, jb.strip, jb.index);
-                            if let Some(j) = strips.get_mut(sa).and_then(|s| s.joints.get_mut(ia)) {
-                                j.2 -= shift;
-                            }
-                            if let Some(j) = strips.get_mut(sb).and_then(|s| s.joints.get_mut(ib)) {
-                                j.2 += shift;
-                            }
-                        }
+                    let distance = (a.x - b.x).hypot(a.y - b.y);
+                    let gap = half_width(a.strip) + half_width(b.strip) + 3.0 * cell;
+                    // parts of one road that merely follow each other are not close
+                    let follows =
+                        a.strip == b.strip && (a.along - b.along).abs() <= 1.4 * distance + 3.0;
+                    if distance <= gap + 12.0 && !follows {
+                        pairs.push(Pair {
+                            first,
+                            second,
+                            distance,
+                            gap,
+                        });
                     }
                 }
             }
+        }
+    }
+    pairs
+}
+
+/// The two variables that carry a spot, with their weights; one variable that carries both ends takes all.
+fn carriers(chains: &[Solved], spot: &Spot) -> [(usize, f64); 2] {
+    let var = |joint: usize| {
+        chains
+            .get(spot.strip)
+            .and_then(|c| c.joint_variable.get(joint))
+            .copied()
+            .unwrap_or(0)
+    };
+    let parts = [
+        (var(spot.segment), 1.0 - spot.t),
+        (var(spot.segment + 1), spot.t),
+    ];
+    if parts[0].0 == parts[1].0 {
+        [(parts[0].0, 1.0), (parts[0].0, 0.0)]
+    } else {
+        parts
+    }
+}
+
+fn spot_height(chains: &[Solved], spot: &Spot) -> f64 {
+    carriers(chains, spot)
+        .iter()
+        .map(|&(v, w)| {
+            w * chains
+                .get(spot.strip)
+                .and_then(|c| c.heights.get(v))
+                .copied()
+                .unwrap_or(0.0)
+        })
+        .sum()
+}
+
+/// What each variable is asked to do by the pairs that are too far apart in height: the weighted sum of the
+/// shifts and the sum of the weights, per (chain, variable).
+fn wanted_shifts(
+    pairs: &[Pair],
+    spots: &[Spot],
+    strips: &[RoadStrip],
+    chains: &[Solved],
+) -> BTreeMap<(usize, usize), (f64, f64)> {
+    let mut wanted: BTreeMap<(usize, usize), (f64, f64)> = BTreeMap::new();
+    let importance = |strip: usize| f64::from(strips.get(strip).map_or(0, |s| s.rank)) + 1.0;
+    for pair in pairs {
+        let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
+            continue;
+        };
+        let (ha, hb) = (spot_height(chains, a), spot_height(chains, b));
+        let allowed = MATCH_M + (pair.distance - pair.gap).max(0.0) * FILL_SLOPE;
+        let excess = (ha - hb).abs() - allowed;
+        if excess <= 0.0 {
+            continue;
+        }
+        // the less important road moves more
+        let (ra, rb) = (importance(a.strip), importance(b.strip));
+        let sign = (ha - hb).signum();
+        for (spot, shift) in [
+            (a, -sign * excess * rb / (ra + rb)),
+            (b, sign * excess * ra / (ra + rb)),
+        ] {
+            let parts = carriers(chains, spot);
+            let norm: f64 = parts.iter().map(|p| p.1 * p.1).sum();
+            for (var, w) in parts {
+                if w > 1e-9 {
+                    let slot = wanted.entry((spot.strip, var)).or_insert((0.0, 0.0));
+                    slot.0 += w * (w * shift / norm);
+                    slot.1 += w;
+                }
+            }
+        }
+    }
+    wanted
+}
+
+/// Moves what was asked for into the targets of the chains and solves every chain that was touched again,
+/// so that the grade limits and the smoothness are kept and the road does not wander off the terrain.
+fn resolve(
+    wanted: BTreeMap<(usize, usize), (f64, f64)>,
+    chains: &mut [Solved],
+    owners: &[(usize, usize)],
+) {
+    let mut touched: BTreeSet<usize> = BTreeSet::new();
+    for ((strip, var), (sum, weight)) in wanted {
+        if let Some(chain) = chains.get_mut(strip)
+            && let (Some(h), Some(&base)) = (chain.heights.get_mut(var), chain.origin.get(var))
+        {
+            *h = (*h + sum / weight.max(1e-9)).clamp(base - MAX_SETTLE_M, base + MAX_SETTLE_M);
+            touched.insert(strip);
+        }
+    }
+    for strip in touched {
+        // the ends are where roads meet: an end on another road takes that road's height, any other keeps
+        // what it was asked for
+        let ends = [
+            chains
+                .get(strip)
+                .and_then(|c| c.joins.first().copied().flatten()),
+            chains
+                .get(strip)
+                .and_then(|c| c.joins.get(1).copied().flatten()),
+        ]
+        .map(|join| {
+            let (owner, joint) = owners.get(join?).copied()?;
+            let other = chains.get(owner)?;
+            other
+                .heights
+                .get(*other.joint_variable.get(joint)?)
+                .copied()
+        });
+        let Some(chain) = chains.get_mut(strip) else {
+            continue;
+        };
+        let mut pinned = vec![None; chain.heights.len()];
+        if let (Some(first), Some(&own)) = (pinned.first_mut(), chain.heights.first()) {
+            *first = Some(ends[0].unwrap_or(own));
+        }
+        if let (Some(last), Some(&own)) = (pinned.last_mut(), chain.heights.last()) {
+            *last = Some(ends[1].unwrap_or(own));
+        }
+        chain.heights = solve_chain(&chain.heights, &chain.spacing, &pinned, chain.limits);
+        for (h, &base) in chain.heights.iter_mut().zip(&chain.origin) {
+            *h = h.clamp(base - MAX_SETTLE_M, base + MAX_SETTLE_M);
+        }
+    }
+}
+
+/// Brings roads that run close together to heights the terrain can follow.
+///
+/// The terrain cells under a road are all given the road's height, `1.5` cells beyond its edge. Where two
+/// roads are closer than their footprints plus those margins, they share cells and cannot differ in height:
+/// the legs of a hairpin, streets side by side, the arms of a junction. Beyond that distance the ground
+/// between them can slope at [`FILL_SLOPE`]. Heights are compared every [`SAMPLE_M`], the less important road
+/// moving more; a road moves at most [`MAX_SETTLE_M`] from where it was first solved, and the grade limits
+/// are kept. Measured on the Berchtesgaden example this takes the pieces that miss the terrain from 5001 to
+/// about 3800 and the road not drivable from 37 km to 28 km; a stiffer pull towards the shared height made
+/// both worse, because it breaks the grade limits.
+fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], owners: &[(usize, usize)], cell: f32) {
+    let spots = spots(strips);
+    let pairs = close_pairs(&spots, strips, f64::from(cell));
+    for _ in 0..SETTLE_ROUNDS {
+        let wanted = wanted_shifts(&pairs, &spots, strips, chains);
+        if wanted.is_empty() {
+            break;
+        }
+        resolve(wanted, chains, owners);
+    }
+    for (strip, chain) in strips.iter_mut().zip(chains.iter()) {
+        for (joint, &var) in strip.joints.iter_mut().zip(&chain.joint_variable) {
+            joint.2 = chain.heights.get(var).copied().unwrap_or(joint.2);
         }
     }
 }

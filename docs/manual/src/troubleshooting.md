@@ -106,7 +106,10 @@ updated; the message names the model.
 **`not_drivable`, `road_misses_terrain`, `road_grade` ... in the warnings**
 Every line names the rule and a position in map metres. The same findings, with the numbers of the network, are in
 `build/report.json`. A road can be too steep because the real road is steep and the map is small (a horizontal scale
-below 1 steepens everything): raise `[scale] horizontal`, or accept the finding.
+below 1 steepens everything): raise `[scale] horizontal`, or accept the finding. `road_misses_terrain` and a road
+that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
+(a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
+moves roads further apart in map metres; otherwise accept the finding.
 
 **`bridge on ...: the widest bridge model is ... m, the road is ... m wide`**
 The game has no bridge as wide as the road. The widest is used; the road is wider than the deck.

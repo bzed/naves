@@ -134,6 +134,13 @@ road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the fi
 cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every
 finding is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
+The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map), and every cell under a road takes the road's height
+for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
+streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
+it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the
+ground between two roads is too steep for that, the terrain under one of them is still wrong; those places are the
+`road_misses_terrain` and `road_not_drivable` findings that remain.
+
 **What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
 line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the

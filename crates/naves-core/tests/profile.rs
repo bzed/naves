@@ -259,6 +259,49 @@ fn switchback_legs_leave_room_for_a_slope() {
     );
 }
 
+/// The height of a strip's profile at `y` (linear between joints).
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: a missing joint fails loudly"
+)]
+fn profile_height(p: &Profiles, strip: usize, y: f64) -> f64 {
+    let joints = &p.strips[strip].joints;
+    let pair = joints
+        .windows(2)
+        .find(|w| (w[0].1 - y) * (w[1].1 - y) <= 0.0 && (w[0].1 - w[1].1).abs() > 1e-9)
+        .unwrap();
+    let t = (y - pair[0].1) / (pair[1].1 - pair[0].1);
+    pair[0].2 + t * (pair[1].2 - pair[0].2)
+}
+
+#[test]
+fn roads_closer_than_their_footprints_share_a_height() {
+    // two roads 20 m apart on a 20 degree flank: on a 6.25 m terrain grid the cells under both overlap, so
+    // they cannot be 7 m apart in height whatever the terrain does around them
+    let slope = 20.0_f64.to_radians().tan();
+    let hm = terrain(160, 6.25, |x, _| 400.0 - slope * x);
+    let a = straight("a", Family::Asf3, (400.0, 100.0), (400.0, 600.0));
+    let b = straight("b", Family::Asf3, (420.0, 100.0), (420.0, 600.0));
+    let p = solve_profiles(&network(vec![a, b]), &hm);
+    let diff = (profile_height(&p, 0, 350.0) - profile_height(&p, 1, 350.0)).abs();
+    assert!(diff < 0.5, "{diff} m between roads 20 m apart");
+}
+
+#[test]
+fn settling_keeps_a_road_near_the_terrain() {
+    // two legs 30 m apart on a 35 degree flank cannot be brought together; they must not wander off
+    let slope = 35.0_f64.to_radians().tan();
+    let hm = terrain(160, 6.25, |x, _| 400.0 - slope * x);
+    let a = straight("a", Family::Asf3, (400.0, 100.0), (400.0, 600.0));
+    let b = straight("b", Family::Asf3, (430.0, 100.0), (430.0, 600.0));
+    let p = solve_profiles(&network(vec![a, b]), &hm);
+    for (strip, x) in [(0, 400.0), (1, 430.0)] {
+        let ground = 400.0 - slope * x;
+        let off = (profile_height(&p, strip, 350.0) - ground).abs();
+        assert!(off <= 5.5, "road {strip} is {off} m off the terrain");
+    }
+}
+
 #[test]
 fn the_profile_is_deterministic() {
     let hm = terrain(100, 6.25, |x, y| {
