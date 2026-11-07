@@ -275,6 +275,162 @@ fn profile_height(p: &Profiles, strip: usize, y: f64) -> f64 {
 }
 
 #[test]
+fn an_end_between_joints_takes_the_road_height_there() {
+    // a side road ends on a through road that climbs: the height it takes is the through road's
+    // height where they meet, not the height of the through road's nearest joint
+    let hm = terrain(100, 6.25, |x, _| 100.0 + 0.10 * (x - 100.0));
+    let through = straight("t", Family::Asf3, (100.0, 100.0), (550.0, 100.0));
+    // ends 1.5 m inside the through road's edge, 5 m past its joint at x = 300
+    let side = straight("s", Family::Asf3, (305.0, 250.0), (305.0, 101.5));
+    let p = solve_profiles(&network(vec![through, side]), &hm);
+    let end = p.strips[1].joints.last().copied().unwrap();
+    let wanted = 100.0 + 0.10 * (305.0 - 100.0);
+    assert!(
+        (end.2 - wanted).abs() < 0.3,
+        "side ends at {:.2}, the through road is at {wanted:.2} there",
+        end.2
+    );
+}
+
+#[test]
+fn an_end_beside_a_road_keeps_its_own_height() {
+    // a dead end 5 m from the centre line of another road does not meet it: it keeps the height
+    // of the terrain it is on, instead of taking the other road's nearest joint
+    let hm = terrain(100, 6.25, |x, _| 100.0 + 0.10 * (x - 100.0));
+    let through = straight("t", Family::Asf3, (100.0, 100.0), (550.0, 100.0));
+    let side = straight("s", Family::Asf3, (306.0, 250.0), (306.0, 105.0));
+    let p = solve_profiles(&network(vec![through, side]), &hm);
+    let end = p.strips[1].joints.last().copied().unwrap();
+    let wanted = 100.0 + 0.10 * (306.0 - 100.0);
+    assert!(
+        (end.2 - wanted).abs() < 0.35,
+        "side ends at {:.2}, the terrain is at {wanted:.2} there",
+        end.2
+    );
+}
+
+#[test]
+fn settling_keeps_the_grade_limits_of_a_road_between_two_others() {
+    // a short road between a high one and a low one: settling may pull its ends, but the road
+    // itself must keep its grade limit - the ends are free, nothing pins them
+    let hm = terrain(200, 6.25, |_, y| {
+        if y <= 82.0 {
+            100.0
+        } else if y >= 128.0 {
+            50.0
+        } else {
+            100.0 - (y - 82.0) * (50.0 / 46.0)
+        }
+    });
+    let high = straight("h", Family::Asf3, (100.0, 80.0), (500.0, 80.0));
+    let low = straight("l", Family::Asf3, (100.0, 132.0), (500.0, 132.0));
+    let between = vec![piece(
+        "b",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (200.0, 95.0),
+        (200.0, 115.0),
+    )];
+    let p = solve_profiles(&network(vec![high, low, between]), &hm);
+    let grades = grades(&p, 2);
+    let limit = max_grade(Family::Asf3);
+    assert!(
+        grades.iter().all(|g| g.abs() <= limit + 1e-6),
+        "the road between settled to grades {grades:?}, limit {limit}"
+    );
+}
+
+#[test]
+fn the_reported_excesses_are_the_settled_ones() {
+    // what the profiles report as over the limits is measured on the heights that are actually
+    // used, after settling - not on the heights the chains had before it
+    let hm = terrain(200, 6.25, |_, y| {
+        if y <= 82.0 {
+            100.0
+        } else if y >= 128.0 {
+            50.0
+        } else {
+            100.0 - (y - 82.0) * (50.0 / 46.0)
+        }
+    });
+    let high = straight("h", Family::Asf3, (100.0, 80.0), (500.0, 80.0));
+    let low = straight("l", Family::Asf3, (100.0, 132.0), (500.0, 132.0));
+    let between = vec![piece(
+        "b",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (200.0, 95.0),
+        (200.0, 115.0),
+    )];
+    let p = solve_profiles(&network(vec![high, low, between]), &hm);
+    let family = Family::Asf3;
+    let (grade, change) = (max_grade(family), max_grade_change(family));
+    let mut shown = 0;
+    for strip in &p.strips {
+        let grades: Vec<f64> = strip
+            .joints
+            .windows(2)
+            .map(|w| {
+                let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1).max(0.5);
+                (w[1].2 - w[0].2) / d
+            })
+            .collect();
+        for pair in grades.windows(2) {
+            if (pair[1] - pair[0]).abs() > change + 1e-6 {
+                shown += 1;
+            }
+        }
+        for g in &grades {
+            if g.abs() > grade + 1e-6 {
+                shown += 1;
+            }
+        }
+    }
+    assert_eq!(
+        shown,
+        p.excesses.len(),
+        "the strips show {shown} violations, the report has {}",
+        p.excesses.len()
+    );
+}
+
+#[test]
+fn a_side_road_ends_at_the_junction_port_height() {
+    // the side road ends at the port of a junction piece, which sits beyond the through road's
+    // edge: it still takes the junction's height, not the height of the terrain it stands on
+    let hm = terrain(200, 6.25, |_, y| if y <= 103.0 { 110.0 } else { 100.0 });
+    let mut through = straight("t", Family::Asf3, (100.0, 100.0), (300.0, 100.0));
+    through.push(piece(
+        "t|s",
+        0,
+        PlacedKind::Junction,
+        Family::Asf3,
+        (300.0, 100.0),
+        (312.5, 100.0),
+    ));
+    through.extend(straight("t", Family::Asf3, (312.5, 100.0), (550.0, 100.0)));
+    // the port of the junction, 5 m from its centre, past the through road's 3.5 m edge
+    let side = straight("s", Family::Asf3, (306.25, 130.0), (306.25, 105.0));
+    let p = solve_profiles(&network(vec![through, side]), &hm);
+    let end = p.strips[1].joints.last().copied().unwrap();
+    assert!(
+        end.2 > 109.0,
+        "the side road ends at {:.2}, the junction is at 110",
+        end.2
+    );
+    // and the climb onto the junction stays within the grade limit: the whole road tilts up
+    let grades = grades(&p, 1);
+    assert!(
+        grades
+            .iter()
+            .all(|g| g.abs() <= max_grade(Family::Asf3) + 1e-6),
+        "the climb onto the junction breaks the limit: {grades:?}"
+    );
+}
+
+#[test]
 fn roads_closer_than_their_footprints_share_a_height() {
     // two roads 20 m apart on a 20 degree flank: on a 6.25 m terrain grid the cells under both overlap, so
     // they cannot be 7 m apart in height whatever the terrain does around them

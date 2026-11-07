@@ -36,6 +36,7 @@ fn strip(joints: &[(f64, f64, f64)], half_width: f64, rank: u8) -> RoadStrip {
         slots: Vec::new(),
         joints: joints.to_vec(),
         bridge: Vec::new(),
+        junction: Vec::new(),
         half_width,
         rank,
     }

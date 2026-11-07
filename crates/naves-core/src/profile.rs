@@ -5,15 +5,17 @@
 //!
 //! A road's height is not its terrain's: a profile follows the terrain but keeps to a grade limit, a limit on
 //! how much the grade may change from one piece to the next (the number that makes a road feel bumpy), and
-//! the height of whatever it joins. The terrain is then shaped to the profile, see [`crate::conform`].
+//! the height of whatever it meets. The terrain is then shaped to the profile, see [`crate::conform`].
 //!
 //! Per chain in placement order: a smoothing solve (a banded system, solved directly) and clipping passes
-//! alternate for a fixed 30 rounds, so that the result is deterministic. A chain that ends on a road placed
-//! earlier takes its height there and keeps it; where that makes the limits impossible, the ends win and a
-//! [`GradeExcess`] is reported.
+//! alternate for a fixed 30 rounds, so that the result is deterministic. A chain end that lies on a road
+//! placed earlier (within its half width, however far from that road's joints) takes that road's height
+//! where they meet and keeps it; an end that does not lie on another road is free. Where that makes the
+//! limits impossible, the ends win and a [`GradeExcess`] is reported, on the settled heights.
 //!
 //! Then roads that run closer together than the terrain grid can tell apart are brought to one height (the step
-//! called settling): without that, the terrain under one of them is wrong however it is shaped.
+//! called settling): without that, the terrain under one of them is wrong however it is shaped. Settling
+//! moves heights and solves again with the grade limits, so it cannot break them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,8 +28,6 @@ use crate::roadplace::{PlacedKind, PlacedNetwork};
 const ROUNDS: usize = 30;
 /// Weight of the second difference against the terrain heights.
 const SMOOTHNESS: f64 = 30.0;
-/// A chain end this close to a joint of an earlier chain takes its height.
-const JOIN_RADIUS_M: f64 = 10.0;
 
 /// The steepest grade a road of this family is aimed at (rise over run).
 #[must_use]
@@ -77,6 +77,9 @@ pub struct RoadStrip {
     /// For each segment between two joints, whether it is a bridge deck; the ground below a span is left
     /// alone. May be shorter than the segments, which then are not bridges.
     pub bridge: Vec<bool>,
+    /// For each segment between two joints, whether it is a junction piece: its side ports, where
+    /// side roads end, lie beyond the through road's edge. May be shorter than the segments.
+    pub junction: Vec<bool>,
     /// Half the width of the road.
     pub half_width: f64,
     /// How important the road is; higher wins where two roads clash.
@@ -109,13 +112,24 @@ struct Solved {
     joint_variable: Vec<usize>,
     /// The height of each variable.
     heights: Vec<f64>,
+    /// The position of each variable.
+    at: Vec<(f64, f64)>,
     /// The distance from each variable to the next.
     spacing: Vec<f64>,
     limits: Limits,
-    /// The joint, as an index into the joints solved before this chain, that each end lies on.
-    joins: [Option<usize>; 2],
+    /// The meeting each end lies on, if any.
+    joins: [Option<Meeting>; 2],
     /// The heights as first solved: [`settle`] moves a variable only so far from them.
     origin: Vec<f64>,
+}
+
+/// A place where a chain end meets a road solved earlier: on the strip `owner`, between its
+/// joints `segment` and `segment + 1`, `t` of the way from the first to the second.
+#[derive(Clone, Copy, Debug)]
+struct Meeting {
+    owner: usize,
+    segment: usize,
+    t: f64,
 }
 
 /// The variables of a chain: one per joint, except that a junction has one height along its length.
@@ -350,45 +364,93 @@ fn solve_chain(
     heights
 }
 
-/// The joint of a chain solved earlier that a chain end lies on: the nearest one, as an index into `solved`.
-fn joined_joint(solved: &[(f64, f64, f64)], at: (f64, f64)) -> Option<usize> {
-    solved
-        .iter()
-        .enumerate()
-        .map(|(index, joint)| ((joint.0 - at.0).hypot(joint.1 - at.1), index))
-        .filter(|(distance, _)| *distance <= JOIN_RADIUS_M)
-        .min_by(|left, right| left.0.total_cmp(&right.0))
-        .map(|(_, index)| index)
+/// The height of a strip at a [`Meeting`], from its joints.
+fn meeting_height(strip: &RoadStrip, meet: &Meeting) -> Option<f64> {
+    let from = strip.joints.get(meet.segment)?;
+    let to = strip.joints.get(meet.segment + 1)?;
+    Some(from.2 + meet.t * (to.2 - from.2))
 }
 
-/// The fixed heights of a chain's variables and the joints its ends lie on: an end on a chain solved earlier
-/// takes that chain's height.
-fn end_joins(chain: &Chain, solved: &[(f64, f64, f64)]) -> (Vec<Option<f64>>, [Option<usize>; 2]) {
+/// A chain end this far beyond the edge of another road still counts as meeting it.
+const ON_ROAD_M: f64 = 1.0;
+
+/// Where a chain end meets a road solved earlier: the nearest place whose surface the end lies
+/// on - within the road's half width (and [`ON_ROAD_M`]) of its centre line, or, on a junction
+/// piece, within the piece's own length of its centre, where its side ports are. The ground under
+/// a bridge does not count.
+fn meeting(strips: &[RoadStrip], at: (f64, f64)) -> Option<Meeting> {
+    let mut best: Option<(f64, Meeting)> = None;
+    for (owner, strip) in strips.iter().enumerate() {
+        for segment in 0..strip.joints.len().saturating_sub(1) {
+            if strip.bridge.get(segment).copied().unwrap_or(false) {
+                continue;
+            }
+            let (Some(from), Some(to)) = (strip.joints.get(segment), strip.joints.get(segment + 1))
+            else {
+                continue;
+            };
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 0.0 {
+                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = if strip.junction.get(segment).copied().unwrap_or(false) {
+                // a junction piece carries the side arms of the roads that end on it: its ports
+                // are as far out as the piece is long
+                let reach = length2.sqrt() / 2.0 + ON_ROAD_M;
+                let (mx, my) = (
+                    f64::midpoint(from.0, to.0) - at.0,
+                    f64::midpoint(from.1, to.1) - at.1,
+                );
+                (mx.hypot(my) - reach).max(0.0)
+            } else {
+                (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy)
+            };
+            if distance <= strip.half_width + ON_ROAD_M
+                && best.as_ref().is_none_or(|(found, _)| distance < *found)
+            {
+                best = Some((distance, Meeting { owner, segment, t }));
+            }
+        }
+    }
+    best.map(|(_, meet)| meet)
+}
+
+/// The fixed heights of a chain's variables and where its ends meet an earlier road: an end that
+/// reaches one takes its height there and stays fixed; any other end is free.
+fn end_joins(chain: &Chain, strips: &[RoadStrip]) -> (Vec<Option<f64>>, [Option<Meeting>; 2]) {
     let count = chain.at.len();
     let mut fixed = vec![None; count];
     let mut ends_on = [None, None];
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
-        let landing = chain
-            .at
-            .get(end)
-            .and_then(|point| joined_joint(solved, *point));
-        if let (Some(slot), Some(index)) = (fixed.get_mut(end), landing) {
-            *slot = solved.get(index).map(|j| j.2);
+        let Some(point) = chain.at.get(end) else {
+            continue;
+        };
+        let Some(meet) = meeting(strips, *point) else {
+            continue;
+        };
+        let height = strips
+            .get(meet.owner)
+            .and_then(|strip| meeting_height(strip, &meet));
+        if let (Some(slot), Some(height)) = (fixed.get_mut(end), height) {
+            *slot = Some(height);
         }
         if let Some(slot) = ends_on.get_mut(side) {
-            *slot = landing;
+            *slot = Some(meet);
         }
     }
     (fixed, ends_on)
 }
 
-/// The profile of one chain and where its limits are exceeded.
+/// The profile of one chain.
 fn profile_chain(
     net: &PlacedNetwork,
     roads: &[usize],
     hm: &Heightmap,
-    solved: &[(f64, f64, f64)],
-) -> Option<(RoadStrip, Vec<GradeExcess>, Solved)> {
+    strips: &[RoadStrip],
+) -> Option<(RoadStrip, Solved)> {
     let chain = chain_of(net, roads)?;
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
@@ -410,7 +472,7 @@ fn profile_chain(
             _ => 1.0,
         })
         .collect();
-    let (fixed, ends_on) = end_joins(&chain, solved);
+    let (fixed, ends_on) = end_joins(&chain, strips);
     let heights = if count == 1 {
         targets
     } else {
@@ -427,36 +489,6 @@ fn profile_chain(
             )
         })
         .collect();
-    // what the limits allow, checked on the result
-    let grades: Vec<f64> = heights
-        .windows(2)
-        .zip(&spacing)
-        .map(|(pair, length)| match pair {
-            [from, to] => (to - from) / length.max(0.5),
-            _ => 0.0,
-        })
-        .collect();
-    let mut excesses = Vec::new();
-    for (index, grade) in grades.iter().enumerate() {
-        let at = chain.at.get(index).copied().unwrap_or_default();
-        if grade.abs() > limits.grade + 1e-6 {
-            excesses.push(GradeExcess {
-                at,
-                grade: *grade,
-                limit: limits.grade,
-            });
-        }
-        let before = index.checked_sub(1).and_then(|b| grades.get(b)).copied();
-        if let Some(before) = before
-            && (grade - before).abs() > limits.change + 1e-6
-        {
-            excesses.push(GradeExcess {
-                at,
-                grade: grade - before,
-                limit: limits.change,
-            });
-        }
-    }
     let strip = RoadStrip {
         slots: roads.to_vec(),
         joints,
@@ -468,40 +500,80 @@ fn profile_chain(
                     .is_some_and(|r| r.kind == PlacedKind::Bridge)
             })
             .collect(),
+        junction: roads
+            .iter()
+            .map(|i| {
+                net.roads
+                    .get(*i)
+                    .is_some_and(|r| r.kind == PlacedKind::Junction)
+            })
+            .collect(),
         half_width: first.width / 2.0,
         rank: rank(family),
     };
     let variables = Solved {
         joint_variable: chain.joints.iter().map(|j| j.2).collect(),
+        at: chain.at,
         joins: ends_on,
         origin: heights.clone(),
         heights,
         spacing,
         limits,
     };
-    Some((strip, excesses, variables))
+    Some((strip, variables))
+}
+
+/// Where a solved chain breaks its limits: the grades and grade changes over the limit, on the
+/// heights it is holding now.
+fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
+    let grades: Vec<f64> = chain
+        .heights
+        .windows(2)
+        .zip(&chain.spacing)
+        .map(|(pair, length)| match pair {
+            [from, to] => (to - from) / length.max(0.5),
+            _ => 0.0,
+        })
+        .collect();
+    let mut excesses = Vec::new();
+    for (index, grade) in grades.iter().enumerate() {
+        let at = chain.at.get(index).copied().unwrap_or_default();
+        if grade.abs() > chain.limits.grade + 1e-6 {
+            excesses.push(GradeExcess {
+                at,
+                grade: *grade,
+                limit: chain.limits.grade,
+            });
+        }
+        let before = index.checked_sub(1).and_then(|b| grades.get(b)).copied();
+        if let Some(before) = before
+            && (grade - before).abs() > chain.limits.change + 1e-6
+        {
+            excesses.push(GradeExcess {
+                at,
+                grade: grade - before,
+                limit: chain.limits.change,
+            });
+        }
+    }
+    excesses
 }
 
 /// Computes the profile of every chain of `net`, in placement order, on the terrain `hm`.
 #[must_use]
 pub fn solve_profiles(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
     let mut out = Profiles::default();
-    // every joint solved so far, with its height, to find what a chain end joins
-    let mut solved: Vec<(f64, f64, f64)> = Vec::new();
     let mut variables: Vec<Solved> = Vec::new();
-    // which chain and joint each entry of `solved` is
-    let mut owners: Vec<(usize, usize)> = Vec::new();
     for roads in &net.chains {
-        let Some((strip, excesses, vars)) = profile_chain(net, roads, hm, &solved) else {
+        let Some((strip, vars)) = profile_chain(net, roads, hm, &out.strips) else {
             continue;
         };
-        solved.extend(strip.joints.iter().copied());
-        owners.extend((0..strip.joints.len()).map(|joint| (out.strips.len(), joint)));
-        out.excesses.extend(excesses);
         out.strips.push(strip);
         variables.push(vars);
     }
-    settle(&mut out.strips, &mut variables, &owners, hm.cell_m);
+    settle(&mut out.strips, &mut variables, hm.cell_m);
+    // what is over the limits is measured on the heights that are actually used, after settling
+    out.excesses = variables.iter().flat_map(excesses_of).collect();
     out
 }
 
@@ -695,13 +767,24 @@ fn wanted_shifts(
     wanted
 }
 
+/// The height a meeting points at, from the heights the chain that owns it holds now.
+fn joined_height(chains: &[Solved], meet: &Meeting) -> Option<f64> {
+    let owner = chains.get(meet.owner)?;
+    let from = owner
+        .joint_variable
+        .get(meet.segment)
+        .and_then(|var| owner.heights.get(*var).copied());
+    let to = owner
+        .joint_variable
+        .get(meet.segment + 1)
+        .and_then(|var| owner.heights.get(*var).copied());
+    Some(from? + meet.t * (to? - from?))
+}
+
 /// Moves what was asked for into the targets of the chains and solves every chain that was touched again,
-/// so that the grade limits and the smoothness are kept and the road does not wander off the terrain.
-fn resolve(
-    wanted: BTreeMap<(usize, usize), (f64, f64)>,
-    chains: &mut [Solved],
-    owners: &[(usize, usize)],
-) {
+/// so that the grade limits and the smoothness are kept and the road does not wander off the terrain. Only
+/// an end that meets another road is fixed to it; every other height, ends included, is free to be solved.
+fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) {
     let mut touched: BTreeSet<usize> = BTreeSet::new();
     for ((strip, var), (sum, weight)) in wanted {
         if let Some(chain) = chains.get_mut(strip)
@@ -712,35 +795,60 @@ fn resolve(
         }
     }
     for strip in touched {
-        // the ends are where roads meet: an end on another road takes that road's height, any other keeps
-        // what it was asked for
-        let ends = [
+        let joins = [
             chains
                 .get(strip)
                 .and_then(|c| c.joins.first().copied().flatten()),
             chains
                 .get(strip)
                 .and_then(|c| c.joins.get(1).copied().flatten()),
-        ]
-        .map(|join| {
-            let (owner, joint) = owners.get(join?).copied()?;
-            let other = chains.get(owner)?;
-            other
-                .heights
-                .get(*other.joint_variable.get(joint)?)
-                .copied()
-        });
+        ];
+        let pins: [Option<f64>; 2] = [
+            joins[0].and_then(|meet| joined_height(chains, &meet)),
+            joins[1].and_then(|meet| joined_height(chains, &meet)),
+        ];
         let Some(chain) = chains.get_mut(strip) else {
             continue;
         };
+        let last = chain.heights.len().saturating_sub(1);
         let mut pinned = vec![None; chain.heights.len()];
-        if let (Some(first), Some(&own)) = (pinned.first_mut(), chain.heights.first()) {
-            *first = Some(ends[0].unwrap_or(own));
+        for (end, height) in [(0, pins[0]), (last, pins[1])] {
+            if let (Some(slot), Some(height)) = (pinned.get_mut(end), height) {
+                *slot = Some(height);
+            }
         }
-        if let (Some(last), Some(&own)) = (pinned.last_mut(), chain.heights.last()) {
-            *last = Some(ends[1].unwrap_or(own));
+        // An end that does not meet another road is pinned at what settling moved it to, but only
+        // as far as the grade limit allows from its neighbour: the move sticks (without that, the
+        // solve's smoothing undoes it from one round to the next) without breaking the limit.
+        for (end, other) in [(0, 1), (last, last.saturating_sub(1))] {
+            if end == other || pinned.get(end).is_some_and(Option::is_some) {
+                continue;
+            }
+            let (Some(moved), Some(neighbour)) = (
+                chain.heights.get(end).copied(),
+                chain.heights.get(other).copied(),
+            ) else {
+                continue;
+            };
+            let span = chain
+                .spacing
+                .get(end.min(other))
+                .copied()
+                .unwrap_or(1.0)
+                .max(0.5);
+            let bound = chain.limits.grade * span;
+            let held = moved.clamp(neighbour - bound, neighbour + bound);
+            if let Some(slot) = chain.heights.get_mut(end) {
+                *slot = held;
+            }
+            if let Some(slot) = pinned.get_mut(end) {
+                *slot = Some(held);
+            }
         }
         chain.heights = solve_chain(&chain.heights, &chain.spacing, &pinned, chain.limits);
+        // the solve may overshoot at a free end (the smoothing has none there): hold the move
+        // near the first solve. What that breaks the limits of - ends fixed to a road they meet -
+        // is reported as an excess.
         for (h, &base) in chain.heights.iter_mut().zip(&chain.origin) {
             *h = h.clamp(base - MAX_SETTLE_M, base + MAX_SETTLE_M);
         }
@@ -754,10 +862,12 @@ fn resolve(
 /// the legs of a hairpin, streets side by side, the arms of a junction. Beyond that distance the ground
 /// between them can slope at [`FILL_SLOPE`]. Heights are compared every [`SAMPLE_M`], the less important road
 /// moving more; a road moves at most [`MAX_SETTLE_M`] from where it was first solved, and the grade limits
-/// are kept. Measured on the Berchtesgaden example this takes the pieces that miss the terrain from 5001 to
-/// about 3800 and the road not drivable from 37 km to 28 km; a stiffer pull towards the shared height made
-/// both worse, because it breaks the grade limits.
-fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], owners: &[(usize, usize)], cell: f32) {
+/// are kept: the moves are targets of a new solve, not commands, and only an end that meets another road is
+/// fixed to it. Measured on the Berchtesgaden example this takes the pieces that miss the terrain from 5001
+/// to about 3800 and the road not drivable from 37 km to 28 km. A stiffer pull towards the shared height made
+/// both worse: with the ends pinned at what the pull moved them to, a strong pull left neighbouring
+/// variables at opposite sides of the ± [`MAX_SETTLE_M`] range, and the grade between them broke.
+fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32) {
     let spots = spots(strips);
     let pairs = close_pairs(&spots, strips, f64::from(cell));
     for _ in 0..SETTLE_ROUNDS {
@@ -765,7 +875,7 @@ fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], owners: &[(usize, usi
         if wanted.is_empty() {
             break;
         }
-        resolve(wanted, chains, owners);
+        resolve(wanted, chains);
     }
     for (strip, chain) in strips.iter_mut().zip(chains.iter()) {
         for (joint, &var) in strip.joints.iter_mut().zip(&chain.joint_variable) {
