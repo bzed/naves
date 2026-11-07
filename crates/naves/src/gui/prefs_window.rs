@@ -148,6 +148,10 @@ pub fn show(app: &mut NavesApp, ctx: &egui::Context) {
     if !handler.is_open() {
         handler.open();
     }
+    // While a key is being chosen, nothing may close the window: not Esc (the event is
+    // taken above), not the backdrop, not the title's close button.
+    let choosing = window.capturing.is_some() || window.pending.is_some();
+    handler = handler.allow_escape(!choosing);
     handler.ui(
         ctx,
         || naves_ui::modal::ModalWrapper::new("Settings"),

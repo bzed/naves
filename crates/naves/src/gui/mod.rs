@@ -500,6 +500,9 @@ impl NavesApp {
         if self.prefs_window.is_some() {
             return; // the window listens to the keys itself
         }
+        if self.command_palette.is_open() {
+            return; // the palette owns the keyboard while it is open
+        }
         let typing = shortcuts::typing(ctx);
         let level = self.panel.active;
         if let Some(action) = ctx.input(|i| shortcuts::action_for(i, &self.bindings, level, typing))

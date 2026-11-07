@@ -175,6 +175,38 @@ fn the_modal_blocks_the_map_behind_it() {
 }
 
 #[test]
+fn a_click_on_the_backdrop_while_a_key_is_chosen_does_not_close_it() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path(), None);
+    open_window(&mut h);
+    // start listening for a new key, and press none: the choice is still open
+    h.get_by_label_contains("Build shortcut").click();
+    h.run_steps(2);
+    // a click on the dimmed ground must not throw the window away
+    let corner = egui::pos2(4.0, 4.0);
+    h.hover_at(corner);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: corner,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: corner,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(
+        is_open(&h),
+        "the window must stay open while a key is being chosen"
+    );
+}
+
+#[test]
 fn no_setting_changes_the_project_file() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, _) = started(root.path(), None);

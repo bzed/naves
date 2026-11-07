@@ -18,6 +18,8 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - The GUI now uses Rerun's design system (the Inter font, light and dark themes that follow the system, modern widgets) — the look and feel of the whole editor changed.
+- The palette renders its rows with the design system's list items (hover, selection and focus come with them).
+- The settings window is a modal of the design system: a title bar with a close button, and it keeps the keyboard and the pointer away from the map behind it.
 - Build: re-port naves-ui to Rerun's re_ui 0.42.0 on egui 0.37.
 - Build: vendor Rerun's design system (from rerun_ui_kit's re_ui 0.38.1 extraction, MIT OR Apache-2.0) as the workspace crate naves-ui; not yet used by the GUI.
 - Build: the Rust toolchain pin moved from 1.95 to 1.99 (required by the vendored design system).

@@ -221,6 +221,11 @@ impl CommandPalette {
         self.visible ^= true;
     }
 
+    /// Port note: not in upstream; the app must know whether the palette owns the keyboard.
+    pub fn is_open(&self) -> bool {
+        self.visible
+    }
+
     /// Show the command palette, if it is visible.
     #[must_use = "Returns the command that was selected"]
     pub fn show<Cmd>(
