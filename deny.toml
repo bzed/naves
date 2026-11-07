@@ -6,6 +6,10 @@ all-features = true
 
 [advisories]
 yanked = "warn"
+# RUSTSEC-2026-0192 (ttf-parser unmaintained): arrives with winit 0.30's `sctk-adwaita` (the Wayland
+# window decorations) through eframe; it is unmaintained, not a vulnerability, and nothing we select
+# — the fix belongs to winit. Revisit when eframe moves to a winit without it.
+ignore = ["RUSTSEC-2026-0192"]
 
 [licenses]
 allow = [
@@ -27,6 +31,12 @@ unknown-git = "deny"
 [[licenses.exceptions]]
 crate = "epaint_default_fonts"
 allow = ["OFL-1.1", "Ubuntu-font-1.0"]
+
+# The Inter font that the vendored design system (naves-ui) embeds. The SIL Open Font License covers
+# the font file only; it allows shipping it inside a program. Scoped to this crate, not allowed globally.
+[[licenses.exceptions]]
+crate = "naves-ui"
+allow = ["OFL-1.1"]
 
 # The Mozilla CA list that the HTTP client (ureq with rustls) trusts. CDLA-Permissive-2.0 is a permissive data
 # licence: it allows using and redistributing the list in a program. Scoped to this crate, not allowed globally.

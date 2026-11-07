@@ -109,6 +109,9 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
     coverage, but no further.
 - Never lower the threshold, and never exclude code (`--ignore-filename-regex`, `#[coverage(off)]`,
   moving code into untested crates) to reach it.
+- Vendored upstream crates (`crates/naves-ui`) are held to their upstream tests plus tests for our
+  modifications, not to the 85 % floor; `make coverage-check` excludes them. The exclusion is for
+  vendored third-party code only — never for code we wrote.
 
 ## Safe Rust
 

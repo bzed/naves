@@ -1,5 +1,13 @@
 version = 1
 
+# Vendored design system (crates/naves-ui): Rerun's re_ui via rerun_ui_kit. The files are kept
+# diffable against upstream (see crates/naves-ui/PORTING.md), so they carry no per-file headers.
+[[annotations]]
+path = "crates/naves-ui/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Rerun contributors; jiang heng"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+
 [[annotations]]
 path = ["Cargo.lock", "fuzz/Cargo.lock", ".gitignore", "debian/changelog", "debian/source/format", "LICENSE"]
 precedence = "aggregate"
