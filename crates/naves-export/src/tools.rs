@@ -434,10 +434,13 @@ fn locate_armake2(
 
 /// bzed's fork is recognised by `--proton-binarize` in its help text.
 fn is_fork(armake2: &Path) -> Result<bool, ToolError> {
-    let output = Command::new(armake2)
-        .arg("-h")
-        .output()
-        .map_err(ToolError::io(armake2))?;
+    let mut cmd = Command::new(armake2);
+    cmd.arg("-h")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = crate::bridge::spawn_retrying_busy(&mut cmd).map_err(ToolError::io(armake2))?;
+    let output = child.wait_with_output().map_err(ToolError::io(armake2))?;
     let text = [output.stdout, output.stderr].concat();
     Ok(String::from_utf8_lossy(&text).contains("--proton-binarize"))
 }

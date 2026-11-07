@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Starting an external tool that was written or replaced moments earlier no longer fails with "text file busy": the kernel releases a closed file's write permission a moment after close, and the spawn now waits that moment out (up to one second).
+
 ### Changed
 
 - Build: the Rust toolchain pin moved from 1.95 to 1.99 (required by the vendored design system).
