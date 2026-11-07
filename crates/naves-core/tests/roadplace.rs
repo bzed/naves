@@ -382,3 +382,150 @@ fn chains_index_the_roads_in_driving_order() {
     let covered: usize = net.chains.iter().map(Vec::len).sum();
     assert_eq!(covered, net.roads.len());
 }
+
+fn bridge_feature(way: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    let mut f = feature(way, Family::Asf3, nodes, points);
+    if let FeatureKind::Road { bridge, .. } = &mut f.kind {
+        *bridge = true;
+    }
+    f
+}
+
+/// A road with a bridge of the given length in the middle.
+fn bridged(span: f64) -> Vec<Feature> {
+    vec![
+        feature(1, Family::Asf3, &[1, 2], &[(100.0, 500.0), (400.0, 500.0)]),
+        bridge_feature(2, &[2, 3], &[(400.0, 500.0), (400.0 + span, 500.0)]),
+        feature(
+            3,
+            Family::Asf3,
+            &[3, 4],
+            &[(400.0 + span, 500.0), (900.0, 500.0)],
+        ),
+    ]
+}
+
+#[test]
+fn a_bridge_is_a_straight_run_of_bridge_models() {
+    let net = place(&bridged(100.0));
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    // 100 m of 25 m models
+    assert_eq!(bridges.len(), 4, "{:?}", net.warnings);
+    for b in &bridges {
+        assert!(b.model.contains("bridge_stone"), "{}", b.model);
+        assert!((b.start.y - 500.0).abs() < 0.5 && (b.end.y - 500.0).abs() < 0.5);
+    }
+    for pair in bridges.windows(2) {
+        assert!(
+            dist(
+                (pair[0].end.x, pair[0].end.y),
+                (pair[1].start.x, pair[1].start.y)
+            ) < 1e-6
+        );
+    }
+    // the models cover the span
+    assert!(
+        (bridges[0].start.x - 400.0).abs() < 3.0,
+        "{}",
+        bridges[0].start.x
+    );
+    assert!(
+        (bridges[3].end.x - 500.0).abs() < 3.0,
+        "{}",
+        bridges[3].end.x
+    );
+    // the slots count along the stretch
+    assert!(bridges.iter().all(|b| b.slot.stretch.starts_with("2:")));
+    let indices: Vec<u32> = bridges.iter().map(|b| b.slot.index).collect();
+    assert_eq!(indices, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn a_short_bridge_stays_road() {
+    let net = place(&bridged(8.0));
+    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+}
+
+#[test]
+fn a_gravel_road_gets_a_wooden_bridge() {
+    let mut features = bridged(100.0);
+    for f in &mut features {
+        if let FeatureKind::Road { family, .. } = &mut f.kind {
+            *family = Family::Grav;
+        }
+    }
+    let net = place(&features);
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(!bridges.is_empty());
+    assert!(
+        bridges.iter().all(|b| b.model.contains("bridge_wood")),
+        "{}",
+        bridges[0].model
+    );
+    // the wooden models lie along x in their own frame and still follow the road
+    assert!(bridges.iter().all(|b| (b.start.y - 500.0).abs() < 0.5));
+}
+
+#[test]
+fn a_bridge_narrower_than_the_road_is_a_warning() {
+    // asf1 is 12 m wide; the stone bridge is 9 m
+    let mut features = bridged(100.0);
+    for f in &mut features {
+        if let FeatureKind::Road { family, .. } = &mut f.kind {
+            *family = Family::Asf1;
+        }
+    }
+    let net = place(&features);
+    assert!(!of_kind(&net, PlacedKind::Bridge).is_empty());
+    assert_eq!(net.warnings.len(), 1, "{:?}", net.warnings);
+    assert!(net.warnings[0].contains("bridge"));
+}
+
+#[test]
+fn no_junction_sits_at_the_end_of_a_bridge() {
+    let mut features = bridged(100.0);
+    features.push(feature(
+        9,
+        Family::Asf3,
+        &[2, 8],
+        &[(400.0, 500.0), (400.0, 800.0)],
+    ));
+    let net = place(&features);
+    assert!(of_kind(&net, PlacedKind::Junction).is_empty());
+    assert_eq!(net.joins_without_junction.len(), 1);
+}
+
+#[test]
+fn an_edit_keeps_its_object_when_a_neighbouring_stretch_changes() {
+    use naves_core::objects::{Override, Overrides, PinnedEdit, apply_overrides, road_objects};
+    let base = t_network(Family::Asf3);
+    let net = place(&base);
+    let objects = road_objects(&net);
+    let target = objects
+        .iter()
+        .find(|o| o.id.feature.starts_with("1:") && o.id.slot == 3)
+        .unwrap();
+    let overrides = Overrides {
+        edits: vec![PinnedEdit {
+            id: target.id.clone(),
+            generated_model: target.model.clone(),
+            generated_at: (target.x, target.y),
+            edit: Override::Moved {
+                x: target.x + 1.0,
+                y: target.y + 2.0,
+                yaw: target.yaw,
+            },
+        }],
+    };
+    let mut changed = base.clone();
+    changed[1].points = vec![(500.0, 500.0), (530.0, 700.0), (600.0, 900.0)];
+    changed[1].nodes = vec![2, 7, 4];
+    let after = road_objects(&place(&changed));
+    let (placed, orphans) = apply_overrides(&after, &overrides);
+    assert!(orphans.is_empty(), "{orphans:?}");
+    assert!(
+        placed
+            .iter()
+            .any(|p| p.id.as_ref() == Some(&target.id) && (p.x - (target.x + 1.0)).abs() < 1e-9)
+    );
+}

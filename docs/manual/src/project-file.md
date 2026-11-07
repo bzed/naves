@@ -139,3 +139,36 @@ non_commercial = true
 | `brightness` | 1.3 | 0.25 to 4; factor on the colours of the imagery (Sentinel-2 images are dark for a terrain) |
 
 Both sections are left out of the file while they are empty or default.
+
+## `edits/overrides.toml`
+
+Not part of `naves.toml`: a file of its own in the project folder, for the changes you make by hand to what Náves
+generates. The editor will write it; for now you edit it by hand. A missing file means no edits.
+
+Every object that Náves generates has a name that says where it comes from, such as `road/123:1-5/4` (the fifth
+object along the road stretch `123:1-5`; the numbers are OpenStreetMap way and node ids). An edit is pinned to that
+name, so a build that generates the map again **keeps your edits**.
+
+```toml
+[[edits]]
+id = "road/123:1-5/4"
+generated_model = "dz\\structures\\roads\\parts\\asf3_25.p3d"
+generated_at = [10.5, 20.25]
+
+[edits.edit]
+kind = "moved"
+x = 12.0
+y = 21.0
+yaw = 0.5
+```
+
+| Field | Valid values |
+|---|---|
+| `id` | the name of the object |
+| `generated_model` | the model the object had when you edited it |
+| `generated_at` | `[east, north]` in map metres where it was |
+| `edit.kind` | `moved` (with `x`, `y`, `yaw` in map metres and radians clockwise from north), `deleted`, or `replaced` (with `model`) |
+
+If the object an edit was made for is gone, has become another model, or is more than 25 m from where it was, the edit
+was made for something else. It is **kept exactly as it is**, as an object of its own, and the build warns about it.
+A deletion with no object left to delete is dropped without a warning.

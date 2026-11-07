@@ -137,8 +137,12 @@ struct Core {
 fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (f64, f64)> {
     let mut found: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
     let last = grid.size.saturating_sub(1);
-    for pair in strip.joints.windows(2) {
+    for (segment, pair) in strip.joints.windows(2).enumerate() {
         let [from, to] = pair else { continue };
+        // the ground under a bridge is left alone
+        if strip.bridge.get(segment).copied().unwrap_or(false) {
+            continue;
+        }
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let length2 = dx * dx + dy * dy;
         let cols = (

@@ -35,6 +35,7 @@ fn strip(joints: &[(f64, f64, f64)], half_width: f64, rank: u8) -> RoadStrip {
     RoadStrip {
         slots: Vec::new(),
         joints: joints.to_vec(),
+        bridge: Vec::new(),
         half_width,
         rank,
     }
@@ -401,4 +402,40 @@ fn conforming_is_deterministic() {
     let a = conform(&base, &rs).unwrap();
     let b = conform(&base, &rs).unwrap();
     assert_eq!(a, b);
+}
+
+#[test]
+fn the_ground_under_a_bridge_keeps_its_height() {
+    // a gorge 30 m deep, crossed by a level road on a bridge from y = 300 to y = 500
+    let base = terrain(120, 6.25, |_, y| {
+        100.0
+            - if (300.0..500.0).contains(&y) {
+                30.0
+            } else {
+                0.0
+            }
+    });
+    let mut joints = vec![
+        (300.0, 100.0, 100.0),
+        (300.0, 300.0, 100.0),
+        (300.0, 500.0, 100.0),
+        (300.0, 700.0, 100.0),
+    ];
+    joints.dedup();
+    let mut road = strip(&joints, 3.5, 3);
+    road.bridge = vec![false, true, false];
+    let out = conform(&base, std::slice::from_ref(&road)).unwrap();
+    // in the middle of the span the ground is as it was
+    for row in 63..69 {
+        for col in 40..56 {
+            assert_eq!(
+                out.heightmap.at(col, row).to_bits(),
+                base.at(col, row).to_bits(),
+                "{col},{row}"
+            );
+        }
+    }
+    // beside the abutments the road still shapes the ground
+    assert!((at(&out.heightmap, 48, 40) - 100.0).abs() < 1e-3);
+    assert!((at(&out.heightmap, 48, 100) - 100.0).abs() < 1e-3);
 }

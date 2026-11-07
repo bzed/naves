@@ -107,6 +107,15 @@ fn osm_ways_seeds() {
 }
 
 #[test]
+fn overrides_parse_seeds() {
+    for (name, data) in seeds("overrides_parse") {
+        let text = String::from_utf8(data).unwrap();
+        let result = naves_core::objects::Overrides::parse(&text);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+    }
+}
+
+#[test]
 fn imagery_catalog_seeds() {
     for (name, data) in seeds("imagery_catalog") {
         let text = String::from_utf8(data).unwrap();

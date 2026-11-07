@@ -292,3 +292,48 @@ fn the_limits_get_looser_with_the_rank_of_the_road() {
     assert!((max_grade(Family::Asf3) - 0.12).abs() < 1e-12);
     assert!((max_grade_change(Family::Mud) - 0.08).abs() < 1e-12);
 }
+
+#[test]
+fn the_road_meets_the_bridge_at_deck_height() {
+    let hm = terrain(100, 6.25, |_, y| {
+        100.0 + 0.04 * y
+            - if (200.0..320.0).contains(&y) {
+                30.0
+            } else {
+                0.0
+            }
+    });
+    let mut chain = straight("a", Family::Asf3, (100.0, 100.0), (100.0, 200.0));
+    for i in 0..4 {
+        let (y0, y1) = (200.0 + 30.0 * f64::from(i), 230.0 + 30.0 * f64::from(i));
+        chain.push(piece(
+            "b",
+            i,
+            PlacedKind::Bridge,
+            Family::Asf3,
+            (100.0, y0),
+            (100.0, y1),
+        ));
+    }
+    chain.extend(straight("c", Family::Asf3, (100.0, 320.0), (100.0, 500.0)));
+    let p = solve_profiles(&network(vec![chain]), &hm);
+    let height_at = |y: f64| {
+        p.strips[0]
+            .joints
+            .iter()
+            .find(|j| (j.1 - y).abs() < 1e-6)
+            .unwrap()
+            .2
+    };
+    // the deck is level from its first joint to its last
+    for y in [230.0, 260.0, 290.0, 320.0] {
+        assert!(
+            (height_at(y) - height_at(200.0)).abs() < 1e-9,
+            "joint at {y}"
+        );
+    }
+    // and the road on both sides meets it, with the grade limit kept
+    assert!((height_at(175.0) - height_at(200.0)).abs() < max_grade(Family::Asf3) * 25.0 + 1e-6);
+    assert!(p.strips[0].bridge.iter().filter(|b| **b).count() == 4);
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}

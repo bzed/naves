@@ -11,6 +11,7 @@ pub mod heightmap;
 pub mod ident;
 pub mod imagery;
 pub mod landcover;
+pub mod objects;
 pub mod osm;
 pub mod prefs;
 pub mod profile;

@@ -75,6 +75,9 @@ pub struct RoadStrip {
     pub slots: Vec<usize>,
     /// Position and height at the start of the first piece and the end of each piece.
     pub joints: Vec<(f64, f64, f64)>,
+    /// For each segment between two joints, whether it is a bridge deck; the ground below a span is left
+    /// alone. May be shorter than the segments, which then are not bridges.
+    pub bridge: Vec<bool>,
     /// Half the width of the road.
     pub half_width: f64,
     /// How important the road is; higher wins where two roads clash.
@@ -115,7 +118,7 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
     let mut at = vec![(first.start.x, first.start.y)];
     for &i in roads {
         let r = net.roads.get(i)?;
-        if r.kind == PlacedKind::Junction {
+        if matches!(r.kind, PlacedKind::Junction | PlacedKind::Bridge) {
             let v = at.len() - 1;
             joints.push((r.end.x, r.end.y, v));
             if let (Some(first_joint), Some(slot)) =
@@ -426,6 +429,14 @@ fn profile_chain(
     let strip = RoadStrip {
         slots: roads.to_vec(),
         joints,
+        bridge: roads
+            .iter()
+            .map(|i| {
+                net.roads
+                    .get(*i)
+                    .is_some_and(|r| r.kind == PlacedKind::Bridge)
+            })
+            .collect(),
         half_width: first.width / 2.0,
         rank: rank(family),
     };

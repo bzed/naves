@@ -110,3 +110,10 @@ path = "fuzz_targets/osm_ways.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "overrides_parse"
+path = "fuzz_targets/overrides_parse.rs"
+test = false
+doc = false
+bench = false

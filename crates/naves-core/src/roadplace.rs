@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
-use crate::catalog::{Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
+use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
 use crate::roadfit::{EndGoal, FitError, FitPiece, GAP_TOLERATED_M, Pose, fit_line};
 use crate::roadnet::{Chain, RoadGraph, chains};
 
@@ -23,6 +23,8 @@ const JUNCTION_SPACING_M: f64 = 12.5;
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
 /// A side road without a junction piece ends this far inside the through road's edge.
 const SIDE_OVERLAP_M: f64 = 2.0;
+/// A bridge stretch shorter than this stays an ordinary road.
+const MIN_BRIDGE_M: f64 = 10.0;
 
 /// The identity of a placed object along a stretch: it does not change with the direction a chain is
 /// walked, nor with the other roads.
@@ -97,6 +99,8 @@ pub struct PlacedNetwork {
     pub tunnels_omitted: Vec<(String, (f64, f64))>,
     /// Indices into `roads`, in driving order, one list per placed run of a chain.
     pub chains: Vec<Vec<usize>>,
+    /// Things worth knowing that did not stop the placement.
+    pub warnings: Vec<String>,
 }
 
 /// Why the network could not be placed.
@@ -255,6 +259,27 @@ impl Polyline {
             .rposition(|&start| start <= s + 1e-9)
             .unwrap_or(0)
     }
+}
+
+/// A forced element of a run.
+enum Event {
+    /// A junction piece, by index into the plans.
+    Junction(usize),
+    /// A run of bridge models along link `k` of the chain.
+    Bridge(usize),
+}
+
+impl Junction {
+    /// Half the length of the junction along the through road.
+    fn half_length(&self) -> f64 {
+        (self.end.x - self.start.x).hypot(self.end.z - self.start.z) / 2.0
+    }
+}
+
+/// What placing a bridge produced: the road fitted up to it and the bridge models.
+struct PlacedBridge {
+    fit: Vec<FitPiece>,
+    items: Vec<Item>,
 }
 
 /// Something placed, before its slot is known.
@@ -428,13 +453,13 @@ impl<'a> Placer<'a> {
                 let point = line.pose_at(s_cross);
                 let at = (point.x, point.y);
                 let too_close = last_junction.is_some_and(|l| s_cross - l < JUNCTION_SPACING_M);
-                let plan = if too_close
-                    || self
-                        .graph
+                let beside_bridge = [a.stretch, b.stretch].iter().any(|i| {
+                    self.graph
                         .stretches
-                        .get(a.stretch)
-                        .is_some_and(|s| s.tunnel)
-                {
+                        .get(*i)
+                        .is_some_and(|s| s.tunnel || s.bridge)
+                });
+                let plan = if too_close || beside_bridge {
                     None
                 } else {
                     self.plan_junction(c, i, at, point.heading, &chain, &sides)
@@ -713,16 +738,61 @@ impl<'a> Placer<'a> {
                 items.push(make(&piece, PlacedKind::EndCap, 0.0, Some(0)));
             }
         }
-        // parts between the junctions
-        let plan_ids: Vec<usize> = (first..last).filter_map(|k| self.plan_at(c, k)).collect();
+        // the forced elements of the run, in order: junctions and bridges
+        let mut events: Vec<(f64, Event)> = (first..last)
+            .filter_map(|k| self.plan_at(c, k))
+            .filter_map(|plan_id| {
+                let plan = self.plans.get(plan_id)?;
+                let s_cross = line.link_start.get(plan.link + 1 - first).copied()?;
+                Some((
+                    s_cross - plan.junction.half_length(),
+                    Event::Junction(plan_id),
+                ))
+            })
+            .collect();
+        for k in first..=last {
+            if self
+                .bridge_chord(c, k)
+                .is_some_and(|chord| chord >= MIN_BRIDGE_M)
+                && let Some(s0) = line.link_start.get(k - first)
+            {
+                events.push((*s0, Event::Bridge(k)));
+            }
+        }
+        events.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut dropped: Vec<usize> = Vec::new();
-        for plan_id in plan_ids {
+        for (_, event) in events {
+            let plan_id = match event {
+                Event::Junction(plan_id) => plan_id,
+                Event::Bridge(k) => {
+                    let placed = self.place_bridge(
+                        &line,
+                        c,
+                        k - first,
+                        family,
+                        drivable,
+                        &mut pose,
+                        &mut s_cur,
+                    )?;
+                    for p in &placed.fit {
+                        let s = line.project((
+                            f64::midpoint(p.start.x, p.end.x),
+                            f64::midpoint(p.start.y, p.end.y),
+                        ));
+                        items.push(make(p, PlacedKind::Piece, s, None));
+                    }
+                    for mut item in placed.items {
+                        item.link = Some(k - first);
+                        items.push(item);
+                    }
+                    continue;
+                }
+            };
             let Some((k, junction)) = self.plans.get(plan_id).map(|p| (p.link, p.junction)) else {
                 continue;
             };
             let s_cross = line.link_start.get(k + 1 - first).copied().unwrap_or(0.0);
-            let half =
-                (junction.end.x - junction.start.x).hypot(junction.end.z - junction.start.z) / 2.0;
+            let half = junction.half_length();
             let s_goal = s_cross - half;
             let stretch_id = links
                 .get(k - first)
@@ -843,6 +913,131 @@ impl<'a> Placer<'a> {
         Ok(())
     }
 
+    /// The straight distance between the ends of link `k` of chain `c`, if it is a bridge.
+    fn bridge_chord(&self, c: usize, k: usize) -> Option<f64> {
+        let link = self.chains.get(c)?.links.get(k)?;
+        let stretch = self.graph.stretches.get(link.stretch)?;
+        if !stretch.bridge || stretch.tunnel {
+            return None;
+        }
+        let (first, last) = (stretch.points.first()?, stretch.points.last()?);
+        Some((last.0 - first.0).hypot(last.1 - first.1))
+    }
+
+    /// The bridge model for a road of `family`: stone for asphalt and streets, wood for gravel and
+    /// dirt; the narrowest that is wide enough, else the widest.
+    fn choose_bridge(&mut self, family: Family, stretch: &str) -> Option<&'a BridgeModel> {
+        let wanted = match family {
+            Family::Grav | Family::Mud => "wood",
+            _ => "stone",
+        };
+        let all = self.catalog.bridges();
+        let of_material: Vec<&BridgeModel> =
+            all.iter().filter(|b| b.model.contains(wanted)).collect();
+        let pool: Vec<&BridgeModel> = if of_material.is_empty() {
+            all.iter().collect()
+        } else {
+            of_material
+        };
+        let width = self.family_width(family);
+        let enough = pool
+            .iter()
+            .filter(|b| b.width + 1e-6 >= width)
+            .min_by(|x, y| x.width.total_cmp(&y.width))
+            .copied();
+        let chosen = enough.or_else(|| {
+            pool.iter()
+                .max_by(|x, y| x.width.total_cmp(&y.width))
+                .copied()
+        })?;
+        if chosen.width + 1e-6 < width {
+            self.out.warnings.push(format!(
+                "bridge on {stretch}: the widest bridge model is {:.1} m, the road is {width:.1} m wide",
+                chosen.width
+            ));
+        }
+        Some(chosen)
+    }
+
+    /// Fits the road up to link `k` of the run and lays the bridge models along its chord.
+    #[expect(clippy::too_many_arguments, reason = "the state of one run, passed on")]
+    fn place_bridge(
+        &mut self,
+        line: &Polyline,
+        c: usize,
+        k: usize,
+        family: Family,
+        drivable: bool,
+        pose: &mut Pose,
+        s_cur: &mut f64,
+    ) -> Result<PlacedBridge, PlaceError> {
+        let mut out = PlacedBridge {
+            fit: Vec::new(),
+            items: Vec::new(),
+        };
+        let s0 = line.link_start.get(k).copied().unwrap_or(0.0);
+        let s1 = line
+            .link_start
+            .get(k + 1)
+            .copied()
+            .unwrap_or_else(|| line.total());
+        let (p0, p1) = (line.pose_at(s0), line.pose_at(s1));
+        let heading = (p1.x - p0.x).atan2(p1.y - p0.y);
+        let chord = (p1.x - p0.x).hypot(p1.y - p0.y);
+        let id = self
+            .chains
+            .get(c)
+            .and_then(|ch| ch.links.get(k))
+            .and_then(|l| self.graph.stretches.get(l.stretch))
+            .map(|s| s.id.clone())
+            .unwrap_or_default();
+        let Some(model) = self.choose_bridge(family, &id) else {
+            return Ok(out);
+        };
+        if s0 - *s_cur > 1.0 {
+            let path = line.slice(*s_cur, s0);
+            let goal = Pose {
+                x: p0.x,
+                y: p0.y,
+                heading,
+            };
+            let (pieces, end) = self.fit_part(&path, *pose, EndGoal::Fixed(goal), family, &id)?;
+            out.fit = pieces;
+            *pose = end;
+        } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
+            pose.heading = heading;
+        }
+        let count = (chord / model.length).round().max(1.0);
+        let mut laid = 0.0;
+        while laid < count {
+            let frame = Frame::through(&pose_of(&model.start), *pose);
+            let start = frame.pose(&pose_of(&model.start));
+            let end = frame.pose(&pose_of(&model.end));
+            out.items.push(Item {
+                road: PlacedRoad {
+                    slot: Slot {
+                        stretch: String::new(),
+                        index: 0,
+                    },
+                    kind: PlacedKind::Bridge,
+                    family,
+                    drivable,
+                    model: model.model.clone(),
+                    origin: frame.origin,
+                    start,
+                    end,
+                    width: model.width,
+                },
+                s: s0 + laid * model.length,
+                link: None,
+            });
+            *pose = end;
+            laid += 1.0;
+        }
+        *s_cur = s1;
+        Ok(out)
+    }
+
     /// Where a junction goes if its entry is at `at`, trying both ways round; the frame, whether it
     /// is flipped, and the pose where the through road leaves. `None` if it is more than the tolerance
     /// from the crossing.
@@ -948,7 +1143,7 @@ impl<'a> Placer<'a> {
         // pieces per link in driving order
         let mut per_link: Vec<Vec<usize>> = vec![Vec::new(); n];
         for (i, item) in items.iter().enumerate() {
-            if item.road.kind == PlacedKind::Piece
+            if matches!(item.road.kind, PlacedKind::Piece | PlacedKind::Bridge)
                 && let Some(v) = item.link.and_then(|k| per_link.get_mut(k))
             {
                 v.push(i);
