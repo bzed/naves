@@ -61,6 +61,7 @@ the map, the **wheel** zooms.
 | `Ctrl+Z` | Undo | Everywhere |
 | `Ctrl+Shift+Z` | Redo | Everywhere |
 | `Ctrl+F` | Search items | Everywhere |
+| `Ctrl+P` | Command palette | Everywhere |
 | `,` | Brush smaller | Everywhere |
 | `.` | Brush larger | Everywhere |
 | `Ctrl+,` | Brush weaker | Everywhere |

@@ -7,6 +7,7 @@
 //! Look: the manual's palette. A pale green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
+mod command_palette;
 mod dock;
 mod imagery;
 mod layers;
@@ -104,6 +105,8 @@ pub struct NavesApp {
     prefs_window: Option<prefs_window::PrefsWindow>,
     /// The settings window's modal, kept while the window lives in `prefs_window`.
     prefs_modal: naves_ui::modal::ModalHandler,
+    /// The command palette, opened by its shortcut.
+    command_palette: naves_ui::CommandPalette,
     /// Where the tools come from; replaced in tests.
     origins: fn(&ToolPaths) -> Vec<ToolOrigin>,
     /// What is wrong, from all sources.
@@ -180,6 +183,7 @@ impl NavesApp {
             prefs_save_error: None,
             prefs_window: None,
             prefs_modal: naves_ui::modal::ModalHandler::default(),
+            command_palette: naves_ui::CommandPalette::default(),
             origins: tool_origins,
             problems: problems::ProblemList::default(),
             build_problems: Vec::new(),
@@ -434,6 +438,10 @@ impl NavesApp {
             self.help_ui(ui.ctx());
         }
         prefs_window::show(self, ui.ctx());
+        let mut provider = command_palette::Provider::new(self);
+        if let Some(command) = self.command_palette.show(ui.ctx(), &mut provider) {
+            command_palette::run(self, &command);
+        }
     }
 
     /// The interface scale and the animation time of the settings.
@@ -518,6 +526,7 @@ impl NavesApp {
             Action::Tool(tool) => self.tool = tool,
             Action::SearchItems => self.palette.focus_search = true,
             Action::Settings => self.open_settings(),
+            Action::CommandPalette => self.command_palette.toggle(),
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;

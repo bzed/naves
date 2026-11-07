@@ -91,12 +91,8 @@ impl Level {
         }
     }
 
-    /// The stable id, used in the settings file.
+    /// The stable id, used in the settings file and the command palette.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the shortcut table uses it (Task 4)")
-    )]
     pub fn id(self) -> &'static str {
         match self {
             Level::Project => "level.project",

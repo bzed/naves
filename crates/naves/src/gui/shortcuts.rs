@@ -72,6 +72,8 @@ pub enum Action {
     Redo,
     /// Search the items.
     SearchItems,
+    /// Open the command palette.
+    CommandPalette,
     /// A smaller brush.
     BrushSmaller,
     /// A larger brush.
@@ -541,6 +543,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Scope::Everywhere,
     ),
     row(
+        "command_palette",
+        Key::P,
+        Modifiers::CTRL,
+        Action::CommandPalette,
+        "Command palette",
+        Scope::Everywhere,
+    ),
+    row(
         "brush.smaller",
         Key::Comma,
         Modifiers::NONE,
@@ -662,7 +672,8 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::Help
         | Action::HideLevel
         | Action::ShowOthersInFull
-        | Action::Settings => true,
+        | Action::Settings
+        | Action::CommandPalette => true,
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
         Action::Tool(tool) => app.has_tool(tool),
         Action::SearchItems => app.has_palette(),
@@ -944,7 +955,8 @@ pub fn action_built(action: Action, app: &NavesApp) -> bool {
         | Action::NextProblem
         | Action::PreviousProblem
         | Action::Help
-        | Action::Settings => true,
+        | Action::Settings
+        | Action::CommandPalette => true,
         Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
