@@ -102,6 +102,8 @@ pub struct NavesApp {
     prefs_save_error: Option<String>,
     /// The settings window, while it is open.
     prefs_window: Option<prefs_window::PrefsWindow>,
+    /// The settings window's modal, kept while the window lives in `prefs_window`.
+    prefs_modal: naves_ui::modal::ModalHandler,
     /// Where the tools come from; replaced in tests.
     origins: fn(&ToolPaths) -> Vec<ToolOrigin>,
     /// What is wrong, from all sources.
@@ -177,6 +179,7 @@ impl NavesApp {
             prefs_error: None,
             prefs_save_error: None,
             prefs_window: None,
+            prefs_modal: naves_ui::modal::ModalHandler::default(),
             origins: tool_origins,
             problems: problems::ProblemList::default(),
             build_problems: Vec::new(),

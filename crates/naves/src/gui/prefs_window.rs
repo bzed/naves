@@ -106,7 +106,6 @@ pub fn show(app: &mut NavesApp, ctx: &egui::Context) {
     let Some(mut window) = app.prefs_window.take() else {
         return;
     };
-    let mut close = false;
     let escape = ctx.input(|i| i.key_pressed(Key::Escape));
     let pressed = ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
@@ -123,81 +122,93 @@ pub fn show(app: &mut NavesApp, ctx: &egui::Context) {
             _ => None,
         })
     });
-    // Esc cancels what is going on first and closes the window last
-    if escape {
-        if window.capturing.is_some() || window.pending.is_some() {
-            window.capturing = None;
-            window.pending = None;
-            window.message = None;
-        } else {
-            close = true;
-        }
+    // Esc cancels what is going on first and closes the window last; the modal itself
+    // closes on Esc and on a click on the backdrop, but not while a key is being chosen.
+    let esc_cancels = escape && (window.capturing.is_some() || window.pending.is_some());
+    if esc_cancels {
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        ..
+                    }
+                )
+            });
+        });
+        window.capturing = None;
+        window.pending = None;
+        window.message = None;
     } else if let (Some(id), Some(binding)) = (window.capturing, pressed) {
         capture(app, &mut window, id, binding);
     }
-    let modal = egui::Modal::new(egui::Id::unique("settings")).frame(
-        egui::Frame::window(&ctx.global_style())
-            .shadow(egui::Shadow::NONE)
-            .inner_margin(16.0),
+    let mut handler = std::mem::take(&mut app.prefs_modal);
+    if !handler.is_open() {
+        handler.open();
+    }
+    handler.ui(
+        ctx,
+        || naves_ui::modal::ModalWrapper::new("Settings"),
+        |ui| content(app, &mut window, ui),
     );
-    let response = modal.show(ctx, |ui| {
-        ui.set_width(640.0);
-        ui.set_min_height(420.0);
-        ui.heading("Settings");
-        ui.label("These apply to every project. Each project's own values are in level 0.");
-        problems_ui(app, ui);
-        ui.add_space(8.0);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(130.0);
-                for (tab, name) in PrefsTab::ALL {
-                    let selected = window.tab == tab;
-                    let text = if selected {
-                        RichText::new(name).strong()
-                    } else {
-                        RichText::new(name)
-                    };
-                    let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
-                    if selected {
-                        let bar = egui::Rect::from_min_size(
-                            egui::pos2(r.rect.left() - 8.0, r.rect.top()),
-                            egui::vec2(3.0, r.rect.height()),
-                        );
-                        ui.painter().rect_filled(bar, 0.0, super::theme::GREEN);
-                    }
-                    if r.has_focus() {
-                        ui.painter().rect_stroke(
-                            r.rect.expand(2.0),
-                            2.0,
-                            egui::Stroke::new(2.0, super::theme::GREEN),
-                            egui::StrokeKind::Outside,
-                        );
-                    }
-                    r.widget_info(|| {
-                        WidgetInfo::selected(egui::Role::Tab, true, selected, name.to_string())
-                    });
-                    if r.clicked() {
-                        window.tab = tab;
-                        window.origins = None;
-                    }
-                }
-            });
-            ui.separator();
-            ui.vertical(|ui| match window.tab {
-                PrefsTab::Keyboard => keyboard_tab(app, &mut window, ui),
-                PrefsTab::Map => map_tab(app, ui),
-                PrefsTab::ExternalTools => tools_tab(app, &mut window, ui),
-            });
-        });
-    });
-    // Esc is handled above; a click on the dimmed ground closes it too, unless a key is being chosen
-    let outside = response.backdrop_response.clicked()
-        && window.capturing.is_none()
-        && window.pending.is_none();
-    if close || outside {
-        return;
+    app.prefs_modal = handler;
+    if !app.prefs_modal.is_open() {
+        return; // closed: the window goes with it
     }
     app.prefs_window = Some(window);
+}
+
+/// The modal's body: the tabs and their content.
+fn content(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
+    ui.set_width(640.0);
+    ui.set_min_height(420.0);
+    ui.label("These apply to every project. Each project's own values are in level 0.");
+    problems_ui(app, ui);
+    ui.add_space(8.0);
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(130.0);
+            for (tab, name) in PrefsTab::ALL {
+                let selected = window.tab == tab;
+                let text = if selected {
+                    RichText::new(name).strong()
+                } else {
+                    RichText::new(name)
+                };
+                let r = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                if selected {
+                    let bar = egui::Rect::from_min_size(
+                        egui::pos2(r.rect.left() - 8.0, r.rect.top()),
+                        egui::vec2(3.0, r.rect.height()),
+                    );
+                    ui.painter().rect_filled(bar, 0.0, super::theme::GREEN);
+                }
+                if r.has_focus() {
+                    ui.painter().rect_stroke(
+                        r.rect.expand(2.0),
+                        2.0,
+                        egui::Stroke::new(2.0, super::theme::GREEN),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                r.widget_info(|| {
+                    WidgetInfo::selected(egui::Role::Tab, true, selected, name.to_string())
+                });
+                if r.clicked() {
+                    window.tab = tab;
+                    window.origins = None;
+                }
+            }
+        });
+        ui.separator();
+        ui.vertical(|ui| match window.tab {
+            PrefsTab::Keyboard => keyboard_tab(app, window, ui),
+            PrefsTab::Map => map_tab(app, ui),
+            PrefsTab::ExternalTools => tools_tab(app, window, ui),
+        });
+    });
 }
 
 /// What is wrong with the file, and the last failed save.

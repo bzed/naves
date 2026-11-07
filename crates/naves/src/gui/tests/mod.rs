@@ -44,6 +44,7 @@ fn project(root: &Path) -> PathBuf {
 /// The window of a normal session: wide and tall enough that nothing folds.
 fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
     Harness::builder()
+        .with_context_setup(crate::gui::theme::apply_theme)
         .with_size((1180.0, 760.0))
         .build_ui(|ui| app.show(ui))
 }
@@ -51,6 +52,7 @@ fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
 /// The same, with the app inside the harness so that tests can look at it between steps.
 fn state_harness(app: NavesApp) -> Harness<'static, NavesApp> {
     Harness::builder()
+        .with_context_setup(crate::gui::theme::apply_theme)
         .with_size((1180.0, 760.0))
         .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app)
 }
