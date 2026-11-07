@@ -122,6 +122,9 @@ pub struct NavesApp {
     /// The rectangle the active view was given (for tests).
     #[cfg(test)]
     seen_rect: egui::Rect,
+    /// The id of the palette row under the pointer, if any (for tests).
+    #[cfg(test)]
+    pub hovered_row: Option<String>,
     worker: Option<BuildWorker>,
     log: Vec<Line>,
     locate_tools: ToolLocator,
@@ -186,6 +189,8 @@ impl NavesApp {
             seen_events: Vec::new(),
             #[cfg(test)]
             seen_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            hovered_row: None,
             worker: None,
             log: Vec::new(),
             locate_tools,
