@@ -20,6 +20,7 @@ mod layers;
 mod levels;
 mod prefs_window;
 mod rail;
+mod roads;
 mod selection;
 mod shortcuts;
 mod stack;

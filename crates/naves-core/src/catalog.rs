@@ -64,6 +64,19 @@ impl Family {
         }
     }
 
+    /// The width of the road in metres (all pieces of a family agree).
+    #[must_use]
+    pub fn width_m(self) -> f64 {
+        match self {
+            Family::Asf1 => 12.0,
+            Family::Asf2 => 9.0,
+            Family::Asf3 => 7.0,
+            Family::City => 10.0,
+            Family::Grav => 6.0,
+            Family::Mud => 5.0,
+        }
+    }
+
     /// The family whose model names start with `prefix`.
     #[must_use]
     pub fn from_prefix(prefix: &str) -> Option<Family> {

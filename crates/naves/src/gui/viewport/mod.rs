@@ -104,6 +104,8 @@ pub struct ViewFrame<'a> {
     pub base: Overlay,
     /// The layers to draw over it, bottom first.
     pub layers: &'a [VisibleLayer],
+    /// The generated roads, once they are there; the road layers draw nothing before.
+    pub roads: Option<&'a naves_export::generate::Generated>,
     /// The wheel zooms the other way.
     pub invert_zoom: bool,
     /// Counts up with every new `MapData` (and every change of what the pictures show).

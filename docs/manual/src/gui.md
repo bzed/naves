@@ -36,7 +36,20 @@ Hover a row to see its key; **F1** lists all [keyboard shortcuts](shortcuts.md) 
 A level can have **layers**: things drawn over the base map. They are in the stack, under the active level, as
 checkboxes. Switching one on shows its key under it (the symbol as drawn on the map). Level 1 has **Too steep to
 walk**: diagonal hatching over ground steeper than 60° (a provisional limit, the steepest slope of the Livonia
-navigation mesh, so the layer may miss some ground that is too steep, but never marks walkable ground).
+navigation mesh, so the layer may miss some ground that is too steep, but never marks walkable ground), and
+**Terrain changes**: what the roads did to the terrain, cut in earth brown and fill in blue, stronger the more
+(half opaque from 5 m, nothing below a quarter of a metre).
+
+Level 4, **Roads and paths**, has **Roads** (at their true width, at least a pixel and a half, with a white casing so
+that they read on every base map), **Paths** (dashed, brown) and **Drivable**, drawn along each road piece: green
+for a piece vehicles can drive, amber for one that is steeper than its family is aimed at but still drivable, red
+and twice as wide with cross ticks for one that cannot be driven, grey for a track that only has to be walkable.
+The road layers appear when the roads are generated, which takes a moment after the project opens (the panel says
+"Placing roads"); they are not drawn before. The roads need the sources listed in `sources.osm`, `armake2` and
+the DayZ Server install: without a tool the panel says which and has a button that opens the settings.
+**Click a road** to read its model, surface, grade, cross fall, distance from the ground and whether it can be
+driven, and where it was generated from. What is wrong with the roads is listed under Problems, each with its
+position.
 
 The levels you are not working on are drawn faded, at 40 %, so that you see what you work against. **H** hides the
 active level, **Shift+H** shows the others in full; making a hidden level active shows it again. Layers and the
@@ -44,7 +57,7 @@ active level belong to the window and are not saved in `naves.toml`. Switching, 
 anew.
 
 A 3 px band in the active level's colour runs along the top of the map, and a line below the map says what
-you can do. The numbers never change, so key 4 will be Roads and paths even though it is not there yet.
+you can do. The numbers never change: key 4 is Roads and paths.
 
 Above the stack are the **base maps**, one at a time: **Relief** (shaded, sun in the north-west), **Slope**
 (green flat to red at 45° and steeper; the surface painter makes ground above 35° rock), **Height**, **Ground**

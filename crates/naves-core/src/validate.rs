@@ -49,6 +49,21 @@ pub enum Rule {
 }
 
 impl Rule {
+    /// Every rule, in the order violations are sorted.
+    pub const ALL: [Rule; 11] = [
+        Rule::RoadNotDrivable,
+        Rule::RoadMissesTerrain,
+        Rule::PathTooSteep,
+        Rule::RoadGrade,
+        Rule::RoadGap,
+        Rule::RoadInWater,
+        Rule::RoadConflict,
+        Rule::EarthworksCapped,
+        Rule::OrphanedEdit,
+        Rule::JoinWithoutJunction,
+        Rule::TunnelOmitted,
+    ];
+
     /// The stable id of the rule.
     #[must_use]
     pub fn id(self) -> &'static str {

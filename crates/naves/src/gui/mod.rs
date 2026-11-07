@@ -45,7 +45,7 @@ use levels::LevelDef;
 use settings::SettingsForm;
 use stack::LayerPanel;
 use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
-use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState};
+use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState};
 
 use theme::{ERROR, GREEN, GROUND, INK, PANEL};
 const SETTINGS_WIDTH: f32 = 300.0;
@@ -112,6 +112,11 @@ pub struct NavesApp {
     merge_problems: Vec<problems::Problem>,
     heightmap: HeightmapState,
     job: Option<HeightmapJob>,
+    /// The roads behind the road layers.
+    roads: RoadsState,
+    roads_job: Option<RoadJob>,
+    /// What is wrong with the roads, with positions.
+    road_problems: Vec<problems::Problem>,
     /// The settings changed while `job` was running, so its result is out of date.
     reload_wanted: bool,
     /// The project values the current heightmap depends on.
@@ -179,6 +184,9 @@ impl NavesApp {
             build_problems: Vec::new(),
             merge_problems: Vec::new(),
             heightmap: HeightmapState::NoDem,
+            roads: RoadsState::NoOsm,
+            roads_job: None,
+            road_problems: Vec::new(),
             job: None,
             reload_wanted: false,
             heightmap_inputs: inputs,
@@ -257,9 +265,23 @@ impl NavesApp {
         format!("Náves – {}", self.form.project.name)
     }
 
+    /// Generates the roads again, if the project lists OpenStreetMap files.
+    fn reload_roads(&mut self) {
+        self.roads_job = None;
+        self.road_problems.clear();
+        let project = &self.form.project;
+        if project.sources.osm.is_empty() || project.sources.dem.is_empty() {
+            self.roads = RoadsState::NoOsm;
+            return;
+        }
+        self.roads = RoadsState::Generating;
+        self.roads_job = Some(RoadJob::start(self.form.dir(), (self.locate_tools)()));
+    }
+
     fn reload_heightmap(&mut self) {
         self.views.reset_all();
         self.selection = None;
+        self.reload_roads();
         if self.form.project.sources.dem.is_empty() {
             self.heightmap = HeightmapState::NoDem;
             self.job = None;
@@ -289,8 +311,25 @@ impl NavesApp {
         }
     }
 
+    fn poll_roads(&mut self) {
+        let Some(msg) = self.roads_job.as_ref().and_then(RoadJob::poll) else {
+            return;
+        };
+        self.roads_job = None;
+        self.roads = match msg {
+            RoadsMsg::Ready(generated) => {
+                self.road_problems = levels::roads::problems(&generated);
+                RoadsState::Ready(Arc::new(*generated))
+            }
+            RoadsMsg::ToolsMissing(error) => RoadsState::ToolsMissing(error),
+            RoadsMsg::Failed(error) => RoadsState::Failed(error),
+        };
+        self.generation += 1;
+    }
+
     fn poll_background(&mut self) {
         self.poll_fetch();
+        self.poll_roads();
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
             if std::mem::take(&mut self.reload_wanted) {
@@ -448,6 +487,7 @@ impl NavesApp {
     fn refresh_problems(&mut self) {
         let mut rows: Vec<problems::Problem> = self.build_problems.clone();
         rows.extend(self.merge_problems.iter().cloned());
+        rows.extend(self.road_problems.iter().cloned());
         if let Some(error) = &self.form.error {
             rows.push(problems::Problem::note(format!("Not saved: {error}")));
         }
@@ -773,6 +813,28 @@ impl NavesApp {
             });
     }
 
+    /// The generated roads, once they are there.
+    fn generated_roads(&self) -> Option<Arc<naves_export::generate::Generated>> {
+        match &self.roads {
+            RoadsState::Ready(generated) => Some(Arc::clone(generated)),
+            _ => None,
+        }
+    }
+
+    /// The layers to draw over the base map: the ones that are on, without those that need roads that are not
+    /// there yet (they wait while the roads are being placed).
+    fn drawn_layers(&self) -> Vec<viewport::VisibleLayer> {
+        let roads = self.generated_roads().is_some();
+        layers::visible(
+            &self.panel,
+            &self.levels,
+            f32::from(self.prefs.map.fade_percent) / 100.0,
+        )
+        .into_iter()
+        .filter(|l| roads || !levels::roads::needs_roads(l.layer))
+        .collect()
+    }
+
     fn map_ui(&mut self, ui: &mut egui::Ui) {
         let data = match &self.heightmap {
             HeightmapState::Ready(data) => Arc::clone(data),
@@ -802,16 +864,14 @@ impl NavesApp {
             return;
         }
         let rect = ui.available_rect_before_wrap();
-        let layers = layers::visible(
-            &self.panel,
-            &self.levels,
-            f32::from(self.prefs.map.fade_percent) / 100.0,
-        );
+        let roads = self.generated_roads();
+        let layers = self.drawn_layers();
         let frame = ViewFrame {
             data: &data,
             project: &self.form.project,
             base: self.panel.base,
             layers: &layers,
+            roads: roads.as_deref(),
             invert_zoom: self.prefs.map.invert_zoom,
             generation: self.generation,
         };

@@ -23,13 +23,40 @@ pub const DEF: LevelDef = LevelDef {
     pick: Some(pick),
     tools: &[],
     items: no_items,
-    layers: &[LayerDef {
-        layer: MapLayer::TooSteepToWalk,
-        name: "Too steep to walk",
-        tooltip: steep_tooltip,
-        key: steep_key,
-    }],
+    layers: &[
+        LayerDef {
+            layer: MapLayer::TerrainChanges,
+            name: "Terrain changes",
+            tooltip: changes_tooltip,
+            key: changes_key,
+        },
+        LayerDef {
+            layer: MapLayer::TooSteepToWalk,
+            name: "Too steep to walk",
+            tooltip: steep_tooltip,
+            key: steep_key,
+        },
+    ],
 };
+
+fn changes_tooltip() -> String {
+    "What the roads did to the terrain: cut (earth) and fill (blue), stronger the more. Hidden while the roads are being placed."
+        .to_string()
+}
+
+/// Cut and fill as drawn on the map.
+fn changes_key(ui: &mut egui::Ui) {
+    for (colour, label) in [
+        (egui::Color32::from_rgb(0x8c, 0x6a, 0x45), "Cut"),
+        (egui::Color32::from_rgb(0x3f, 0x6f, 0x9e), "Fill"),
+    ] {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 12.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, colour);
+            ui.label(label);
+        });
+    }
+}
 
 fn steep_tooltip() -> String {
     format!("Ground steeper than {WALK_LIMIT_DEG:.0}°. Players cannot walk up it.")

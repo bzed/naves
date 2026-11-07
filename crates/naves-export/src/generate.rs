@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use naves_core::catalog::{BridgeModel, Family, PieceCatalog};
+use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, conform};
 use naves_core::dem::Dem;
@@ -263,7 +263,7 @@ fn paint(surfaces: &mut SurfaceGrid, features: &[Feature], catalog: Option<&Piec
                 }
                 let width = catalog
                     .and_then(|c| c.pieces(family).first())
-                    .map_or(family_width(family), |p| p.width);
+                    .map_or(family.width_m(), |p| p.width);
                 surfaces.stroke(
                     &feature.points,
                     width + ROAD_BED_MARGIN_M,
@@ -271,18 +271,6 @@ fn paint(surfaces: &mut SurfaceGrid, features: &[Feature], catalog: Option<&Piec
                 );
             }
         }
-    }
-}
-
-/// Road widths when no catalog is at hand.
-fn family_width(family: Family) -> f64 {
-    match family {
-        Family::Asf1 => 12.0,
-        Family::Asf2 => 9.0,
-        Family::Asf3 => 7.0,
-        Family::City => 10.0,
-        Family::Grav => 6.0,
-        Family::Mud => 5.0,
     }
 }
 

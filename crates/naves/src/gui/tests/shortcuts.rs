@@ -233,7 +233,8 @@ fn a_level_that_is_not_built_ignores_its_digit() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, _) = started(root.path());
     h.run_steps(3);
-    h.key_press(egui::Key::Num4);
+    // 3 is Water, which is not built
+    h.key_press(egui::Key::Num3);
     h.run_steps(2);
     assert_eq!(level(&h), Level::Project);
 }

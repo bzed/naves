@@ -6,6 +6,7 @@
 #![cfg(unix)]
 #![expect(
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "test helper code; failing loudly is the point"
 )]
 
@@ -84,6 +85,57 @@ async fn start_with(sources: bool) -> Fixture {
     }
 }
 
+/// Like [`start`], with the OSM highways of the Königssee as a source; without `tools` no external tool
+/// can be found.
+async fn start_roads(tools: bool) -> Fixture {
+    let root = tempfile::tempdir().unwrap();
+    let fakes = FakeEnv::new(&root.path().join("fake")).unwrap();
+    let proj = root.path().join("proj");
+    std::fs::create_dir_all(proj.join("dem")).unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
+    std::fs::copy(fixture, proj.join("dem/koenigssee.tif")).unwrap();
+    let mut p = naves_core::project::Project::new("Test", 47.55, 12.975, 1500.0);
+    p.grid.terrain_size = 256;
+    p.grid.land_size = 32;
+    p.sources.dem = vec!["dem/koenigssee.tif".into()];
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    std::fs::create_dir_all(proj.join("osm")).unwrap();
+    std::fs::copy(
+        fixtures.join("osm/koenigssee_roads.osm.pbf"),
+        proj.join("osm/roads.osm.pbf"),
+    )
+    .unwrap();
+    p.sources.osm = vec!["osm/roads.osm.pbf".into()];
+    p.save(&proj).unwrap();
+
+    let home = root.path().to_path_buf();
+    let command = tokio::process::Command::new(env!("CARGO_BIN_EXE_naves")).configure(|cmd| {
+        cmd.arg("mcp")
+            .arg(&proj)
+            .env_clear()
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("PATH", home.join("no-bin"));
+        if tools {
+            for (key, value) in fakes.env() {
+                cmd.env(key, value);
+            }
+        }
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            cmd.env("LLVM_PROFILE_FILE", profile);
+        }
+    });
+    let client = ().serve(TokioChildProcess::new(command).unwrap()).await.unwrap();
+    Fixture {
+        _root: root,
+        proj,
+        client,
+    }
+}
+
 async fn call(f: &Fixture, tool: &'static str, args: Value) -> CallToolResult {
     let params = CallToolRequestParams::new(tool).with_arguments(args.as_object().unwrap().clone());
     f.client.call_tool(params).await.unwrap()
@@ -119,7 +171,9 @@ async fn lists_tools() {
             "imagery_options",
             "project_get",
             "project_set",
-            "render_topdown"
+            "render_topdown",
+            "roads_stats",
+            "validation_list"
         ]
     );
 }
@@ -484,4 +538,166 @@ async fn parallel_changes_all_arrive() {
             "round {round}"
         );
     }
+}
+
+// --- roads ---------------------------------------------------------------------------------------------------------
+
+fn png_of(result: &CallToolResult) -> image::RgbaImage {
+    let data = result
+        .content
+        .iter()
+        .find_map(|c| c.as_image().map(|i| i.data.clone()))
+        .expect("an image in the result");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap();
+    image::load_from_memory(&bytes).unwrap().to_rgba8()
+}
+
+fn whole_map(extra: &Value) -> Value {
+    let mut args = json!({ "x0": 0.0, "y0": 0.0, "x1": 750.0, "y1": 750.0, "px": 375, "overlay": "hillshade" });
+    args.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    args
+}
+
+#[tokio::test]
+async fn render_topdown_without_layers_does_not_generate() {
+    // no tool can be found: a render that generated the roads would fail
+    let f = start_roads(false).await;
+    let result = call(&f, "render_topdown", whole_map(&json!({}))).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let _ = png_of(&result);
+    let layers_only = call(
+        &f,
+        "render_topdown",
+        whole_map(&json!({ "layers": ["too_steep_to_walk"] })),
+    )
+    .await;
+    assert_ne!(layers_only.is_error, Some(true), "{}", text(&layers_only));
+}
+
+#[tokio::test]
+async fn render_topdown_with_layers_matches_composited_layers() {
+    let f = start_roads(true).await;
+    let plain = png_of(&call(&f, "render_topdown", whole_map(&json!({}))).await);
+    let with = png_of(
+        &call(
+            &f,
+            "render_topdown",
+            whole_map(&json!({ "layers": ["roads", "drivable"] })),
+        )
+        .await,
+    );
+    assert_eq!(plain.dimensions(), with.dimensions());
+    let changed = plain
+        .pixels()
+        .zip(with.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert!(changed > 50, "{changed} pixels differ");
+    // the order of the ids does not matter
+    let swapped = png_of(
+        &call(
+            &f,
+            "render_topdown",
+            whole_map(&json!({ "layers": ["drivable", "roads"] })),
+        )
+        .await,
+    );
+    assert_eq!(with, swapped);
+    // and the picture is the base with the layers composited over it
+    let alone = png_of(
+        &call(
+            &f,
+            "render_topdown",
+            whole_map(&json!({ "layers": ["roads"] })),
+        )
+        .await,
+    );
+    assert_ne!(alone, with);
+}
+
+#[tokio::test]
+async fn an_unknown_layer_is_a_tool_error() {
+    let f = start().await;
+    let result = call(
+        &f,
+        "render_topdown",
+        whole_map(&json!({ "layers": ["roads", "unicorns"] })),
+    )
+    .await;
+    assert_eq!(result.is_error, Some(true));
+    let message = text(&result);
+    assert!(
+        message.contains("unicorns") && message.contains("drivable"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn roads_stats_counts_the_network() {
+    let f = start_roads(true).await;
+    let result = call(&f, "roads_stats", json!({})).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let stats: Value = serde_json::from_str(&text(&result)).unwrap();
+    assert!(stats["pieces"].as_u64().unwrap() > 20, "{stats}");
+    assert!(stats["stretches"].as_u64().unwrap() >= 1);
+    assert!(stats["km_by_family"]["grav"].as_f64().unwrap() > 0.1);
+}
+
+#[tokio::test]
+async fn validation_list_filters_by_rule() {
+    let f = start_roads(true).await;
+    let all: Value =
+        serde_json::from_str(&text(&call(&f, "validation_list", json!({})).await)).unwrap();
+    let all = all["violations"].as_array().unwrap();
+    assert!(!all.is_empty());
+    for v in all {
+        assert!(
+            v["rule"].is_string()
+                && v["x"].is_number()
+                && v["y"].is_number()
+                && v["message"].is_string()
+        );
+    }
+    let rule = all[0]["rule"].as_str().unwrap().to_string();
+    let only: Value = serde_json::from_str(&text(
+        &call(&f, "validation_list", json!({ "rule": rule })).await,
+    ))
+    .unwrap();
+    let only = only["violations"].as_array().unwrap();
+    assert!(!only.is_empty() && only.len() <= all.len());
+    assert!(only.iter().all(|v| v["rule"] == rule.as_str()));
+    // a rule that exists and has no findings gives an empty list; one that does not exist is an error
+    let none = call(&f, "validation_list", json!({ "rule": "road_in_water" })).await;
+    assert_ne!(none.is_error, Some(true));
+    let bad = call(&f, "validation_list", json!({ "rule": "nonsense" })).await;
+    assert_eq!(bad.is_error, Some(true));
+    assert!(text(&bad).contains("road_not_drivable"));
+}
+
+#[tokio::test]
+async fn a_project_without_osm_has_empty_stats() {
+    let f = start().await;
+    let stats: Value =
+        serde_json::from_str(&text(&call(&f, "roads_stats", json!({})).await)).unwrap();
+    assert_eq!(stats["pieces"], 0);
+    assert_eq!(stats["stretches"], 0);
+    let list: Value =
+        serde_json::from_str(&text(&call(&f, "validation_list", json!({})).await)).unwrap();
+    assert!(list["violations"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn roads_without_the_tools_say_which_are_missing() {
+    let f = start_roads(false).await;
+    let result = call(&f, "roads_stats", json!({})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("Roads need armake2"),
+        "{}",
+        text(&result)
+    );
 }
