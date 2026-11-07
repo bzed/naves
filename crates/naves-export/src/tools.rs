@@ -108,6 +108,9 @@ pub struct Tools {
     pub binarize: BinarizeBridge,
     /// The DayZ Server install (read-only); the mission is built from its `mpmissions`.
     pub dayz_server: PathBuf,
+    /// Where Náves keeps what it learns from the game files (the catalog of road pieces): per user, never
+    /// part of a project and never distributed.
+    pub cache_dir: PathBuf,
 }
 
 /// Where DayZ Tools and Proton live, and how binarize is run.
@@ -158,6 +161,7 @@ impl Tools {
         home: Option<PathBuf>,
     ) -> Result<Tools, ToolError> {
         let armake2 = locate_armake2(env, path)?;
+        let cache_dir = cache_dir(env, home.as_deref());
         let steam_root = locate_steam(env, home)?;
         let common = steam_root.join("steamapps/common");
         let var = |key: &str| env(key).map(PathBuf::from);
@@ -192,6 +196,7 @@ impl Tools {
         Ok(Tools {
             armake2: absolute(armake2),
             dayz_server: absolute(dayz_server),
+            cache_dir: absolute(cache_dir),
             binarize: BinarizeBridge {
                 dayz: absolute(var("DAYZ").unwrap_or_else(|| common.join("DayZ"))),
                 dayz_tools: absolute(dayz_tools),
@@ -462,6 +467,16 @@ fn locate_steam(
         .chain(windows)
         .find(|c| c.join("steamapps").is_dir())
         .ok_or_else(|| missing("Steam", "STEAM_ROOT", HINT))
+}
+
+/// `naves` in `$XDG_CACHE_HOME`, else `~/.cache`, else the temporary folder.
+fn cache_dir(env: &dyn Fn(&str) -> Option<OsString>, home: Option<&Path>) -> PathBuf {
+    let base = env("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| h.join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("naves")
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ which = "8.0.6"
 
 [features]
 # Fake external tools for tests (Unix only); also used by the CLI tests of the naves crate.
-test-util = []
+test-util = ["naves-core/test-util", "naves-formats/test-util"]
 
 [dev-dependencies]
 naves-export = { path = ".", features = ["test-util"] }

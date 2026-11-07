@@ -56,7 +56,7 @@ Mission: berchtesgaden/build/missions/dayzOffline.berchtesgaden
 
 The server log shows `Loading landscape 'berchtesgaden'` when the map loads. New characters spawn in the middle
 of the map. Without land cover or OpenStreetMap data the ground is procedural (grass, and rock on steep slopes and
-above 2100 m real altitude); see [Ground from real data](#ground-from-real-data). There are no roads, houses,
+above 2100 m real altitude); see [Ground from real data](#ground-from-real-data). Roads and paths come from OpenStreetMap, see [Roads](#roads); there are no houses,
 trees or water planes yet (a lake is only soil-coloured ground). Infected and animals only move once the project
 has a [navigation mesh](navmesh.md).
 
@@ -103,3 +103,45 @@ A map made from OpenStreetMap contains OSM-derived data under the ODbL: if you p
 that `naves build` writes to `ATTRIBUTION.txt` in the mod folder, and share the derived database alike. The same
 file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only the sources the build used. See
 [Credits and data licences](credits.md).
+
+## Roads
+
+List OpenStreetMap extracts in `sources.osm` and `naves build` also builds the **roads**: the `highway` ways of the
+map become the game's own road pieces (asphalt, streets, gravel and dirt tracks, with junctions, end caps and
+bridges), laid along the OSM line, and the terrain is shaped to fit them. The pieces are read from the game: the
+DayZ Server install needs its `addons/structures_roads.pbo`, and `armake2` unpacks it once (the result is cached
+per user and rebuilt when the game is updated). No model of the game is ever copied into your mod.
+
+What is built, from the `highway` tag:
+
+| OpenStreetMap | Result |
+|---|---|
+| `motorway`, `trunk`, `primary` | asphalt, 12 m |
+| `secondary` | asphalt, 9 m |
+| `tertiary`, `unclassified` | narrow asphalt, 7 m |
+| `residential`, `living_street`, `service` | street, 10 m |
+| `track` with `tracktype` `grade1` or `grade2`, or a hard `surface` | gravel, 6 m |
+| `track` otherwise | dirt track, 5 m |
+| `track` with `tracktype` `grade4`, `grade5` or a very bad `smoothness` | dirt track that must only be walkable |
+| `path`, `footway`, `cycleway`, `steps`, `sac_scale=hiking` | only painted on the ground, 1.6 m |
+| `sac_scale=alpine_hiking` or harder, `trail_visibility=bad` | nothing |
+
+`access` and `motor_vehicle` tags do not matter: a forestry road in a national park is still physically a road.
+
+The terrain is **held to a slope limit around every road**: a road on a valley side gets a bench, a road across a
+valley an embankment, a road through a ridge a cutting. The earthworks reach only as far as they are connected to the
+road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles
+cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every
+finding is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
+
+**What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
+says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
+line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
+roads simply meet; the build lists those places. On a bridge, the span has a level deck and the ground below keeps
+its height.
+
+Your own changes to what was generated are kept in `edits/overrides.toml`
+([the project file](project-file.md#editsoverridestoml)).
+
+**The terrain changes where there are roads, so a [navigation mesh](navmesh.md) made earlier no longer fits.**
+`naves build` warns about that when the project has one.

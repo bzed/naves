@@ -24,6 +24,9 @@ const ARMAKE2: &str = r#"case "$1" in
       printf '\004\200\004\000\004\000\000\021\000\000\000'
       head -c 6 /dev/zero
       printf 'PAA:%s\n' "$2"; cat "$3"; } > "$4" ;;
+  unpack)
+    # the road pieces: a tree of synthetic models next to the script
+    cp -r "$(dirname "$0")/../roads-tree"/. "$3"/ ;;
   keygen)
     shift; [ "$1" = "-f" ] && shift
     : > "$1.biprivatekey"; : > "$1.bikey" ;;
@@ -125,6 +128,12 @@ impl FakeEnv {
         )?;
         std::fs::write(enoch.join("db/types.xml"), "<types/>\n")?;
         std::fs::create_dir_all(root.join("sandboxes"))?;
+        std::fs::create_dir_all(server.join("addons"))?;
+        std::fs::write(
+            server.join("addons/structures_roads.pbo"),
+            b"fake roads pbo",
+        )?;
+        write_road_tree(&root.join("roads-tree"))?;
         Ok(FakeEnv {
             root: root.to_path_buf(),
             armake2,
@@ -140,6 +149,7 @@ impl FakeEnv {
         Tools {
             armake2: self.armake2.clone(),
             dayz_server: self.server.clone(),
+            cache_dir: self.root.join("cache"),
             binarize: BinarizeBridge {
                 steam_root: self.steam.clone(),
                 dayz_tools: common.join("DayZ Tools"),
@@ -169,4 +179,48 @@ impl FakeEnv {
     pub fn replace_armake2(&self, body: &str) -> std::io::Result<()> {
         write_script(&self.armake2, body)
     }
+}
+
+/// Writes the unpacked content of a road PBO with synthetic models of all pieces, junctions and two bridges
+/// below `dir` (`Parts/` and `Bridges/`, in the mixed case of the game's files).
+///
+/// # Errors
+///
+/// Any I/O error while writing the files.
+pub fn write_road_tree(dir: &Path) -> std::io::Result<()> {
+    for (path, model) in naves_core::catalog::testing::synthetic_models() {
+        let (folder, file) = if path.contains("\\bridges\\") {
+            ("Bridges", path.rsplit('\\').next().unwrap_or_default())
+        } else {
+            ("Parts", path.rsplit('\\').next().unwrap_or_default())
+        };
+        let stem = file.strip_suffix(".p3d").unwrap_or(file);
+        let stem = match stem.strip_prefix("bridge_") {
+            // the game's bridge files are capitalised: Bridge_Stone_25
+            Some(rest) => {
+                let words: Vec<String> = rest
+                    .split('_')
+                    .map(|w| {
+                        let mut c = w.chars();
+                        c.next()
+                            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                format!("Bridge_{}", words.join("_"))
+            }
+            None => stem.to_string(),
+        };
+        let points: Vec<(&str, [f32; 3])> = model
+            .memory
+            .iter()
+            .filter_map(|(name, v)| v.first().map(|p| (name.as_str(), *p)))
+            .collect();
+        let target = dir.join(folder).join(format!("{stem}.p3d"));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, naves_formats::odol::synthetic::model_bytes(&points))?;
+    }
+    Ok(())
 }

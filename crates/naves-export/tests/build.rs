@@ -16,7 +16,9 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+use naves_core::features::FeatureKind;
 use naves_core::project::Project;
+use naves_core::surface::SurfaceClass;
 use naves_export::build::{BuildError, build};
 use naves_export::testing::FakeEnv;
 
@@ -916,4 +918,228 @@ fn build_is_reproducible_with_imagery() {
         )
     };
     assert_eq!(read(), read());
+}
+
+// --- roads -------------------------------------------------------------------------------------------------------
+
+use naves_export::generate::generate;
+use naves_formats::wrp8::EditableWorld;
+
+/// The Königssee project with the OSM highways of the area listed as a source.
+fn roads_project(proj: &Path) -> Project {
+    project(proj, INSIDE);
+    with_sources(proj, &[], &["koenigssee_roads.osm.pbf"])
+}
+
+fn staged_world(proj: &Path) -> EditableWorld {
+    let bytes = std::fs::read(proj.join("build/staging/P/naves/worlds/test/test.wrp")).unwrap();
+    EditableWorld::read(&mut &bytes[..]).unwrap()
+}
+
+#[test]
+fn roads_reach_the_world_file() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let world = staged_world(&proj);
+    assert!(world.objects.len() > 20, "{} objects", world.objects.len());
+    let size = 750.0_f32;
+    for (i, o) in world.objects.iter().enumerate() {
+        assert!(
+            o.model.starts_with("dz\\structures\\roads\\"),
+            "{}",
+            o.model
+        );
+        assert_eq!(o.id, i32::try_from(i + 1).unwrap(), "ids count up from 1");
+        // upright, as the engine drapes the pieces
+        assert!((o.transform[4] - 1.0).abs() < 1e-6, "{:?}", o.transform);
+        let (x, y) = (o.transform[9], o.transform[11]);
+        assert!(
+            (0.0..=size).contains(&x) && (0.0..=size).contains(&y),
+            "{x},{y}"
+        );
+    }
+}
+
+#[test]
+fn required_addons_follow_the_objects_in_the_staged_config() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let config =
+        std::fs::read_to_string(proj.join("build/staging/P/naves/worlds/test/config.cpp")).unwrap();
+    assert!(config.contains("DZ_Structures_Roads"), "{config}");
+
+    let (_dir2, env2, proj2) = setup();
+    project(&proj2, INSIDE);
+    with_sources(&proj2, &[], &["koenigssee.osm.pbf"]);
+    build(&proj2, &env2.tools(), &quiet).unwrap();
+    let config =
+        std::fs::read_to_string(proj2.join("build/staging/P/naves/worlds/test/config.cpp"))
+            .unwrap();
+    assert!(!config.contains("DZ_Structures_Roads"));
+}
+
+#[test]
+fn game_models_are_not_in_the_mod() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let pbo = std::fs::read_to_string(out.mod_dir.join("addons/naves_test.pbo")).unwrap();
+    assert!(
+        !pbo.contains(".p3d") && !pbo.lines().any(|l| l.starts_with("./dz")),
+        "{pbo}"
+    );
+    // nor in the staging folder that binarize and the packer read
+    let found = walkdir::WalkDir::new(proj.join("build"))
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|e| e.path().extension().is_some_and(|x| x == "p3d"));
+    assert!(!found, "a model of the game ended up in the build folder");
+}
+
+#[test]
+fn a_project_without_osm_builds_as_before() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    // without the PBO of the road pieces a build that asked for them would fail
+    std::fs::remove_file(env.server.join("addons/structures_roads.pbo")).unwrap();
+    build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(staged_world(&proj).objects.is_empty());
+    // and the same for an OSM source that has no highways
+    with_sources(&proj, &[], &["koenigssee.osm.pbf"]);
+    build(&proj, &env.tools(), &quiet).unwrap();
+}
+
+#[test]
+fn osm_without_roads_builds_with_no_objects() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    with_sources(&proj, &[], &["koenigssee.osm.pbf"]);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(staged_world(&proj).objects.is_empty());
+}
+
+#[test]
+fn the_terrain_under_a_road_is_conformed() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let shaped = staged_world(&proj).elevation;
+    let (_dir2, env2, proj2) = setup();
+    project(&proj2, INSIDE);
+    build(&proj2, &env2.tools(), &quiet).unwrap();
+    let plain = staged_world(&proj2).elevation;
+    assert_eq!(shaped.len(), plain.len());
+    let changed = shaped
+        .iter()
+        .zip(&plain)
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
+    assert!(changed > 20, "{changed} vertices differ");
+}
+
+#[test]
+fn paths_are_in_the_mask_and_have_no_objects() {
+    let (_dir, env, proj) = setup();
+    let p = roads_project(&proj);
+    let generated = generate(&proj, &p, &env.tools(), &quiet).unwrap();
+    let roads: Vec<&naves_core::features::Feature> = generated
+        .features
+        .iter()
+        .filter(|f| matches!(f.kind, FeatureKind::Road { .. }))
+        .collect();
+    let near_road = |at: (f64, f64)| {
+        roads.iter().any(|r| {
+            r.points
+                .iter()
+                .any(|q| (q.0 - at.0).hypot(q.1 - at.1) < 20.0)
+        })
+    };
+    let mut checked = 0;
+    for path in generated
+        .features
+        .iter()
+        .filter(|f| matches!(f.kind, FeatureKind::Path { .. }))
+    {
+        for &(x, y) in &path.points {
+            if near_road((x, y)) {
+                continue;
+            }
+            checked += 1;
+            assert_eq!(
+                generated.surfaces.at(x, y),
+                SurfaceClass::Soil,
+                "path at {x:.0},{y:.0}"
+            );
+            assert!(
+                generated
+                    .objects
+                    .iter()
+                    .all(|o| (o.x - x).hypot(o.y - y) > 3.0),
+                "an object stands on the path at {x:.0},{y:.0}"
+            );
+        }
+    }
+    assert!(checked > 5, "only {checked} path points away from roads");
+}
+
+#[test]
+fn two_builds_are_byte_identical() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let first = (
+        std::fs::read(proj.join("build/staging/P/naves/worlds/test/test.wrp")).unwrap(),
+        std::fs::read(proj.join("build/report.json")).unwrap(),
+    );
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let second = (
+        std::fs::read(proj.join("build/staging/P/naves/worlds/test/test.wrp")).unwrap(),
+        std::fs::read(proj.join("build/report.json")).unwrap(),
+    );
+    assert!(first.0 == second.0, "the world files differ");
+    assert!(first.1 == second.1, "the reports differ");
+}
+
+#[test]
+fn the_report_has_the_violations() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
+            .unwrap();
+    assert!(report["roads"]["pieces"].as_u64().unwrap() > 20);
+    let violations = report["violations"].as_array().unwrap();
+    for v in violations {
+        assert!(v["rule"].is_string() && v["message"].is_string() && v["x"].is_number());
+    }
+    // every violation is also a warning (up to the cap)
+    assert!(
+        out.warnings.len() >= violations.len().min(50),
+        "{} warnings",
+        out.warnings.len()
+    );
+}
+
+#[test]
+fn a_stale_navmesh_is_warned_about() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    std::fs::create_dir_all(proj.join("navmesh")).unwrap();
+    std::fs::write(proj.join("navmesh/test.nm"), "NAVMESH").unwrap();
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    assert!(
+        out.warnings.iter().any(|w| w.contains("navigation mesh")),
+        "{:?}",
+        out.warnings
+    );
+    // and not for a world without roads
+    let (_dir2, env2, proj2) = setup();
+    project(&proj2, INSIDE);
+    std::fs::create_dir_all(proj2.join("navmesh")).unwrap();
+    std::fs::write(proj2.join("navmesh/test.nm"), "NAVMESH").unwrap();
+    let out = build(&proj2, &env2.tools(), &quiet).unwrap();
+    assert!(!out.warnings.iter().any(|w| w.contains("navigation mesh")));
 }

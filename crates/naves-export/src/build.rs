@@ -21,17 +21,22 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use naves_core::dem::{Dem, DemError};
-use naves_core::heightmap::{Heightmap, HeightmapError, build_heightmap};
+use naves_core::conform::ConformError;
+use naves_core::dem::DemError;
+use naves_core::heightmap::{Heightmap, HeightmapError};
 use naves_core::imagery::{ImageryError, TileImagery, load_imagery};
+use naves_core::objects::{OverridesError, piece_transform};
 use naves_core::project::{ImageryFile, Project, ProjectError};
-use naves_core::surface::{LoadedSources, SurfaceError, SurfaceGrid, build_surfaces};
+use naves_core::roadplace::PlaceError;
+use naves_core::surface::SurfaceError;
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
-use naves_formats::wrp8::EditableWorld;
+use naves_formats::wrp8::{EditableWorld, WorldObject};
 use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
-use crate::config::{prefix, world_config};
+use crate::catalog_read::CatalogReadError;
+use crate::config::{prefix, world_config_with};
+use crate::generate::{Generated, generate};
 use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
@@ -70,6 +75,18 @@ pub enum BuildError {
     /// The ground cannot be decided.
     #[error(transparent)]
     Surface(#[from] SurfaceError),
+    /// The road pieces of the game cannot be read.
+    #[error(transparent)]
+    Catalog(#[from] CatalogReadError),
+    /// The roads cannot be placed.
+    #[error(transparent)]
+    Place(#[from] PlaceError),
+    /// The terrain cannot be shaped to the roads.
+    #[error(transparent)]
+    Conform(#[from] ConformError),
+    /// The edits cannot be read.
+    #[error(transparent)]
+    Overrides(#[from] OverridesError),
     /// An imagery file cannot be read or merged.
     #[error(transparent)]
     Imagery(#[from] ImageryError),
@@ -286,8 +303,10 @@ fn stage_world(
     project: &Project,
     heightmap: &Heightmap,
     layers: &LayerSet,
+    objects: Vec<WorldObject>,
 ) -> Result<(), BuildError> {
     let world_dir = &layout.world_dir;
+    let has_roads = !objects.is_empty();
     let editable = EditableWorld {
         land_range_x: project.grid.land_size,
         land_range_y: project.grid.land_size,
@@ -297,14 +316,14 @@ fn stage_world(
         elevation: heightmap.h.clone(),
         material_index: layers.material_index.clone(),
         materials: layers.materials.clone(),
-        objects: Vec::new(),
+        objects,
     };
     let mut wrp = Vec::new();
     editable.write(&mut wrp).map_err(BuildError::World)?;
     write_file(&world_dir.join(format!("{}.wrp", layout.world)), &wrp)?;
     write_file(
         &world_dir.join("config.cpp"),
-        world_config(project, heightmap).as_bytes(),
+        world_config_with(project, heightmap, has_roads).as_bytes(),
     )?;
 
     let png_dir = layout.staging.join("png");
@@ -441,9 +460,6 @@ fn pack_mod(
     Ok(())
 }
 
-/// Land cover shares of the map above this get a warning.
-const UNCOVERED_WARN_SHARE: f64 = 0.01;
-
 /// The notice that opens `ATTRIBUTION.txt` when a used imagery file does not allow commercial use.
 const NON_COMMERCIAL_NOTICE: &str = "NON-COMMERCIAL USE ONLY\n\
     The satellite images of this map come from sources that do not allow commercial use (marked below).\n\
@@ -542,46 +558,86 @@ fn mod_cpp(project: &Project, imagery: &[ImageryFile]) -> String {
 /// Imagery coverage of the map below this gets no warning.
 const IMAGERY_UNCOVERED_WARN_SHARE: f64 = 0.01;
 
-/// The decided ground and what the build has to say about it.
-struct Ground {
-    grid: SurfaceGrid,
-    warnings: Vec<String>,
-    used_land_cover: bool,
-    used_osm: bool,
+/// A navigation mesh made for the terrain from before the roads is out of date.
+fn navmesh_warning(layout: &Layout, generated: &Generated) -> Option<String> {
+    let navmesh = layout
+        .project_dir
+        .join("navmesh")
+        .join(format!("{}.nm", layout.world));
+    (!generated.objects.is_empty() && navmesh.is_file()).then(|| {
+        "the terrain has changed (roads and their earthworks): the navigation mesh of the project was made \
+         for the old terrain and should be regenerated, see the manual page on the navigation mesh"
+            .to_string()
+    })
 }
 
-/// Reads the land cover and OSM files of the project and decides the ground of every map cell.
-fn decide_ground(
-    project: &Project,
-    project_dir: &Path,
-    heightmap: &Heightmap,
-    progress: &dyn Fn(&str),
-) -> Result<Ground, BuildError> {
-    let sources = LoadedSources::open(project, project_dir, progress)?;
-    progress("Deciding the ground");
-    let decided = build_surfaces(project, heightmap, &sources.as_sources())?;
-    let (land_cover, osm) = (sources.land_cover, sources.osm);
-    let mut warnings = Vec::new();
-    if land_cover.is_some() && decided.uncovered_share > UNCOVERED_WARN_SHARE {
-        warnings.push(format!(
-            "{:.0} % of the map is not covered by the land cover files; the slope and altitude rules decide the \
-             ground there",
-            decided.uncovered_share * 100.0
-        ));
+/// The objects of the world file, numbered from 1 in the order of their ids.
+fn world_objects(generated: &Generated) -> Vec<WorldObject> {
+    generated
+        .objects
+        .iter()
+        .zip(&generated.heights)
+        .enumerate()
+        .map(|(index, (object, height))| WorldObject {
+            transform: piece_transform(object, *height),
+            id: i32::try_from(index + 1).unwrap_or(i32::MAX),
+            model: object.model.clone(),
+        })
+        .collect()
+}
+
+/// How many violations go into the warnings, one line each; the rest is in the report.
+const MAX_VIOLATION_LINES: usize = 50;
+
+/// The violations as warnings, one line each, and a last line for what does not fit.
+fn violation_warnings(generated: &Generated) -> Vec<String> {
+    let mut lines: Vec<String> = generated
+        .violations
+        .iter()
+        .take(MAX_VIOLATION_LINES)
+        .map(|v| {
+            format!(
+                "{}: {} (at {:.0}, {:.0})",
+                v.rule.id(),
+                v.message,
+                v.at.0,
+                v.at.1
+            )
+        })
+        .collect();
+    let more = generated
+        .violations
+        .len()
+        .saturating_sub(MAX_VIOLATION_LINES);
+    if more > 0 {
+        lines.push(format!("... and {more} more, see build/report.json"));
     }
-    if let Some(osm) = osm.as_ref().filter(|o| o.skipped_rings > 0) {
-        warnings.push(format!(
-            "{} OpenStreetMap ring(s) were skipped because the extract cuts them or lacks nodes; the land cover \
-             or the rules decide there",
-            osm.skipped_rings
-        ));
-    }
-    Ok(Ground {
-        grid: decided.grid,
-        warnings,
-        used_land_cover: land_cover.is_some(),
-        used_osm: osm.is_some(),
-    })
+    lines
+}
+
+/// `build/report.json`: the numbers and every violation.
+fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError> {
+    let violations: Vec<serde_json::Value> = generated
+        .violations
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "rule": v.rule.id(),
+                "x": v.at.0,
+                "y": v.at.1,
+                "message": v.message,
+            })
+        })
+        .collect();
+    let report = serde_json::json!({ "roads": generated.stats, "violations": violations });
+    let text = serde_json::to_string_pretty(&report).map_err(|e| BuildError::Io {
+        path: layout.project_dir.join("build/report.json"),
+        source: std::io::Error::other(e),
+    })?;
+    write_file(
+        &layout.project_dir.join("build/report.json"),
+        text.as_bytes(),
+    )
 }
 
 /// Builds the mod and the mission of the project in `project_dir`.
@@ -601,22 +657,9 @@ pub fn build(
     // External tools run in other working directories, so every path they get must be absolute.
     let project_dir = &std::path::absolute(project_dir).map_err(io_err(project_dir))?;
     let project = Project::load(project_dir)?;
-    if project.sources.dem.is_empty() {
-        return Err(BuildError::NoDem);
-    }
-    progress("Reading the elevation data");
-    let dem_files: Vec<PathBuf> = project
-        .sources
-        .dem
-        .iter()
-        .map(|p| project_dir.join(p))
-        .collect();
-    let dem = Dem::open(&dem_files)?;
-    progress("Sampling the heightmap");
-    let heightmap = build_heightmap(&project, &dem)?;
-
     // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
-    let ground = decide_ground(&project, project_dir, &heightmap, progress)?;
+    let generated = generate(project_dir, &project, tools, progress)?;
+    let heightmap = &generated.heightmap;
 
     let imagery = load_imagery(&project, project_dir, progress)?;
 
@@ -627,14 +670,16 @@ pub fn build(
         project: &project,
     });
     let layers = build_layers(
-        &heightmap,
+        heightmap,
         project.grid.land_size,
         &layout.prefix,
-        &ground.grid,
+        &generated.surfaces,
         tile_imagery.as_ref(),
     )?;
     let used_imagery: &[ImageryFile] = imagery.as_ref().map_or(&[], |i| i.used.as_slice());
-    let mut warnings = ground.warnings;
+    let mut warnings = generated.warnings.clone();
+    warnings.extend(violation_warnings(&generated));
+    warnings.extend(navmesh_warning(&layout, &generated));
     if let Some(imagery) = &imagery {
         warnings.extend(imagery.warnings.iter().cloned());
         if !imagery.used.is_empty() && 1.0 - layers.imagery_share > IMAGERY_UNCOVERED_WARN_SHARE {
@@ -659,7 +704,14 @@ pub fn build(
     layout.clean()?;
 
     progress("Writing the world and converting the images");
-    stage_world(&layout, tools, &project, &heightmap, &layers)?;
+    stage_world(
+        &layout,
+        tools,
+        &project,
+        heightmap,
+        &layers,
+        world_objects(&generated),
+    )?;
 
     progress("Binarizing the world (this takes a while)");
     let binarized = layout.staging.join("binarize");
@@ -683,7 +735,7 @@ pub fn build(
 
     progress("Packing and signing the mod");
     pack_mod(&layout, tools, &oprw, &new_mission)?;
-    let credits = attribution(ground.used_land_cover, ground.used_osm, used_imagery);
+    let credits = attribution(generated.used_land_cover, generated.used_osm, used_imagery);
     write_file(&layout.new_mod.join("ATTRIBUTION.txt"), credits.as_bytes())?;
     // server owners install the mission separately from the mod
     write_file(&new_mission.join("ATTRIBUTION.txt"), credits.as_bytes())?;
@@ -692,6 +744,7 @@ pub fn build(
         mod_cpp(&project, used_imagery).as_bytes(),
     )?;
     layout.install()?;
+    write_report(&layout, &generated)?;
     let mission_dir = layout
         .missions
         .join(format!("dayzOffline.{}", layout.world));

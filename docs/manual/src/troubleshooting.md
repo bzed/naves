@@ -88,6 +88,29 @@ again; otherwise copy the file back or take it off the list.
 A file touches the map but does not overlap any other image, so there is nothing to match its colours to. It is used
 as it is. Add a file that covers both, or accept the step in colour.
 
+## Roads
+
+**`.../structures_roads.pbo not found; the road pieces are read from the DayZ Server install`**
+The roads are built from the game's own pieces, which `naves build` reads from the DayZ Server install
+(`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
+External tools.
+
+**`armake2 unpack failed`**
+armake2 could not open the PBO; its output is in the message. The result of a successful read is cached in
+`$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
+
+**`the model ... cannot be read`**
+A model of the game is not in the layout Náves expects (ODOL version 56, as of DayZ 1.30). The game was probably
+updated; the message names the model.
+
+**`not_drivable`, `road_misses_terrain`, `road_grade` ... in the warnings**
+Every line names the rule and a position in map metres. The same findings, with the numbers of the network, are in
+`build/report.json`. A road can be too steep because the real road is steep and the map is small (a horizontal scale
+below 1 steepens everything): raise `[scale] horizontal`, or accept the finding.
+
+**`bridge on ...: the widest bridge model is ... m, the road is ... m wide`**
+The game has no bridge as wide as the road. The widest is used; the road is wider than the deck.
+
 ## Server mission
 
 **`source mission not found: .../dayzOffline.enoch`**
