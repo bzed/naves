@@ -17,4 +17,5 @@ pub mod projection;
 pub mod render;
 pub mod roadfit;
 pub mod roadnet;
+pub mod roadplace;
 pub mod surface;
