@@ -151,7 +151,9 @@ pub fn without_stray_lzo_bytes(paa: &[u8]) -> Result<Vec<u8>, PaaError> {
         .get_mut(offs_at..offs_at + OFFSETS * 4)
         .ok_or(PaaError::NoOffsets)?;
     for (slot, start) in table
-        .chunks_exact_mut(4)
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
         .zip(starts.into_iter().chain(std::iter::repeat(0)))
     {
         slot.copy_from_slice(&start.to_le_bytes());
@@ -193,9 +195,8 @@ pub fn with_colour_tags(paa: &[u8], tags: &ColourTags) -> Result<Vec<u8>, PaaErr
     let new_end = u64::try_from(new_end).map_err(|_| PaaError::Truncated)?;
 
     let mut moved = Vec::with_capacity(OFFSETS * 4);
-    for chunk in offsets.chunks_exact(4) {
-        let raw: [u8; 4] = chunk.try_into().map_err(|_| PaaError::NoOffsets)?;
-        let offset = u32::from_le_bytes(raw);
+    for chunk in offsets.as_chunks::<4>().0 {
+        let offset = u32::from_le_bytes(*chunk);
         let new = if offset == 0 {
             0
         } else {

@@ -48,20 +48,24 @@ pub(crate) fn read_bytes<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<u8>> 
 pub(crate) fn read_f32s<R: Read>(r: &mut R, n: usize) -> io::Result<Vec<f32>> {
     let bytes = n.checked_mul(4).ok_or_else(|| eof("a float array"))?;
     let raw = read_bytes(r, bytes)?;
-    // `chunks_exact(4)` yields only 4-byte slices, so the conversion cannot fail.
+    // `as_chunks` yields `[u8; 4]` arrays, so the conversion cannot fail.
     Ok(raw
-        .chunks_exact(4)
-        .filter_map(|c| <[u8; 4]>::try_from(c).ok().map(f32::from_le_bytes))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect())
 }
 
 pub(crate) fn read_u16s<R: Read>(r: &mut R, n: usize) -> io::Result<Vec<u16>> {
     let bytes = n.checked_mul(2).ok_or_else(|| eof("a u16 array"))?;
     let raw = read_bytes(r, bytes)?;
-    // `chunks_exact(2)` yields only 2-byte slices, so the conversion cannot fail.
+    // `as_chunks` yields `[u8; 2]` arrays, so the conversion cannot fail.
     Ok(raw
-        .chunks_exact(2)
-        .filter_map(|c| <[u8; 2]>::try_from(c).ok().map(u16::from_le_bytes))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect())
 }
 

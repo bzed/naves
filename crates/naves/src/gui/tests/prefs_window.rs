@@ -415,7 +415,7 @@ fn a_new_default_reaches_a_file_that_does_not_mention_it() {
         ("build".to_string(), "F9".to_string()),
         ("tool.from_the_future".to_string(), "Ctrl+J".to_string()),
     ]));
-    assert!(notes.is_empty());
+    assert_eq!(notes, [] as [String; 0]);
     assert_eq!(
         bindings
             .key_for(Action::Build, Level::Project)

@@ -244,7 +244,7 @@ fn new_rejects_bad_numbers() {
             .args(args)
             .assert()
             .failure();
-        assert!(!stderr(&assert).is_empty());
+        assert_ne!(stderr(&assert), "");
         assert!(!home.path().join("bad/naves.toml").exists(), "{args:?}");
     }
 }

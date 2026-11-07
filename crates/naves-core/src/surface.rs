@@ -362,8 +362,8 @@ impl OsmLayer {
                 }
             }
             crossings.sort_by(f64::total_cmp);
-            for pair in crossings.chunks_exact(2) {
-                let [x0, x1] = *pair else { continue };
+            for pair in crossings.as_chunks::<2>().0 {
+                let [x0, x1] = *pair;
                 let first_col = clamp_to((x0 / cell_m - 0.5).ceil(), self.size);
                 let end_col = clamp_to((x1 / cell_m - 0.5).ceil(), self.size);
                 for col in first_col..end_col {

@@ -267,7 +267,7 @@ fn search_filters_by_name_and_group() {
     assert_eq!(names(""), ["a", "b"]);
     assert_eq!(names("HOUSE"), ["a"]);
     assert_eq!(names("milit"), ["b"]);
-    assert!(names("zzz").is_empty());
+    assert_eq!(names("zzz"), [] as [&str; 0]);
 }
 
 #[test]

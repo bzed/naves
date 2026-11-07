@@ -400,7 +400,7 @@ fn unsafe_names_are_rejected_before_anything_runs() {
             "{prefix} {world}: {err}"
         );
     }
-    assert!(leftovers(&base).is_empty());
+    assert_eq!(leftovers(&base), [] as [std::path::PathBuf; 0]);
 }
 
 #[test]

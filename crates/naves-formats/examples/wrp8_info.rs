@@ -18,8 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let words: Vec<u32> = raw
         .get(4..)
         .unwrap_or_default()
-        .chunks_exact(4)
-        .filter_map(|c| <[u8; 4]>::try_from(c).ok().map(u32::from_le_bytes))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect();
     std::io::Write::write_fmt(
         &mut std::io::stdout(),

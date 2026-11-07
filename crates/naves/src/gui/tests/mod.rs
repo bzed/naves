@@ -712,7 +712,10 @@ fn own_file_needs_licence_and_attribution() {
         before,
         "nothing was saved"
     );
-    assert!(app.form.project.sources.imagery.is_empty());
+    assert_eq!(
+        app.form.project.sources.imagery,
+        [] as [naves_core::project::ImageryFile; 0]
+    );
     app.add_own_imagery(&own("imagery/a.tif", "A", "CC BY 4.0", false))
         .unwrap();
     assert_eq!(Project::load(&dir).unwrap().sources.imagery.len(), 1);
