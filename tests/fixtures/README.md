@@ -80,6 +80,19 @@ osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigsse
 its half (`osmium extract -b 12.9,47.548,13.1,47.7 -s simple` and `-b 12.9,47.4,13.1,47.552 -s simple`), so each alone
 cannot close the lake's ring, and the two together can.
 
+## `osm/koenigssee_roads.osm.pbf`: roads and paths at the Königssee
+
+A 9 KB extract of the highway ways that lie in 12.96-12.99 °E, 47.54-47.56 °N, the area of the DEM crop: seven
+`tracktype=grade2` tracks (gravel roads for the build), footpaths, hiking paths (`sac_scale`) and two small bridges. It lets
+the build tests of the roads run on the same ground as the others.
+
+> © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright
+
+```sh
+osmium extract -b 12.96,47.54,12.99,47.56 --strategy=complete_ways oberbayern-latest.osm.pbf -o all.osm.pbf
+osmium tags-filter all.osm.pbf w/highway -o koenigssee_roads.osm.pbf
+```
+
 ## `osm/schoenau.osm.pbf` and `osm/schoenau_cut.osm.pbf`: a village with roads
 
 `schoenau.osm.pbf` (138 KB) is every element that touches 12.978–12.992 °E, 47.596–47.606 °N in Schönau am Königssee:

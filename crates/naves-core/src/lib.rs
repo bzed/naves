@@ -23,3 +23,4 @@ pub mod roadfit;
 pub mod roadnet;
 pub mod roadplace;
 pub mod surface;
+pub mod validate;
