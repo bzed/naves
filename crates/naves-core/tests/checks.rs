@@ -98,6 +98,37 @@ fn chain(family: Family, drivable: bool, a: (f64, f64), b: (f64, f64)) -> Placed
     }
 }
 
+/// One arc piece of `radius` around `centre`, from `from_deg` through `turn_deg`, with the tangent
+/// headings at both ends.
+fn arc(
+    family: Family,
+    centre: (f64, f64),
+    radius: f64,
+    from_deg: f64,
+    turn_deg: f64,
+) -> PlacedNetwork {
+    let from = from_deg.to_radians();
+    let turn = turn_deg.to_radians();
+    let side = turn.signum();
+    let point = |heading: f64| {
+        (
+            centre.0 + side * radius * (-heading.cos()),
+            centre.1 + side * radius * heading.sin(),
+        )
+    };
+    let start = point(from);
+    let end = point(from + turn);
+    let mut road = piece(0, PlacedKind::Piece, family, true, start, end);
+    road.origin.heading = from;
+    road.start.heading = from;
+    road.end.heading = from + turn;
+    PlacedNetwork {
+        chains: vec![vec![0]],
+        roads: vec![road],
+        ..PlacedNetwork::default()
+    }
+}
+
 /// A terrain rising `grade` towards the north.
 fn ramp(grade: f64) -> Heightmap {
     terrain(100, 6.25, move |_, y| 100.0 + grade * y)
@@ -231,6 +262,27 @@ fn gravel_and_tracks_have_their_own_lower_limits() {
             "{family:?} at {grade}"
         );
     }
+}
+
+#[test]
+fn an_arc_on_a_spiral_ramp_has_no_cross_fall() {
+    // a spiral ramp: 10 % along a circle of radius 10 m, level along every radius
+    let centre = (300.0, 300.0);
+    let hm = terrain(200, 3.125, |x, y| {
+        100.0 + 0.10 * 10.0 * (x - centre.0).atan2(y - centre.1)
+    });
+    let net = arc(Family::Asf3, centre, 10.0, 20.0, 60.0);
+    let check = &check_roads_on_terrain(&net, &hm)[0];
+    assert!(check.cross_fall < 0.02, "{}", check.cross_fall);
+    assert!((check.grade - 0.10).abs() < 0.02, "{}", check.grade);
+}
+
+#[test]
+fn a_straight_is_measured_as_before() {
+    let hm = terrain(100, 6.25, |x, y| 100.0 + 0.07 * y - 0.03 * x);
+    let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
+    let check = &check_roads_on_terrain(&net, &hm)[0];
+    assert!((check.grade - 0.07).abs() < 0.005 && (check.cross_fall - 0.03).abs() < 0.005);
 }
 
 #[test]

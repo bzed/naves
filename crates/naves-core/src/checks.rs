@@ -193,6 +193,11 @@ fn quad_miss(hm: &Heightmap, axes: &Axes, length: f64, width: f64) -> f64 {
     miss
 }
 
+/// The signed angle from one heading to another, in `(-π, π]`.
+fn wrap_angle(angle: f64) -> f64 {
+    (angle + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+}
+
 fn measure(road: &PlacedRoad, hm: &Heightmap) -> Option<Measured> {
     let (from, to) = ((road.start.x, road.start.y), (road.end.x, road.end.y));
     let length = (to.0 - from.0).hypot(to.1 - from.1);
@@ -204,11 +209,39 @@ fn measure(road: &PlacedRoad, hm: &Heightmap) -> Option<Measured> {
         along: ((to.0 - from.0) / length, (to.1 - from.1) / length),
         right: ((to.1 - from.1) / length, -(to.0 - from.0) / length),
     };
-    let count = count_of(length).max(1);
-    let spacing = length / ratio(count, 1);
-    let samples: Vec<(f64, f64)> = (0..=count)
-        .map(|i| axes.at(spacing * ratio(i, 1), 0.0))
-        .collect();
+    // A bend is measured along its arc: the samples lie on the circle through both ends that is tangent to
+    // both headings, and "across" is at right angles to the heading there. A straight keeps its chord.
+    let turn = wrap_angle(road.end.heading - road.start.heading);
+    let (samples, rights, run_length, spacing) = if turn.abs() > 0.001 {
+        let radius = length / (2.0 * (turn.abs() / 2.0).sin());
+        let side = turn.signum();
+        let centre = (
+            from.0 + side * radius * road.start.heading.cos(),
+            from.1 - side * radius * road.start.heading.sin(),
+        );
+        let arc_length = radius * turn.abs();
+        let count = count_of(arc_length).max(1);
+        let spacing = arc_length / ratio(count, 1);
+        let mut samples = Vec::with_capacity(count + 1);
+        let mut rights = Vec::with_capacity(count + 1);
+        for i in 0..=count {
+            let heading = road.start.heading + turn * ratio(i, count);
+            samples.push((
+                centre.0 + side * radius * (-heading.cos()),
+                centre.1 + side * radius * heading.sin(),
+            ));
+            rights.push((heading.cos(), -heading.sin()));
+        }
+        (samples, rights, arc_length, spacing)
+    } else {
+        let count = count_of(length).max(1);
+        let spacing = length / ratio(count, 1);
+        let samples = (0..=count)
+            .map(|i| axes.at(spacing * ratio(i, 1), 0.0))
+            .collect();
+        (samples, vec![axes.right; count + 1], length, spacing)
+    };
+    let count = samples.len().saturating_sub(1);
     let heights: Vec<f64> = samples.iter().map(|p| height(hm, *p)).collect();
     // over full windows only (a window cut short at the end of the piece would exaggerate a ramp that goes
     // on into the next piece); a piece shorter than a window is measured whole
@@ -221,9 +254,10 @@ fn measure(road: &PlacedRoad, hm: &Heightmap) -> Option<Measured> {
     let half = road.width / 2.0;
     let cross_fall = samples
         .iter()
-        .map(|p| {
-            let left = height(hm, (p.0 - axes.right.0 * half, p.1 - axes.right.1 * half));
-            let right = height(hm, (p.0 + axes.right.0 * half, p.1 + axes.right.1 * half));
+        .zip(&rights)
+        .map(|(p, right)| {
+            let left = height(hm, (p.0 - right.0 * half, p.1 - right.1 * half));
+            let right = height(hm, (p.0 + right.0 * half, p.1 + right.1 * half));
             (left - right).abs() / road.width.max(0.1)
         })
         .fold(0.0, f64::max);
@@ -234,7 +268,7 @@ fn measure(road: &PlacedRoad, hm: &Heightmap) -> Option<Measured> {
     let rise = heights.last().copied().unwrap_or(0.0) - heights.first().copied().unwrap_or(0.0);
     Some(Measured {
         grade,
-        signed_grade: rise / length,
+        signed_grade: rise / run_length,
         cross_fall,
         miss: quad_miss(hm, &axes, length, road.width),
         steepest_ground_deg,
