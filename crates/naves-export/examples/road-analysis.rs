@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain};
-use naves_core::conform::conform;
+use naves_core::conform::{FILL_SLOPE_MAX, conform};
 use naves_core::dem::Dem;
 use naves_core::features::road_features;
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
@@ -401,8 +401,12 @@ fn main() {
             }
         }
         if let Some((c, dh)) = own_far {
-            // what the ground between two legs can take: nothing within 3 cells, then the fill slope
-            let room = (c - margin).max(0.0) * 0.667 + 0.1;
+            // what the ground between two legs can take: nothing within 3 cells, then the step a cell holds
+            let room = if c < margin {
+                0.1
+            } else {
+                (c - margin + cell).max(0.0) * FILL_SLOPE_MAX + 0.1
+            };
             if c < 60.0 {
                 leg_pairs += 1;
                 if dh > room {

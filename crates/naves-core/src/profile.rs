@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::Family;
-use crate::conform::FILL_SLOPE;
+use crate::conform::FILL_SLOPE_MAX;
 use crate::heightmap::Heightmap;
 use crate::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
@@ -862,6 +862,7 @@ fn wanted_shifts(
     spots: &[Spot],
     strips: &[RoadStrip],
     chains: &[Solved],
+    cell: f64,
 ) -> BTreeMap<(usize, usize), (f64, f64)> {
     let mut wanted: BTreeMap<(usize, usize), (f64, f64)> = BTreeMap::new();
     let importance = |strip: usize| f64::from(strips.get(strip).map_or(0, |s| s.rank)) + 1.0;
@@ -870,7 +871,11 @@ fn wanted_shifts(
             continue;
         };
         let (ha, hb) = (spot_height(chains, a), spot_height(chains, b));
-        let allowed = MATCH_M + (pair.distance - pair.gap).max(0.0) * FILL_SLOPE;
+        let allowed = if pair.distance < pair.gap {
+            MATCH_M
+        } else {
+            MATCH_M + (pair.distance - pair.gap + cell) * FILL_SLOPE_MAX
+        };
         let excess = (ha - hb).abs() - allowed;
         if excess <= 0.0 {
             continue;
@@ -991,7 +996,8 @@ fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) 
 /// The terrain cells under a road are all given the road's height, `1.5` cells beyond its edge. Where two
 /// roads are closer than their footprints plus those margins, they share cells and cannot differ in height:
 /// the legs of a hairpin, streets side by side, the arms of a junction. Beyond that distance the ground
-/// between them can slope at [`FILL_SLOPE`]. Heights are compared every [`SAMPLE_M`], the less important road
+/// between them may differ by the step a cell can hold, at [`FILL_SLOPE_MAX`]. Heights are compared every
+/// [`SAMPLE_M`], the less important road
 /// moving more; a road moves at most [`MAX_SETTLE_M`] from where it was first solved, and the grade limits
 /// are kept: the moves are targets of a new solve, not commands, and only an end that meets another road is
 /// fixed to it. Measured on the Berchtesgaden example this takes the pieces that miss the terrain from 5001
@@ -1002,7 +1008,7 @@ fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32) {
     let spots = spots(strips);
     let pairs = close_pairs(&spots, strips, f64::from(cell));
     for _ in 0..SETTLE_ROUNDS {
-        let wanted = wanted_shifts(&pairs, &spots, strips, chains);
+        let wanted = wanted_shifts(&pairs, &spots, strips, chains, f64::from(cell));
         if wanted.is_empty() {
             break;
         }

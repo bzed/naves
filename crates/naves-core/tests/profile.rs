@@ -12,7 +12,7 @@
 )]
 
 use naves_core::catalog::Family;
-use naves_core::conform::FILL_SLOPE;
+use naves_core::conform::{FILL_SLOPE_MAX, conform};
 use naves_core::heightmap::Heightmap;
 use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use naves_core::profile::{MEETING_GRADE, Profiles, RELAX_OFF_M, solve_profiles};
@@ -147,6 +147,35 @@ fn bend_on_a_ramp(family: Family, radius: f64, turn_deg: f64, _grade: f64) -> Ve
 /// The grade of the arc's segment: the two 25 m pieces of the straight come first.
 fn arc_grade(p: &Profiles) -> f64 {
     grades(p, 0)[2]
+}
+
+/// One chain: up the west leg, a link at the top, down the east leg.
+fn hairpin_legs(family: Family, west: f64, east: f64, from: f64, to: f64) -> Vec<PlacedRoad> {
+    let mut roads = straight("a", family, (west, from), (west, to));
+    roads.push(piece(
+        "a",
+        0,
+        PlacedKind::Piece,
+        family,
+        (west, to),
+        (east, to),
+    ));
+    roads.extend(straight("a", family, (east, to), (east, from)));
+    roads
+}
+
+/// The height of the chain at the joint nearest `(x, y)`.
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: a missing joint fails loudly"
+)]
+fn leg_height(p: &Profiles, x: f64, y: f64) -> f64 {
+    p.strips[0]
+        .joints
+        .iter()
+        .min_by(|a, b| ((a.0 - x).hypot(a.1 - y)).total_cmp(&((b.0 - x).hypot(b.1 - y))))
+        .unwrap()
+        .2
 }
 
 #[test]
@@ -515,7 +544,7 @@ fn an_arc_narrower_than_the_road_keeps_half_the_limit() {
 fn switchback_legs_leave_room_for_a_slope() {
     // two legs 30 m apart on a 35 degree flank
     let slope = 35.0_f64.to_radians().tan();
-    let hm = terrain(100, 12.5, |x, _| 400.0 - slope * x);
+    let hm = terrain(100, 6.25, |x, _| 400.0 - slope * x);
     let a = straight("a", Family::Asf3, (400.0, 100.0), (400.0, 600.0));
     let b = straight("b", Family::Asf3, (430.0, 100.0), (430.0, 600.0));
     let p = solve_profiles(&network(vec![a, b]), &hm);
@@ -528,10 +557,26 @@ fn switchback_legs_leave_room_for_a_slope() {
             .2
     };
     let diff = (height(0, 350.0) - height(1, 350.0)).abs();
+    let gap = 3.5 + 3.5 + 3.0 * 6.25;
+    let allowed = 0.1 + (30.0 - gap + 6.25) * FILL_SLOPE_MAX;
     assert!(
-        diff <= 30.0 * FILL_SLOPE + 0.5,
-        "{diff} m between legs 30 m apart"
+        diff <= allowed + 0.5,
+        "{diff} m between legs 30 m apart, {allowed} allowed"
     );
+}
+
+#[test]
+fn legs_whose_level_strips_do_not_touch_keep_their_heights() {
+    // two legs on a 35 degree flank, 27 m apart; the helper's roads are 7 m wide, so their edges are 20 m
+    // apart, 1.25 m more than three cells
+    let slope = 35.0_f64.to_radians().tan();
+    let hm = terrain(200, 6.25, |x, _| 400.0 - slope * (x - 300.0) * 0.3);
+    let legs = hairpin_legs(Family::Mud, 300.0, 327.0, 200.0, 600.0);
+    let p = solve_profiles(&network(vec![legs]), &hm);
+    let apart = (leg_height(&p, 300.0, 400.0) - leg_height(&p, 327.0, 400.0)).abs();
+    assert!(apart > 4.0, "{apart}");
+    let out = conform(&hm, &p.strips).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
 }
 
 /// The height of a strip's profile at `y` (linear between joints).
