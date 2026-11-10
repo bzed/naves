@@ -22,11 +22,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::conform::FILL_SLOPE;
 use crate::heightmap::Heightmap;
-use crate::limits::{grade_aim, min_vertical_radius};
+use crate::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
 /// The steepest grade a road may carry where another road meets it (rise over run).
 pub const MEETING_GRADE: f64 = 0.06;
+
+/// How far a road may be from the terrain before it gives up its grade aim and becomes steeper.
+pub const RELAX_OFF_M: f64 = 4.0;
 
 /// Rounds of smoothing and clipping.
 const ROUNDS: usize = 30;
@@ -558,10 +561,7 @@ fn profile_chain(
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
     let spacing = chain.spacing.clone();
-    let limits = Limits {
-        grade: segment_grades(net, roads, grade_aim(family)),
-        radius: min_vertical_radius(family),
-    };
+    let radius = min_vertical_radius(family);
     let count = chain.at.len();
     let targets: Vec<f64> = chain
         .at
@@ -569,15 +569,36 @@ fn profile_chain(
         .map(|point| f64::from(hm.sample(point.0, point.1).height))
         .collect();
     let (fixed, meetings) = end_joins(&chain, strips, f64::from(hm.cell_m));
-    let heights = if count == 1 || fixed.iter().all(Option::is_some) {
-        targets
+    let aim = grade_aim(family);
+    let ceiling = grade_ceiling(family);
+    let mut solved: Option<(Vec<f64>, Limits)> = None;
+    for base in [aim, f64::midpoint(aim, ceiling), ceiling] {
+        let limits = Limits {
+            grade: segment_grades(net, roads, base),
+            radius,
+        };
+        let heights = if count == 1 || fixed.iter().all(Option::is_some) {
+            targets
+                .iter()
+                .zip(&fixed)
+                .map(|(target, pinned)| pinned.unwrap_or(*target))
+                .collect()
+        } else {
+            solve_chain(&targets, &spacing, &fixed, &limits)
+        };
+        let off = heights
             .iter()
+            .zip(&targets)
             .zip(&fixed)
-            .map(|(target, pinned)| pinned.unwrap_or(*target))
-            .collect()
-    } else {
-        solve_chain(&targets, &spacing, &fixed, &limits)
-    };
+            .any(|((height, target), pinned)| {
+                pinned.is_none() && (height - target).abs() > RELAX_OFF_M
+            });
+        solved = Some((heights, limits));
+        if !off {
+            break;
+        }
+    }
+    let (heights, limits) = solved?;
     let joints: Vec<(f64, f64, f64)> = chain
         .joints
         .iter()

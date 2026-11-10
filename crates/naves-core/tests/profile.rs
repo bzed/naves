@@ -14,8 +14,8 @@
 use naves_core::catalog::Family;
 use naves_core::conform::FILL_SLOPE;
 use naves_core::heightmap::Heightmap;
-use naves_core::limits::{grade_aim, min_vertical_radius};
-use naves_core::profile::{MEETING_GRADE, Profiles, solve_profiles};
+use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
+use naves_core::profile::{MEETING_GRADE, Profiles, RELAX_OFF_M, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
 use proptest::prelude::*;
@@ -215,7 +215,7 @@ fn short_pieces_bend_no_more_per_metre_than_long_ones() {
 
 #[test]
 fn the_piece_before_a_bridge_keeps_the_grade_limit() {
-    // a 20 % ramp down to a 25 m bridge: the last piece before the deck is not steeper than the aim
+    // a 20 % ramp down to a 25 m bridge: the last piece before the deck is not steeper than the ceiling
     let hm = terrain(200, 6.25, |_, y| 100.0 + 0.20 * (y - 500.0).max(0.0));
     let mut roads = straight("up", Family::Asf3, (300.0, 900.0), (300.0, 525.0));
     roads.push(piece(
@@ -231,7 +231,7 @@ fn the_piece_before_a_bridge_keeps_the_grade_limit() {
     assert!(
         grades(&p, 0)
             .iter()
-            .all(|g| g.abs() <= grade_aim(Family::Asf3) + 1e-6)
+            .all(|g| g.abs() <= grade_ceiling(Family::Asf3) + 1e-6)
     );
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
@@ -310,6 +310,64 @@ fn a_short_road_between_two_others_is_all_fixed_and_finite() {
     }
 }
 
+#[test]
+fn a_road_on_ground_steeper_than_its_aim_gives_way() {
+    let hm = terrain(200, 6.25, |_, y| 100.0 + 0.20 * y);
+    let p = solve_profiles(
+        &network(vec![straight(
+            "a",
+            Family::Asf3,
+            (300.0, 200.0),
+            (300.0, 800.0),
+        )]),
+        &hm,
+    );
+    let steepest = grades(&p, 0).iter().fold(0.0_f64, |m, g| m.max(g.abs()));
+    assert!(
+        steepest > grade_aim(Family::Asf3) && steepest <= grade_ceiling(Family::Asf3) + 1e-6,
+        "{steepest}"
+    );
+    for joint in &p.strips[0].joints {
+        assert!(
+            (joint.2 - (100.0 + 0.20 * joint.1)).abs() <= RELAX_OFF_M + 0.5,
+            "{joint:?}"
+        );
+    }
+}
+
+#[test]
+fn a_road_that_stays_near_the_ground_keeps_its_aim() {
+    // 14 % for 100 m in the middle of level ground: 2 m off at most with the aim of 12 %
+    let hm = terrain(200, 6.25, |_, y| {
+        100.0 + 0.14 * (y - 450.0).clamp(0.0, 100.0)
+    });
+    let p = solve_profiles(
+        &network(vec![straight(
+            "a",
+            Family::Asf3,
+            (300.0, 200.0),
+            (300.0, 800.0),
+        )]),
+        &hm,
+    );
+    assert!(
+        grades(&p, 0)
+            .iter()
+            .all(|g| g.abs() <= grade_aim(Family::Asf3) + 1e-6)
+    );
+}
+
+#[test]
+fn giving_way_is_deterministic_and_leaves_earlier_roads_alone() {
+    let hm = terrain(200, 6.25, |x, y| 100.0 + 0.20 * y + 0.01 * x);
+    let first = straight("a", Family::Asf2, (200.0, 200.0), (800.0, 200.0));
+    let steep = straight("b", Family::Asf3, (500.0, 300.0), (500.0, 900.0));
+    let alone = solve_profiles(&network(vec![first.clone()]), &hm);
+    let both = solve_profiles(&network(vec![first.clone(), steep.clone()]), &hm);
+    assert_eq!(alone.strips[0], both.strips[0]);
+    assert_eq!(both, solve_profiles(&network(vec![first, steep]), &hm));
+}
+
 proptest! {
     #[test]
     fn grade_limit_holds(seed in any::<u64>(), family_index in 0usize..6) {
@@ -328,7 +386,7 @@ proptest! {
         let net = network(vec![straight("a", family, (50.0, 50.0), (550.0, 550.0))]);
         let p = solve_profiles(&net, &hm);
         for g in grades(&p, 0) {
-            prop_assert!(g.abs() <= grade_aim(family) + 1e-6, "grade {g}");
+            prop_assert!(g.abs() <= grade_ceiling(family) + 1e-6, "grade {g}");
         }
         let g = grades(&p, 0);
         let lengths: Vec<f64> = p.strips[0]
@@ -560,7 +618,7 @@ fn settling_keeps_the_grade_limits_of_a_road_between_two_others() {
     )];
     let p = solve_profiles(&network(vec![high, low, between]), &hm);
     let grades = grades(&p, 2);
-    let limit = grade_aim(Family::Asf3);
+    let limit = grade_ceiling(Family::Asf3);
     assert!(
         grades.iter().all(|g| g.abs() <= limit + 1e-6),
         "the road between settled to grades {grades:?}, limit {limit}"
@@ -592,7 +650,7 @@ fn the_reported_excesses_are_the_settled_ones() {
     )];
     let p = solve_profiles(&network(vec![high, low, between]), &hm);
     let family = Family::Asf3;
-    let (grade, radius) = (grade_aim(family), min_vertical_radius(family));
+    let (grade, radius) = (grade_ceiling(family), min_vertical_radius(family));
     let mut shown = 0;
     for strip in &p.strips {
         let lengths: Vec<f64> = strip
@@ -646,7 +704,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
     let p = solve_profiles(&network(vec![through, side]), &hm);
     let end = p.strips[1].joints.last().copied().unwrap();
     assert!(
-        end.2 > 109.0,
+        end.2 > 108.5,
         "the side road ends at {:.2}, the junction is at 110",
         end.2
     );
@@ -655,7 +713,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
     assert!(
         grades
             .iter()
-            .all(|g| g.abs() <= grade_aim(Family::Asf3) + 1e-6),
+            .all(|g| g.abs() <= grade_ceiling(Family::Asf3) + 1e-6),
         "the climb onto the junction breaks the limit: {grades:?}"
     );
 }
