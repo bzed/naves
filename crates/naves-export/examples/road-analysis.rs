@@ -550,12 +550,12 @@ fn main() {
                 if grade.abs() > grade_aim(fam) + 1e-6 {
                     before_over += 1;
                 }
-                jcurv.push(grade.abs() / ((l + g[i].1) / 2.0) * 100.0);
+                jcurv.push((grade - g[i].0).abs() / ((l + g[i].1) / 2.0) * 100.0);
             }
         }
     }
     println!(
-        "\n== junctions: {jn} level junction pieces; neighbouring pieces planned over the family's aim: {before_over}; grade change into the level piece p50 {:.2} p90 {:.2} max {:.2} %/m",
+        "\n== junctions: {jn} junction pieces; neighbouring pieces planned over the family's aim: {before_over}; grade change into the junction p50 {:.2} p90 {:.2} max {:.2} %/m",
         pct(&mut jcurv, 0.5),
         pct(&mut jcurv, 0.9),
         pct(&mut jcurv, 1.0)

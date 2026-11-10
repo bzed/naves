@@ -15,7 +15,7 @@ use naves_core::catalog::Family;
 use naves_core::conform::FILL_SLOPE;
 use naves_core::heightmap::Heightmap;
 use naves_core::limits::{grade_aim, min_vertical_radius};
-use naves_core::profile::{Profiles, solve_profiles};
+use naves_core::profile::{MEETING_GRADE, Profiles, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
 use proptest::prelude::*;
@@ -119,6 +119,34 @@ fn grades(p: &Profiles, strip: usize) -> Vec<f64> {
             if d < 1e-9 { 0.0 } else { (w[1].2 - w[0].2) / d }
         })
         .collect()
+}
+
+fn ramp_terrain(grade: f64) -> Heightmap {
+    terrain(200, 6.25, move |_, y| 100.0 + grade * y)
+}
+
+/// A straight, one arc piece with tangent poses, and a straight after it.
+fn bend_on_a_ramp(family: Family, radius: f64, turn_deg: f64, _grade: f64) -> Vec<PlacedRoad> {
+    let turn = turn_deg.to_radians();
+    let start = (300.0, 300.0);
+    let end = (
+        start.0 + radius * (1.0 - turn.cos()),
+        start.1 + radius * turn.sin(),
+    );
+    let mut roads = straight("a", family, (300.0, 250.0), start);
+    let mut arc = piece("b", 0, PlacedKind::Piece, family, start, end);
+    arc.origin.heading = 0.0;
+    arc.start.heading = 0.0;
+    arc.end.heading = turn;
+    roads.push(arc);
+    let after = (end.0 + 50.0 * turn.sin(), end.1 + 50.0 * turn.cos());
+    roads.extend(straight("c", family, end, after));
+    roads
+}
+
+/// The grade of the arc's segment: the two 25 m pieces of the straight come first.
+fn arc_grade(p: &Profiles) -> f64 {
+    grades(p, 0)[2]
 }
 
 #[test]
@@ -326,27 +354,68 @@ fn side_road_starts_at_the_through_road_height() {
 }
 
 #[test]
-fn a_junction_is_level_along_its_length() {
-    let hm = terrain(100, 6.25, |_, y| 100.0 + 0.1 * y);
-    let mut chain = straight("a", Family::Asf3, (100.0, 100.0), (100.0, 200.0));
-    chain.push(piece(
+fn a_junction_on_a_slope_carries_the_meeting_grade_at_most() {
+    let hm = terrain(200, 6.25, |_, y| 100.0 + 0.10 * y);
+    let mut roads = straight("a", Family::Asf3, (300.0, 200.0), (300.0, 500.0));
+    roads.push(piece(
         "a|b",
         0,
         PlacedKind::Junction,
         Family::Asf3,
-        (100.0, 200.0),
-        (100.0, 212.5),
+        (300.0, 500.0),
+        (300.0, 512.5),
     ));
-    chain.extend(straight("b", Family::Asf3, (100.0, 212.5), (100.0, 400.0)));
-    let junction_index = 4;
-    let net = network(vec![chain]);
-    let p = solve_profiles(&net, &hm);
-    // the joint at the start of the junction and the one at its end have one height
-    let j = &p.strips[0].joints;
-    let start = j.iter().find(|j| (j.1 - 200.0).abs() < 1e-6).unwrap();
-    let end = j.iter().find(|j| (j.1 - 212.5).abs() < 1e-6).unwrap();
-    assert!((start.2 - end.2).abs() < 1e-9, "{start:?} {end:?}");
-    let _ = junction_index;
+    roads.extend(straight("c", Family::Asf3, (300.0, 512.5), (300.0, 800.0)));
+    let p = solve_profiles(&network(vec![roads]), &hm);
+    let g = grades(&p, 0);
+    let at_junction = g[12]; // 300 m of 25 m pieces come first
+    assert!(
+        at_junction > 0.03 && at_junction <= MEETING_GRADE + 1e-6,
+        "{at_junction}"
+    );
+    assert!(g.iter().all(|v| v.abs() <= grade_aim(Family::Asf3) + 1e-6));
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}
+
+#[test]
+fn a_through_road_is_gentle_where_a_side_road_ends_on_it() {
+    // no junction piece: a track ends on the road's edge at y = 500
+    let hm = terrain(200, 6.25, |_, y| 100.0 + 0.11 * y);
+    let through = straight("a", Family::Asf3, (300.0, 200.0), (300.0, 800.0));
+    let side = straight("s", Family::Mud, (303.5, 500.0), (500.0, 500.0));
+    let p = solve_profiles(&network(vec![through, side]), &hm);
+    for (i, pair) in p.strips[0].joints.windows(2).enumerate() {
+        let near = pair[0].1 <= 512.5 && pair[1].1 >= 487.5;
+        let grade = (pair[1].2 - pair[0].2) / 25.0;
+        if near {
+            assert!(grade.abs() <= MEETING_GRADE + 1e-6, "segment {i}: {grade}");
+        }
+    }
+}
+
+#[test]
+fn a_tight_bend_is_gentler_than_a_straight() {
+    // a 60 degree arc of radius 10 m in a 7 m road on a 12 % slope: at most 12 % * 6.5 / 10
+    let p = solve_profiles(
+        &network(vec![bend_on_a_ramp(Family::Asf3, 10.0, 60.0, 0.12)]),
+        &ramp_terrain(0.12),
+    );
+    let on_the_arc = arc_grade(&p);
+    assert!(on_the_arc <= 0.12 * 0.65 + 1e-6, "{on_the_arc}");
+}
+
+#[test]
+fn an_arc_narrower_than_the_road_keeps_half_the_limit() {
+    // radius 3 m, road 7 m wide (the helper's width): (r - w/2) / r is negative; the limit is half the aim
+    let p = solve_profiles(
+        &network(vec![bend_on_a_ramp(Family::Asf1, 3.0, 60.0, 0.08)]),
+        &ramp_terrain(0.08),
+    );
+    let on_the_arc = arc_grade(&p);
+    assert!(
+        on_the_arc.is_finite() && on_the_arc > 0.0 && on_the_arc <= 0.04 + 1e-6,
+        "{on_the_arc}"
+    );
 }
 
 #[test]
@@ -397,7 +466,16 @@ fn an_end_between_joints_takes_the_road_height_there() {
     let side = straight("s", Family::Asf3, (305.0, 250.0), (305.0, 101.5));
     let p = solve_profiles(&network(vec![through, side]), &hm);
     let end = p.strips[1].joints.last().copied().unwrap();
-    let wanted = 100.0 + 0.10 * (305.0 - 100.0);
+    let through_height = |x: f64| {
+        let joints = &p.strips[0].joints;
+        let pair = joints
+            .windows(2)
+            .find(|w| (w[0].0 - x) * (w[1].0 - x) <= 0.0 && (w[0].0 - w[1].0).abs() > 1e-9)
+            .unwrap();
+        let t = (x - pair[0].0) / (pair[1].0 - pair[0].0);
+        pair[0].2 + t * (pair[1].2 - pair[0].2)
+    };
+    let wanted = through_height(305.0);
     assert!(
         (end.2 - wanted).abs() < 0.3,
         "side ends at {:.2}, the through road is at {wanted:.2} there",
@@ -407,11 +485,11 @@ fn an_end_between_joints_takes_the_road_height_there() {
 
 #[test]
 fn an_end_beside_a_road_keeps_its_own_height() {
-    // a dead end 5 m from the centre line of another road does not meet it: it keeps the height
-    // of the terrain it is on, instead of taking the other road's nearest joint
+    // a dead end 40 m from the centre line of another road does not meet it and does not share its
+    // cells: it keeps the height of the terrain it is on, instead of taking the other road's height
     let hm = terrain(100, 6.25, |x, _| 100.0 + 0.10 * (x - 100.0));
     let through = straight("t", Family::Asf3, (100.0, 100.0), (550.0, 100.0));
-    let side = straight("s", Family::Asf3, (306.0, 250.0), (306.0, 105.0));
+    let side = straight("s", Family::Asf3, (306.0, 250.0), (306.0, 140.0));
     let p = solve_profiles(&network(vec![through, side]), &hm);
     let end = p.strips[1].joints.last().copied().unwrap();
     let wanted = 100.0 + 0.10 * (306.0 - 100.0);

@@ -134,6 +134,9 @@ road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the fi
 cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every
 finding is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
+A road is at most **6 % steep where another road meets it**, and gentler in a tight bend: the inner edge of a bend is
+steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
+
 The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
 streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before

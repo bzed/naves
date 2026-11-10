@@ -23,7 +23,10 @@ use crate::catalog::Family;
 use crate::conform::FILL_SLOPE;
 use crate::heightmap::Heightmap;
 use crate::limits::{grade_aim, min_vertical_radius};
-use crate::roadplace::{PlacedKind, PlacedNetwork};
+use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
+
+/// The steepest grade a road may carry where another road meets it (rise over run).
+pub const MEETING_GRADE: f64 = 0.06;
 
 /// Rounds of smoothing and clipping.
 const ROUNDS: usize = 30;
@@ -125,7 +128,7 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
     for &i in roads {
         let r = net.roads.get(i)?;
         let length = (r.end.x - r.start.x).hypot(r.end.y - r.start.y);
-        if matches!(r.kind, PlacedKind::Junction | PlacedKind::Bridge) {
+        if r.kind == PlacedKind::Bridge {
             let v = at.len() - 1;
             joints.push((r.end.x, r.end.y, v));
             if let (Some(first_joint), Some(slot)) =
@@ -147,6 +150,71 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
         at,
         spacing,
     })
+}
+
+/// The signed angle from one heading to another, in `(-π, π]`.
+fn wrap_angle(angle: f64) -> f64 {
+    (angle + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI
+}
+
+/// The distance from `p` to the segment `a`-`b`.
+fn point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length2 = dx * dx + dy * dy;
+    let t = if length2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+}
+
+/// Whether the first or last point of another chain lies within the road's half width plus 12.5 m of it.
+fn meets_another_chain(net: &PlacedNetwork, roads: &[usize], road: &PlacedRoad) -> bool {
+    let reach = road.width / 2.0 + 12.5;
+    let (a, b) = ((road.start.x, road.start.y), (road.end.x, road.end.y));
+    net.chains.iter().any(|chain| {
+        if chain.as_slice() == roads {
+            return false;
+        }
+        let first = chain.first().and_then(|i| net.roads.get(*i));
+        let last = chain.last().and_then(|i| net.roads.get(*i));
+        [
+            first.map(|r| (r.start.x, r.start.y)),
+            last.map(|r| (r.end.x, r.end.y)),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|point| point_segment_distance(point, a, b) <= reach)
+    })
+}
+
+/// The grade limit of each segment of a chain: the family's aim, lowered at a meeting and in a tight bend.
+fn segment_grades(net: &PlacedNetwork, roads: &[usize], base: f64) -> Vec<f64> {
+    let mut limits = Vec::new();
+    for &index in roads {
+        let Some(road) = net.roads.get(index) else {
+            continue;
+        };
+        if road.kind == PlacedKind::Bridge {
+            continue;
+        }
+        let mut limit = base;
+        if road.kind == PlacedKind::Junction || meets_another_chain(net, roads, road) {
+            limit = limit.min(MEETING_GRADE);
+        }
+        let turn = wrap_angle(road.end.heading - road.start.heading);
+        if turn.abs() > 0.001 {
+            let chord = (road.end.x - road.start.x).hypot(road.end.y - road.start.y);
+            let radius = chord / (2.0 * (turn.abs() / 2.0).sin());
+            if radius > 0.0 {
+                let factor = ((radius - road.width / 2.0) / radius).max(0.5);
+                limit = limit.min(base * factor);
+            }
+        }
+        limits.push(limit);
+    }
+    limits
 }
 
 /// The bands of `W + λ D₂ᵀD₂` (the main diagonal, the first and the second off-diagonal) and the
@@ -443,7 +511,7 @@ fn profile_chain(
     let family = first.family;
     let spacing = chain.spacing.clone();
     let limits = Limits {
-        grade: vec![grade_aim(family); spacing.len()],
+        grade: segment_grades(net, roads, grade_aim(family)),
         radius: min_vertical_radius(family),
     };
     let count = chain.at.len();

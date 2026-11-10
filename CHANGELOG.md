@@ -54,6 +54,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A junction piece is no longer level along its length: it carries up to 6 % like any road near a meeting. A road is at most 6 % steep where another road meets it, and gentler in a tight bend so that its inner edge stays within the family's aim.
 - A road's profile is limited by a vertical radius per family (600 m on `asf1` down to 60 m on a dirt track) instead of one change of grade per joint, so a short piece no longer bends more per metre than a long one; the grade excesses are measured on the joints after settling.
 - The road limits are in one place (`naves_core::limits`): the steepest grade a car climbs is 30 % on asphalt and streets (was 35 %); gravel and dirt tracks keep 30 % and 28 %, because some of them are used by a tractor or a tougher vehicle rather than a car, and keep their aims of 18 % and 25 %; and a road may be tilted across by up to 20 %, with 8 % as the aim (was one hard limit of 5 %). A road between its family's aim and those limits is **Steep** (amber) instead of not drivable. The limits are estimates from real vehicles, not measured in the game yet.
 - The GUI's look: boxes, radio buttons and fields have an outline that shows on the panel, selected rows are a light green that ink reads on, tabs are marked by a bar instead of a filled button, and keyboard focus is a green ring (white or ink on a coloured level row). The shortcut sheet (F1) is centred and has no shadow.
