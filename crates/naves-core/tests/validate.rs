@@ -147,6 +147,46 @@ fn a_section_of_undrivable_pieces_is_one_violation() {
 }
 
 #[test]
+fn a_cross_fall_between_the_aim_and_the_limit_is_not_reported() {
+    let n = net(vec![road(0, PlacedKind::Piece, (100.0, 100.0))]);
+    let mut piece = check(0, DriveState::Fine, 0.10, 0.0);
+    piece.cross_fall = 0.12;
+    let v = run(
+        &n,
+        &Profiles::default(),
+        &conformed(),
+        &[piece],
+        &[],
+        &[],
+        &[],
+    );
+    assert!(only(Rule::RoadNotDrivable, &v).is_empty());
+}
+
+#[test]
+fn a_cross_fall_over_the_limit_says_so() {
+    let n = net(vec![road(0, PlacedKind::Piece, (100.0, 100.0))]);
+    let mut piece = check(0, DriveState::NotDrivable, 0.10, 0.0);
+    piece.cross_fall = 0.24;
+    let v = run(
+        &n,
+        &Profiles::default(),
+        &conformed(),
+        &[piece],
+        &[],
+        &[],
+        &[],
+    );
+    let nd = only(Rule::RoadNotDrivable, &v);
+    assert_eq!(nd.len(), 1, "{nd:?}");
+    assert!(
+        nd[0].message.ends_with("(and 24 % across)"),
+        "{}",
+        nd[0].message
+    );
+}
+
+#[test]
 fn a_piece_that_misses_the_terrain_is_reported() {
     let n = net(vec![road(0, PlacedKind::Piece, (100.0, 100.0))]);
     let v = run(

@@ -111,4 +111,8 @@ Open until Task 1 steps 2 to 7 of the roads plan have been run. What is known:
 
 To be measured, none done: whether binarize needs the models below `P:`, what the height of an object means,
 what a piece does over a crest, whether overlapping pieces flicker, the surface under the wheels, how steep a
-vehicle can climb per surface (`DRIVE_GRADE_*`), how steep a player can walk (`WALK_LIMIT_DEG`).
+vehicle can climb per surface, how steep a player can walk (`WALK_LIMIT_DEG`).
+
+**The vehicle limits in `naves_core::limits` are estimates from real vehicles, not measured in the game**, until
+the ramps of Task 1 are driven. The numbers and their derivation are in
+`docs/research/2026-11-10-road-alignment.md`, section 3.

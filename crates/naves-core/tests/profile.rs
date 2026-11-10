@@ -14,7 +14,8 @@
 use naves_core::catalog::Family;
 use naves_core::conform::FILL_SLOPE;
 use naves_core::heightmap::Heightmap;
-use naves_core::profile::{Profiles, max_grade, max_grade_change, solve_profiles};
+use naves_core::limits::grade_aim;
+use naves_core::profile::{Profiles, max_grade_change, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
 use proptest::prelude::*;
@@ -162,7 +163,7 @@ proptest! {
         let net = network(vec![straight("a", family, (50.0, 50.0), (550.0, 550.0))]);
         let p = solve_profiles(&net, &hm);
         for g in grades(&p, 0) {
-            prop_assert!(g.abs() <= max_grade(family) + 1e-6, "grade {g}");
+            prop_assert!(g.abs() <= grade_aim(family) + 1e-6, "grade {g}");
         }
         let g = grades(&p, 0);
         for w in g.windows(2) {
@@ -188,7 +189,7 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
     let p = solve_profiles(&network(vec![low, high, bridge_between]), &hm);
     assert!(!p.excesses.is_empty(), "60 m in 40 m cannot be a road");
     let worst = p.excesses.iter().map(|e| e.grade.abs()).fold(0.0, f64::max);
-    assert!(worst > max_grade(Family::Mud));
+    assert!(worst > grade_aim(Family::Mud));
 }
 
 #[test]
@@ -334,7 +335,7 @@ fn settling_keeps_the_grade_limits_of_a_road_between_two_others() {
     )];
     let p = solve_profiles(&network(vec![high, low, between]), &hm);
     let grades = grades(&p, 2);
-    let limit = max_grade(Family::Asf3);
+    let limit = grade_aim(Family::Asf3);
     assert!(
         grades.iter().all(|g| g.abs() <= limit + 1e-6),
         "the road between settled to grades {grades:?}, limit {limit}"
@@ -366,7 +367,7 @@ fn the_reported_excesses_are_the_settled_ones() {
     )];
     let p = solve_profiles(&network(vec![high, low, between]), &hm);
     let family = Family::Asf3;
-    let (grade, change) = (max_grade(family), max_grade_change(family));
+    let (grade, change) = (grade_aim(family), max_grade_change(family));
     let mut shown = 0;
     for strip in &p.strips {
         let grades: Vec<f64> = strip
@@ -425,7 +426,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
     assert!(
         grades
             .iter()
-            .all(|g| g.abs() <= max_grade(Family::Asf3) + 1e-6),
+            .all(|g| g.abs() <= grade_aim(Family::Asf3) + 1e-6),
         "the climb onto the junction breaks the limit: {grades:?}"
     );
 }
@@ -485,10 +486,10 @@ fn the_limits_get_looser_with_the_rank_of_the_road() {
         Family::Mud,
     ];
     for pair in order.windows(2) {
-        assert!(max_grade(pair[0]) <= max_grade(pair[1]));
+        assert!(grade_aim(pair[0]) <= grade_aim(pair[1]));
         assert!(max_grade_change(pair[0]) <= max_grade_change(pair[1]));
     }
-    assert!((max_grade(Family::Asf3) - 0.12).abs() < 1e-12);
+    assert!((grade_aim(Family::Asf3) - 0.12).abs() < 1e-12);
     assert!((max_grade_change(Family::Mud) - 0.08).abs() < 1e-12);
 }
 
@@ -532,7 +533,7 @@ fn the_road_meets_the_bridge_at_deck_height() {
         );
     }
     // and the road on both sides meets it, with the grade limit kept
-    assert!((height_at(175.0) - height_at(200.0)).abs() < max_grade(Family::Asf3) * 25.0 + 1e-6);
+    assert!((height_at(175.0) - height_at(200.0)).abs() < grade_aim(Family::Asf3) * 25.0 + 1e-6);
     assert!(p.strips[0].bridge.iter().filter(|b| **b).count() == 4);
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }

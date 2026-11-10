@@ -42,7 +42,7 @@ navigation mesh, so the layer may miss some ground that is too steep, but never 
 
 Level 4, **Roads and paths**, has **Roads** (at their true width, at least a pixel and a half, with a white casing so
 that they read on every base map), **Paths** (dashed, brown) and **Drivable**, drawn along each road piece: green
-for a piece vehicles can drive, amber for one that is steeper than its family is aimed at but still drivable, red
+for a piece vehicles can drive, amber for one that is steeper or more tilted than its family is aimed at but still drivable, red
 and twice as wide with cross ticks for one that cannot be driven, grey for a track that only has to be walkable.
 The road layers appear when the roads are generated, which takes a moment after the project opens (the panel says
 "Placing roads"); they are not drawn before. The roads need the sources listed in `sources.osm`, `armake2` and

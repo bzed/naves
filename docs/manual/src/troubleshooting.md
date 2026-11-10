@@ -105,8 +105,12 @@ updated; the message names the model.
 
 **`not_drivable`, `road_misses_terrain`, `road_grade` ... in the warnings**
 Every line names the rule and a position in map metres. The same findings, with the numbers of the network, are in
-`build/report.json`. A road can be too steep because the real road is steep and the map is small (a horizontal scale
-below 1 steepens everything): raise `[scale] horizontal`, or accept the finding. `road_misses_terrain` and a road
+`build/report.json`. A road is **not drivable** when it is steeper than a vehicle manages on its surface (30 % on
+asphalt and streets; gravel and dirt tracks keep 30 % and 28 %, since some are used by a tractor or a tougher vehicle)
+or more than 20 % tilted across. Between the family's aim and that limit it is amber: steep or tilted, but still
+drivable. A road can be too steep because the real road is
+steep and the map is small (a horizontal scale below 1 steepens everything): raise `[scale] horizontal`, or accept the
+finding. `road_misses_terrain` and a road
 that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
 (a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
 moves roads further apart in map metres; otherwise accept the finding.

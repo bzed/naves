@@ -31,8 +31,9 @@ use naves_core::conform::conform;
 use naves_core::dem::Dem;
 use naves_core::features::road_features;
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
+use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim};
 use naves_core::osm::read_ways;
-use naves_core::profile::{RoadStrip, max_grade, solve_profiles};
+use naves_core::profile::{RoadStrip, solve_profiles};
 use naves_core::project::Project;
 use naves_core::roadnet::build_graph;
 use naves_core::roadplace::{PlacedKind, place_network};
@@ -200,17 +201,13 @@ fn main() {
         *by_state.entry(format!("{:?}", p.state)).or_default() += len(p);
     }
     println!("total {:.1} km: {by_state:.1?}", total / 1000.0);
-    let hard = |p: &PieceCheck| match p.family {
-        naves_core::catalog::Family::Grav => 0.30,
-        naves_core::catalog::Family::Mud => 0.28,
-        _ => 0.35,
-    };
+    let hard = |p: &PieceCheck| drive_grade(p.family);
     let (mut only_grade, mut only_fall, mut both) = (0.0, 0.0, 0.0);
     for p in drivable
         .iter()
         .filter(|p| p.state == DriveState::NotDrivable)
     {
-        match (p.grade > hard(p), p.cross_fall > 0.05) {
+        match (p.grade > hard(p), p.cross_fall > CROSS_FALL_LIMIT) {
             (true, true) => both += len(p),
             (true, false) => only_grade += len(p),
             _ => only_fall += len(p),
@@ -275,7 +272,7 @@ fn main() {
         println!(
             "  {fam:5} {:6.1} {:6.2} {:6.2} {:6.2}   {:.2}/{:.2}",
             km(&|_| true),
-            km(&|p| p.grade > max_grade(p.family)),
+            km(&|p| p.grade > grade_aim(p.family)),
             km(&|p| p.grade > hard(p)),
             km(&|p| p.cross_fall > 0.05),
             pct(&mut side, 0.5),
@@ -550,7 +547,7 @@ fn main() {
                 {
                     continue;
                 }
-                if grade.abs() > max_grade(fam) + 1e-6 {
+                if grade.abs() > grade_aim(fam) + 1e-6 {
                     before_over += 1;
                 }
                 jcurv.push(grade.abs() / ((l + g[i].1) / 2.0) * 100.0);
@@ -593,10 +590,10 @@ fn main() {
             let l = along[i + 1] - along[i];
             let grade = (ground[j] - ground[i]).abs() / run;
             e.0 += l;
-            if grade > max_grade(fam) {
+            if grade > grade_aim(fam) {
                 e.1 += l;
             }
-            if grade > 1.25 * max_grade(fam) {
+            if grade > 1.25 * grade_aim(fam) {
                 e.2 += l;
             }
             if (strip.joints[i].2 - ground[i]).abs() > 5.0 {
@@ -658,9 +655,9 @@ fn main() {
                         ((b.2 - strip.joints[k].2) / (along[k + 1] - along[k]).max(0.5)).abs()
                     })
                 };
-                let at_limit = grade_at(i) >= 0.95 * max_grade(fam)
-                    || (i > 0 && grade_at(i - 1) >= 0.95 * max_grade(fam))
-                    || slope.abs() > max_grade(fam);
+                let at_limit = grade_at(i) >= 0.95 * grade_aim(fam)
+                    || (i > 0 && grade_at(i - 1) >= 0.95 * grade_aim(fam))
+                    || slope.abs() > grade_aim(fam);
                 match (at_limit, rough > 2.5) {
                     (true, true) => off_both += 1,
                     (true, false) => off_limit += 1,
@@ -718,7 +715,7 @@ fn main() {
         let e = planned_over.entry(format!("{fam:?}")).or_default();
         for (grade, l) in &g {
             e.1 += l;
-            if grade.abs() > max_grade(fam) + 1e-6 {
+            if grade.abs() > grade_aim(fam) + 1e-6 {
                 e.0 += l;
             }
         }

@@ -22,25 +22,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::conform::FILL_SLOPE;
 use crate::heightmap::Heightmap;
+use crate::limits::grade_aim;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// Rounds of smoothing and clipping.
 const ROUNDS: usize = 30;
 /// Weight of the second difference against the terrain heights.
 const SMOOTHNESS: f64 = 30.0;
-
-/// The steepest grade a road of this family is aimed at (rise over run).
-#[must_use]
-pub fn max_grade(family: Family) -> f64 {
-    match family {
-        Family::Asf1 => 0.08,
-        Family::Asf2 => 0.10,
-        Family::Asf3 => 0.12,
-        Family::City => 0.14,
-        Family::Grav => 0.18,
-        Family::Mud => 0.25,
-    }
-}
 
 /// The largest change of grade from one piece to the next.
 #[must_use]
@@ -455,7 +443,7 @@ fn profile_chain(
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
     let limits = Limits {
-        grade: max_grade(family),
+        grade: grade_aim(family),
         change: max_grade_change(family),
     };
     let count = chain.at.len();

@@ -125,7 +125,7 @@ fn paths_key(ui: &mut egui::Ui) {
 
 fn drivable_key(ui: &mut egui::Ui) {
     swatch(ui, FINE, "Can be driven");
-    swatch(ui, STEEP, "Steep, still drivable");
+    swatch(ui, STEEP, "Steep or tilted, still drivable");
     swatch(ui, NOT_DRIVABLE, "Cannot be driven");
     swatch(ui, WALK_ONLY, "Only on foot");
 }
@@ -261,7 +261,7 @@ fn family_name(family: Family) -> &'static str {
 fn state_text(state: DriveState) -> &'static str {
     match state {
         DriveState::Fine => "Yes",
-        DriveState::Steep => "Yes, steeper than aimed",
+        DriveState::Steep => "Yes, steeper or more tilted than aimed",
         DriveState::NotDrivable => "No",
         DriveState::WalkOnly => "Only on foot",
         DriveState::TooSteepToWalk => "No, too steep to walk",

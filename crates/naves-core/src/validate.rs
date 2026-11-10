@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::Conformed;
 use crate::heightmap::MapGeo;
+use crate::limits::CROSS_FALL_LIMIT;
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::Profiles;
@@ -115,7 +116,7 @@ fn not_drivable(net: &PlacedNetwork, pieces: &[PieceCheck]) -> Vec<Violation> {
                 let fall = run.iter().map(|p| p.cross_fall).fold(0.0, f64::max);
                 let mut message =
                     format!("Not drivable: {:.0} % over {length:.0} m", grade * 100.0);
-                if fall > crate::checks::MAX_CROSS_FALL {
+                if fall > CROSS_FALL_LIMIT {
                     message = format!("{message} (and {:.0} % across)", fall * 100.0);
                 }
                 out.push(violation(Rule::RoadNotDrivable, first.start, message));

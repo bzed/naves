@@ -11,13 +11,13 @@
 
 use naves_core::catalog::Family;
 use naves_core::checks::{
-    DRIVE_GRADE_GRAVEL, DRIVE_GRADE_PAVED, DRIVE_GRADE_TRACK, DriveState, MAX_CROSS_FALL,
-    MAX_MISS_M, WALK_LIMIT_DEG, check_roads_on_terrain, check_walkable,
+    DriveState, MAX_MISS_M, WALK_LIMIT_DEG, check_roads_on_terrain, check_walkable,
 };
 use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, conform};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
-use naves_core::profile::{max_grade, solve_profiles};
+use naves_core::limits::{drive_grade, grade_aim};
+use naves_core::profile::solve_profiles;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
 
@@ -112,13 +112,9 @@ fn states(net: &PlacedNetwork, hm: &Heightmap) -> Vec<DriveState> {
 
 #[test]
 fn a_road_at_the_limit_is_drivable() {
-    for (family, limit) in [
-        (Family::Asf3, DRIVE_GRADE_PAVED),
-        (Family::Grav, DRIVE_GRADE_GRAVEL),
-        (Family::Mud, DRIVE_GRADE_TRACK),
-    ] {
+    for family in [Family::Asf3, Family::Grav, Family::Mud] {
         let net = chain(family, true, (300.0, 100.0), (300.0, 400.0));
-        for state in states(&net, &ramp(limit - 0.01)) {
+        for state in states(&net, &ramp(drive_grade(family) - 0.01)) {
             assert!(
                 matches!(state, DriveState::Fine | DriveState::Steep),
                 "{family:?}: {state:?}"
@@ -129,13 +125,9 @@ fn a_road_at_the_limit_is_drivable() {
 
 #[test]
 fn a_road_over_the_limit_is_not_drivable() {
-    for (family, limit) in [
-        (Family::Asf3, DRIVE_GRADE_PAVED),
-        (Family::Grav, DRIVE_GRADE_GRAVEL),
-        (Family::Mud, DRIVE_GRADE_TRACK),
-    ] {
+    for family in [Family::Asf3, Family::Grav, Family::Mud] {
         let net = chain(family, true, (300.0, 100.0), (300.0, 400.0));
-        for state in states(&net, &ramp(limit + 0.02)) {
+        for state in states(&net, &ramp(drive_grade(family) + 0.02)) {
             assert_eq!(state, DriveState::NotDrivable, "{family:?}");
         }
     }
@@ -144,8 +136,8 @@ fn a_road_over_the_limit_is_not_drivable() {
 #[test]
 fn steep_is_between_the_two_limits() {
     let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
-    let aim = max_grade(Family::Asf3);
-    assert!(aim < DRIVE_GRADE_PAVED);
+    let aim = grade_aim(Family::Asf3);
+    assert!(aim < drive_grade(Family::Asf3));
     assert!(
         states(&net, &ramp(aim + 0.03))
             .iter()
@@ -202,16 +194,43 @@ fn a_short_steep_spot_within_the_window_counts() {
         checks.iter().map(|c| c.grade).collect::<Vec<_>>()
     );
     let worst = checks.iter().map(|c| c.grade).fold(0.0, f64::max);
-    assert!(worst > 0.12 && worst < DRIVE_GRADE_PAVED, "{worst}");
+    assert!(worst > 0.12 && worst < drive_grade(Family::Asf3), "{worst}");
 }
 
 #[test]
-fn cross_fall_makes_a_road_not_drivable() {
-    let hm = terrain(100, 6.25, |x, _| 100.0 - (MAX_CROSS_FALL + 0.04) * x);
+fn cross_fall_over_the_aim_is_steep_and_still_drivable() {
+    let hm = terrain(100, 6.25, |x, _| 100.0 - 0.12 * x);
     let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
-    let checks = check_roads_on_terrain(&net, &hm);
-    assert!(checks.iter().all(|c| c.state == DriveState::NotDrivable));
-    assert!(checks[0].cross_fall > MAX_CROSS_FALL);
+    assert!(states(&net, &hm).iter().all(|s| *s == DriveState::Steep));
+}
+
+#[test]
+fn cross_fall_over_the_limit_is_not_drivable() {
+    let hm = terrain(100, 6.25, |x, _| 100.0 - 0.24 * x);
+    let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
+    assert!(
+        states(&net, &hm)
+            .iter()
+            .all(|s| *s == DriveState::NotDrivable)
+    );
+}
+
+#[test]
+fn gravel_and_tracks_have_their_own_lower_limits() {
+    for (family, grade, state) in [
+        (Family::Grav, 0.20, DriveState::Steep),
+        (Family::Grav, 0.32, DriveState::NotDrivable),
+        (Family::Mud, 0.26, DriveState::Steep),
+        (Family::Mud, 0.30, DriveState::NotDrivable),
+        (Family::Asf3, 0.27, DriveState::Steep),
+        (Family::Asf3, 0.33, DriveState::NotDrivable),
+    ] {
+        let net = chain(family, true, (300.0, 100.0), (300.0, 400.0));
+        assert!(
+            states(&net, &ramp(grade)).iter().all(|s| *s == state),
+            "{family:?} at {grade}"
+        );
+    }
 }
 
 #[test]

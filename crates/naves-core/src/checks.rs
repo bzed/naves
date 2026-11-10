@@ -11,25 +11,13 @@
 use crate::catalog::Family;
 use crate::features::{Feature, FeatureKind};
 use crate::heightmap::Heightmap;
-use crate::profile::max_grade;
+use crate::limits::{CROSS_FALL_AIM, CROSS_FALL_LIMIT, drive_grade, grade_aim};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
-/// The steepest grade (rise over run) a vehicle climbs on asphalt and streets.
-///
-/// **Provisional.** The roads plan measures this in the game (Task 1, drive ramps, the steepest grade that a
-/// small car, a large car and the truck manage, times 0.8). That measurement has not been made: this is a
-/// guess above the aims of the road families, to be replaced by the measured value.
-pub const DRIVE_GRADE_PAVED: f64 = 0.35;
-/// The steepest grade a vehicle climbs on gravel. **Provisional**, see [`DRIVE_GRADE_PAVED`].
-pub const DRIVE_GRADE_GRAVEL: f64 = 0.30;
-/// The steepest grade a vehicle climbs on a dirt track. **Provisional**, see [`DRIVE_GRADE_PAVED`].
-pub const DRIVE_GRADE_TRACK: f64 = 0.28;
 /// The steepest ground a player walks up, in degrees. **Provisional**: the roads plan measures it in the game
 /// (Task 1, walk ramps); Livonia's navigation mesh allows agents 60°, which is an upper bound and not the
 /// player's limit. It must stay above the cutting slope, so that a player can always leave a road.
 pub const WALK_LIMIT_DEG: f64 = 50.0;
-/// The largest fall across a road that a vehicle can take (rise over width).
-pub const MAX_CROSS_FALL: f64 = 0.05;
 /// The most a road piece may be above or below the terrain inside its footprint.
 pub const MAX_MISS_M: f64 = 0.15;
 
@@ -47,7 +35,7 @@ const MERGE_STEEP_PATH_M: f64 = 10.0;
 pub enum DriveState {
     /// Within the aim of its family.
     Fine,
-    /// Steeper than the aim of its family, but not beyond what vehicles manage.
+    /// Steeper or more tilted across than the aim of its family, but not beyond what vehicles manage.
     Steep,
     /// A road that vehicles cannot climb or that tilts too much across.
     NotDrivable,
@@ -95,14 +83,6 @@ pub struct SteepPathSection {
     pub length_m: f64,
     /// The steepest ground in it, in degrees.
     pub slope_deg: f64,
-}
-
-fn hard_limit(family: Family) -> f64 {
-    match family {
-        Family::Asf1 | Family::Asf2 | Family::Asf3 | Family::City => DRIVE_GRADE_PAVED,
-        Family::Grav => DRIVE_GRADE_GRAVEL,
-        Family::Mud => DRIVE_GRADE_TRACK,
-    }
 }
 
 fn count_of(value: f64) -> usize {
@@ -274,9 +254,9 @@ pub fn check_roads_on_terrain(net: &PlacedNetwork, hm: &Heightmap) -> Vec<PieceC
         signed.push(measured.as_ref().map_or(0.0, |m| m.signed_grade));
         checks.push(measured.map(|m| {
             let state = if road.drivable {
-                if m.grade > hard_limit(road.family) || m.cross_fall > MAX_CROSS_FALL {
+                if m.grade > drive_grade(road.family) || m.cross_fall > CROSS_FALL_LIMIT {
                     DriveState::NotDrivable
-                } else if m.grade > max_grade(road.family) {
+                } else if m.grade > grade_aim(road.family) || m.cross_fall > CROSS_FALL_AIM {
                     DriveState::Steep
                 } else {
                     DriveState::Fine
