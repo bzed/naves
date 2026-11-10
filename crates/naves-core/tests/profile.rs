@@ -14,8 +14,8 @@
 use naves_core::catalog::Family;
 use naves_core::conform::FILL_SLOPE;
 use naves_core::heightmap::Heightmap;
-use naves_core::limits::grade_aim;
-use naves_core::profile::{Profiles, max_grade_change, solve_profiles};
+use naves_core::limits::{grade_aim, min_vertical_radius};
+use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
 use proptest::prelude::*;
@@ -88,6 +88,19 @@ fn straight(stretch: &str, family: Family, a: (f64, f64), b: (f64, f64)) -> Vec<
         .collect()
 }
 
+/// Pieces of `length` metres along the straight line from `a` to `b`.
+fn pieces_of(family: Family, a: (f64, f64), b: (f64, f64), length: f64) -> Vec<PlacedRoad> {
+    let total = (b.0 - a.0).hypot(b.1 - a.1);
+    let n = (total / length).ceil() as u32;
+    (0..n)
+        .map(|i| {
+            let (t0, t1) = (f64::from(i) / f64::from(n), f64::from(i + 1) / f64::from(n));
+            let p = |t: f64| (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+            piece("a", i, PlacedKind::Piece, family, p(t0), p(t1))
+        })
+        .collect()
+}
+
 fn network(chains: Vec<Vec<PlacedRoad>>) -> PlacedNetwork {
     let mut net = PlacedNetwork::default();
     for chain in chains {
@@ -145,6 +158,95 @@ fn a_gentle_slope_is_followed() {
     }
 }
 
+#[test]
+fn short_pieces_bend_no_more_per_metre_than_long_ones() {
+    // the same crest once in 25 m pieces and once in 6.25 m pieces
+    let hm = terrain(200, 6.25, |_, y| {
+        100.0 - 0.004 * (y - 600.0).powi(2).min(40_000.0)
+    });
+    for length in [25.0, 6.25] {
+        let p = solve_profiles(
+            &network(vec![pieces_of(
+                Family::Asf3,
+                (300.0, 200.0),
+                (300.0, 1000.0),
+                length,
+            )]),
+            &hm,
+        );
+        let g = grades(&p, 0);
+        let radius = min_vertical_radius(Family::Asf3);
+        for pair in g.windows(2) {
+            assert!(
+                (pair[1] - pair[0]).abs() <= length / radius + 1e-6,
+                "{length}: {pair:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_piece_before_a_bridge_keeps_the_grade_limit() {
+    // a 20 % ramp down to a 25 m bridge: the last piece before the deck is not steeper than the aim
+    let hm = terrain(200, 6.25, |_, y| 100.0 + 0.20 * (y - 500.0).max(0.0));
+    let mut roads = straight("up", Family::Asf3, (300.0, 900.0), (300.0, 525.0));
+    roads.push(piece(
+        "deck",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 525.0),
+        (300.0, 500.0),
+    ));
+    roads.extend(straight("on", Family::Asf3, (300.0, 500.0), (300.0, 300.0)));
+    let p = solve_profiles(&network(vec![roads]), &hm);
+    assert!(
+        grades(&p, 0)
+            .iter()
+            .all(|g| g.abs() <= grade_aim(Family::Asf3) + 1e-6)
+    );
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}
+
+#[test]
+fn overlapping_pieces_do_not_break_the_solver() {
+    // two straights that overlap by all but 1 cm: the distance between two joints is nearly zero
+    let hm = terrain(100, 6.25, |_, y| 100.0 + 0.05 * y);
+    let roads = vec![
+        piece(
+            "a",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (300.0, 100.0),
+            (300.0, 125.0),
+        ),
+        piece(
+            "a",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (300.0, 100.01),
+            (300.0, 125.01),
+        ),
+        piece(
+            "a",
+            2,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (300.0, 125.01),
+            (300.0, 150.01),
+        ),
+    ];
+    let p = solve_profiles(&network(vec![roads]), &hm);
+    assert!(
+        p.strips[0]
+            .joints
+            .iter()
+            .all(|j| j.2.is_finite() && (j.2 - (100.0 + 0.05 * j.1)).abs() < 1.0)
+    );
+}
+
 proptest! {
     #[test]
     fn grade_limit_holds(seed in any::<u64>(), family_index in 0usize..6) {
@@ -166,8 +268,18 @@ proptest! {
             prop_assert!(g.abs() <= grade_aim(family) + 1e-6, "grade {g}");
         }
         let g = grades(&p, 0);
-        for w in g.windows(2) {
-            prop_assert!((w[1] - w[0]).abs() <= max_grade_change(family) + 1e-6, "change {}", w[1] - w[0]);
+        let lengths: Vec<f64> = p.strips[0]
+            .joints
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+            .collect();
+        for (i, w) in g.windows(2).enumerate() {
+            let run = f64::midpoint(lengths[i], lengths[i + 1]);
+            prop_assert!(
+                (w[1] - w[0]).abs() <= run / min_vertical_radius(family) + 1e-6,
+                "change {} over {run} m",
+                w[1] - w[0]
+            );
         }
         prop_assert!(p.excesses.is_empty());
     }
@@ -367,19 +479,23 @@ fn the_reported_excesses_are_the_settled_ones() {
     )];
     let p = solve_profiles(&network(vec![high, low, between]), &hm);
     let family = Family::Asf3;
-    let (grade, change) = (grade_aim(family), max_grade_change(family));
+    let (grade, radius) = (grade_aim(family), min_vertical_radius(family));
     let mut shown = 0;
     for strip in &p.strips {
+        let lengths: Vec<f64> = strip
+            .joints
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1).max(0.5))
+            .collect();
         let grades: Vec<f64> = strip
             .joints
             .windows(2)
-            .map(|w| {
-                let d = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1).max(0.5);
-                (w[1].2 - w[0].2) / d
-            })
+            .zip(&lengths)
+            .map(|(w, d)| (w[1].2 - w[0].2) / d)
             .collect();
-        for pair in grades.windows(2) {
-            if (pair[1] - pair[0]).abs() > change + 1e-6 {
+        for (i, pair) in grades.windows(2).enumerate() {
+            let run = f64::midpoint(lengths[i], lengths[i + 1]);
+            if (pair[1] - pair[0]).abs() / run > 1.0 / radius + 1e-6 {
                 shown += 1;
             }
         }
@@ -487,10 +603,10 @@ fn the_limits_get_looser_with_the_rank_of_the_road() {
     ];
     for pair in order.windows(2) {
         assert!(grade_aim(pair[0]) <= grade_aim(pair[1]));
-        assert!(max_grade_change(pair[0]) <= max_grade_change(pair[1]));
+        assert!(min_vertical_radius(pair[0]) >= min_vertical_radius(pair[1]));
     }
     assert!((grade_aim(Family::Asf3) - 0.12).abs() < 1e-12);
-    assert!((max_grade_change(Family::Mud) - 0.08).abs() < 1e-12);
+    assert!((min_vertical_radius(Family::Mud) - 60.0).abs() < 1e-12);
 }
 
 #[test]

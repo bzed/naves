@@ -22,26 +22,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::conform::FILL_SLOPE;
 use crate::heightmap::Heightmap;
-use crate::limits::grade_aim;
+use crate::limits::{grade_aim, min_vertical_radius};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// Rounds of smoothing and clipping.
 const ROUNDS: usize = 30;
 /// Weight of the second difference against the terrain heights.
 const SMOOTHNESS: f64 = 30.0;
-
-/// The largest change of grade from one piece to the next.
-#[must_use]
-pub fn max_grade_change(family: Family) -> f64 {
-    match family {
-        Family::Asf1 => 0.02,
-        Family::Asf2 => 0.025,
-        Family::Asf3 => 0.03,
-        Family::City => 0.04,
-        Family::Grav => 0.05,
-        Family::Mud => 0.08,
-    }
-}
 
 /// The importance of a road when two want the same ground: higher wins.
 fn rank(family: Family) -> u8 {
@@ -126,14 +113,18 @@ struct Chain {
     joints: Vec<(f64, f64, usize)>,
     /// Position of each variable.
     at: Vec<(f64, f64)>,
+    /// The length of the piece that joins variable `i` and `i + 1`.
+    spacing: Vec<f64>,
 }
 
 fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
     let first = net.roads.get(*roads.first()?)?;
     let mut joints = vec![(first.start.x, first.start.y, 0)];
     let mut at = vec![(first.start.x, first.start.y)];
+    let mut spacing = Vec::new();
     for &i in roads {
         let r = net.roads.get(i)?;
+        let length = (r.end.x - r.start.x).hypot(r.end.y - r.start.y);
         if matches!(r.kind, PlacedKind::Junction | PlacedKind::Bridge) {
             let v = at.len() - 1;
             joints.push((r.end.x, r.end.y, v));
@@ -148,9 +139,14 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
         } else {
             joints.push((r.end.x, r.end.y, at.len()));
             at.push((r.end.x, r.end.y));
+            spacing.push(length);
         }
     }
-    Some(Chain { joints, at })
+    Some(Chain {
+        joints,
+        at,
+        spacing,
+    })
 }
 
 /// The bands of `W + λ D₂ᵀD₂` (the main diagonal, the first and the second off-diagonal) and the
@@ -264,15 +260,16 @@ fn smooth(target: &[f64], fixed: &[bool]) -> Vec<f64> {
     solve_bands(&bands(target, fixed))
 }
 
-/// The grade limits of a family.
-#[derive(Clone, Copy)]
+/// The grade limits of a chain: one grade per segment between two variables, and the smallest vertical
+/// radius its joints may have.
+#[derive(Clone, Debug, PartialEq)]
 struct Limits {
-    grade: f64,
-    change: f64,
+    grade: Vec<f64>,
+    radius: f64,
 }
 
 /// One clipping pass over the grades, forward (from the start) or backward; fixed heights stay.
-fn clip(heights: &mut [f64], spacing: &[f64], fixed: &[bool], limits: Limits, forward: bool) {
+fn clip(heights: &mut [f64], spacing: &[f64], fixed: &[bool], limits: &Limits, forward: bool) {
     let count = heights.len();
     if count < 2 {
         return;
@@ -282,17 +279,19 @@ fn clip(heights: &mut [f64], spacing: &[f64], fixed: &[bool], limits: Limits, fo
     } else {
         (0..count - 1).rev().collect()
     };
-    let mut previous: Option<f64> = None;
+    let mut previous: Option<(f64, f64)> = None;
     for segment in segments {
         let length = spacing.get(segment).copied().unwrap_or(1.0).max(0.5);
         let (from, to) = (
             heights.get(segment).copied().unwrap_or(0.0),
             heights.get(segment + 1).copied().unwrap_or(0.0),
         );
-        let (mut low, mut high) = (-limits.grade, limits.grade);
-        if let Some(before) = previous {
-            low = low.max(before - limits.change);
-            high = high.min(before + limits.change);
+        let grade_limit = limits.grade.get(segment).copied().unwrap_or(f64::INFINITY);
+        let (mut low, mut high) = (-grade_limit, grade_limit);
+        if let Some((before, before_length)) = previous {
+            let change = f64::midpoint(before_length, length) / limits.radius;
+            low = low.max(before - change);
+            high = high.min(before + change);
             if low > high {
                 let middle = f64::midpoint(low, high);
                 (low, high) = (middle, middle);
@@ -317,7 +316,7 @@ fn clip(heights: &mut [f64], spacing: &[f64], fixed: &[bool], limits: Limits, fo
                 *height = new;
             }
         }
-        previous = Some(slope);
+        previous = Some((slope, length));
     }
 }
 
@@ -325,7 +324,7 @@ fn solve_chain(
     targets: &[f64],
     spacing: &[f64],
     fixed_height: &[Option<f64>],
-    limits: Limits,
+    limits: &Limits,
 ) -> Vec<f64> {
     let fixed: Vec<bool> = fixed_height.iter().map(Option::is_some).collect();
     let mut goal = targets.to_vec();
@@ -442,9 +441,10 @@ fn profile_chain(
     let chain = chain_of(net, roads)?;
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
+    let spacing = chain.spacing.clone();
     let limits = Limits {
-        grade: grade_aim(family),
-        change: max_grade_change(family),
+        grade: vec![grade_aim(family); spacing.len()],
+        radius: min_vertical_radius(family),
     };
     let count = chain.at.len();
     let targets: Vec<f64> = chain
@@ -452,19 +452,11 @@ fn profile_chain(
         .iter()
         .map(|point| f64::from(hm.sample(point.0, point.1).height))
         .collect();
-    let spacing: Vec<f64> = chain
-        .at
-        .windows(2)
-        .map(|pair| match pair {
-            [from, to] => (to.0 - from.0).hypot(to.1 - from.1),
-            _ => 1.0,
-        })
-        .collect();
     let (fixed, ends_on) = end_joins(&chain, strips);
     let heights = if count == 1 {
         targets
     } else {
-        solve_chain(&targets, &spacing, &fixed, limits)
+        solve_chain(&targets, &spacing, &fixed, &limits)
     };
     let joints: Vec<(f64, f64, f64)> = chain
         .joints
@@ -514,34 +506,42 @@ fn profile_chain(
 /// Where a solved chain breaks its limits: the grades and grade changes over the limit, on the
 /// heights it is holding now.
 fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
-    let grades: Vec<f64> = chain
+    let grades: Vec<(f64, f64)> = chain
         .heights
         .windows(2)
         .zip(&chain.spacing)
         .map(|(pair, length)| match pair {
-            [from, to] => (to - from) / length.max(0.5),
-            _ => 0.0,
+            [from, to] => ((to - from) / length.max(0.5), *length),
+            _ => (0.0, 0.5),
         })
         .collect();
     let mut excesses = Vec::new();
-    for (index, grade) in grades.iter().enumerate() {
+    for (index, (grade, length)) in grades.iter().enumerate() {
         let at = chain.at.get(index).copied().unwrap_or_default();
-        if grade.abs() > chain.limits.grade + 1e-6 {
+        let limit = chain
+            .limits
+            .grade
+            .get(index)
+            .copied()
+            .unwrap_or(f64::INFINITY);
+        if grade.abs() > limit + 1e-6 {
             excesses.push(GradeExcess {
                 at,
                 grade: *grade,
-                limit: chain.limits.grade,
+                limit,
             });
         }
-        let before = index.checked_sub(1).and_then(|b| grades.get(b)).copied();
-        if let Some(before) = before
-            && (grade - before).abs() > chain.limits.change + 1e-6
-        {
-            excesses.push(GradeExcess {
-                at,
-                grade: grade - before,
-                limit: chain.limits.change,
-            });
+        if let Some((before, before_length)) = index.checked_sub(1).and_then(|b| grades.get(b)) {
+            let run = f64::midpoint(*before_length, *length);
+            let change = (grade - before).abs() / run.max(0.5);
+            let change_limit = 1.0 / chain.limits.radius;
+            if change > change_limit + 1e-6 {
+                excesses.push(GradeExcess {
+                    at,
+                    grade: change,
+                    limit: change_limit,
+                });
+            }
         }
     }
     excesses
@@ -824,7 +824,13 @@ fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) 
                 .copied()
                 .unwrap_or(1.0)
                 .max(0.5);
-            let bound = chain.limits.grade * span;
+            let bound = chain
+                .limits
+                .grade
+                .get(end.min(other))
+                .copied()
+                .unwrap_or(f64::INFINITY)
+                * span;
             let held = moved.clamp(neighbour - bound, neighbour + bound);
             if let Some(slot) = chain.heights.get_mut(end) {
                 *slot = held;
@@ -833,7 +839,8 @@ fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) 
                 *slot = Some(held);
             }
         }
-        chain.heights = solve_chain(&chain.heights, &chain.spacing, &pinned, chain.limits);
+        let heights = solve_chain(&chain.heights, &chain.spacing, &pinned, &chain.limits);
+        chain.heights = heights;
         // the solve may overshoot at a free end (the smoothing has none there): hold the move
         // near the first solve. What that breaks the limits of - ends fixed to a road they meet -
         // is reported as an excess.
