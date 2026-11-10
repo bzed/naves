@@ -87,11 +87,15 @@ fn write_script(path: &Path, body: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Write next to the script and rename it into place: a script that is still open for writing cannot be
+    // executed ("Text file busy"), and the tests run it immediately after the fixture is made.
+    let temporary = path.with_extension("tmp");
     std::fs::write(
-        path,
+        &temporary,
         format!("#!/bin/sh\nPATH=\"$PATH:/usr/bin:/bin\"\n{body}\n"),
     )?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::rename(&temporary, path)
 }
 
 impl FakeEnv {
