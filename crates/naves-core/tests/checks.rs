@@ -16,7 +16,7 @@ use naves_core::checks::{
 use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, conform};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
-use naves_core::limits::{drive_grade, grade_aim};
+use naves_core::limits::{CROSS_FALL_AIM, drive_grade, grade_aim};
 use naves_core::profile::solve_profiles;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
@@ -96,6 +96,30 @@ fn chain(family: Family, drivable: bool, a: (f64, f64), b: (f64, f64)) -> Placed
         roads,
         ..PlacedNetwork::default()
     }
+}
+
+/// Adds a second chain of 12.5 m pieces from `a` to `b`.
+fn append_chain(
+    net: &mut PlacedNetwork,
+    family: Family,
+    drivable: bool,
+    a: (f64, f64),
+    b: (f64, f64),
+) {
+    let n = ((b.0 - a.0).hypot(b.1 - a.1) / 12.5).ceil() as u32;
+    let base = net.roads.len();
+    for i in 0..n {
+        let p = |t: f64| (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+        net.roads.push(piece(
+            i,
+            PlacedKind::Piece,
+            family,
+            drivable,
+            p(f64::from(i) / f64::from(n)),
+            p(f64::from(i + 1) / f64::from(n)),
+        ));
+    }
+    net.chains.push((base..base + n as usize).collect());
 }
 
 /// One arc piece of `radius` around `centre`, from `from_deg` through `turn_deg`, with the tangent
@@ -314,6 +338,30 @@ fn miss_is_zero_on_shaped_terrain() {
             "piece {} misses by {}",
             c.slot,
             c.miss_m
+        );
+    }
+}
+
+#[test]
+fn a_side_road_starts_on_the_ground_of_the_road_it_leaves() {
+    // the through road falls 5 % to the north; the side road leaves east, where the ground rises 10 %
+    let base = terrain(160, 6.25, |x, y| {
+        100.0 - 0.05 * y + 0.10 * (x - 300.0).max(0.0)
+    });
+    let mut net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 900.0));
+    append_chain(&mut net, Family::Grav, true, (303.5, 500.0), (600.0, 500.0));
+    let profiles = solve_profiles(&net, &base);
+    let shaped = conform(&base, &profiles.strips).unwrap().heightmap;
+    for c in check_roads_on_terrain(&net, &shaped)
+        .iter()
+        .filter(|c| c.family == Family::Grav)
+    {
+        assert!(c.miss_m <= MAX_MISS_M, "miss {} at {:?}", c.miss_m, c.start);
+        assert!(
+            c.cross_fall <= CROSS_FALL_AIM,
+            "cross fall {} at {:?}",
+            c.cross_fall,
+            c.start
         );
     }
 }

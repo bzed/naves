@@ -95,8 +95,8 @@ struct Solved {
     /// The distance from each variable to the next.
     spacing: Vec<f64>,
     limits: Limits,
-    /// The meeting each end lies on, if any.
-    joins: [Option<Meeting>; 2],
+    /// The meeting each fixed variable lies on.
+    joins: Vec<(usize, Meeting)>,
     /// The heights as first solved: [`settle`] moves a variable only so far from them.
     origin: Vec<f64>,
 }
@@ -429,56 +429,83 @@ fn meeting_height(strip: &RoadStrip, meet: &Meeting) -> Option<f64> {
 /// A chain end this far beyond the edge of another road still counts as meeting it.
 const ON_ROAD_M: f64 = 1.0;
 
+/// Where a point lies on one road's surface: the nearest place on `strip` whose surface it is on.
+/// `reach` is how far beyond the edge it may be; on a junction piece `junction_reach` is how far
+/// beyond the piece's own reach its side ports lie. The ground under a bridge does not count.
+fn meeting_on(
+    strip: &RoadStrip,
+    owner: usize,
+    at: (f64, f64),
+    reach: f64,
+    junction_reach: f64,
+) -> Option<(f64, Meeting)> {
+    let mut best: Option<(f64, Meeting)> = None;
+    for segment in 0..strip.joints.len().saturating_sub(1) {
+        if strip.bridge.get(segment).copied().unwrap_or(false) {
+            continue;
+        }
+        let (Some(from), Some(to)) = (strip.joints.get(segment), strip.joints.get(segment + 1))
+        else {
+            continue;
+        };
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let length2 = dx * dx + dy * dy;
+        let t = if length2 > 0.0 {
+            (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let junction = strip.junction.get(segment).copied().unwrap_or(false);
+        let distance = if junction {
+            // a junction piece carries the side arms of the roads that end on it: its ports
+            // are as far out as the piece is long
+            let (mx, my) = (
+                f64::midpoint(from.0, to.0) - at.0,
+                f64::midpoint(from.1, to.1) - at.1,
+            );
+            (mx.hypot(my) - length2.sqrt() / 2.0).max(0.0)
+        } else {
+            (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy)
+        };
+        let allowed = if junction {
+            junction_reach
+        } else {
+            strip.half_width + reach
+        };
+        if distance <= allowed && best.as_ref().is_none_or(|(found, _)| distance < *found) {
+            best = Some((distance, Meeting { owner, segment, t }));
+        }
+    }
+    best
+}
+
 /// Where a chain end meets a road solved earlier: the nearest place whose surface the end lies
 /// on - within the road's half width (and [`ON_ROAD_M`]) of its centre line, or, on a junction
-/// piece, within the piece's own length of its centre, where its side ports are. The ground under
-/// a bridge does not count.
+/// piece, within the piece's own length of its centre, where its side ports are.
 fn meeting(strips: &[RoadStrip], at: (f64, f64)) -> Option<Meeting> {
     let mut best: Option<(f64, Meeting)> = None;
     for (owner, strip) in strips.iter().enumerate() {
-        for segment in 0..strip.joints.len().saturating_sub(1) {
-            if strip.bridge.get(segment).copied().unwrap_or(false) {
-                continue;
-            }
-            let (Some(from), Some(to)) = (strip.joints.get(segment), strip.joints.get(segment + 1))
-            else {
-                continue;
-            };
-            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-            let length2 = dx * dx + dy * dy;
-            let t = if length2 > 0.0 {
-                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let distance = if strip.junction.get(segment).copied().unwrap_or(false) {
-                // a junction piece carries the side arms of the roads that end on it: its ports
-                // are as far out as the piece is long
-                let reach = length2.sqrt() / 2.0 + ON_ROAD_M;
-                let (mx, my) = (
-                    f64::midpoint(from.0, to.0) - at.0,
-                    f64::midpoint(from.1, to.1) - at.1,
-                );
-                (mx.hypot(my) - reach).max(0.0)
-            } else {
-                (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy)
-            };
-            if distance <= strip.half_width + ON_ROAD_M
-                && best.as_ref().is_none_or(|(found, _)| distance < *found)
-            {
-                best = Some((distance, Meeting { owner, segment, t }));
-            }
+        if let Some((distance, meet)) = meeting_on(strip, owner, at, ON_ROAD_M, ON_ROAD_M)
+            && best.as_ref().is_none_or(|(found, _)| distance < *found)
+        {
+            best = Some((distance, meet));
         }
     }
     best.map(|(_, meet)| meet)
 }
 
-/// The fixed heights of a chain's variables and where its ends meet an earlier road: an end that
-/// reaches one takes its height there and stays fixed; any other end is free.
-fn end_joins(chain: &Chain, strips: &[RoadStrip]) -> (Vec<Option<f64>>, [Option<Meeting>; 2]) {
+/// The fixed heights of a chain's variables and where they lie on an earlier road: an end that
+/// reaches one takes its height there and stays fixed, and so do up to eight variables inward
+/// while they lie on that road's surface (within its half width and 1.5 cells of its centre line,
+/// or on a junction piece within that distance beyond the piece's reach).
+fn end_joins(
+    chain: &Chain,
+    strips: &[RoadStrip],
+    cell: f64,
+) -> (Vec<Option<f64>>, Vec<(usize, Meeting)>) {
     let count = chain.at.len();
     let mut fixed = vec![None; count];
-    let mut ends_on = [None, None];
+    let mut joins = Vec::new();
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
         let Some(point) = chain.at.get(end) else {
             continue;
@@ -486,17 +513,38 @@ fn end_joins(chain: &Chain, strips: &[RoadStrip]) -> (Vec<Option<f64>>, [Option<
         let Some(meet) = meeting(strips, *point) else {
             continue;
         };
-        let height = strips
-            .get(meet.owner)
-            .and_then(|strip| meeting_height(strip, &meet));
-        if let (Some(slot), Some(height)) = (fixed.get_mut(end), height) {
-            *slot = Some(height);
-        }
-        if let Some(slot) = ends_on.get_mut(side) {
-            *slot = Some(meet);
+        let owner = meet.owner;
+        let Some(owner_strip) = strips.get(owner) else {
+            continue;
+        };
+        let reach = owner_strip.half_width + 1.5 * cell;
+        let mut var = end;
+        for _ in 0..8 {
+            let Some(point) = chain.at.get(var) else {
+                break;
+            };
+            let Some((_, meet_on)) = meeting_on(owner_strip, owner, *point, reach, reach) else {
+                break;
+            };
+            let height = meeting_height(owner_strip, &meet_on);
+            if let (Some(slot), Some(height)) = (fixed.get_mut(var), height) {
+                *slot = Some(height);
+                joins.push((var, meet_on));
+            }
+            if side == 0 {
+                if var + 1 >= count {
+                    break;
+                }
+                var += 1;
+            } else {
+                if var == 0 {
+                    break;
+                }
+                var -= 1;
+            }
         }
     }
-    (fixed, ends_on)
+    (fixed, joins)
 }
 
 /// The profile of one chain.
@@ -520,9 +568,13 @@ fn profile_chain(
         .iter()
         .map(|point| f64::from(hm.sample(point.0, point.1).height))
         .collect();
-    let (fixed, ends_on) = end_joins(&chain, strips);
-    let heights = if count == 1 {
+    let (fixed, meetings) = end_joins(&chain, strips, f64::from(hm.cell_m));
+    let heights = if count == 1 || fixed.iter().all(Option::is_some) {
         targets
+            .iter()
+            .zip(&fixed)
+            .map(|(target, pinned)| pinned.unwrap_or(*target))
+            .collect()
     } else {
         solve_chain(&targets, &spacing, &fixed, &limits)
     };
@@ -562,7 +614,7 @@ fn profile_chain(
     let variables = Solved {
         joint_variable: chain.joints.iter().map(|j| j.2).collect(),
         at: chain.at,
-        joins: ends_on,
+        joins: meetings,
         origin: heights.clone(),
         heights,
         spacing,
@@ -851,25 +903,20 @@ fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) 
         }
     }
     for strip in touched {
-        let joins = [
-            chains
-                .get(strip)
-                .and_then(|c| c.joins.first().copied().flatten()),
-            chains
-                .get(strip)
-                .and_then(|c| c.joins.get(1).copied().flatten()),
-        ];
-        let pins: [Option<f64>; 2] = [
-            joins[0].and_then(|meet| joined_height(chains, &meet)),
-            joins[1].and_then(|meet| joined_height(chains, &meet)),
-        ];
+        let pins: Vec<(usize, Option<f64>)> = chains.get(strip).map_or_else(Vec::new, |chain| {
+            chain
+                .joins
+                .iter()
+                .map(|(var, meet)| (*var, joined_height(chains, meet)))
+                .collect()
+        });
         let Some(chain) = chains.get_mut(strip) else {
             continue;
         };
         let last = chain.heights.len().saturating_sub(1);
         let mut pinned = vec![None; chain.heights.len()];
-        for (end, height) in [(0, pins[0]), (last, pins[1])] {
-            if let (Some(slot), Some(height)) = (pinned.get_mut(end), height) {
+        for (var, height) in pins {
+            if let (Some(slot), Some(height)) = (pinned.get_mut(var), height) {
                 *slot = Some(height);
             }
         }

@@ -275,6 +275,41 @@ fn overlapping_pieces_do_not_break_the_solver() {
     );
 }
 
+#[test]
+fn a_short_road_between_two_others_is_all_fixed_and_finite() {
+    // two parallel roads 20 m apart and a 20 m link between them
+    let hm = terrain(100, 6.25, |x, y| 100.0 + 0.05 * x + 0.02 * y);
+    let west = straight("w", Family::Asf3, (300.0, 100.0), (300.0, 500.0));
+    let east = straight("e", Family::Asf3, (320.0, 100.0), (320.0, 500.0));
+    let link = vec![
+        piece(
+            "l",
+            0,
+            PlacedKind::Piece,
+            Family::Mud,
+            (303.5, 300.0),
+            (310.0, 300.0),
+        ),
+        piece(
+            "l",
+            1,
+            PlacedKind::Piece,
+            Family::Mud,
+            (310.0, 300.0),
+            (316.5, 300.0),
+        ),
+    ];
+    let p = solve_profiles(&network(vec![west, east, link]), &hm);
+    let (w, e) = (profile_height(&p, 0, 300.0), profile_height(&p, 1, 300.0));
+    for joint in &p.strips[2].joints {
+        assert!(joint.2.is_finite());
+        assert!(
+            joint.2 >= w.min(e) - 1e-6 && joint.2 <= w.max(e) + 1e-6,
+            "{joint:?}"
+        );
+    }
+}
+
 proptest! {
     #[test]
     fn grade_limit_holds(seed in any::<u64>(), family_index in 0usize..6) {
