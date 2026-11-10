@@ -10,7 +10,7 @@
     reason = "test helper code; failing loudly is the point and the numbers are tiny"
 )]
 
-use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, MAX_EARTHWORK_M, conform};
+use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform};
 use naves_core::heightmap::Heightmap;
 use naves_core::profile::RoadStrip;
 
@@ -221,21 +221,46 @@ fn a_road_along_a_valley_side_gets_a_bench() {
 }
 
 #[test]
-fn a_valley_side_steeper_than_the_embankment_leaves_a_reported_step() {
-    // 35 degrees is steeper than FILL_SLOPE (34 degrees): the embankment never meets the ground
-    let slope = 35.0_f64.to_radians().tan();
-    assert!(slope > FILL_SLOPE);
-    let base = terrain(160, 6.25, |x, _| 700.0 - slope * x);
+fn an_embankment_on_a_40_degree_side_reaches_the_ground() {
+    let slope = 40.0_f64.to_radians().tan();
+    let base = terrain(200, 6.25, |x, _| 500.0 - slope * x);
+    // the road lies on the ground at its downhill edge: at the centre the level strip is 12.875 m wide
+    // and the embankment would need 67 m, more than the 60 m cap
     let r = road(
-        (500.0, 100.0),
-        (500.0, 900.0),
-        700.0 - slope * 500.0,
-        700.0 - slope * 500.0,
+        (600.0, 200.0),
+        (600.0, 1000.0),
+        500.0 - slope * 603.5,
+        500.0 - slope * 603.5,
         3.5,
         3,
     );
     let out = conform(&base, std::slice::from_ref(&r)).unwrap();
-    assert!(!out.capped.is_empty());
+    assert!(out.capped.is_empty(), "{} capped", out.capped.len());
+    let downhill = steepest(&out.heightmap, |col, row| {
+        col > 100 && (40..150).contains(&row)
+    });
+    assert!(downhill <= FILL_SLOPE_MAX + 0.05, "{downhill}");
+}
+
+#[test]
+fn gentle_ground_keeps_the_gentle_slopes() {
+    // a road 6 m above a 10 % slope: the embankment is 34 degrees, not steeper
+    let base = terrain(200, 6.25, |x, _| 300.0 - 0.10 * x);
+    let r = road((600.0, 200.0), (600.0, 1000.0), 246.0, 246.0, 3.5, 3);
+    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let steep = steepest(&out.heightmap, |_, row| (40..150).contains(&row));
+    assert!(steep <= FILL_SLOPE + 0.05, "{steep}");
+}
+
+#[test]
+fn level_ground_and_the_map_edge_are_shaped_as_before() {
+    // natural slope zero, and a road whose core touches the border
+    let base = terrain(64, 6.25, |_, _| 100.0);
+    let r = road((3.0, 0.0), (3.0, 393.0), 103.0, 103.0, 3.5, 3);
+    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    assert!(out.heightmap.h.iter().all(|h| h.is_finite()));
+    let steep = steepest(&out.heightmap, |_, _| true);
+    assert!(steep <= FILL_SLOPE + 0.05, "{steep}");
 }
 
 #[test]

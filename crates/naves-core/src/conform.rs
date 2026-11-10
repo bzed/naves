@@ -19,10 +19,17 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::heightmap::Heightmap;
 use crate::profile::RoadStrip;
 
-/// Rise over run of a cutting: 45°.
+/// Rise over run of the gentlest cutting: 45°. A cutting on a steeper hillside may be steeper, up to
+/// [`CUT_SLOPE_MAX`].
 pub const CUT_SLOPE: f64 = 1.0;
-/// Rise over run of an embankment: 34°.
+/// Rise over run of the steepest cutting: 63°.
+pub const CUT_SLOPE_MAX: f64 = 2.0;
+/// Rise over run of the gentlest embankment: 34°. An embankment on a steeper hillside may be steeper, up to
+/// [`FILL_SLOPE_MAX`].
 pub const FILL_SLOPE: f64 = 0.667;
+/// Rise over run of the steepest embankment: 45°. It stays below the walk limit, so the downhill side of a
+/// road can always be left on foot.
+pub const FILL_SLOPE_MAX: f64 = 1.0;
 /// How far earthworks reach from a road's core, in metres.
 pub const MAX_EARTHWORK_M: f64 = 60.0;
 /// Cores of different roads that differ by more than this are a conflict.
@@ -131,6 +138,10 @@ impl Grid {
 struct Core {
     height: f32,
     strip: usize,
+    /// Rise over run of the cutting this vertex's hillside needs.
+    cut: f32,
+    /// Rise over run of the embankment this vertex's hillside needs.
+    fill: f32,
 }
 
 /// The vertices within `reach` of the centre line of `strip`, with the height of the closest point.
@@ -185,30 +196,43 @@ struct Fields {
     nearest: Vec<u32>,
     upper: Vec<f32>,
     lower: Vec<f32>,
+    /// Rise over run of the cutting of the nearest core vertex.
+    cut: Vec<f32>,
+    /// Rise over run of the embankment of the nearest core vertex.
+    fill: Vec<f32>,
 }
 
 impl Fields {
     /// Lets `vertex` take what is better of its own values and those of `from`, `step` metres away.
     fn relax(&mut self, vertex: usize, from: usize, step: f32) {
-        let (Some(&dist), Some(&upper), Some(&lower), Some(&nearest)) = (
+        let (Some(&dist), Some(&upper), Some(&lower), Some(&nearest), Some(&cut), Some(&fill)) = (
             self.dist.get(from),
             self.upper.get(from),
             self.lower.get(from),
             self.nearest.get(from),
+            self.cut.get(from),
+            self.fill.get(from),
         ) else {
             return;
         };
         if dist + step < self.dist.get(vertex).copied().unwrap_or(f32::INFINITY)
-            && let (Some(d), Some(n)) = (self.dist.get_mut(vertex), self.nearest.get_mut(vertex))
+            && let (Some(d), Some(n), Some(c), Some(f)) = (
+                self.dist.get_mut(vertex),
+                self.nearest.get_mut(vertex),
+                self.cut.get_mut(vertex),
+                self.fill.get_mut(vertex),
+            )
         {
             *d = dist + step;
             *n = nearest;
+            *c = cut;
+            *f = fill;
         }
         if let Some(value) = self.upper.get_mut(vertex) {
-            *value = value.min(upper + narrow(CUT_SLOPE) * step);
+            *value = value.min(upper + cut * step);
         }
         if let Some(value) = self.lower.get_mut(vertex) {
-            *value = value.max(lower - narrow(FILL_SLOPE) * step);
+            *value = value.max(lower - fill * step);
         }
     }
 }
@@ -225,19 +249,25 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
         nearest: vec![u32::MAX; count],
         upper: vec![f32::INFINITY; count],
         lower: vec![f32::NEG_INFINITY; count],
+        cut: vec![0.0; count],
+        fill: vec![0.0; count],
     };
     for (index, core) in cores.iter().enumerate() {
-        if let (Some(core), Some(d), Some(u), Some(l), Some(n)) = (
+        if let (Some(core), Some(d), Some(u), Some(l), Some(n), Some(c), Some(f)) = (
             core,
             fields.dist.get_mut(index),
             fields.upper.get_mut(index),
             fields.lower.get_mut(index),
             fields.nearest.get_mut(index),
+            fields.cut.get_mut(index),
+            fields.fill.get_mut(index),
         ) {
             *d = 0.0;
             *u = core.height;
             *l = core.height;
             *n = u32::try_from(index).unwrap_or(u32::MAX);
+            *c = core.cut;
+            *f = core.fill;
         }
     }
     let straight = narrow(grid.cell);
@@ -274,6 +304,7 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
 fn claim_cores(
     strips: &[RoadStrip],
     grid: Grid,
+    base: &Heightmap,
 ) -> (
     Vec<Option<Core>>,
     BTreeMap<(usize, usize), (f64, (f64, f64))>,
@@ -292,6 +323,11 @@ fn claim_cores(
         let reach = strip.half_width + 1.5 * grid.cell;
         for (vertex, (_, height)) in core_vertices(strip, grid, reach) {
             let height = narrow(height);
+            let (x, y) = grid.position(vertex);
+            let sample = base.sample(x, y);
+            let natural = f64::from(sample.dz_dx.hypot(sample.dz_dy));
+            let cut = narrow((1.5 * natural).clamp(CUT_SLOPE, CUT_SLOPE_MAX));
+            let fill = narrow((1.5 * natural).clamp(FILL_SLOPE, FILL_SLOPE_MAX));
             let Some(slot) = cores.get_mut(vertex) else {
                 continue;
             };
@@ -300,6 +336,8 @@ fn claim_cores(
                     *slot = Some(Core {
                         height,
                         strip: index,
+                        cut,
+                        fill,
                     });
                 }
                 Some(owner) => {
@@ -387,7 +425,7 @@ pub fn conform(base: &Heightmap, strips: &[RoadStrip]) -> Result<Conformed, Conf
         size,
         cell: f64::from(base.cell_m),
     };
-    let (cores, clashes) = claim_cores(strips, grid);
+    let (cores, clashes) = claim_cores(strips, grid, base);
     if cores.iter().all(Option::is_none) {
         return Ok(Conformed {
             heightmap: base.clone(),
@@ -489,9 +527,13 @@ fn clamp_flooded(
                 .and_then(|core| *core);
             nearest.map_or(ground, |core| {
                 let distance = fields.dist.get(vertex).copied().unwrap_or(0.0);
-                core.height
-                    + (ground - core.height)
-                        .clamp(-narrow(FILL_SLOPE) * distance, narrow(CUT_SLOPE) * distance)
+                let fill = fields
+                    .fill
+                    .get(vertex)
+                    .copied()
+                    .unwrap_or(narrow(FILL_SLOPE));
+                let cut = fields.cut.get(vertex).copied().unwrap_or(narrow(CUT_SLOPE));
+                core.height + (ground - core.height).clamp(-fill * distance, cut * distance)
             })
         };
         if let Some(height) = heights.get_mut(vertex) {

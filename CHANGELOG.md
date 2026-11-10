@@ -54,6 +54,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Earthworks follow the hillside: a cutting is 45° and an embankment 34° on gentle ground and both get steeper with the natural slope, up to 63° and 45°. A cutting in a steep hillside can be too steep to walk up; the downhill side can always be left on foot. On the Berchtesgaden example the earthworks that stop at the 60 m cap fall from 1904 vertices to 728.
 - A road gives up its grade aim before it leaves the ground: where holding the aim would put it more than 4 m above or below the terrain, it is solved again with a steeper grade, up to nine tenths of what vehicles manage. Such pieces are amber (**Steep**), not not drivable.
 - A junction piece is no longer level along its length: it carries up to 6 % like any road near a meeting. A road is at most 6 % steep where another road meets it, and gentler in a tight bend so that its inner edge stays within the family's aim.
 - A road's profile is limited by a vertical radius per family (600 m on `asf1` down to 60 m on a dirt track) instead of one change of grade per joint, so a short piece no longer bends more per metre than a long one; the grade excesses are measured on the joints after settling.

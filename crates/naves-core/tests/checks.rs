@@ -13,7 +13,7 @@ use naves_core::catalog::Family;
 use naves_core::checks::{
     DriveState, MAX_MISS_M, WALK_LIMIT_DEG, check_roads_on_terrain, check_walkable,
 };
-use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, conform};
+use naves_core::conform::{CUT_SLOPE, FILL_SLOPE_MAX, conform};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::limits::{CROSS_FALL_AIM, drive_grade, grade_aim};
@@ -504,9 +504,9 @@ fn a_track_that_is_not_drivable_is_checked_like_a_path() {
 }
 
 #[test]
-fn batter_slopes_are_walkable() {
+fn a_road_can_always_be_left_downhill() {
+    assert!(FILL_SLOPE_MAX.atan().to_degrees() < WALK_LIMIT_DEG);
     assert!(CUT_SLOPE.atan().to_degrees() < WALK_LIMIT_DEG);
-    assert!(FILL_SLOPE.atan().to_degrees() < WALK_LIMIT_DEG);
 }
 
 #[test]

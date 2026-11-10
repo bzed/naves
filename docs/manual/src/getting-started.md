@@ -129,8 +129,10 @@ What is built, from the `highway` tag:
 `access` and `motor_vehicle` tags do not matter: a forestry road in a national park is still physically a road.
 
 The terrain is **held to a slope limit around every road**: a road on a valley side gets a bench, a road across a
-valley an embankment, a road through a ridge a cutting. The earthworks reach only as far as they are connected to the
-road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles
+valley an embankment, a road through a ridge a cutting. On gentle ground a cutting is 45° and an embankment 34°; on a
+steeper hillside both get steeper with the natural slope, up to 63° and 45°. A cutting in a steep hillside can
+therefore be too steep to walk up, while the downhill side can always be left on foot. The earthworks reach only as
+far as they are connected to the road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles
 cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every
 finding is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
