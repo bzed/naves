@@ -202,3 +202,57 @@ Each with one constant changed in `conform.rs` and the same run, 1024 grid.
 
 Not tried: hairpins widened to the 25 m arcs (legs 50 m apart), a wall between the legs as an object, the profile
 taking its height from the downhill edge on steep ground (a road wholly in cutting).
+
+## 5. After the fixes
+
+Measured again on 2026-11-11 with the plan's fixes (Tasks 2 to 9), same map and tool, at `terrain_size = 1024` and
+`2048`. The limits are still estimates from real vehicles, not measured in the game.
+
+| | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| Road that cannot be driven | 27.5 km | 5.7 km | 21.4 km | 4.8 km |
+| of that: cross fall alone | 25.6 km | 3.2 km | 20.2 km | 2.5 km |
+| of that: grade, alone or with cross fall | 1.9 km | 2.5 km | 1.3 km | 2.3 km |
+| Cross fall over 5 % | 27.4 km | 19.1 km | 21.3 km | 15.9 km |
+| Cross fall over 10 % | 12.9 km | 7.5 km | 9.3 km | 5.5 km |
+| Cross fall over 20 % | 5.8 km | 4.3 km | 4.7 km | 3.4 km |
+| Cross fall over 30 % | 3.8 km | 3.2 km | 3.0 km | 2.7 km |
+| Grade over 35 % (on the unshaped terrain) | 1.4 km (6.4 km) | 1.7 km (6.1 km) | 1.0 km (6.7 km) | 1.5 km (6.4 km) |
+| Pieces more than 0.15 m off the terrain (unshaped) | 3786 (12 293) | 3522 (12 293) | 3234 (12 143) | 3303 (12 143) |
+| Pieces more than 1 m off the terrain | 469 | 368 | 425 | 331 |
+| Road conflicts | 2412 | 1979 | 2166 | 1729 |
+| Earthworks that stop at the 60 m cap (vertices) | 1904 | 728 | 3459 | 1322 |
+| Map vertices changed by the earthworks | 18.5 % | 17.7 % | 14.4 % | 13.5 % |
+
+The grade over 35 % rises because a road now gives up its grade aim where holding it would leave the ground: the
+road is steeper and stays on the terrain instead of hanging above it. The earthworks that stop at the cap fall
+because cuttings and embankments follow the hillside; the 60 m cap and the 12.875 m level strip still leave some on
+the steepest ground.
+
+Pieces with a cross fall over 5 % or more than 0.15 m off the terrain, by what is next to them (edge to edge, within
+three cells), after the fixes:
+
+| What is next to the piece | 1024 pieces | 1024 length | 1024 cross fall over 5 % | 2048 pieces | 2048 length | 2048 cross fall over 5 % |
+|---|---|---|---|---|---|---|
+| Another road overlaps it, at a different height | 458 | 5.9 km | 3.0 km | 551 | 6.6 km | 3.4 km |
+| Another road overlaps it, at the same height where they are closest | 514 | 6.3 km | 3.7 km | 609 | 7.3 km | 3.9 km |
+| Another road within three cells, at a different height | 1111 | 12.5 km | 5.8 km | 542 | 5.8 km | 2.6 km |
+| Another road within three cells, at the same height | 301 | 3.6 km | 1.9 km | 141 | 1.6 km | 0.7 km |
+| Another part of the same road (a hairpin), at a different height | 304 | 3.0 km | 1.6 km | 155 | 1.3 km | 0.7 km |
+| Nothing: an arc of radius 10 m or 25 m | 732 | 6.6 km | 3.2 km | 901 | 8.4 km | 3.9 km |
+| Nothing: other | 591 | 7.8 km | 1.4 km | 775 | 9.1 km | 2.1 km |
+
+What is left:
+
+- **Hairpins.** 1345 pieces at 1024 and 618 at 2048 still differ by more than the step the ground between the legs
+  can hold (short by 2.8 m at the median, 9.5 m at p90 at 1024; 1.5 m and 7.8 m at 2048). The finer grid helps most;
+  widening the hairpins to 25 m arcs, or a wall between the legs, is still open.
+- **The 332 stretch ends that miss what they have to meet** are unchanged and not analysed here; they need their own
+  investigation. The 737 crossings without a junction piece and the 21 tunnels without pieces are also unchanged.
+- **The 1353 joints far off the ground for neither known reason** (section 2.6) were not looked into; the fixes do not
+  address them.
+- **The limits** are estimates from real vehicles. Driving the ramps in the game (Task 1 of the roads plan) replaces
+  them and may move every figure in this section.
+- **The grid.** At 2048 the hairpin short count halves (1345 to 618), conflicts fall (1979 to 1729) and cross fall over
+  5 % falls (19.1 to 15.9 km); the cost is build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB, see
+  `examples/berchtesgaden/README.md`).

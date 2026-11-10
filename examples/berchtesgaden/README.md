@@ -77,6 +77,10 @@ Cost of the satellite image (release binary, `naves build`; same map without ima
 | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) |
 | 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) |
 
+On steep ground with hairpins the finer grid also leaves fewer roads in conflict: after the road alignment fixes,
+2048 has 1729 conflicts and 618 short hairpin pieces against 1979 and 1345 at 1024 (`docs/research/2026-11-10-road-alignment.md`,
+section 5).
+
 ## Build
 
 ```sh
