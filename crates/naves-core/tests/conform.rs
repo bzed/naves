@@ -465,3 +465,70 @@ fn the_ground_under_a_bridge_keeps_its_height() {
     assert!((at(&out.heightmap, 48, 40) - 100.0).abs() < 1e-3);
     assert!((at(&out.heightmap, 48, 100) - 100.0).abs() < 1e-3);
 }
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: failing loudly is the point"
+)]
+/// A level road at 100 m over a gorge of `depth` between y = 300 and y = 300 + `span`, on a bridge.
+fn short_bridge(cell: f32, span: f64, depth: f64) {
+    let size = (800.0 / f64::from(cell)) as u32;
+    let base = terrain(size, cell, |_, y| {
+        100.0
+            - if y > 300.0 && y < 300.0 + span {
+                depth
+            } else {
+                0.0
+            }
+    });
+    let joints = vec![
+        (300.0, 100.0, 100.0),
+        (300.0, 300.0, 100.0),
+        (300.0, 300.0 + span, 100.0),
+        (300.0, 600.0, 100.0),
+    ];
+    let mut road = strip(&joints, 3.5, 3);
+    road.bridge = vec![false, true, false];
+    let out = conform(&base, std::slice::from_ref(&road)).unwrap();
+    let c = |m: f64| (m / f64::from(cell)).round() as u32;
+    // the ground under the span, around the centre line, is as it was
+    for row in 0..size {
+        let y = f64::from(row) * f64::from(cell);
+        if y <= 300.0 || y >= 300.0 + span {
+            continue;
+        }
+        let reach = 3.5 + 1.5 * f64::from(cell);
+        for col in
+            c(300.0 - reach + 0.5 * f64::from(cell))..=c(300.0 + reach - 0.5 * f64::from(cell))
+        {
+            assert_eq!(
+                out.heightmap.at(col, row).to_bits(),
+                base.at(col, row).to_bits(),
+                "cell {cell}, span {span}: {col},{row}"
+            );
+        }
+    }
+    // the approaches are shaped up to the abutments
+    for y in [250.0, 300.0 - f64::from(cell), 300.0] {
+        assert!(
+            (at(&out.heightmap, c(300.0), c(y)) - 100.0).abs() < 1e-3,
+            "{y}"
+        );
+    }
+    assert!((at(&out.heightmap, c(300.0), c(300.0 + span)) - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn the_ground_under_a_short_bridge_keeps_its_height() {
+    short_bridge(6.25, 25.0, 6.0);
+}
+
+#[test]
+fn the_ground_under_a_longer_bridge_keeps_its_height() {
+    short_bridge(6.25, 50.0, 6.0);
+}
+
+#[test]
+fn the_ground_under_a_short_bridge_keeps_its_height_on_fine_cells() {
+    short_bridge(2.5, 25.0, 6.0);
+}

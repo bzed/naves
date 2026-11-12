@@ -10,6 +10,9 @@
 //! engine splits a cell. Where the DEM is too coarse to show a valley the road crosses, the road gets a
 //! bench.
 //!
+//! The ground under a bridge span is left alone: the cores of the approaches end flat at the abutments and
+//! the earthworks do not spread under the span.
+//!
 //! The earthworks reach only as far as they are connected to the road: a flood from the road through the
 //! vertices that break the limits stops where the ground meets the slope again, so that a cliff beyond that
 //! stays a cliff.
@@ -154,6 +157,9 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (
         if strip.bridge.get(segment).copied().unwrap_or(false) {
             continue;
         }
+        // beside a bridge the core ends flat at the abutment, without a rounded cap into the span
+        let bridge_before = segment > 0 && strip.bridge.get(segment - 1).copied().unwrap_or(false);
+        let bridge_after = strip.bridge.get(segment + 1).copied().unwrap_or(false);
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let length2 = dx * dx + dy * dy;
         let cols = (
@@ -167,11 +173,15 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (
         for row in rows.0..=rows.1 {
             for col in cols.0..=cols.1 {
                 let (px, py) = (Grid::coord(col) * grid.cell, Grid::coord(row) * grid.cell);
-                let along = if length2 > 0.0 {
-                    (((px - from.0) * dx + (py - from.1) * dy) / length2).clamp(0.0, 1.0)
+                let raw = if length2 > 0.0 {
+                    ((px - from.0) * dx + (py - from.1) * dy) / length2
                 } else {
                     0.0
                 };
+                if (raw < 0.0 && bridge_before) || (raw > 1.0 && bridge_after) {
+                    continue;
+                }
+                let along = raw.clamp(0.0, 1.0);
                 let distance = (px - from.0 - along * dx).hypot(py - from.1 - along * dy);
                 if distance <= reach {
                     let height = from.2 + along * (to.2 - from.2);
@@ -186,6 +196,51 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (
         }
     }
     found
+}
+
+/// The vertices under a bridge span: within `reach` of a bridge segment's centre line and between its
+/// abutments. The earthworks of the approaches do not spread into them.
+fn bridge_shadow(strips: &[RoadStrip], grid: Grid) -> Vec<bool> {
+    let mut shadow = vec![false; grid.count()];
+    let last = grid.size.saturating_sub(1);
+    for strip in strips {
+        let reach = strip.half_width + 1.5 * grid.cell;
+        for (segment, pair) in strip.joints.windows(2).enumerate() {
+            let [from, to] = pair else { continue };
+            if !strip.bridge.get(segment).copied().unwrap_or(false) {
+                continue;
+            }
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length2 = dx * dx + dy * dy;
+            if length2 <= 0.0 {
+                continue;
+            }
+            let cols = (
+                grid.nearest(from.0.min(to.0) - reach).saturating_sub(1),
+                (grid.nearest(from.0.max(to.0) + reach) + 1).min(last),
+            );
+            let rows = (
+                grid.nearest(from.1.min(to.1) - reach).saturating_sub(1),
+                (grid.nearest(from.1.max(to.1) + reach) + 1).min(last),
+            );
+            for row in rows.0..=rows.1 {
+                for col in cols.0..=cols.1 {
+                    let (px, py) = (Grid::coord(col) * grid.cell, Grid::coord(row) * grid.cell);
+                    let raw = ((px - from.0) * dx + (py - from.1) * dy) / length2;
+                    if !(0.0..=1.0).contains(&raw) {
+                        continue;
+                    }
+                    let distance = (px - from.0 - raw * dx).hypot(py - from.1 - raw * dy);
+                    if distance <= reach
+                        && let Some(flag) = shadow.get_mut(row * grid.size + col)
+                    {
+                        *flag = true;
+                    }
+                }
+            }
+        }
+    }
+    shadow
 }
 
 /// The fields the earthworks are held to.
@@ -364,10 +419,16 @@ fn flood(
     base: &Heightmap,
     cores: &[Option<Core>],
     fields: &Fields,
+    shadow: &[bool],
     grid: Grid,
 ) -> (Vec<bool>, Vec<(f64, f64)>) {
     let mut flooded = vec![false; grid.count()];
-    let mut seen: Vec<bool> = cores.iter().map(Option::is_some).collect();
+    // the ground under a bridge is never entered, so nothing is filled or cut there
+    let mut seen: Vec<bool> = cores
+        .iter()
+        .enumerate()
+        .map(|(index, core)| core.is_some() || shadow.get(index).copied().unwrap_or(false))
+        .collect();
     let mut queue: VecDeque<usize> = cores
         .iter()
         .enumerate()
@@ -436,7 +497,8 @@ pub fn conform(base: &Heightmap, strips: &[RoadStrip]) -> Result<Conformed, Conf
         });
     }
     let fields = sweep(&cores, grid);
-    let (flooded, capped) = flood(base, &cores, &fields, grid);
+    let shadow = bridge_shadow(strips, grid);
+    let (flooded, capped) = flood(base, &cores, &fields, &shadow, grid);
     let mut heights = base.h.clone();
     for (vertex, core) in cores.iter().enumerate() {
         if let (Some(core), Some(height)) = (core, heights.get_mut(vertex)) {

@@ -154,7 +154,7 @@ ground between two roads is too steep for that, the terrain under one of them is
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
 line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
 roads simply meet; the build lists those places. On a bridge, the span has a level deck and the ground below keeps
-its height.
+its height; the ground starts to be shaped only at the abutments.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`
 ([the project file](project-file.md#editsoverridestoml)).
