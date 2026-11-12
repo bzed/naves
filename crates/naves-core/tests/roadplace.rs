@@ -510,6 +510,7 @@ fn an_edit_keeps_its_object_when_a_neighbouring_stretch_changes() {
             id: target.id.clone(),
             generated_model: target.model.clone(),
             generated_at: (target.x, target.y),
+            generated_yaw: target.yaw,
             edit: Override::Moved {
                 x: target.x + 1.0,
                 y: target.y + 2.0,

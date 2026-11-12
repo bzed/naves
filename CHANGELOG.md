@@ -69,6 +69,7 @@ All notable changes to this project are documented here. The format follows
 
 - The ground under a bridge keeps its height: the road on either side now ends flat at the abutment and its earthworks no longer spread under the span (a 25 m bridge used to have the whole gap filled to deck level).
 - A bridge deck is held to the ground at its abutments, not to the valley floor under it, so a deck over a gorge stays at bank height instead of pulling the approaches down into cuttings.
+- `edits/overrides.toml` with `nan` or `inf`, or with an empty or non-ASCII model name, is refused when it is read, with a message that names the object and the field (it used to reach the world file as a NaN transform, or fail late in the world writer).
 - Hairpin legs keep their heights when a step fits between them: roads closer than their half widths plus three cells still share a height, but from there on they may differ by the step one cell can hold (up to 45°), so a hairpin on a steep flank is no longer pulled together.
 - A road that ends on another now lies on the other road's ground for as far as that ground reaches (up to eight variables inward, within half a width and 1.5 cells of its centre line), instead of leaving it after the first joint. This removes the step where the side road's surface left the through road's.
 - A bend is measured along the bend, not along its chord: the grade and the cross fall of an arc are read along the arc and at right angles to it, so a tight arc on a grade no longer reports part of its grade as cross fall.

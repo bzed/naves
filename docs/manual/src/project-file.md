@@ -154,6 +154,7 @@ name, so a build that generates the map again **keeps your edits**.
 id = "road/123:1-5/4"
 generated_model = "dz\\structures\\roads\\parts\\asf3_25.p3d"
 generated_at = [10.5, 20.25]
+generated_yaw = 0.5
 
 [edits.edit]
 kind = "moved"
@@ -167,7 +168,12 @@ yaw = 0.5
 | `id` | the name of the object |
 | `generated_model` | the model the object had when you edited it |
 | `generated_at` | `[east, north]` in map metres where it was |
+| `generated_yaw` | the rotation the object had, in radians clockwise from north; optional (files without it read as 0). It is where a `replaced` edit stands when its object is gone |
 | `edit.kind` | `moved` (with `x`, `y`, `yaw` in map metres and radians clockwise from north), `deleted`, or `replaced` (with `model`) |
+
+Every number must be finite (TOML also allows `nan` and `inf`, which are rejected) and every model name must be
+non-empty and ASCII. A file that breaks this is refused when it is read, with a message that names the object and the
+field.
 
 If the object an edit was made for is gone, has become another model, or is more than 25 m from where it was, the edit
 was made for something else. It is **kept exactly as it is**, as an object of its own, and the build warns about it.

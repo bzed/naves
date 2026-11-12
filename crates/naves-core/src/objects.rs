@@ -124,6 +124,10 @@ pub struct PinnedEdit {
     pub generated_model: String,
     /// Where that object was.
     pub generated_at: (f64, f64),
+    /// How that object was turned, in radians clockwise from north. Files from before this field was
+    /// written read as 0.
+    #[serde(default)]
+    pub generated_yaw: f64,
     /// What was done.
     pub edit: Override,
 }
@@ -150,6 +154,16 @@ pub enum OverridesError {
     /// The file is not valid.
     #[error("the overrides are damaged: {0}")]
     Parse(#[from] toml::de::Error),
+    /// An edit holds a value that cannot be used.
+    #[error("the overrides are not usable: the edit of {id} has {field} {problem}")]
+    Invalid {
+        /// The object the edit belongs to.
+        id: ObjectId,
+        /// The field of the edit.
+        field: &'static str,
+        /// What is wrong with it.
+        problem: &'static str,
+    },
     /// The overrides cannot be written as TOML.
     #[error("the overrides cannot be written: {0}")]
     Write(#[from] toml::ser::Error),
@@ -159,9 +173,57 @@ impl Overrides {
     /// Reads the overrides from TOML text.
     ///
     /// # Errors
-    /// [`OverridesError::Parse`] if the text is not a valid list of edits.
+    /// [`OverridesError::Parse`] if the text is not a valid list of edits, [`OverridesError::Invalid`] if an
+    /// edit holds a number that is not finite (TOML allows `nan` and `inf`) or a model name that is empty or
+    /// not ASCII.
     pub fn parse(text: &str) -> Result<Overrides, OverridesError> {
-        Ok(toml::from_str(text)?)
+        let overrides: Overrides = toml::from_str(text)?;
+        overrides.validate()?;
+        Ok(overrides)
+    }
+
+    /// Checks that every edit can be used: finite numbers, and model names that are not empty and are ASCII.
+    ///
+    /// # Errors
+    /// [`OverridesError::Invalid`] for the first edit that cannot be used.
+    pub fn validate(&self) -> Result<(), OverridesError> {
+        for edit in &self.edits {
+            let bad = |field, problem| OverridesError::Invalid {
+                id: edit.id.clone(),
+                field,
+                problem,
+            };
+            let finite = |field: &'static str, value: f64| {
+                if value.is_finite() {
+                    Ok(())
+                } else {
+                    Err(bad(field, "a number that is not finite"))
+                }
+            };
+            let model = |field: &'static str, name: &str| {
+                if name.is_empty() {
+                    Err(bad(field, "an empty name"))
+                } else if !name.is_ascii() {
+                    Err(bad(field, "a name with characters other than ASCII"))
+                } else {
+                    Ok(())
+                }
+            };
+            finite("generated_at", edit.generated_at.0)?;
+            finite("generated_at", edit.generated_at.1)?;
+            finite("generated_yaw", edit.generated_yaw)?;
+            model("generated_model", &edit.generated_model)?;
+            match &edit.edit {
+                Override::Moved { x, y, yaw } => {
+                    finite("x", *x)?;
+                    finite("y", *y)?;
+                    finite("yaw", *yaw)?;
+                }
+                Override::Deleted => {}
+                Override::Replaced { model: name } => model("model", name)?,
+            }
+        }
+        Ok(())
     }
 
     fn path(dir: &Path) -> PathBuf {
@@ -184,8 +246,9 @@ impl Overrides {
     /// Writes `edits/overrides.toml` below `dir`, atomically.
     ///
     /// # Errors
-    /// [`OverridesError`] if the file cannot be written.
+    /// [`OverridesError`] if the file cannot be written or an edit cannot be used (see [`Overrides::validate`]).
     pub fn save(&self, dir: &Path) -> Result<(), OverridesError> {
+        self.validate()?;
         let path = Self::path(dir);
         let folder = dir.join(EDITS_DIR);
         let io = |path: &Path| {
@@ -284,7 +347,7 @@ pub fn apply_overrides(
                 model: model.clone(),
                 x: edit.generated_at.0,
                 y: edit.generated_at.1,
-                yaw: 0.0,
+                yaw: edit.generated_yaw,
             },
         };
         orphans.push(OrphanedEdit {

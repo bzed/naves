@@ -35,6 +35,7 @@ fn edit(stretch: &str, slot: u32, model: &str, at: (f64, f64), what: Override) -
         id: id(stretch, slot),
         generated_model: model.to_string(),
         generated_at: at,
+        generated_yaw: 0.5,
         edit: what,
     }
 }
@@ -411,4 +412,85 @@ fn a_bridge_sits_with_its_deck_at_the_profile_height() {
         .unwrap();
     // the deck is 7.9 m above the model's origin: the origin goes that far below the road
     assert!((bridge_object_height(120.0, stone) - (120.0 - stone.deck_height)).abs() < 1e-12);
+}
+
+const EDIT_HEAD: &str = "[[edits]]\nid = \"road/123:1-5/4\"\ngenerated_model = \"m\"\n";
+
+#[test]
+fn overrides_with_numbers_that_are_not_finite_are_rejected_by_name() {
+    for (what, field) in [
+        (
+            "generated_at = [nan, 2.0]\n[edits.edit]\nkind = \"deleted\"\n",
+            "generated_at",
+        ),
+        (
+            "generated_at = [1.0, inf]\n[edits.edit]\nkind = \"deleted\"\n",
+            "generated_at",
+        ),
+        (
+            "generated_at = [1.0, 2.0]\ngenerated_yaw = nan\n[edits.edit]\nkind = \"deleted\"\n",
+            "generated_yaw",
+        ),
+        (
+            "generated_at = [1.0, 2.0]\n[edits.edit]\nkind = \"moved\"\nx = nan\ny = 1.0\nyaw = 0.0\n",
+            "x",
+        ),
+        (
+            "generated_at = [1.0, 2.0]\n[edits.edit]\nkind = \"moved\"\nx = 1.0\ny = -inf\nyaw = 0.0\n",
+            "y",
+        ),
+        (
+            "generated_at = [1.0, 2.0]\n[edits.edit]\nkind = \"moved\"\nx = 1.0\ny = 1.0\nyaw = inf\n",
+            "yaw",
+        ),
+    ] {
+        let text = format!("{EDIT_HEAD}{what}");
+        let error = Overrides::parse(&text).unwrap_err().to_string();
+        assert!(error.contains("road/123:1-5/4"), "{error}");
+        assert!(error.contains(field), "{field}: {error}");
+    }
+}
+
+#[test]
+fn overrides_with_an_unusable_model_are_rejected_by_name() {
+    for model in ["", "dz/stra\u{df}e.p3d"] {
+        let text = format!(
+            "{EDIT_HEAD}generated_at = [1.0, 2.0]\n[edits.edit]\nkind = \"replaced\"\nmodel = \"{model}\"\n"
+        );
+        let error = Overrides::parse(&text).unwrap_err().to_string();
+        assert!(error.contains("road/123:1-5/4"), "{error}");
+        assert!(error.contains("model"), "{error}");
+    }
+}
+
+#[test]
+fn an_orphaned_replacement_keeps_the_yaw_of_its_object() {
+    let o = Overrides {
+        edits: vec![PinnedEdit {
+            generated_yaw: 1.25,
+            ..edit(
+                "1:1-2",
+                0,
+                "m",
+                (10.0, 20.0),
+                Override::Replaced {
+                    model: "other".to_string(),
+                },
+            )
+        }],
+    };
+    let (placed, orphans) = apply_overrides(&[], &o);
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(placed.len(), 1);
+    assert!((placed[0].yaw - 1.25).abs() < 1e-12);
+    assert!((placed[0].x - 10.0).abs() < 1e-12);
+}
+
+#[test]
+fn an_overrides_file_without_a_generated_yaw_still_loads() {
+    let text = format!(
+        "{EDIT_HEAD}generated_at = [1.0, 2.0]\n[edits.edit]\nkind = \"replaced\"\nmodel = \"other\"\n"
+    );
+    let o = Overrides::parse(&text).unwrap();
+    assert!(o.edits[0].generated_yaw.abs() < 1e-12);
 }
