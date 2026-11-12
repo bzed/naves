@@ -170,6 +170,10 @@ Forest roads are built at 8 to 12 %, 15 to 18 % over short lengths. Proposed: `a
 `city` 0.14, `grav` 0.15, `mud` 0.15. Section 2.6 shows that a low aim costs earth, so an aim must be allowed to give
 way, up to 0.9 of the hard limit, where holding it puts the road far from the ground.
 
+**Decided by the maintainer:** gravel and dirt keep their values, hard limits 0.30 and 0.28 and aims 0.18 and 0.25. The
+proposal above is what a car manages, and not every gravel or dirt road in such an area can be driven by car: some
+need chains or a tractor. The proposed limits and aims are used for asphalt and streets only.
+
 **Across.** Roads are built with 2.5 % across on a straight and up to 7 or 8 % in a bend. A car slides sideways at a
 fall of `μ` and tips at half its track width over `h` (above 1.0 for a car, 0.6 to 0.8 for a loaded truck). Proposed:
 aim 0.08, hard limit 0.20.
@@ -256,3 +260,63 @@ What is left:
 - **The grid.** At 2048 the hairpin short count halves (1345 to 618), conflicts fall (1979 to 1729) and cross fall over
   5 % falls (19.1 to 15.9 km); the cost is build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB, see
   `examples/berchtesgaden/README.md`).
+
+## 6. The grid sizes compared, and where pieces miss the terrain (2026-11-12)
+
+Measured with `road-analysis` at 1024, 2048 and 4096 on the tree with the review fixes (bridge ground, deck height,
+cut ids, road bed). The 1024 column equals the `report.json` of a full build. Not measured: the build with binarize
+and the PBO size at 2048 and 4096.
+
+| Rule | 1024 | 2048 | 4096 |
+|---|---|---|---|
+| `road_misses_terrain` | 3569 | 3353 | 3872 |
+| of these above 0.5 m | 817 | 735 | 792 |
+| largest miss | 13.0 m | 22.0 m | 26.4 m |
+| `road_conflict` | 2001 | 1743 | 1495 |
+| largest conflict | 37.4 m | 39.9 m | 51.8 m |
+| `road_grade` | 972 | 972 | 940 |
+| `road_not_drivable` | 254 | 243 | 245 |
+| not drivable | 5.7 km | 4.8 km | 4.1 km |
+| `path_too_steep` | 89 | 91 | 73 |
+| `earthworks_capped` | 143 | 122 | 108 |
+| `road_gap`, `join_without_junction`, `tunnel_omitted` | 332, 737, 21 | same | same |
+
+**A finer grid does not remove the violations.** It lowers the conflicts by a quarter and shortens the embankments
+(below); the worst values grow, because a finer grid shows a step that a coarse one smears. The road pipeline costs
+the same at every size (177 s, of which 168 s is placing; 1.4 to 1.7 GB).
+
+**A miss above 0.5 m is a clash between roads.** The first cause that applies, pieces at 1024 / 2048 / 4096:
+
+| Cause | 1024 | 2048 | 4096 |
+|---|---|---|---|
+| Another road within three cells, at a different height | 627 | 483 | 455 |
+| Another leg of the same road, at a different height | 93 | 69 | 76 |
+| A change of grade over 1 %/m at the piece's own joint | 57 | 144 | 215 |
+| The end of a bridge | 22 | 32 | 37 |
+| A bend | 15 | 2 | 2 |
+| Other (same height, capped earthworks) | 3 | 5 | 7 |
+| Unknown | 0 | 0 | 0 |
+
+The other road's core holds vertices at or beside the piece's corners at its own height; printed for three pieces,
+the vertex was 3 to 16 m off the piece's height and belonged to a higher-ranked road 11 to 14 m away. Shaping the
+terrain harder cannot repair this: the two roads want different ground. The small misses (0.15 to 0.5 m; 2752 at
+1024) are roads at different heights (1492), bends (528) and grade changes at a joint (420).
+
+**The road is not cut into the hillside.** Finished minus original ground, median, at 1024:
+
+| Side slope of the ground | Uphill edge | Centre | Downhill edge | Fill over 2 m / 5 m at the downhill edge | Fill runs (median) |
+|---|---|---|---|---|---|
+| 0 to 10 % | -0.1 m | 0.1 m | 0.3 m | 25 % / 7 % | 18 m |
+| 20 to 35 % | -1.5 m | -0.4 m | 0.5 m | 34 % / 16 % | 27 m |
+| 35 to 60 % | -2.5 m | -0.8 m | 0.7 m | 38 % / 19 % | 35 m |
+| above 60 % | -4.8 m | -2.3 m | 0.3 m | 36 % / 18 % | 37 m |
+
+Half of the pieces have their whole width in cut, in every band. A quarter of the pieces on flat ground stand on
+more than 2 m of fill: that comes from a profile that does not follow the ground, not from the hillside. The fill runs
+6 to 19 m at the median at 4096; the balance of cut and fill does not change with the grid.
+
+**The extremes.** A road whose profile cannot follow the ground within its grade ceiling runs 20 to 38 m below it, and
+where its end is fixed to another road's height the whole difference lands in one piece: 294 % over 9 m at
+(3450, 3533), where a track needs 30 % on average and may have 25 %; 235 % at (4334, 5458) at 2048 and 4096. The
+105.9 m gap at (6173, 5641) is a 7.7 m stretch between two junctions that gets a 24.5 m piece pointing elsewhere: a
+fault of the placing. Not explained: the 37.4 m conflict at (1281, 3406), with one road within 45 m.
