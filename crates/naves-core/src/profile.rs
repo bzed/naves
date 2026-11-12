@@ -113,6 +113,12 @@ struct Meeting {
     t: f64,
 }
 
+/// The two ends of a bridge deck.
+type DeckEnds = ((f64, f64), (f64, f64));
+
+/// A chain (by index) and the position of one of its ends.
+type ChainEnd = (usize, (f64, f64));
+
 /// The variables of a chain: one per joint, except that a junction has one height along its length.
 struct Chain {
     /// (x, y, variable) of each joint.
@@ -121,6 +127,9 @@ struct Chain {
     at: Vec<(f64, f64)>,
     /// The length of the piece that joins variable `i` and `i + 1`.
     spacing: Vec<f64>,
+    /// For a variable that is a bridge deck, the two ends of the deck: the ground there, not the ground under
+    /// the span, is what the deck is held to.
+    deck: Vec<Option<DeckEnds>>,
 }
 
 fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
@@ -128,23 +137,29 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
     let mut joints = vec![(first.start.x, first.start.y, 0)];
     let mut at = vec![(first.start.x, first.start.y)];
     let mut spacing = Vec::new();
+    let mut deck: Vec<Option<DeckEnds>> = vec![None];
     for &i in roads {
         let r = net.roads.get(i)?;
         let length = (r.end.x - r.start.x).hypot(r.end.y - r.start.y);
         if r.kind == PlacedKind::Bridge {
             let v = at.len() - 1;
             joints.push((r.end.x, r.end.y, v));
-            if let (Some(first_joint), Some(slot)) =
-                (joints.iter().find(|j| j.2 == v), at.get_mut(v))
-            {
+            if let (Some(first_joint), Some(slot), Some(ends)) = (
+                joints.iter().find(|j| j.2 == v),
+                at.get_mut(v),
+                deck.get_mut(v),
+            ) {
                 *slot = (
                     f64::midpoint(first_joint.0, r.end.x),
                     f64::midpoint(first_joint.1, r.end.y),
                 );
+                let start = ends.map_or((first_joint.0, first_joint.1), |(start, _)| start);
+                *ends = Some((start, (r.end.x, r.end.y)));
             }
         } else {
             joints.push((r.end.x, r.end.y, at.len()));
             at.push((r.end.x, r.end.y));
+            deck.push(None);
             spacing.push(length);
         }
     }
@@ -152,6 +167,7 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
         joints,
         at,
         spacing,
+        deck,
     })
 }
 
@@ -563,10 +579,16 @@ fn profile_chain(
     let spacing = chain.spacing.clone();
     let radius = min_vertical_radius(family);
     let count = chain.at.len();
+    let ground = |point: (f64, f64)| f64::from(hm.sample(point.0, point.1).height);
     let targets: Vec<f64> = chain
         .at
         .iter()
-        .map(|point| f64::from(hm.sample(point.0, point.1).height))
+        .zip(&chain.deck)
+        .map(|(point, deck)| match deck {
+            // a deck is held to the ground at its abutments, not to the valley floor under it
+            Some((from, to)) => f64::midpoint(ground(*from), ground(*to)),
+            None => ground(*point),
+        })
         .collect();
     let (fixed, meetings) = end_joins(&chain, strips, f64::from(hm.cell_m));
     let aim = grade_aim(family);
@@ -590,8 +612,9 @@ fn profile_chain(
             .iter()
             .zip(&targets)
             .zip(&fixed)
-            .any(|((height, target), pinned)| {
-                pinned.is_none() && (height - target).abs() > RELAX_OFF_M
+            .zip(&chain.deck)
+            .any(|(((height, target), pinned), deck)| {
+                pinned.is_none() && deck.is_none() && (height - target).abs() > RELAX_OFF_M
             });
         solved = Some((heights, limits));
         if !off {

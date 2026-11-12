@@ -869,3 +869,89 @@ fn the_road_meets_the_bridge_at_deck_height() {
     assert!(p.strips[0].bridge.iter().filter(|b| **b).count() == 4);
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
+
+/// A level road at 100 m over a gorge `depth` deep from y = 300 to y = 300 + `span`, on bridge pieces.
+fn gorge_chain(depth: f64, span: f64) -> (Heightmap, Vec<PlacedRoad>) {
+    let hm = terrain(200, 6.25, move |_, y| {
+        100.0
+            - if y > 300.0 && y < 300.0 + span {
+                depth
+            } else {
+                0.0
+            }
+    });
+    let mut chain = straight("a", Family::Asf3, (300.0, 100.0), (300.0, 300.0));
+    let n = (span / 25.0).ceil() as u32;
+    for i in 0..n {
+        let (y0, y1) = (
+            300.0 + span * f64::from(i) / f64::from(n),
+            300.0 + span * f64::from(i + 1) / f64::from(n),
+        );
+        chain.push(piece(
+            "b",
+            i,
+            PlacedKind::Bridge,
+            Family::Asf3,
+            (300.0, y0),
+            (300.0, y1),
+        ));
+    }
+    chain.extend(straight(
+        "c",
+        Family::Asf3,
+        (300.0, 300.0 + span),
+        (300.0, 600.0),
+    ));
+    (hm, chain)
+}
+
+#[test]
+fn a_deck_over_a_gorge_stays_at_bank_height() {
+    for (depth, span) in [(30.0, 100.0), (5.0, 25.0)] {
+        let (hm, chain) = gorge_chain(depth, span);
+        let p = solve_profiles(&network(vec![chain]), &hm);
+        for joint in &p.strips[0].joints {
+            assert!(
+                (joint.2 - 100.0).abs() < 0.05,
+                "depth {depth}, span {span}: joint at {} is {}",
+                joint.1,
+                joint.2
+            );
+        }
+        assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+    }
+}
+
+#[test]
+fn a_deck_whose_ends_lie_on_the_ground_is_solved_at_the_aim() {
+    // a ramp at the aim grade with a short bridge over a hollow: the approaches stay on the ground
+    let aim = grade_aim(Family::Asf3);
+    let hm = terrain(200, 6.25, move |_, y| {
+        100.0 + aim * y - if y > 300.0 && y < 325.0 { 6.0 } else { 0.0 }
+    });
+    let mut chain = straight("a", Family::Asf3, (300.0, 100.0), (300.0, 300.0));
+    chain.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 300.0),
+        (300.0, 325.0),
+    ));
+    chain.extend(straight("c", Family::Asf3, (300.0, 325.0), (300.0, 600.0)));
+    let p = solve_profiles(&network(vec![chain]), &hm);
+    let joint = |y: f64| {
+        p.strips[0]
+            .joints
+            .iter()
+            .find(|j| (j.1 - y).abs() < 1e-6)
+            .unwrap()
+    };
+    // the ground at the abutments is the ground of the approaches
+    let (a, b) = (joint(300.0), joint(325.0));
+    assert!((a.2 - b.2).abs() < 1e-9);
+    assert!((a.2 - (100.0 + aim * 300.0)).abs() < 0.5, "{}", a.2);
+    for g in grades(&p, 0) {
+        assert!(g.abs() <= aim + 1e-6, "grade {g} over the aim {aim}");
+    }
+}
