@@ -150,9 +150,31 @@ fn ring_contains(ring: &[(f64, f64)], point: (f64, f64)) -> bool {
     inside
 }
 
-fn in_water(water: &[&LandPolygon], lat: f64, lon: f64) -> bool {
-    water.iter().any(|polygon| {
-        ring_contains(&polygon.outer, (lat, lon))
+/// A box `(min lat, max lat, min lon, max lon)`.
+type Bounds = (f64, f64, f64, f64);
+
+/// The box around the outer ring of a polygon: `(min lat, max lat, min lon, max lon)`.
+fn outer_bounds(polygon: &LandPolygon) -> Bounds {
+    polygon.outer.iter().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(lat0, lat1, lon0, lon1), &(lat, lon)| {
+            (lat0.min(lat), lat1.max(lat), lon0.min(lon), lon1.max(lon))
+        },
+    )
+}
+
+/// Whether a position lies in one of the lakes, each given with the box around its outer ring: a position
+/// outside the box is not in the lake, which spares the walk over the ring.
+fn in_water(water: &[(Bounds, &LandPolygon)], lat: f64, lon: f64) -> bool {
+    water.iter().any(|((lat0, lat1, lon0, lon1), polygon)| {
+        (*lat0..=*lat1).contains(&lat)
+            && (*lon0..=*lon1).contains(&lon)
+            && ring_contains(&polygon.outer, (lat, lon))
             && !polygon
                 .holes
                 .iter()
@@ -162,9 +184,10 @@ fn in_water(water: &[&LandPolygon], lat: f64, lon: f64) -> bool {
 
 /// The road pieces that stand in water (bridges may).
 fn water_violations(net: &PlacedNetwork, water: &[LandPolygon], frame: &MapGeo) -> Vec<Violation> {
-    let lakes: Vec<&LandPolygon> = water
+    let lakes: Vec<_> = water
         .iter()
         .filter(|p| p.priority == WATER_PRIORITY)
+        .map(|p| (outer_bounds(p), p))
         .collect();
     if lakes.is_empty() {
         return Vec::new();

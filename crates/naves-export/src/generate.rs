@@ -213,16 +213,18 @@ fn object_heights(
     catalog: Option<&PieceCatalog>,
     generated: &[GeneratedObject],
 ) -> Vec<f32> {
+    // the first generated object of each id, as a linear search would find it
+    let mut by_id: BTreeMap<&ObjectId, &GeneratedObject> = BTreeMap::new();
+    for object in generated {
+        by_id.entry(&object.id).or_insert(object);
+    }
     objects
         .iter()
         .map(|object| {
             let ground = heightmap.sample(object.x, object.y).height;
             let deck = object.id.as_ref().and_then(|id| decks.get(id));
             // a replaced bridge is no longer the bridge the deck level belongs to
-            let original = object
-                .id
-                .as_ref()
-                .and_then(|id| generated.iter().find(|g| g.id == *id));
+            let original = object.id.as_ref().and_then(|id| by_id.get(id).copied());
             let bridge: Option<&BridgeModel> = catalog.and_then(|c| {
                 c.bridges().iter().find(|b| {
                     original.is_some_and(|g| g.model == b.model) && object.model == b.model

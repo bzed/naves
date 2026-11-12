@@ -391,16 +391,14 @@ fn deviation(a: f64, b: f64) -> f64 {
 /// At each crossing, the two arms that continue each other (see [`chains`]), both ways round.
 fn through_pairs(graph: &RoadGraph) -> BTreeMap<Arm, Arm> {
     let mut partner: BTreeMap<Arm, Arm> = BTreeMap::new();
+    // the arms at each node, in the order of the stretches, a stretch's start before its end
+    let mut arms_at: BTreeMap<i64, Vec<Arm>> = BTreeMap::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        arms_at.entry(s.start).or_default().push((i, true));
+        arms_at.entry(s.end).or_default().push((i, false));
+    }
     for crossing in &graph.crossings {
-        let mut arms: Vec<Arm> = Vec::new();
-        for (i, s) in graph.stretches.iter().enumerate() {
-            if s.start == crossing.node {
-                arms.push((i, true));
-            }
-            if s.end == crossing.node {
-                arms.push((i, false));
-            }
-        }
+        let arms: Vec<Arm> = arms_at.get(&crossing.node).cloned().unwrap_or_default();
         let heading = |arm: Arm| {
             graph
                 .stretches

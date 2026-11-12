@@ -300,6 +300,8 @@ struct Placer<'a> {
     /// The live (not tunnel) stretch ends at each node.
     arms_at: BTreeMap<i64, Vec<Arm>>,
     plans: Vec<Plan<'a>>,
+    /// The first plan of each (chain, link), by index into `plans`.
+    plan_index: BTreeMap<(usize, usize), usize>,
     /// Chains that have to be placed before a chain.
     needs: Vec<Vec<usize>>,
     /// Poses fixed by placed junctions: where a side arm starts, heading away from the through road.
@@ -341,6 +343,7 @@ impl<'a> Placer<'a> {
             chain_of,
             arms_at,
             plans: Vec::new(),
+            plan_index: BTreeMap::new(),
             needs,
             fixed: BTreeMap::new(),
             trim: BTreeMap::new(),
@@ -475,6 +478,9 @@ impl<'a> Placer<'a> {
                             n.push(c);
                         }
                     }
+                    self.plan_index
+                        .entry((plan.chain, plan.link))
+                        .or_insert(self.plans.len());
                     self.plans.push(plan);
                 } else {
                     self.join(at);
@@ -566,9 +572,7 @@ impl<'a> Placer<'a> {
     }
 
     fn plan_at(&self, chain: usize, link: usize) -> Option<usize> {
-        self.plans
-            .iter()
-            .position(|p| p.chain == chain && p.link == link)
+        self.plan_index.get(&(chain, link)).copied()
     }
 
     fn live_arms(&self, node: i64) -> usize {

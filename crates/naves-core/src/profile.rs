@@ -200,28 +200,105 @@ fn point_segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
 }
 
-/// Whether the first or last point of another chain lies within the road's half width plus 12.5 m of it.
-fn meets_another_chain(net: &PlacedNetwork, roads: &[usize], road: &PlacedRoad) -> bool {
-    let reach = road.width / 2.0 + 12.5;
-    let (a, b) = ((road.start.x, road.start.y), (road.end.x, road.end.y));
-    net.chains.iter().any(|chain| {
-        if chain.as_slice() == roads {
-            return false;
+/// The first and last point of every chain, in a coarse grid, to find the chains that end near a road without
+/// asking every chain.
+struct ChainEnds {
+    /// (chain, point) of the ends in each cell of [`ChainEnds::CELL_M`] metres.
+    cells: BTreeMap<(i64, i64), Vec<ChainEnd>>,
+}
+
+impl ChainEnds {
+    const CELL_M: f64 = 64.0;
+    /// More cells than this in a query: ask every end instead.
+    const MAX_QUERY_CELLS: i64 = 4096;
+
+    fn cell(v: f64) -> i64 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a cell number of a map position; saturates"
+        )]
+        let n = (v / Self::CELL_M).floor() as i64;
+        n
+    }
+
+    fn new(net: &PlacedNetwork) -> ChainEnds {
+        let mut cells: BTreeMap<(i64, i64), Vec<ChainEnd>> = BTreeMap::new();
+        for (index, chain) in net.chains.iter().enumerate() {
+            let first = chain.first().and_then(|i| net.roads.get(*i));
+            let last = chain.last().and_then(|i| net.roads.get(*i));
+            for point in [
+                first.map(|r| (r.start.x, r.start.y)),
+                last.map(|r| (r.end.x, r.end.y)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                cells
+                    .entry((Self::cell(point.0), Self::cell(point.1)))
+                    .or_default()
+                    .push((index, point));
+            }
         }
-        let first = chain.first().and_then(|i| net.roads.get(*i));
-        let last = chain.last().and_then(|i| net.roads.get(*i));
-        [
-            first.map(|r| (r.start.x, r.start.y)),
-            last.map(|r| (r.end.x, r.end.y)),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|point| point_segment_distance(point, a, b) <= reach)
-    })
+        ChainEnds { cells }
+    }
+
+    /// Whether an end of a chain other than `roads` lies within `reach` of the segment `a`-`b`.
+    fn any_near(
+        &self,
+        net: &PlacedNetwork,
+        roads: &[usize],
+        a: (f64, f64),
+        b: (f64, f64),
+        reach: f64,
+    ) -> bool {
+        let others = |(index, point): &ChainEnd| {
+            net.chains
+                .get(*index)
+                .is_some_and(|c| c.as_slice() != roads)
+                && point_segment_distance(*point, a, b) <= reach
+        };
+        let (x0, x1) = (
+            Self::cell(a.0.min(b.0) - reach),
+            Self::cell(a.0.max(b.0) + reach),
+        );
+        let (y0, y1) = (
+            Self::cell(a.1.min(b.1) - reach),
+            Self::cell(a.1.max(b.1) + reach),
+        );
+        let span = x1
+            .saturating_sub(x0)
+            .saturating_add(1)
+            .saturating_mul(y1.saturating_sub(y0).saturating_add(1));
+        if !(0..=Self::MAX_QUERY_CELLS).contains(&span) {
+            return self.cells.values().flatten().any(others);
+        }
+        self.cells
+            .range((x0, i64::MIN)..=(x1, i64::MAX))
+            .filter(|((_, y), _)| (y0..=y1).contains(y))
+            .flat_map(|(_, ends)| ends)
+            .any(others)
+    }
+}
+
+/// Whether the first or last point of another chain lies within the road's half width plus 12.5 m of it.
+fn meets_another_chain(
+    net: &PlacedNetwork,
+    ends: &ChainEnds,
+    roads: &[usize],
+    road: &PlacedRoad,
+) -> bool {
+    let reach = road.width / 2.0 + 12.5;
+    ends.any_near(
+        net,
+        roads,
+        (road.start.x, road.start.y),
+        (road.end.x, road.end.y),
+        reach,
+    )
 }
 
 /// The grade limit of each segment of a chain: the family's aim, lowered at a meeting and in a tight bend.
-fn segment_grades(net: &PlacedNetwork, roads: &[usize], base: f64) -> Vec<f64> {
+fn segment_grades(net: &PlacedNetwork, ends: &ChainEnds, roads: &[usize], base: f64) -> Vec<f64> {
     let mut limits = Vec::new();
     for &index in roads {
         let Some(road) = net.roads.get(index) else {
@@ -231,7 +308,7 @@ fn segment_grades(net: &PlacedNetwork, roads: &[usize], base: f64) -> Vec<f64> {
             continue;
         }
         let mut limit = base;
-        if road.kind == PlacedKind::Junction || meets_another_chain(net, roads, road) {
+        if road.kind == PlacedKind::Junction || meets_another_chain(net, ends, roads, road) {
             limit = limit.min(MEETING_GRADE);
         }
         let turn = wrap_angle(road.end.heading - road.start.heading);
@@ -513,9 +590,16 @@ fn meeting_on(
 /// Where a chain end meets a road solved earlier: the nearest place whose surface the end lies
 /// on - within the road's half width (and [`ON_ROAD_M`]) of its centre line, or, on a junction
 /// piece, within the piece's own length of its centre, where its side ports are.
-fn meeting(strips: &[RoadStrip], at: (f64, f64)) -> Option<Meeting> {
+fn meeting(strips: &[RoadStrip], bounds: &[[f64; 4]], at: (f64, f64)) -> Option<Meeting> {
     let mut best: Option<(f64, Meeting)> = None;
     for (owner, strip) in strips.iter().enumerate() {
+        // a strip whose box is not near cannot hold a meeting
+        if bounds
+            .get(owner)
+            .is_some_and(|b| !((b[0]..=b[2]).contains(&at.0) && (b[1]..=b[3]).contains(&at.1)))
+        {
+            continue;
+        }
         if let Some((distance, meet)) = meeting_on(strip, owner, at, ON_ROAD_M, ON_ROAD_M)
             && best.as_ref().is_none_or(|(found, _)| distance < *found)
         {
@@ -525,6 +609,46 @@ fn meeting(strips: &[RoadStrip], at: (f64, f64)) -> Option<Meeting> {
     best.map(|(_, meet)| meet)
 }
 
+/// The box in which [`meeting`] can find a place on `strip` for a point: `(min x, min y, max x, max y)` of
+/// its joints, widened by the strip's half width, [`ON_ROAD_M`] and the longest of its segments (a junction
+/// piece reaches that far from its centre).
+fn meeting_bounds(strip: &RoadStrip) -> [f64; 4] {
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut longest = 0.0_f64;
+    for joint in &strip.joints {
+        bounds = [
+            bounds[0].min(joint.0),
+            bounds[1].min(joint.1),
+            bounds[2].max(joint.0),
+            bounds[3].max(joint.1),
+        ];
+    }
+    for pair in strip.joints.windows(2) {
+        if let [from, to] = pair {
+            longest = longest.max((to.0 - from.0).hypot(to.1 - from.1));
+        }
+    }
+    let margin = strip.half_width + ON_ROAD_M + longest;
+    [
+        bounds[0] - margin,
+        bounds[1] - margin,
+        bounds[2] + margin,
+        bounds[3] + margin,
+    ]
+}
+
+/// What [`profile_chain`] looks things up in instead of walking every chain and strip.
+struct Index {
+    ends: ChainEnds,
+    /// [`meeting_bounds`] of each strip solved so far.
+    strips: Vec<[f64; 4]>,
+}
+
 /// The fixed heights of a chain's variables and where they lie on an earlier road: an end that
 /// reaches one takes its height there and stays fixed, and so do up to eight variables inward
 /// while they lie on that road's surface (within its half width and 1.5 cells of its centre line,
@@ -532,6 +656,7 @@ fn meeting(strips: &[RoadStrip], at: (f64, f64)) -> Option<Meeting> {
 fn end_joins(
     chain: &Chain,
     strips: &[RoadStrip],
+    bounds: &[[f64; 4]],
     cell: f64,
 ) -> (Vec<Option<f64>>, Vec<(usize, Meeting)>) {
     let count = chain.at.len();
@@ -541,7 +666,7 @@ fn end_joins(
         let Some(point) = chain.at.get(end) else {
             continue;
         };
-        let Some(meet) = meeting(strips, *point) else {
+        let Some(meet) = meeting(strips, bounds, *point) else {
             continue;
         };
         let owner = meet.owner;
@@ -581,6 +706,7 @@ fn end_joins(
 /// The profile of one chain.
 fn profile_chain(
     net: &PlacedNetwork,
+    index: &Index,
     roads: &[usize],
     hm: &Heightmap,
     strips: &[RoadStrip],
@@ -602,13 +728,13 @@ fn profile_chain(
             None => ground(*point),
         })
         .collect();
-    let (fixed, meetings) = end_joins(&chain, strips, f64::from(hm.cell_m));
+    let (fixed, meetings) = end_joins(&chain, strips, &index.strips, f64::from(hm.cell_m));
     let aim = grade_aim(family);
     let ceiling = grade_ceiling(family);
     let mut solved: Option<(Vec<f64>, Limits)> = None;
     for base in [aim, f64::midpoint(aim, ceiling), ceiling] {
         let limits = Limits {
-            grade: segment_grades(net, roads, base),
+            grade: segment_grades(net, &index.ends, roads, base),
             radius,
         };
         let heights = if count == 1 || fixed.iter().all(Option::is_some) {
@@ -730,10 +856,15 @@ fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
 pub fn solve_profiles(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
     let mut out = Profiles::default();
     let mut variables: Vec<Solved> = Vec::new();
+    let mut index = Index {
+        ends: ChainEnds::new(net),
+        strips: Vec::new(),
+    };
     for roads in &net.chains {
-        let Some((strip, vars)) = profile_chain(net, roads, hm, &out.strips) else {
+        let Some((strip, vars)) = profile_chain(net, &index, roads, hm, &out.strips) else {
             continue;
         };
+        index.strips.push(meeting_bounds(&strip));
         out.strips.push(strip);
         variables.push(vars);
     }
