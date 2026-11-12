@@ -9,7 +9,7 @@
 //! Nothing here touches the project folder or runs a tool other than armake2 for the catalog, so the editor
 //! can run it too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use naves_core::catalog::{BridgeModel, PieceCatalog};
@@ -245,32 +245,50 @@ fn narrow(v: f64) -> f32 {
     narrowed
 }
 
-/// Paints the road beds and the paths on the ground.
-fn paint(surfaces: &mut SurfaceGrid, features: &[Feature], catalog: Option<&PieceCatalog>) {
+/// Paints the paths on the ground, along their OpenStreetMap lines.
+fn paint_paths(surfaces: &mut SurfaceGrid, features: &[Feature]) {
     for feature in features {
-        match feature.kind {
-            FeatureKind::Path { width_m } => {
-                surfaces.stroke(&feature.points, width_m, SurfaceClass::Soil);
-            }
-            FeatureKind::Road {
-                family,
-                tunnel,
-                bridge,
-                ..
-            } => {
-                if tunnel || bridge {
-                    continue;
-                }
-                let width = catalog
-                    .and_then(|c| c.pieces(family).first())
-                    .map_or(family.width_m(), |p| p.width);
-                surfaces.stroke(
-                    &feature.points,
-                    width + ROAD_BED_MARGIN_M,
-                    SurfaceClass::Soil,
-                );
-            }
+        if let FeatureKind::Path { width_m } = feature.kind {
+            surfaces.stroke(&feature.points, width_m, SurfaceClass::Soil);
         }
+    }
+}
+
+/// Paints the road beds on the ground: under every road piece, junction and end cap that was placed, along
+/// the piece itself (the fitted pieces may lie some metres from the OpenStreetMap line, and the arms of a
+/// junction leave it at right angles), with the piece's own width and 2 m more. Bridge models
+/// get no bed. A stretch that is neither a bridge nor a tunnel and has nothing placed at all gets its bed
+/// along its OpenStreetMap line, as wide as the catalog's first piece of its family (or the family's
+/// nominal width without a catalog).
+pub fn paint_roads(
+    surfaces: &mut SurfaceGrid,
+    graph: &RoadGraph,
+    net: &PlacedNetwork,
+    catalog: Option<&PieceCatalog>,
+) {
+    let placed: BTreeSet<&str> = net.roads.iter().map(|r| r.slot.stretch.as_str()).collect();
+    for road in &net.roads {
+        if road.kind == PlacedKind::Bridge {
+            continue;
+        }
+        surfaces.stroke(
+            &[(road.start.x, road.start.y), (road.end.x, road.end.y)],
+            road.width + ROAD_BED_MARGIN_M,
+            SurfaceClass::Soil,
+        );
+    }
+    for stretch in &graph.stretches {
+        if stretch.tunnel || stretch.bridge || placed.contains(stretch.id.as_str()) {
+            continue;
+        }
+        let width = catalog
+            .and_then(|c| c.pieces(stretch.family).first())
+            .map_or(stretch.family.width_m(), |p| p.width);
+        surfaces.stroke(
+            &stretch.points,
+            width + ROAD_BED_MARGIN_M,
+            SurfaceClass::Soil,
+        );
     }
 }
 
@@ -428,7 +446,13 @@ pub fn generate(
     );
 
     let (mut surfaces, mut warnings) = decide_ground(project, &sources, &heightmap, progress)?;
-    paint(&mut surfaces, &features, roads.catalog.as_ref());
+    paint_paths(&mut surfaces, &features);
+    paint_roads(
+        &mut surfaces,
+        &roads.graph,
+        &roads.net,
+        roads.catalog.as_ref(),
+    );
 
     progress("Checking the roads");
     let pieces = check_roads_on_terrain(&roads.net, &heightmap);
