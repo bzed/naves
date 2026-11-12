@@ -17,6 +17,7 @@ use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::osm::{OsmWay, OsmWays, read_ways};
 use naves_core::project::Project;
+use naves_core::roadnet::build_graph;
 use proptest::prelude::*;
 
 fn tags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -421,6 +422,55 @@ fn features_come_in_way_id_order_and_are_reproducible() {
     negative.sort_unstable();
     negative.dedup();
     assert_eq!(negative.len(), all);
+}
+
+#[test]
+fn the_identity_of_a_cut_road_does_not_depend_on_other_ways() {
+    let crossing =
+        |id: i64, y: f64| way_on_map(id, &[id * 10, id * 10 + 1], &[(-300.0, y), (600.0, y)]);
+    let alone = features_of(vec![crossing(20, 900.0)]);
+    let with_lower = features_of(vec![crossing(10, 500.0), crossing(20, 900.0)]);
+    let with_higher = features_of(vec![crossing(20, 900.0), crossing(30, 1500.0)]);
+    let of_way_20 = |all: &[Feature]| -> Vec<Feature> {
+        all.iter().filter(|f| f.way_id == 20).cloned().collect()
+    };
+    assert_eq!(alone.len(), 1);
+    assert_eq!(of_way_20(&with_lower), alone);
+    assert_eq!(of_way_20(&with_higher), alone);
+    // so are the stretch ids that the object ids are built from
+    let stretch_ids = |features: &[Feature]| -> Vec<String> {
+        build_graph(features)
+            .stretches
+            .iter()
+            .filter(|s| s.id.starts_with("20:"))
+            .map(|s| s.id.clone())
+            .collect()
+    };
+    assert_eq!(stretch_ids(&alone).len(), 1);
+    assert_eq!(stretch_ids(&with_lower), stretch_ids(&alone));
+    // cut ends never get a real node id, and never one that another way's cut end has
+    let all: Vec<i64> = with_lower
+        .iter()
+        .chain(&with_higher)
+        .flat_map(|f| [f.nodes[0], f.nodes[f.nodes.len() - 1]])
+        .filter(|n| *n < 0)
+        .collect();
+    let mut unique = all.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    // way 20 appears in both lists with the same cut id, so it is counted twice
+    assert_eq!(unique.len(), all.len() - 1);
+}
+
+#[test]
+fn a_way_whose_cut_ids_would_overflow_is_left_out() {
+    let f = features_of(vec![
+        way_on_map(i64::MAX / 2, &[1, 2], &[(-300.0, 900.0), (600.0, 900.0)]),
+        way_on_map(-5, &[3, 4], &[(-300.0, 900.0), (600.0, 900.0)]),
+        way_on_map(7, &[5, 6], &[(100.0, 100.0), (400.0, 400.0)]),
+    ]);
+    let ways: Vec<i64> = f.iter().map(|x| x.way_id).collect();
+    assert_eq!(ways, vec![7]);
 }
 
 #[test]

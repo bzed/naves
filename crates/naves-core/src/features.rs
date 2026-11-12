@@ -213,21 +213,38 @@ fn lerp(p: (f64, f64), q: (f64, f64), t: f64) -> (f64, f64) {
 /// A run of a polyline: its points and their node ids.
 type Run = (Vec<(f64, f64)>, Vec<i64>);
 
-/// The runs of a polyline that lie inside the square `[lo, hi]²`, as points and node ids. A cut end
-/// takes the next id from `next_cut` (which counts down from -1).
+/// Cut ends a way can have: an OSM way has at most 2000 nodes, so at most two cuts per segment.
+const CUTS_PER_WAY: i64 = 4096;
+
+/// The id of the `index`-th cut end of the way `way`: `-(way * 4096 + index + 1)`. It depends on nothing
+/// but the way and the place on it, it is negative so that it cannot be an OSM node id, and no two cut ends
+/// of any ways share it. `None` if the way id is not positive or the id does not fit.
+fn cut_id(way: i64, index: i64) -> Option<i64> {
+    if way <= 0 || !(0..CUTS_PER_WAY).contains(&index) {
+        return None;
+    }
+    way.checked_mul(CUTS_PER_WAY)?
+        .checked_add(index)?
+        .checked_add(1)?
+        .checked_neg()
+}
+
+/// The runs of a polyline that lie inside the square `[lo, hi]²`, as points and node ids. The cut ends take
+/// their ids from [`cut_id`] in the order they are made along `way`; `None` if one cannot get an id.
 fn clip_polyline(
     points: &[(f64, f64)],
     nodes: &[i64],
     lo: f64,
     hi: f64,
-    next_cut: &mut i64,
-) -> Vec<Run> {
+    way: i64,
+) -> Option<Vec<Run>> {
     let mut runs: Vec<Run> = Vec::new();
     // the last run ends exactly at the end of the previous segment
     let mut open = false;
+    let mut made = 0_i64;
     let mut cut = || {
-        let id = *next_cut;
-        *next_cut -= 1;
+        let id = cut_id(way, made);
+        made = made.saturating_add(1);
         id
     };
     let segments = points
@@ -248,14 +265,14 @@ fn clip_polyline(
             let (start, id) = if t0 <= 0.0 {
                 (p, a)
             } else {
-                (lerp(p, q, t0), cut())
+                (lerp(p, q, t0), cut()?)
             };
             runs.push((vec![start], vec![id]));
         }
         let (end, id) = if t1 >= 1.0 {
             (q, b)
         } else {
-            (lerp(p, q, t1), cut())
+            (lerp(p, q, t1), cut()?)
         };
         if let Some((run_points, run_nodes)) = runs.last_mut() {
             run_points.push(end);
@@ -263,14 +280,15 @@ fn clip_polyline(
         }
         open = t1 >= 1.0;
     }
-    runs
+    Some(runs)
 }
 
 /// The roads and paths of `ways` that lie on the map, in map coordinates, in way id order.
 ///
 /// `map_size_m` is the side of the square map. Ways are cut [`CLIP_INSET_M`] inside its edge; the cut ends
-/// get negative node ids (-1, -2, … in the order they are made, so the same input gives the same ids). A
-/// way that cannot be projected is left out.
+/// get negative node ids that depend only on the way and the place on it (`-(way * 4096 + n + 1)` for the
+/// `n`-th cut of the way), so that adding or removing other ways does not change them. A way that cannot be
+/// projected, or that needs a cut end and has no positive id or one that is too large, is left out.
 #[must_use]
 pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Feature> {
     let (lo, hi) = (CLIP_INSET_M, map_size_m - CLIP_INSET_M);
@@ -278,7 +296,6 @@ pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Fea
         return Vec::new();
     }
     let mut features = Vec::new();
-    let mut next_cut = -1_i64;
     // in way id order whatever the order of the input, so that the ids of the cut ends are reproducible
     let mut ordered: Vec<_> = ways.ways.iter().collect();
     ordered.sort_by_key(|w| w.id);
@@ -296,7 +313,9 @@ pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Fea
         if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
             continue;
         }
-        let runs = clip_polyline(&points, &way.nodes, lo, hi, &mut next_cut);
+        let Some(runs) = clip_polyline(&points, &way.nodes, lo, hi, way.id) else {
+            continue;
+        };
         for (part, (points, nodes)) in runs.into_iter().enumerate() {
             features.push(Feature {
                 id: format!("osm/way/{}/{part}", way.id),
