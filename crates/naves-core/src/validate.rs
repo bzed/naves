@@ -14,7 +14,7 @@ use crate::heightmap::MapGeo;
 use crate::limits::CROSS_FALL_LIMIT;
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
-use crate::profile::Profiles;
+use crate::profile::{GradeExcessKind, Profiles};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// The priority of water among the OSM areas.
@@ -250,15 +250,20 @@ pub fn check_roads(
         )
     }));
     out.extend(profiles.excesses.iter().map(|e| {
-        violation(
-            Rule::RoadGrade,
-            e.at,
-            format!(
+        let message = match e.kind {
+            GradeExcessKind::Grade => format!(
                 "Grade {:.0} % exceeds the limit of {:.0} %",
                 e.grade * 100.0,
                 e.limit * 100.0
             ),
-        )
+            // the change of grade per metre is 1 / radius
+            GradeExcessKind::VerticalBend => format!(
+                "Crest or dip too sharp: vertical radius {:.0} m, the minimum is {:.0} m",
+                1.0 / e.grade,
+                1.0 / e.limit
+            ),
+        };
+        violation(Rule::RoadGrade, e.at, message)
     }));
     out.extend(net.gaps.iter().map(|g| {
         violation(

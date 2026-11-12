@@ -15,7 +15,7 @@ use naves_core::conform::{Conformed, RoadConflict};
 use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::objects::{ObjectId, OrphanedEdit};
 use naves_core::osm::LandPolygon;
-use naves_core::profile::{GradeExcess, Profiles};
+use naves_core::profile::{GradeExcess, GradeExcessKind, Profiles};
 use naves_core::project::Project;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, Slot};
@@ -245,6 +245,7 @@ fn the_other_rules_each_give_a_violation() {
     let profiles = Profiles {
         excesses: vec![GradeExcess {
             at: (5.0, 6.0),
+            kind: GradeExcessKind::Grade,
             grade: 0.2,
             limit: 0.12,
         }],
@@ -291,6 +292,36 @@ fn the_other_rules_each_give_a_violation() {
         only(Rule::OrphanedEdit, &v)[0]
             .message
             .contains("road/7:1-2/3")
+    );
+}
+
+#[test]
+fn a_grade_and_a_bend_of_the_profile_are_worded_each_their_own_way() {
+    let profiles = Profiles {
+        excesses: vec![
+            GradeExcess {
+                at: (5.0, 6.0),
+                kind: GradeExcessKind::Grade,
+                grade: 0.2,
+                limit: 0.12,
+            },
+            GradeExcess {
+                at: (7.0, 8.0),
+                // a radius of 40 m against a minimum of 60 m
+                kind: GradeExcessKind::VerticalBend,
+                grade: 1.0 / 40.0,
+                limit: 1.0 / 60.0,
+            },
+        ],
+        ..Profiles::default()
+    };
+    let v = run(&net(vec![]), &profiles, &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::RoadGrade, &v);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].message, "Grade 20 % exceeds the limit of 12 %");
+    assert_eq!(
+        found[1].message,
+        "Crest or dip too sharp: vertical radius 40 m, the minimum is 60 m"
     );
 }
 

@@ -114,7 +114,10 @@ steep and the map is small (a horizontal scale below 1 steepens everything): rai
 finding. `road_misses_terrain` and a road
 that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
 (a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
-moves roads further apart in map metres; otherwise accept the finding. On steep ground with hairpins a finer grid
+moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 20 % exceeds
+the limit of 12 %" (a stretch that is steeper than its limit, usually between two fixed ends) or "Crest or dip too
+sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
+allow over a crest or a dip). On steep ground with hairpins a finer grid
 helps: at `terrain_size = 2048` the Berchtesgaden example has 1729 road conflicts instead of 1979 and 618 hairpin
 pieces short instead of 1345, at the cost of build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB).
 

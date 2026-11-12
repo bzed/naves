@@ -67,12 +67,24 @@ pub struct RoadStrip {
     pub rank: u8,
 }
 
+/// What a [`GradeExcess`] is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradeExcessKind {
+    /// The road is steeper than its limit: `grade` and `limit` are rise over run.
+    Grade,
+    /// The grade changes faster than the minimum vertical radius allows (a crest or a sag that is too
+    /// sharp): `grade` is the change of grade per metre and `limit` is `1 / minimum radius`, both per metre.
+    VerticalBend,
+}
+
 /// A place where the limits could not be kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GradeExcess {
     /// Where.
     pub at: (f64, f64),
-    /// The grade, or the change of grade, found there.
+    /// Whether it is a grade or a bend of the profile.
+    pub kind: GradeExcessKind,
+    /// The grade, or the change of grade per metre, found there.
     pub grade: f64,
     /// The limit it exceeds.
     pub limit: f64,
@@ -691,6 +703,7 @@ fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
         if grade.abs() > limit + 1e-6 {
             excesses.push(GradeExcess {
                 at,
+                kind: GradeExcessKind::Grade,
                 grade: *grade,
                 limit,
             });
@@ -702,6 +715,7 @@ fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
             if change > change_limit + 1e-6 {
                 excesses.push(GradeExcess {
                     at,
+                    kind: GradeExcessKind::VerticalBend,
                     grade: change,
                     limit: change_limit,
                 });
