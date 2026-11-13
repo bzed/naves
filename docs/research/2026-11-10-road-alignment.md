@@ -325,3 +325,35 @@ where its end is fixed to another road's height the whole difference lands in on
 (3450, 3533), where a track needs 30 % on average and may have 25 %; 235 % at (4334, 5458) at 2048 and 4096. The
 105.9 m gap at (6173, 5641) is a 7.7 m stretch between two junctions that gets a 24.5 m piece pointing elsewhere: a
 fault of the placing. Not explained: the 37.4 m conflict at (1281, 3406), with one road within 45 m.
+
+## 7. The road heights plan, task by task
+
+### 7.1 Track limits (2026-11-13)
+
+Gravel tracks now have a hard limit of 40 % and dirt tracks 50 % (ceilings 36 % and 45 %), before 30 % and 28 %
+(section 3, "Decided by the maintainer (2026-11-13)"). Measured with `road-analysis` at 1024 and 2048 on the tree
+with this change. The "before" columns are section 6; the same tool was run on the tree without the change and gave
+the same counts (3569, 2001, 972, 254 at 1024 and 3353, 1743, 972, 243 at 2048). Raw outputs:
+`/var/tmp/naves-task1.4SzKQM/` (`b*` before, `a*` after).
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 254 | 227 | 243 | 226 |
+| not drivable | 5.7 km | 5.1 km | 4.8 km | 4.7 km |
+| `road_grade` | 972 | 1035 | 972 | 957 |
+| `road_misses_terrain` | 3569 | 3935 | 3353 | 3540 |
+| largest miss | 13.0 m | 9.8 m | 22.0 m | 22.0 m |
+| `road_conflict` | 2001 | 2007 | 1743 | 1702 |
+| `path_too_steep` | 89 | 92 | 91 | 85 |
+| `earthworks_capped` | 143 | 133 | 122 | 115 |
+| `road_gap`, `join_without_junction`, `tunnel_omitted`, `road_in_water` | unchanged | | | |
+
+**The Klingerweg** (`158289388:259090646-278531300`, strip 1027 at 2048): the largest planned grade is 45 %, the
+ceiling of a dirt track; the joint grades along its 225 m are up to 45 %, and 41 to 45 % on seven of its 23 joints.
+
+**Worse:** `road_misses_terrain` grows by 366 at 1024 and 187 at 2048, and `road_grade` and `road_conflict` at 1024
+by 63 and 6. The cause was not examined: a track that may be steeper gets a different profile, so its pieces meet
+the ground and other roads differently.
+
+Not measured: the share of `mud` length cut deeper than 10 m. The tool does not print it and this task does not
+extend the tool.
