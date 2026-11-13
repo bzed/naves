@@ -11,7 +11,9 @@
 
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::roadnet::{RoadGraph, build_graph, chains};
+use naves_core::roadnet::{
+    BridgeSpan, RoadGraph, Stretch, build_graph, chains, widen_bridges, with_bridge_spans,
+};
 use proptest::prelude::*;
 
 fn feature(
@@ -395,4 +397,267 @@ proptest! {
         prop_assert_eq!(&a, &b);
         prop_assert_eq!(chain_ids(&a), chain_ids(&b));
     }
+}
+
+// --- bridge spans and widening --------------------------------------------------------------------------------
+
+fn len(s: &Stretch) -> f64 {
+    s.points
+        .windows(2)
+        .map(|p| (p[1].0 - p[0].0).hypot(p[1].1 - p[0].1))
+        .sum()
+}
+
+fn by_id<'a>(g: &'a RoadGraph, id: &str) -> &'a Stretch {
+    g.stretches.iter().find(|s| s.id == id).unwrap()
+}
+
+fn total(g: &RoadGraph) -> f64 {
+    g.stretches.iter().map(len).sum()
+}
+
+fn line_200() -> RoadGraph {
+    build_graph(&[road(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)])])
+}
+
+#[test]
+fn a_span_becomes_a_bridge_stretch_with_a_stable_id() {
+    let g = line_200();
+    let id = g.stretches[0].id.clone();
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: 0,
+            from_m: 80.0,
+            to_m: 110.0,
+        }],
+    );
+    let found: Vec<_> = out
+        .stretches
+        .iter()
+        .map(|s| (s.id.clone(), s.bridge))
+        .collect();
+    assert!(found.contains(&(id.clone(), false)), "{found:?}");
+    assert!(
+        found.contains(&(format!("{id}/bridge0"), true)),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&(format!("{id}/after0"), false)),
+        "{found:?}"
+    );
+    assert!((len(by_id(&out, &format!("{id}/bridge0"))) - 30.0).abs() < 1e-6);
+    assert!((len(by_id(&out, &id)) - 80.0).abs() < 1e-6);
+    assert!((total(&out) - 200.0).abs() < 1e-6);
+    // the pieces meet at crossings of two stretches
+    assert_eq!(out.crossings.len(), 2);
+    assert!(out.crossings.iter().all(|c| c.stretches.len() == 2));
+}
+
+#[test]
+fn a_second_span_does_not_rename_the_first() {
+    let g = line_200();
+    let id = g.stretches[0].id.clone();
+    let span = |from_m, to_m| BridgeSpan {
+        stretch: 0,
+        from_m,
+        to_m,
+    };
+    let one = with_bridge_spans(&g, &[span(80.0, 110.0)]);
+    let two = with_bridge_spans(&g, &[span(80.0, 110.0), span(150.0, 170.0)]);
+    for name in [id.clone(), format!("{id}/bridge0")] {
+        assert_eq!(by_id(&one, &name).points, by_id(&two, &name).points);
+    }
+    let after0 = by_id(&two, &format!("{id}/after0"));
+    assert!((len(after0) - 40.0).abs() < 1e-6, "{}", len(after0));
+    assert!(by_id(&two, &format!("{id}/bridge1")).bridge);
+    assert!((len(by_id(&two, &format!("{id}/after1"))) - 30.0).abs() < 1e-6);
+}
+
+#[test]
+fn overlapping_spans_are_merged() {
+    let g = line_200();
+    let id = g.stretches[0].id.clone();
+    let span = |from_m, to_m| BridgeSpan {
+        stretch: 0,
+        from_m,
+        to_m,
+    };
+    let out = with_bridge_spans(&g, &[span(100.0, 130.0), span(80.0, 110.0)]);
+    assert!((len(by_id(&out, &format!("{id}/bridge0"))) - 50.0).abs() < 1e-6);
+    assert_eq!(out.stretches.len(), 3);
+}
+
+#[test]
+fn a_span_stops_short_of_a_junction_and_of_a_dead_end() {
+    // a T: the main road 1-2-3 and a side road from node 2... here the end node 3 is a 3-way crossing
+    let g = build_graph(&[
+        road(1, &[1, 3], &[(0.0, 0.0), (100.0, 0.0)]),
+        road(2, &[3, 4], &[(100.0, 0.0), (200.0, 0.0)]),
+        road(3, &[3, 5], &[(100.0, 0.0), (100.0, 100.0)]),
+    ]);
+    let first = g
+        .stretches
+        .iter()
+        .position(|s| s.id.starts_with("1:"))
+        .unwrap();
+    let id = g.stretches[first].id.clone();
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: first,
+            from_m: -5.0,
+            to_m: 150.0,
+        }],
+    );
+    let bridge = by_id(&out, &format!("{id}/bridge0"));
+    // 1 m in from the dead end at node 1 and 1 m short of the 3-way crossing
+    assert!((len(bridge) - 98.0).abs() < 1e-6, "{}", len(bridge));
+    assert!((bridge.points[0].0 - 1.0).abs() < 1e-6);
+    assert!((bridge.points.last().unwrap().0 - 99.0).abs() < 1e-6);
+    assert!((len(by_id(&out, &id)) - 1.0).abs() < 1e-6);
+    assert!((len(by_id(&out, &format!("{id}/after0"))) - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_span_may_reach_a_crossing_of_two_stretches() {
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::Grav,
+            false,
+            &[2, 3],
+            &[(100.0, 0.0), (200.0, 0.0)],
+        ),
+    ]);
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: 0,
+            from_m: 40.0,
+            to_m: 100.0,
+        }],
+    );
+    let bridge = out.stretches.iter().find(|s| s.bridge).unwrap();
+    assert!((len(bridge) - 60.0).abs() < 1e-6);
+}
+
+/// 100 m road, a bridge of `bridge_m`, 100 m road, in one line, as three stretches (the family changes).
+fn road_bridge_road(bridge_m: f64) -> RoadGraph {
+    build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf3,
+            true,
+            &[2, 3],
+            &[(100.0, 0.0), (100.0 + bridge_m, 0.0)],
+        ),
+        road(
+            3,
+            &[3, 4],
+            &[(100.0 + bridge_m, 0.0), (200.0 + bridge_m, 0.0)],
+        ),
+    ])
+}
+
+fn bridge_len(g: &RoadGraph) -> f64 {
+    g.stretches.iter().filter(|s| s.bridge).map(len).sum()
+}
+
+#[test]
+fn a_short_osm_bridge_grows_into_its_neighbours() {
+    let g = road_bridge_road(8.0);
+    let out = widen_bridges(&g, &|_| 25.0);
+    assert!((bridge_len(&out) - 25.0).abs() < 0.01);
+    assert!((total(&out) - 208.0).abs() < 0.01);
+    assert_eq!(ids(&out), ids(&g));
+    // evenly: 8.5 m from each side
+    let b = out.stretches.iter().find(|s| s.bridge).unwrap();
+    assert!((b.points[0].0 - 91.5).abs() < 0.01, "{:?}", b.points);
+    assert!((b.points.last().unwrap().0 - 116.5).abs() < 0.01);
+    // the crossings moved with it
+    assert!(
+        out.crossings
+            .iter()
+            .any(|c| (c.point.0 - 91.5).abs() < 0.01)
+    );
+    // a bridge that is long enough is left alone
+    assert_eq!(widen_bridges(&g, &|_| 8.0), g);
+}
+
+#[test]
+fn a_bridge_between_two_junctions_grows_only_as_far_as_they_allow() {
+    // the road before the bridge is 12 m long and ends at a 3-way crossing (node 1 has a side road)
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (12.0, 0.0)]),
+        road(9, &[1, 8], &[(0.0, 0.0), (0.0, 50.0)]),
+        road(7, &[1, 6], &[(0.0, 0.0), (0.0, -50.0)]),
+        feature(2, Family::Asf3, true, &[2, 3], &[(12.0, 0.0), (20.0, 0.0)]),
+        road(3, &[3, 4], &[(20.0, 0.0), (27.0, 0.0)]),
+    ]);
+    // needed 25: 17 m missing, 11 m available before and 6 m after: both give all they can
+    let out = widen_bridges(&g, &|_| 25.0);
+    assert!(
+        (bridge_len(&out) - 25.0).abs() < 0.01,
+        "{}",
+        bridge_len(&out)
+    );
+    let before = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("1:"))
+        .unwrap();
+    assert!((len(before) - 1.0).abs() < 0.01, "{}", len(before));
+    let after = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("3:"))
+        .unwrap();
+    assert!((len(after) - 1.0).abs() < 0.01, "{}", len(after));
+    // asking for more than they allow together leaves no bridge
+    assert!(
+        widen_bridges(&g, &|_| 26.0)
+            .stretches
+            .iter()
+            .all(|s| !s.bridge)
+    );
+}
+
+#[test]
+fn a_bridge_without_room_stays_an_ordinary_road_and_its_neighbours_stay() {
+    // 3-way crossings 12 m before and 12 m after: 11 + 11 + 8 < 40
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (12.0, 0.0)]),
+        road(8, &[1, 5], &[(0.0, 0.0), (0.0, 50.0)]),
+        road(7, &[1, 6], &[(0.0, 0.0), (0.0, -50.0)]),
+        feature(2, Family::Asf3, true, &[2, 3], &[(12.0, 0.0), (20.0, 0.0)]),
+        road(3, &[3, 4], &[(20.0, 0.0), (32.0, 0.0)]),
+        road(9, &[4, 10], &[(32.0, 0.0), (32.0, 50.0)]),
+        road(10, &[4, 11], &[(32.0, 0.0), (32.0, -50.0)]),
+    ]);
+    let out = widen_bridges(&g, &|_| 40.0);
+    assert!(out.stretches.iter().all(|s| !s.bridge));
+    for s in &g.stretches {
+        if !s.bridge {
+            assert_eq!(by_id(&out, &s.id).points, s.points);
+        }
+    }
+}
+
+#[test]
+fn a_neighbour_is_never_used_up() {
+    let g = road_bridge_road(8.0);
+    // the roads are 100 m: asking for 400 m leaves 1 m of each and fails
+    let out = widen_bridges(&g, &|_| 400.0);
+    assert!(out.stretches.iter().all(|s| !s.bridge));
+    let out = widen_bridges(&g, &|_| 206.0);
+    assert!((bridge_len(&out) - 206.0).abs() < 0.01);
+    assert!(
+        out.stretches
+            .iter()
+            .filter(|s| !s.bridge)
+            .all(|s| len(s) >= 1.0 - 1e-9)
+    );
 }

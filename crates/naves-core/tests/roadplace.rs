@@ -13,9 +13,9 @@ use std::collections::BTreeSet;
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_bridges, width};
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::roadnet::build_graph;
+use naves_core::roadnet::{build_graph, widen_bridges};
 use naves_core::roadplace::{
-    MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, place_network,
+    MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network,
 };
 
 fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
@@ -442,10 +442,26 @@ fn a_bridge_is_a_straight_run_of_bridge_models() {
     assert_eq!(indices, vec![0, 1, 2, 3]);
 }
 
+/// The network of `features` with every bridge widened to one model, as the build does.
+fn place_widened(features: &[Feature]) -> PlacedNetwork {
+    let catalog = synthetic_catalog();
+    let graph = widen_bridges(&build_graph(features), &|s| {
+        bridge_for(&catalog, s.family).map_or(0.0, |(m, scale, _)| m.length * scale)
+    });
+    place_network(&graph, &catalog).unwrap()
+}
+
 #[test]
-fn a_short_bridge_stays_road() {
-    let net = place(&bridged(8.0));
-    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+fn an_eight_metre_osm_bridge_is_built_as_a_bridge() {
+    let net = place_widened(&bridged(8.0));
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert_eq!(bridges.len(), 1, "{:?}", net.warnings);
+    // one 25 m model, centred on the 8 m bridge
+    let b = bridges[0];
+    assert!(
+        (b.start.x - 391.5).abs() < 1.0 && (b.end.x - 416.5).abs() < 1.0,
+        "{b:?}"
+    );
 }
 
 #[test]
@@ -649,4 +665,29 @@ fn an_edit_keeps_its_object_when_a_neighbouring_stretch_changes() {
             .iter()
             .any(|p| p.id.as_ref() == Some(&target.id) && (p.x - (target.x + 1.0)).abs() < 1e-9)
     );
+}
+
+#[test]
+fn a_bridge_model_without_a_usable_length_is_never_chosen() {
+    // the catalog is untrusted input: a model whose ports coincide (length 0) or are not numbers must
+    // neither loop forever nor divide by zero; the good model next to it is used
+    for bad in [0.0, f64::NAN, f64::INFINITY] {
+        let net = place_with(
+            &[
+                ("bridge_stone_bad", bad, 8.0, 7.9),
+                ("bridge_stone_ok", 25.0, 12.0, 7.9),
+            ],
+            &bridged(100.0),
+        );
+        let bridges = of_kind(&net, PlacedKind::Bridge);
+        assert!(!bridges.is_empty(), "length {bad}");
+        assert!(
+            bridges.iter().all(|b| b.model.contains("bridge_stone_ok")),
+            "length {bad}: {}",
+            bridges[0].model
+        );
+    }
+    // and if no model is usable, the bridge is left out
+    let net = place_with(&[("bridge_stone_bad", 0.0, 12.0, 7.9)], &bridged(100.0));
+    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
 }

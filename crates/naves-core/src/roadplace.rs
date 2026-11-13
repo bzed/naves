@@ -23,10 +23,52 @@ const JUNCTION_SPACING_M: f64 = 12.5;
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
 /// A side road without a junction piece ends this far inside the through road's edge.
 const SIDE_OVERLAP_M: f64 = 2.0;
-/// A bridge stretch shorter than this stays an ordinary road.
-const MIN_BRIDGE_M: f64 = 10.0;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
+
+/// The bridge model for a road of `family`, the scale to lay it with and whether the scale was capped at
+/// [`MAX_BRIDGE_SCALE`] so that the bridge is still narrower than the road: wooden models for gravel and
+/// dirt, the others for the paved families. The narrowest model that is at least as wide as the road, at
+/// scale 1; else the widest, scaled up to the road's width but at most [`MAX_BRIDGE_SCALE`]. Never scaled
+/// down. A model whose length is zero, negative or not finite is never chosen (the catalog is untrusted).
+#[must_use]
+pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Option<(&BridgeModel, f64, bool)> {
+    let wooden = matches!(family, Family::Grav | Family::Mud);
+    let all: Vec<&BridgeModel> = catalog
+        .bridges()
+        .iter()
+        .filter(|b| b.length.is_finite() && b.length > 0.0)
+        .collect();
+    let of_material: Vec<&BridgeModel> = all
+        .iter()
+        .copied()
+        .filter(|b| b.model.contains("wood") == wooden)
+        .collect();
+    let pool = if of_material.is_empty() {
+        all
+    } else {
+        of_material
+    };
+    let width = catalog.pieces(family).first().map_or(0.0, |p| p.width);
+    let enough = pool
+        .iter()
+        .filter(|b| b.width + 1e-6 >= width)
+        .min_by(|x, y| x.width.total_cmp(&y.width))
+        .copied();
+    if let Some(model) = enough {
+        return Some((model, 1.0, false));
+    }
+    let widest = pool
+        .iter()
+        .max_by(|x, y| x.width.total_cmp(&y.width))
+        .copied()?;
+    let scale = if widest.width > 0.0 {
+        (width / widest.width).clamp(1.0, MAX_BRIDGE_SCALE)
+    } else {
+        1.0
+    };
+    Some((widest, scale, widest.width * scale + 1e-6 < width))
+}
 
 /// The identity of a placed object along a stretch: it does not change with the direction a chain is
 /// walked, nor with the other roads.
@@ -760,9 +802,7 @@ impl<'a> Placer<'a> {
             })
             .collect();
         for k in first..=last {
-            if self
-                .bridge_chord(c, k)
-                .is_some_and(|chord| chord >= MIN_BRIDGE_M)
+            if self.bridge_chord(c, k).is_some_and(|chord| chord > 0.0)
                 && let Some(s0) = line.link_start.get(k - first)
             {
                 events.push((*s0, Event::Bridge(k)));
@@ -933,48 +973,18 @@ impl<'a> Placer<'a> {
         Some((last.0 - first.0).hypot(last.1 - first.1))
     }
 
-    /// The bridge model for a road of `family` and the scale to lay it with: wooden models for gravel
-    /// and dirt, the others for the paved families. The narrowest model that is at least as wide as the
-    /// road, at scale 1; else the widest, scaled up to the road's width but at most
-    /// [`MAX_BRIDGE_SCALE`], with a warning when that is not enough. Never scaled down.
+    /// The bridge for a road of `family`, see [`bridge_for`]; warns once when the scale is capped.
     fn choose_bridge(&mut self, family: Family, stretch: &str) -> Option<(&'a BridgeModel, f64)> {
-        let wooden = matches!(family, Family::Grav | Family::Mud);
-        let all = self.catalog.bridges();
-        let of_material: Vec<&BridgeModel> = all
-            .iter()
-            .filter(|b| b.model.contains("wood") == wooden)
-            .collect();
-        let pool: Vec<&BridgeModel> = if of_material.is_empty() {
-            all.iter().collect()
-        } else {
-            of_material
-        };
-        let width = self.family_width(family);
-        let enough = pool
-            .iter()
-            .filter(|b| b.width + 1e-6 >= width)
-            .min_by(|x, y| x.width.total_cmp(&y.width))
-            .copied();
-        if let Some(model) = enough {
-            return Some((model, 1.0));
-        }
-        let widest = pool
-            .iter()
-            .max_by(|x, y| x.width.total_cmp(&y.width))
-            .copied()?;
-        let scale = if widest.width > 0.0 {
-            (width / widest.width).clamp(1.0, MAX_BRIDGE_SCALE)
-        } else {
-            1.0
-        };
-        if widest.width * scale + 1e-6 < width {
+        let (model, scale, capped) = bridge_for(self.catalog, family)?;
+        if capped {
+            let width = self.family_width(family);
             self.out.warnings.push(format!(
                 "bridge on {stretch}: the widest bridge model is {:.1} m, scaled up to {:.1} m; the road is {width:.1} m wide",
-                widest.width,
-                widest.width * scale
+                model.width,
+                model.width * scale
             ));
         }
-        Some((widest, scale))
+        Some((model, scale))
     }
 
     /// Fits the road up to link `k` of the run and lays the bridge models along its chord.

@@ -177,6 +177,7 @@ roads simply meet; the build lists those places. On a bridge, the span has a lev
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
 the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
+Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than a bridge model grows evenly into the roads on both sides until a model fits (each neighbouring stretch keeps at least 1 m). Between two junctions that leave no room for a model the bridge stays an ordinary road, and the build says so.
 **Scaled bridges have not been tested in the game**; if one misbehaves, replace it in `edits/overrides.toml`. The ground under the pieces that were placed
 (not under the OSM line, which they may leave by some metres) is painted as soil, 2 m wider than the road.
 

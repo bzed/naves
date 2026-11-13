@@ -140,6 +140,11 @@ different slope, or a wrong node of the OSM data. Move the junction or fix the d
 The game has no bridge as wide as the road, not even scaled up by the most the build allows (1.5 times). The widest
 is used at that scale; the road is wider than the deck.
 
+**`bridge on ...: no room for a bridge model between the junctions`**
+An OpenStreetMap bridge is shorter than one bridge model and the roads beside it, junction to junction, are too short
+to give the rest (they keep at least 1 m). It is built as an ordinary road. Move a junction away from the bridge in
+the data, or place a bridge by hand in `edits/overrides.toml`.
+
 ## Server mission
 
 **`source mission not found: .../dayzOffline.enoch`**

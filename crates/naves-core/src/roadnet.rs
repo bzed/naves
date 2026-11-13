@@ -512,3 +512,281 @@ pub fn chains(graph: &RoadGraph) -> Vec<Chain> {
     });
     found
 }
+
+/// A part of a stretch that is to be a bridge, in metres along the stretch from its start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeSpan {
+    /// Index into [`RoadGraph::stretches`].
+    pub stretch: usize,
+    /// Where the bridge starts.
+    pub from_m: f64,
+    /// Where the bridge ends.
+    pub to_m: f64,
+}
+
+/// A span shorter than this is dropped, a remainder shorter than this is not a piece.
+const EPS_M: f64 = 1e-6;
+/// A span stops this far short of a junction or a dead end.
+const CLEARANCE_M: f64 = 1.0;
+/// A neighbour that gives room to a bridge keeps at least this much.
+const KEEP_M: f64 = 1.0;
+
+/// A polyline.
+type Points = Vec<(f64, f64)>;
+
+fn polyline_length(points: &[(f64, f64)]) -> f64 {
+    points
+        .windows(2)
+        .map(|p| match p {
+            [a, b] => (b.0 - a.0).hypot(b.1 - a.1),
+            _ => 0.0,
+        })
+        .sum()
+}
+
+/// The part of `points` between the distances `from` and `to` along it, with interpolated ends.
+fn slice_points(points: &[(f64, f64)], from: f64, to: f64) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    let mut at = 0.0;
+    for w in points.windows(2) {
+        let &[a, b] = w else { continue };
+        let seg = (b.0 - a.0).hypot(b.1 - a.1);
+        let (s0, s1) = (at, at + seg);
+        at = s1;
+        if s1 < from || s0 > to || seg <= 0.0 {
+            continue;
+        }
+        let lerp = |d: f64| {
+            let f = ((d - s0) / seg).clamp(0.0, 1.0);
+            (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f)
+        };
+        let mut candidates = Vec::with_capacity(2);
+        if out.is_empty() {
+            candidates.push(lerp(from));
+        }
+        if to <= s1 {
+            candidates.push(lerp(to));
+        } else {
+            candidates.push(b);
+        }
+        for p in candidates {
+            if out.last() != Some(&p) {
+                out.push(p);
+            }
+        }
+        if to <= s1 {
+            break;
+        }
+    }
+    out
+}
+
+/// A node id above all the ids in `graph`.
+fn first_free_node(graph: &RoadGraph) -> i64 {
+    graph
+        .stretches
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .max()
+        .map_or(1, |m| m.saturating_add(1))
+}
+
+/// The graph with the spans cut out of their stretches as bridge stretches. The part before the first
+/// span keeps the stretch's id; a span is `<id>/bridge<n>` and the road after it `<id>/after<n>`, `n`
+/// counted from the stretch's start. A span that reaches a crossing with three or more stretches, or the
+/// end of a dead end, is shortened to stop 1 m before it. Overlapping spans are merged. Spans on bridges
+/// and tunnels are ignored.
+///
+/// The new ends get node ids above all others, in the order of the stretches and along each stretch, so
+/// the result does not depend on anything else. A cut piece is therefore not always in the canonical
+/// direction (lower node id first) that [`build_graph`] gives its stretches; it keeps the direction of
+/// the stretch it was cut from.
+#[must_use]
+pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
+    let mut next_node = first_free_node(graph);
+    let mut stretches: Vec<Stretch> = Vec::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        let total = polyline_length(&s.points);
+        // a stretch end that continues into exactly one other stretch may be reached; others not
+        let through = |node: i64| {
+            graph
+                .crossings
+                .iter()
+                .any(|c| c.node == node && c.stretches.len() == 2 && c.stretches.contains(&i))
+        };
+        let lo = if through(s.start) { 0.0 } else { CLEARANCE_M };
+        let hi = total - if through(s.end) { 0.0 } else { CLEARANCE_M };
+        let mut mine: Vec<(f64, f64)> = spans
+            .iter()
+            .filter(|sp| sp.stretch == i && sp.from_m.is_finite() && sp.to_m.is_finite())
+            .map(|sp| (sp.from_m.max(lo), sp.to_m.min(hi)))
+            .filter(|(f, t)| t - f > EPS_M)
+            .collect();
+        if s.bridge || s.tunnel || mine.is_empty() {
+            stretches.push(s.clone());
+            continue;
+        }
+        mine.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (f, t) in mine {
+            match merged.last_mut() {
+                Some(last) if f <= last.1 + EPS_M => last.1 = last.1.max(t),
+                _ => merged.push((f, t)),
+            }
+        }
+        let mut node = s.start;
+        let mut cursor = 0.0;
+        let mut piece = |from: f64, to: f64, id: String, bridge: bool, node: &mut i64| {
+            let end = if to >= total - EPS_M {
+                s.end
+            } else {
+                let n = next_node;
+                next_node = next_node.saturating_add(1);
+                n
+            };
+            stretches.push(Stretch {
+                id,
+                bridge,
+                points: slice_points(&s.points, from, to),
+                start: *node,
+                end,
+                ..s.clone()
+            });
+            *node = end;
+        };
+        for (k, &(f, t)) in merged.iter().enumerate() {
+            if f - cursor > EPS_M {
+                let id = if k == 0 {
+                    s.id.clone()
+                } else {
+                    format!("{}/after{}", s.id, k - 1)
+                };
+                piece(cursor, f, id, false, &mut node);
+            }
+            piece(f, t, format!("{}/bridge{k}", s.id), true, &mut node);
+            cursor = t;
+        }
+        if total - cursor > EPS_M {
+            let id = format!("{}/after{}", s.id, merged.len() - 1);
+            piece(cursor, total, id, false, &mut node);
+        }
+    }
+    stretches.sort_by(|a, b| a.id.cmp(&b.id));
+    let crossings = crossings(&stretches);
+    RoadGraph {
+        stretches,
+        crossings,
+    }
+}
+
+/// The stretch that continues stretch `i` at its start or end: the only other one at a crossing of exactly
+/// two stretches, if it is a plain road (not a bridge, a tunnel or a loop).
+fn continuation(graph: &RoadGraph, i: usize, at_start: bool) -> Option<usize> {
+    let this = graph.stretches.get(i)?;
+    let node = if at_start { this.start } else { this.end };
+    let crossing = graph.crossings.iter().find(|c| c.node == node)?;
+    let &[first, second] = crossing.stretches.as_slice() else {
+        return None;
+    };
+    let other = if first == i { second } else { first };
+    let next = graph.stretches.get(other)?;
+    (other != i && !next.bridge && !next.tunnel && next.start != next.end).then_some(other)
+}
+
+/// Splits `points` at distance `d` from its start into the part up to there and the part from there.
+fn split_points(points: &[(f64, f64)], d: f64) -> (Points, Points) {
+    let total = polyline_length(points);
+    (
+        slice_points(points, 0.0, d),
+        slice_points(points, d, total.max(d)),
+    )
+}
+
+/// Moves `t` metres of stretch `n`, from the crossing at its `bridge_at_start` side of bridge `i`, over to
+/// the bridge.
+fn grow(graph: &mut RoadGraph, i: usize, bridge_at_start: bool, n: usize, t: f64) {
+    if t <= EPS_M {
+        return;
+    }
+    let Some(bridge) = graph.stretches.get(i) else {
+        return;
+    };
+    let node = if bridge_at_start {
+        bridge.start
+    } else {
+        bridge.end
+    };
+    let Some(neighbour) = graph.stretches.get(n) else {
+        return;
+    };
+    let from_node = neighbour.start == node;
+    let mut away = neighbour.points.clone();
+    if !from_node {
+        away.reverse();
+    }
+    let (mut head, mut rest) = split_points(&away, t);
+    if !from_node {
+        rest.reverse();
+    }
+    if let Some(s) = graph.stretches.get_mut(n) {
+        s.points = rest;
+    }
+    if let Some(b) = graph.stretches.get_mut(i) {
+        if bridge_at_start {
+            head.reverse();
+            head.extend(b.points.iter().skip(1).copied());
+            b.points = head;
+        } else {
+            b.points.pop();
+            b.points.extend(head);
+        }
+    }
+}
+
+/// For each bridge stretch shorter than `needed(stretch)`, the same stretch grown evenly at both ends into
+/// the stretches that continue it (crossings of exactly two stretches), as far as they allow: if one side
+/// allows less than half of what is missing the other takes the rest. A neighbour keeps at least 1 m. The
+/// nodes stay where they are in the graph, only their points move, so no id changes. A bridge that cannot
+/// reach `needed` that way is no bridge in the result (`bridge` is false) and its neighbours are as they
+/// were.
+#[must_use]
+pub fn widen_bridges(graph: &RoadGraph, needed: &dyn Fn(&Stretch) -> f64) -> RoadGraph {
+    let mut g = graph.clone();
+    for i in 0..g.stretches.len() {
+        let Some(s) = g.stretches.get(i) else {
+            continue;
+        };
+        if !s.bridge || s.tunnel {
+            continue;
+        }
+        let want = needed(s);
+        let missing = want - polyline_length(&s.points);
+        if !want.is_finite() || missing <= EPS_M {
+            continue;
+        }
+        let before = continuation(&g, i, true);
+        let after = continuation(&g, i, false).filter(|&a| Some(a) != before);
+        let room = |n: Option<usize>| {
+            n.and_then(|n| g.stretches.get(n))
+                .map_or(0.0, |n| (polyline_length(&n.points) - KEEP_M).max(0.0))
+        };
+        let (room_before, room_after) = (room(before), room(after));
+        if room_before + room_after + EPS_M < missing {
+            if let Some(s) = g.stretches.get_mut(i) {
+                s.bridge = false;
+            }
+            continue;
+        }
+        let take_before = (missing / 2.0).min(room_before);
+        let take_after = (missing - take_before).min(room_after);
+        let take_before = (missing - take_after).min(room_before);
+        if let Some(n) = before {
+            grow(&mut g, i, true, n, take_before);
+        }
+        if let Some(n) = after {
+            grow(&mut g, i, false, n, take_after);
+        }
+    }
+    g.crossings = crossings(&g.stretches);
+    g
+}

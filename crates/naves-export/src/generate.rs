@@ -26,8 +26,8 @@ use naves_core::objects::{
 use naves_core::osm::{OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::{RoadGraph, build_graph};
-use naves_core::roadplace::{PlacedKind, PlacedNetwork, place_network};
+use naves_core::roadnet::{RoadGraph, build_graph, widen_bridges};
+use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
@@ -158,8 +158,20 @@ fn place_roads(
     progress("Reading the road pieces of the game");
     let catalog = road_catalog(tools, &tools.cache_dir)?;
     progress("Placing the roads");
-    let graph = build_graph(features);
-    let net = place_network(&graph, &catalog)?;
+    let built = build_graph(features);
+    // every OpenStreetMap bridge is a bridge: one that is shorter than a model grows into the roads beside it
+    let graph = widen_bridges(&built, &|s| {
+        bridge_for(&catalog, s.family).map_or(0.0, |(model, scale, _)| model.length * scale)
+    });
+    let mut net = place_network(&graph, &catalog)?;
+    for (before, after) in built.stretches.iter().zip(&graph.stretches) {
+        if before.bridge && !after.bridge {
+            net.warnings.push(format!(
+                "bridge on {}: no room for a bridge model between the junctions",
+                before.id
+            ));
+        }
+    }
     progress("Shaping the terrain to the roads");
     let junctions = find_junctions(&net, &graph, base);
     let side = side_slopes(&net, base);
