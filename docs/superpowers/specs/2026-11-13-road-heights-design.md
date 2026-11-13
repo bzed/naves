@@ -245,7 +245,10 @@ object identity comes from the placing, which does not depend on the grid or the
 **As built (2026-11-14).** When a dip gets a bridge the roads are placed a second time as a whole, not only the links
 with a bridge; the dips that are left are not bridged again. A dip over water that gets no bridge is filled like a dry
 one, not left in the air, and is reported as `road_over_water`. The dip threshold of 3 m gave 93 to 95 bridged dips on
-the example, median 4.7 m deep (the maintainer may raise it).
+the example, median 4.7 m deep, 245 and 229 bridge objects (research note 7.7). The dip threshold for a bridge is 8 m
+(`BRIDGE_DIP_M`; `DIP_M` of 3 m stays the start of a dip, for the fill and the report over water): the controller set it on
+2026-11-14 after the measurement with 3 m, because nine tenths of the dips bridged at 3 m were shallower than 7.8 m (median
+4.7 m) and a road crosses such a hollow on an embankment; 8 m keeps the bridges for the deepest tenth.
 
 ### 6.4 Water
 

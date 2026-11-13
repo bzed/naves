@@ -220,7 +220,7 @@ fn ground_at_hollow(generated: &Generated) -> (f64, f64) {
 #[test]
 fn a_road_over_a_hollow_gets_bridges_and_the_ground_under_them_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
-    let p = project(dir.path(), 40.0, 8.0, &[]);
+    let p = project(dir.path(), 40.0, 12.0, &[]);
     let generated = build(dir.path(), &p);
     let bridges = bridge_indices(&generated);
     assert!(!bridges.is_empty(), "{:?}", generated.warnings);
@@ -253,8 +253,8 @@ fn a_road_over_a_hollow_gets_bridges_and_the_ground_under_them_is_left_alone() {
 fn building_twice_gives_the_same_objects_and_heights() {
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
-    let first = build(a.path(), &project(a.path(), 40.0, 8.0, &[]));
-    let second = build(b.path(), &project(b.path(), 40.0, 8.0, &[]));
+    let first = build(a.path(), &project(a.path(), 40.0, 12.0, &[]));
+    let second = build(b.path(), &project(b.path(), 40.0, 12.0, &[]));
     assert!(!bridge_indices(&first).is_empty());
     assert_eq!(first.objects, second.objects);
     assert_eq!(first.heights, second.heights);
@@ -300,7 +300,7 @@ fn a_short_dip_over_a_stream_is_reported_and_left_as_the_build_leaves_it() {
 #[test]
 fn a_long_wet_dip_gets_a_chain_of_bridges_and_no_report() {
     let dir = tempfile::tempdir().unwrap();
-    let p = project(dir.path(), 120.0, 16.0, &[HOLLOW_LON]);
+    let p = project(dir.path(), 120.0, 40.0, &[HOLLOW_LON]);
     let generated = build(dir.path(), &p);
     let bridges = bridge_indices(&generated);
     assert!(
@@ -314,6 +314,29 @@ fn a_long_wet_dip_gets_a_chain_of_bridges_and_no_report() {
             .violations
             .iter()
             .all(|v| v.rule != Rule::RoadOverWater),
+        "{:?}",
+        generated.violations
+    );
+}
+
+#[test]
+fn a_dip_under_the_bridge_depth_is_filled_or_reported_and_never_bridged() {
+    // 40 m wide and 7 m deep: room for a model, but a road crosses such a hollow on an embankment
+    let dry = tempfile::tempdir().unwrap();
+    let generated = build(dry.path(), &project(dry.path(), 40.0, 7.0, &[]));
+    assert!(bridge_indices(&generated).is_empty());
+    let (shaped, original) = ground_at_hollow(&generated);
+    // the hollow is filled under the road, not spanned
+    assert!(shaped - original > 3.0, "{shaped} {original}");
+    // the same hollow with a stream is reported
+    let wet = tempfile::tempdir().unwrap();
+    let generated = build(wet.path(), &project(wet.path(), 40.0, 7.0, &[HOLLOW_LON]));
+    assert!(bridge_indices(&generated).is_empty());
+    assert!(
+        generated
+            .violations
+            .iter()
+            .any(|v| v.rule == Rule::RoadOverWater),
         "{:?}",
         generated.violations
     );

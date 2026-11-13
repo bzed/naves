@@ -181,10 +181,11 @@ its height; the ground starts to be shaped only at the abutments. Gravel and dir
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
 the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
 Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than a bridge model grows evenly into the roads on both sides until a model fits (each neighbouring stretch keeps at least 1 m). Between two junctions that leave no room for a model the bridge stays an ordinary road, and the build says so.
-A road that stands more than 3 m above the original ground over some length is crossing a dip. Where a bridge model
-fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
+A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
+least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
 dead ends, and the road is straight within 2 m over each model) it gets a bridge, or a chain of bridges end to end over
-a long dip; the ground below is left alone. Otherwise a dip without water is filled, as before, and one with a stream
+a long dip; the ground below is left alone. Otherwise (a dip less than 8 m deep, or no model fits) a dip without water is
+filled, as before, and one with a stream
 (`waterway=stream`, `river` or `canal` crossing the road), a river or a lake under it is left as it is and reported as
 `road_over_water` for you to look at. Only after the heights are solved is the dips' bridging decided, so **when a dip gets a
 bridge the roads are placed a second time and the road part of the build takes about twice as long** (there are no

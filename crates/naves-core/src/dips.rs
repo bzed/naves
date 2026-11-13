@@ -24,6 +24,9 @@ const SLACK_M: f64 = 1e-9;
 
 /// A road this far above the original ground is crossing a dip.
 pub const DIP_M: f64 = 3.0;
+/// A dip shallower than this never gets a bridge: it is filled when dry and reported when a water line
+/// crosses it. [`DIP_M`] is where a run starts to count as a dip at all.
+pub const BRIDGE_DIP_M: f64 = 8.0;
 /// The road may leave the straight line of a bridge model by this much.
 pub const BRIDGE_STRAIGHT_M: f64 = 2.0;
 
@@ -299,7 +302,7 @@ fn off_chord(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 /// What to do about `dip`; `model_length` is the scaled length of the bridge model the road would get, if
 /// any.
 ///
-/// A bridge when a model exists, the run is at least half a model long, the span (the run grown to a whole
+/// A bridge when the dip is at least [`BRIDGE_DIP_M`] deep, a model exists, the run is at least half a model long, the span (the run grown to a whole
 /// number of models, evenly at both ends) stays within the room [`bridge_room`] gives and, over every model
 /// length of it, the stretch's points are within [`BRIDGE_STRAIGHT_M`] of the chord; the span is then the
 /// second value. Otherwise a fill when no water lies under the run, else a report.
@@ -315,6 +318,9 @@ pub fn decide(
         DipAction::Fill
     };
     let span = (|| {
+        if dip.depth_m.is_nan() || dip.depth_m < BRIDGE_DIP_M {
+            return None;
+        }
         let length =
             model_length.filter(|l| l.is_finite() && *l >= crate::roadplace::MIN_BRIDGE_M)?;
         let stretch = graph.stretches.get(dip.stretch)?;

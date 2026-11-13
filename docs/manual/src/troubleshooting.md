@@ -141,8 +141,9 @@ different slope, or a wrong node of the OSM data. Move the junction or fix the d
 
 **`road_over_water`: "Road crosses water 8 m below it without a bridge; look at it"**
 The road stands more than 3 m above the original ground over a run where a stream, a river, a canal or a lake lies
-under it, and no bridge fits: the run is shorter than half a bridge model, a model would reach a junction or the end of
-the road, or the road bends more than 2 m off the straight line of a model. The road is left as it was solved, and the
+under it, and it gets no bridge: the dip is less than 8 m deep (a bridge is built from 8 m), the run is shorter than
+half a bridge model, a model would reach a junction or the end of the road, or the road bends more than 2 m off the
+straight line of a model. The road is left as it was solved, and the
 ground under it as the build leaves it (a fill, as for any road); the position is the middle of the run and the number
 is how far the road stands above the ground. Look at it in the game or the map: replace the pieces by a bridge in
 `edits/overrides.toml`, move the OSM line, or accept it. Dips without water are filled and not reported.

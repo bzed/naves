@@ -12,7 +12,7 @@
 )]
 
 use naves_core::catalog::Family;
-use naves_core::dips::{BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, decide, find_dips};
+use naves_core::dips::{BRIDGE_DIP_M, BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::osm::LandPolygon;
@@ -323,6 +323,36 @@ fn a_dip_in_a_bend_gets_no_bridge() {
     // the same run on a straight road is bridged
     let (action, _) = decide(&found, &straight_road(Family::Asf3), Some(25.0));
     assert_eq!(action, DipAction::Bridge);
+}
+
+#[test]
+fn a_dip_is_bridged_only_from_the_bridge_depth() {
+    let graph = straight_road(Family::Asf3);
+    let deep = |depth_m: f64, over_water: bool| Dip {
+        depth_m,
+        ..dip(0, 180.0, 220.0, over_water)
+    };
+    let model = Some(25.0);
+    // the same dip, with room for a bridge, 0.1 m too shallow: filled when dry, reported over water
+    assert_eq!(
+        decide(&deep(BRIDGE_DIP_M - 0.1, false), &graph, model),
+        (DipAction::Fill, None)
+    );
+    assert_eq!(
+        decide(&deep(BRIDGE_DIP_M - 0.1, true), &graph, model),
+        (DipAction::Report, None)
+    );
+    // and at the depth it gets its bridge, wet or dry
+    for wet in [false, true] {
+        let (action, span) = decide(&deep(BRIDGE_DIP_M, wet), &graph, model);
+        assert_eq!((action, span.is_some()), (DipAction::Bridge, true), "{wet}");
+    }
+    // a depth that is not a number gets none
+    assert_eq!(
+        decide(&deep(f64::NAN, false), &graph, model),
+        (DipAction::Fill, None)
+    );
+    assert!((BRIDGE_DIP_M - 8.0).abs() < 1e-12 && DIP_M < BRIDGE_DIP_M);
 }
 
 #[test]
