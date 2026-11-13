@@ -91,6 +91,9 @@ pub struct GeneratedObject {
     pub y: f64,
     /// Rotation in radians clockwise from north.
     pub yaw: f64,
+    /// Uniform scale of the model: 1 for everything but a bridge made as wide as its road. Derived at
+    /// every build, never stored in the overrides.
+    pub scale: f64,
 }
 
 /// What the user did to an object.
@@ -277,6 +280,9 @@ pub struct PlacedObject {
     pub y: f64,
     /// Rotation.
     pub yaw: f64,
+    /// Uniform scale of the model: the generated one for an object that was generated (and only moved),
+    /// 1 for a replaced or an orphaned one.
+    pub scale: f64,
 }
 
 /// An edit that outlived its object, kept as an object of its own.
@@ -316,13 +322,18 @@ pub fn apply_overrides(
             x: object.x,
             y: object.y,
             yaw: object.yaw,
+            scale: object.scale,
         };
         if let Some(edit) = edit {
             used.push(&edit.id);
             match &edit.edit {
                 Override::Deleted => continue,
                 Override::Moved { x, y, yaw } => (object.x, object.y, object.yaw) = (*x, *y, *yaw),
-                Override::Replaced { model } => object.model.clone_from(model),
+                Override::Replaced { model } => {
+                    object.model.clone_from(model);
+                    // the scale was made for the old model
+                    object.scale = 1.0;
+                }
             }
         }
         placed.push(object);
@@ -341,6 +352,7 @@ pub fn apply_overrides(
                 x: *x,
                 y: *y,
                 yaw: *yaw,
+                scale: 1.0,
             },
             Override::Replaced { model } => PlacedObject {
                 id: None,
@@ -348,6 +360,7 @@ pub fn apply_overrides(
                 x: edit.generated_at.0,
                 y: edit.generated_at.1,
                 yaw: edit.generated_yaw,
+                scale: 1.0,
             },
         };
         orphans.push(OrphanedEdit {
@@ -375,6 +388,7 @@ pub fn road_objects(net: &PlacedNetwork) -> Vec<GeneratedObject> {
             x: road.origin.x,
             y: road.origin.y,
             yaw: road.origin.heading,
+            scale: road.scale,
         })
         .collect()
 }
@@ -389,19 +403,21 @@ fn narrow(v: f64) -> f32 {
 }
 
 /// The 8WVR transform of a piece turned by `yaw` and standing at `ground_height`: the rotation column by
-/// column (the images of the model's x, y and z axes), then position x, height, y. The pieces are not pitched:
-/// the engine drapes them on the terrain.
+/// column (the images of the model's x, y and z axes), each multiplied by the object's scale, then position x,
+/// height, y. The pieces are not pitched: the engine drapes them on the terrain.
 #[must_use]
 pub fn piece_transform(object: &PlacedObject, ground_height: f32) -> [f32; 12] {
     let (sin, cos) = object.yaw.sin_cos();
-    let (sin, cos) = (narrow(sin), narrow(cos));
+    let scale = object.scale;
+    let (sin, cos) = (narrow(sin * scale), narrow(cos * scale));
+    let up = narrow(scale);
     // `0.0 - sin` and not `-sin`: a yaw of zero must not write a negative zero into the world file
     [
         cos,
         0.0,
         0.0 - sin,
         0.0,
-        1.0,
+        up,
         0.0,
         sin,
         0.0,
@@ -413,8 +429,9 @@ pub fn piece_transform(object: &PlacedObject, ground_height: f32) -> [f32; 12] {
 }
 
 /// The height of a bridge model's origin when its deck is at `deck_level`: bridges are rigid objects
-/// whose height is the deck level less the height of the deck above the model's origin.
+/// whose height is the deck level less the height of the deck above the model's origin, which grows with
+/// the object's `scale`.
 #[must_use]
-pub fn bridge_object_height(deck_level: f64, model: &BridgeModel) -> f64 {
-    deck_level - model.deck_height
+pub fn bridge_object_height(deck_level: f64, model: &BridgeModel, scale: f64) -> f64 {
+    deck_level - scale * model.deck_height
 }

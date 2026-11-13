@@ -27,6 +27,7 @@ fn generated(stretch: &str, slot: u32, model: &str, x: f64, y: f64) -> Generated
         x,
         y,
         yaw: 0.5,
+        scale: 1.0,
     }
 }
 
@@ -61,6 +62,7 @@ fn piece_transform_matches_the_sample() {
         x: 100.0,
         y: 200.0,
         yaw: 120.0_f64.to_radians(),
+        scale: 1.0,
     };
     let t = piece_transform(&object, 42.5);
     let expected = [
@@ -90,6 +92,7 @@ fn a_north_facing_piece_has_the_identity_rotation() {
         x: 1.0,
         y: 2.0,
         yaw: 0.0,
+        scale: 1.0,
     };
     let t = piece_transform(&object, 3.0);
     assert_eq!(
@@ -383,6 +386,7 @@ fn bridge_road(index: u32) -> PlacedRoad {
             heading: 0.75,
         },
         width: 7.0,
+        scale: 1.0,
     }
 }
 
@@ -411,7 +415,7 @@ fn a_bridge_sits_with_its_deck_at_the_profile_height() {
         .find(|b| b.model.contains("stone"))
         .unwrap();
     // the deck is 7.9 m above the model's origin: the origin goes that far below the road
-    assert!((bridge_object_height(120.0, stone) - (120.0 - stone.deck_height)).abs() < 1e-12);
+    assert!((bridge_object_height(120.0, stone, 1.0) - (120.0 - stone.deck_height)).abs() < 1e-12);
 }
 
 const EDIT_HEAD: &str = "[[edits]]\nid = \"road/123:1-5/4\"\ngenerated_model = \"m\"\n";
@@ -493,4 +497,93 @@ fn an_overrides_file_without_a_generated_yaw_still_loads() {
     );
     let o = Overrides::parse(&text).unwrap();
     assert!(o.edits[0].generated_yaw.abs() < 1e-12);
+}
+
+#[test]
+fn the_transform_carries_the_scale() {
+    let o = PlacedObject {
+        id: None,
+        model: "b".into(),
+        x: 10.0,
+        y: 20.0,
+        yaw: 0.0,
+        scale: 1.25,
+    };
+    let t = piece_transform(&o, 5.0);
+    assert_eq!(
+        [t[0], t[4], t[8]].map(f32::to_bits),
+        [1.25_f32; 3].map(f32::to_bits)
+    );
+    assert_eq!(
+        [t[9], t[10], t[11]].map(f32::to_bits),
+        [10.0_f32, 5.0, 20.0].map(f32::to_bits)
+    );
+}
+
+#[test]
+fn a_scaled_bridge_stands_lower_by_its_scaled_deck_height() {
+    let catalog = naves_core::catalog::testing::synthetic_catalog();
+    let stone = catalog
+        .bridges()
+        .iter()
+        .find(|b| b.model.contains("bridge_stone_25"))
+        .unwrap();
+    assert!((stone.deck_height - 7.9).abs() < 1e-4);
+    assert!(
+        (bridge_object_height(100.0, stone, 1.25) - (100.0 - 1.25 * stone.deck_height)).abs()
+            < 1e-9
+    );
+}
+
+#[test]
+fn a_moved_bridge_keeps_its_scale_and_a_replaced_or_orphaned_one_loses_it() {
+    let mut bridge = generated("7:1-2", 0, "bridge", 10.0, 20.0);
+    bridge.scale = 1.3;
+    let moved = Overrides {
+        edits: vec![edit(
+            "7:1-2",
+            0,
+            "bridge",
+            (10.0, 20.0),
+            Override::Moved {
+                x: 12.0,
+                y: 22.0,
+                yaw: 0.1,
+            },
+        )],
+    };
+    let (placed, orphans) = apply_overrides(std::slice::from_ref(&bridge), &moved);
+    assert!(orphans.is_empty());
+    assert!((placed[0].scale - 1.3).abs() < 1e-12);
+    assert!((placed[0].x - 12.0).abs() < 1e-12);
+
+    let replaced = Overrides {
+        edits: vec![edit(
+            "7:1-2",
+            0,
+            "bridge",
+            (10.0, 20.0),
+            Override::Replaced {
+                model: "other".into(),
+            },
+        )],
+    };
+    let (placed, _) = apply_overrides(std::slice::from_ref(&bridge), &replaced);
+    assert!((placed[0].scale - 1.0).abs() < 1e-12);
+
+    // the bridge is gone: the edit lives on as an object of its own, at scale 1
+    let (placed, orphans) = apply_overrides(&[], &moved);
+    assert_eq!(orphans.len(), 1);
+    assert!((placed[0].scale - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn a_road_object_takes_the_scale_of_its_road() {
+    let mut road = bridge_road(0);
+    road.scale = 1.2;
+    let net = PlacedNetwork {
+        roads: vec![road],
+        ..PlacedNetwork::default()
+    };
+    assert!((road_objects(&net)[0].scale - 1.2).abs() < 1e-12);
 }

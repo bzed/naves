@@ -49,6 +49,7 @@ fn road(index: u32, kind: PlacedKind, at: (f64, f64)) -> PlacedRoad {
             heading: 0.0,
         },
         width: 7.0,
+        scale: 1.0,
     }
 }
 

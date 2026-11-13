@@ -79,6 +79,7 @@ fn piece(
             heading,
         },
         width: 7.0,
+        scale: 1.0,
     }
 }
 

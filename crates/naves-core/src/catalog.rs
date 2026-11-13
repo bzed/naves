@@ -611,7 +611,7 @@ pub mod testing {
         }
     }
 
-    /// Models for all six families, with junctions and two bridges, keyed like the game's paths.
+    /// Models for all six families, with junctions and three bridges, keyed like the game's paths.
     #[must_use]
     pub fn synthetic_models() -> BTreeMap<String, OdolModel> {
         let mut models = BTreeMap::new();
@@ -654,6 +654,28 @@ pub mod testing {
             "bridge_wood_25".to_string(),
             bridge(31.6, 5.0, 0.05, true),
         );
+        add(
+            BRIDGES_PREFIX,
+            "bridge_stone_12".to_string(),
+            bridge(25.0, 12.0, 7.9, false),
+        );
+        models
+    }
+
+    /// The synthetic models with the bridges replaced by `bridges`: for each a name (the path says
+    /// stone or wood), its length, width and deck height, lying north.
+    #[must_use]
+    pub fn synthetic_models_with_bridges(
+        bridges: &[(&str, f64, f64, f64)],
+    ) -> BTreeMap<String, OdolModel> {
+        let mut models = synthetic_models();
+        models.retain(|path, _| !path.starts_with(BRIDGES_PREFIX));
+        for &(name, length, width, deck) in bridges {
+            models.insert(
+                format!("{BRIDGES_PREFIX}{name}.p3d"),
+                bridge(length, width, deck, false),
+            );
+        }
         models
     }
 

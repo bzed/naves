@@ -174,7 +174,10 @@ ground between two roads is too steep for that, the terrain under one of them is
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
 line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
 roads simply meet; the build lists those places. On a bridge, the span has a level deck and the ground below keeps
-its height; the ground starts to be shaped only at the abutments. The ground under the pieces that were placed
+its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
+paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
+the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
+**Scaled bridges have not been tested in the game**; if one misbehaves, replace it in `edits/overrides.toml`. The ground under the pieces that were placed
 (not under the OSM line, which they may leave by some metres) is painted as soil, 2 m wider than the road.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`

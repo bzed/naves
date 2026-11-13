@@ -25,6 +25,8 @@ const JUNCTION_TOLERANCE_M: f64 = 3.0;
 const SIDE_OVERLAP_M: f64 = 2.0;
 /// A bridge stretch shorter than this stays an ordinary road.
 const MIN_BRIDGE_M: f64 = 10.0;
+/// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
+pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 
 /// The identity of a placed object along a stretch: it does not change with the direction a chain is
 /// walked, nor with the other roads.
@@ -69,8 +71,10 @@ pub struct PlacedRoad {
     pub start: Pose,
     /// Where the road leaves.
     pub end: Pose,
-    /// Width of the road.
+    /// Width of the road; of a scaled bridge, its scaled width.
     pub width: f64,
+    /// Uniform scale of the model: 1 for everything but a bridge that was made as wide as its road.
+    pub scale: f64,
 }
 
 /// A stretch whose fit did not meet what it had to.
@@ -724,6 +728,7 @@ impl<'a> Placer<'a> {
                 start: piece.start,
                 end: piece.end,
                 width,
+                scale: 1.0,
             },
             s,
             link,
@@ -928,16 +933,17 @@ impl<'a> Placer<'a> {
         Some((last.0 - first.0).hypot(last.1 - first.1))
     }
 
-    /// The bridge model for a road of `family`: stone for asphalt and streets, wood for gravel and
-    /// dirt; the narrowest that is wide enough, else the widest.
-    fn choose_bridge(&mut self, family: Family, stretch: &str) -> Option<&'a BridgeModel> {
-        let wanted = match family {
-            Family::Grav | Family::Mud => "wood",
-            _ => "stone",
-        };
+    /// The bridge model for a road of `family` and the scale to lay it with: wooden models for gravel
+    /// and dirt, the others for the paved families. The narrowest model that is at least as wide as the
+    /// road, at scale 1; else the widest, scaled up to the road's width but at most
+    /// [`MAX_BRIDGE_SCALE`], with a warning when that is not enough. Never scaled down.
+    fn choose_bridge(&mut self, family: Family, stretch: &str) -> Option<(&'a BridgeModel, f64)> {
+        let wooden = matches!(family, Family::Grav | Family::Mud);
         let all = self.catalog.bridges();
-        let of_material: Vec<&BridgeModel> =
-            all.iter().filter(|b| b.model.contains(wanted)).collect();
+        let of_material: Vec<&BridgeModel> = all
+            .iter()
+            .filter(|b| b.model.contains("wood") == wooden)
+            .collect();
         let pool: Vec<&BridgeModel> = if of_material.is_empty() {
             all.iter().collect()
         } else {
@@ -949,18 +955,26 @@ impl<'a> Placer<'a> {
             .filter(|b| b.width + 1e-6 >= width)
             .min_by(|x, y| x.width.total_cmp(&y.width))
             .copied();
-        let chosen = enough.or_else(|| {
-            pool.iter()
-                .max_by(|x, y| x.width.total_cmp(&y.width))
-                .copied()
-        })?;
-        if chosen.width + 1e-6 < width {
+        if let Some(model) = enough {
+            return Some((model, 1.0));
+        }
+        let widest = pool
+            .iter()
+            .max_by(|x, y| x.width.total_cmp(&y.width))
+            .copied()?;
+        let scale = if widest.width > 0.0 {
+            (width / widest.width).clamp(1.0, MAX_BRIDGE_SCALE)
+        } else {
+            1.0
+        };
+        if widest.width * scale + 1e-6 < width {
             self.out.warnings.push(format!(
-                "bridge on {stretch}: the widest bridge model is {:.1} m, the road is {width:.1} m wide",
-                chosen.width
+                "bridge on {stretch}: the widest bridge model is {:.1} m, scaled up to {:.1} m; the road is {width:.1} m wide",
+                widest.width,
+                widest.width * scale
             ));
         }
-        Some(chosen)
+        Some((widest, scale))
     }
 
     /// Fits the road up to link `k` of the run and lays the bridge models along its chord.
@@ -995,7 +1009,7 @@ impl<'a> Placer<'a> {
             .and_then(|l| self.graph.stretches.get(l.stretch))
             .map(|s| s.id.clone())
             .unwrap_or_default();
-        let Some(model) = self.choose_bridge(family, &id) else {
+        let Some((model, scale)) = self.choose_bridge(family, &id) else {
             return Ok(out);
         };
         if s0 - *s_cur > 1.0 {
@@ -1011,12 +1025,19 @@ impl<'a> Placer<'a> {
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
             pose.heading = heading;
         }
-        let count = (chord / model.length).round().max(1.0);
+        let scaled = |port: &Port| Port {
+            x: port.x * scale,
+            z: port.z * scale,
+            ..*port
+        };
+        let (model_start, model_end) = (scaled(&model.start), scaled(&model.end));
+        let length = model.length * scale;
+        let count = (chord / length).round().max(1.0);
         let mut laid = 0.0;
         while laid < count {
-            let frame = Frame::through(&pose_of(&model.start), *pose);
-            let start = frame.pose(&pose_of(&model.start));
-            let end = frame.pose(&pose_of(&model.end));
+            let frame = Frame::through(&pose_of(&model_start), *pose);
+            let start = frame.pose(&pose_of(&model_start));
+            let end = frame.pose(&pose_of(&model_end));
             out.items.push(Item {
                 road: PlacedRoad {
                     slot: Slot {
@@ -1030,9 +1051,10 @@ impl<'a> Placer<'a> {
                     origin: frame.origin,
                     start,
                     end,
-                    width: model.width,
+                    width: model.width * scale,
+                    scale,
                 },
-                s: s0 + laid * model.length,
+                s: s0 + laid * length,
                 link: None,
             });
             *pose = end;

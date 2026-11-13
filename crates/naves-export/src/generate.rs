@@ -257,7 +257,9 @@ fn object_heights(
                 })
             });
             match (deck, bridge) {
-                (Some(level), Some(model)) => narrow(bridge_object_height(*level, model)),
+                (Some(level), Some(model)) => {
+                    narrow(bridge_object_height(*level, model, object.scale))
+                }
                 _ => ground,
             }
         })

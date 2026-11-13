@@ -68,6 +68,7 @@ fn piece(
         start: pose(a),
         end: pose(b),
         width: 7.0,
+        scale: 1.0,
     }
 }
 

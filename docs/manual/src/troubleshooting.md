@@ -136,8 +136,9 @@ of the piece, which is measured at its middle against the ground before any road
 measured. It usually means a road held to a height far from its ground, for instance by a junction on a
 different slope, or a wrong node of the OSM data. Move the junction or fix the data, or accept the finding.
 
-**`bridge on ...: the widest bridge model is ... m, the road is ... m wide`**
-The game has no bridge as wide as the road. The widest is used; the road is wider than the deck.
+**`bridge on ...: the widest bridge model is ... m, scaled up to ... m; the road is ... m wide`**
+The game has no bridge as wide as the road, not even scaled up by the most the build allows (1.5 times). The widest
+is used at that scale; the road is wider than the deck.
 
 ## Server mission
 

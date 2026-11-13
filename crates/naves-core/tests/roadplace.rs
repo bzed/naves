@@ -10,11 +10,13 @@
 
 use std::collections::BTreeSet;
 
-use naves_core::catalog::testing::synthetic_catalog;
+use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_bridges, width};
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::build_graph;
-use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, place_network};
+use naves_core::roadplace::{
+    MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, place_network,
+};
 
 fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
     Feature {
@@ -466,19 +468,137 @@ fn a_gravel_road_gets_a_wooden_bridge() {
     assert!(bridges.iter().all(|b| (b.start.y - 500.0).abs() < 0.5));
 }
 
-#[test]
-fn a_bridge_narrower_than_the_road_is_a_warning() {
-    // asf1 is 12 m wide; the stone bridge is 9 m
+/// `bridged(100.0)` with every road of `family`.
+fn bridge_stretch(family: Family) -> Vec<Feature> {
     let mut features = bridged(100.0);
     for f in &mut features {
-        if let FeatureKind::Road { family, .. } = &mut f.kind {
-            *family = Family::Asf1;
+        if let FeatureKind::Road { family: fam, .. } = &mut f.kind {
+            *fam = family;
         }
     }
-    let net = place(&features);
-    assert!(!of_kind(&net, PlacedKind::Bridge).is_empty());
+    features
+}
+
+/// The synthetic catalog with only the given bridges: name, length, width, deck height.
+fn place_with(bridges: &[(&str, f64, f64, f64)], features: &[Feature]) -> PlacedNetwork {
+    let catalog = PieceCatalog::from_models(&synthetic_models_with_bridges(bridges)).unwrap();
+    place_network(&build_graph(features), &catalog).unwrap()
+}
+
+#[test]
+fn a_paved_road_gets_the_narrowest_bridge_that_is_wide_enough() {
+    // asf1 is 12 m wide: the 12 m model, not the 9 m one, and not scaled
+    let net = place(&bridge_stretch(Family::Asf1));
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(!bridges.is_empty());
+    assert!(
+        bridges.iter().all(|r| r.model.contains("bridge_stone_12")
+            && r.width >= width(Family::Asf1)
+            && (r.scale - 1.0).abs() < 1e-12),
+        "{:?}",
+        bridges[0]
+    );
+    assert!(net.warnings.is_empty(), "{:?}", net.warnings);
+    // asf3 (7 m) is served by the 9 m model
+    let net = place(&bridge_stretch(Family::Asf3));
+    assert!(
+        of_kind(&net, PlacedKind::Bridge)
+            .iter()
+            .all(|r| r.model.contains("bridge_stone_25"))
+    );
+}
+
+#[test]
+fn a_bridge_that_is_too_narrow_is_scaled_up_and_not_down() {
+    let only_9m = [("bridge_stone_25", 25.0, 9.0, 7.9)];
+    // a 12 m road
+    let wide = place_with(&only_9m, &bridge_stretch(Family::Asf1));
+    let bridges = of_kind(&wide, PlacedKind::Bridge);
+    assert!(!bridges.is_empty());
+    let scale = width(Family::Asf1) / 9.0;
+    assert!(bridges.iter().all(|r| (r.scale - scale).abs() < 1e-9));
+    assert!(bridges.iter().all(|r| (r.width - 12.0).abs() < 1e-9));
+    assert!(wide.warnings.is_empty(), "{:?}", wide.warnings);
+    // a 7 m road is not given a bridge scaled down
+    let narrow = place_with(&only_9m, &bridge_stretch(Family::Asf3));
+    let bridges = of_kind(&narrow, PlacedKind::Bridge);
+    assert!(!bridges.is_empty());
+    assert!(bridges.iter().all(|r| (r.scale - 1.0).abs() < 1e-12));
+}
+
+#[test]
+fn the_scale_stops_at_one_and_a_half_and_says_so() {
+    // a 3.5 m wooden model for a 6 m track: 6 / 3.5 is more than 1.5
+    let net = place_with(
+        &[("bridge_wood_25", 30.0, 3.5, 0.05)],
+        &bridge_stretch(Family::Grav),
+    );
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(!bridges.is_empty());
+    assert!(
+        bridges
+            .iter()
+            .all(|r| (r.scale - MAX_BRIDGE_SCALE).abs() < 1e-12)
+    );
     assert_eq!(net.warnings.len(), 1, "{:?}", net.warnings);
     assert!(net.warnings[0].contains("bridge"));
+}
+
+#[test]
+fn tracks_get_wooden_bridges_and_paved_roads_do_not() {
+    for (family, wooden) in [
+        (Family::Grav, true),
+        (Family::Mud, true),
+        (Family::Asf1, false),
+        (Family::Asf2, false),
+        (Family::Asf3, false),
+        (Family::City, false),
+    ] {
+        let net = place(&bridge_stretch(family));
+        let bridges = of_kind(&net, PlacedKind::Bridge);
+        assert!(!bridges.is_empty(), "{family:?}");
+        assert!(
+            bridges.iter().all(|r| r.model.contains("wood") == wooden),
+            "{family:?}: {}",
+            bridges[0].model
+        );
+    }
+}
+
+#[test]
+fn scaled_bridges_still_meet_end_to_end() {
+    let net = place_with(
+        &[("bridge_stone_25", 25.0, 9.0, 7.9)],
+        &bridge_stretch(Family::Asf1),
+    );
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(bridges.len() >= 2);
+    for pair in bridges.windows(2) {
+        assert!(
+            dist(
+                (pair[0].end.x, pair[0].end.y),
+                (pair[1].start.x, pair[1].start.y)
+            ) < 0.01
+        );
+    }
+    // the scaled length: 100 m of 33.3 m pieces, three of them
+    assert_eq!(bridges.len(), 3);
+    let first = bridges[0];
+    assert!(
+        (dist((first.start.x, first.start.y), (first.end.x, first.end.y)) - 25.0 * 12.0 / 9.0)
+            .abs()
+            < 0.01
+    );
+}
+
+#[test]
+fn a_bridge_that_fits_is_not_scaled() {
+    let net = place(&bridged(100.0));
+    assert!(
+        of_kind(&net, PlacedKind::Bridge)
+            .iter()
+            .all(|r| (r.scale - 1.0).abs() < 1e-12)
+    );
 }
 
 #[test]
