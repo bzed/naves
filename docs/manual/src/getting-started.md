@@ -138,15 +138,15 @@ one cell wide, and nobody can walk up it. A player can then no longer always wal
 ground under a junction without a junction piece is levelled to the junction's height, in a circle of half the width
 of the widest road plus one cell. **Roads close together keep their own ground:** where two roads, or two legs of one
 road, at different heights come closer than their level strips, each keeps the terrain inside its own width and the
-height difference becomes a face one cell wide between them; of the vertices just outside a road's width that both
-need, the road of the higher rank gets them. The ground under a junction patch never takes a road's own width. Where
-roads at different heights are less than about three cells apart, more pieces miss the terrain slightly than before,
-and it is the less important road that misses; a finer terrain grid lowers this. More footpaths beside such a rock
-face are reported as too steep to walk (`path_too_steep`). Only where the widths of two roads at different heights
-overlap is it a conflict (`road_conflict`). The earthworks reach only as far as they are connected to the road (up to
-60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles cannot drive, a
-piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every finding is a line
-in the build warnings and an entry in `build/report.json`, with the numbers of the network.
+height difference becomes a face one cell wide between them; the vertices just outside a road's width that both need
+go to the road whose edge is nearer, a tie to the road of the higher rank. The ground under a junction patch never
+takes a road's own width. Where roads at different heights are less than about three cells apart, more pieces miss the
+terrain slightly than before, and both roads can miss; a finer terrain grid lowers this. More footpaths beside such a
+rock face are reported as too steep to walk (`path_too_steep`). Only where the widths of two roads at different
+heights overlap is it a conflict (`road_conflict`). The earthworks reach only as far as they are connected to the road
+(up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles cannot
+drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every finding
+is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
 **Where roads meet, they meet at one height.** Every junction (a junction piece, a crossing without a junction
 piece, a road that ends on another) gets a single height: the median of the original ground within 10 m of it. Every

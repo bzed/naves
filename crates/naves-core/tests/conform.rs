@@ -792,7 +792,7 @@ fn an_empty_map_with_a_patch_is_left_alone() {
 }
 
 #[test]
-fn a_vertex_both_roads_need_goes_to_the_higher_rank_even_where_the_other_edge_is_nearer() {
+fn a_vertex_both_roads_need_goes_to_the_road_whose_edge_is_nearer() {
     let base = terrain(128, 3.125, |_, _| 102.0);
     // edges 4 m apart; the vertex at y = 206.25 is 3.25 m from the edge of the road at 200 (rank 6) and 0.75 m
     // from the edge of the road at 210 (rank 3), and both want it
@@ -802,8 +802,20 @@ fn a_vertex_both_roads_need_goes_to_the_higher_rank_even_where_the_other_edge_is
     ];
     let out = conform(&base, &strips, &[]).unwrap();
     assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
-    assert!((sample(&out.heightmap, 200.0, 206.25) - 100.0).abs() < 0.05);
-    assert!((sample(&out.heightmap, 200.0, 210.0) - 105.0).abs() < 0.05);
+    assert!((at(&out.heightmap, 64, 66) - 105.0).abs() < 1e-3);
+    assert!((at(&out.heightmap, 64, 64) - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_tie_between_the_edges_goes_to_the_higher_rank() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    // the vertex at y = 200 is 6 m from both centre lines
+    let strips = [
+        straight_strip(194.0, 100.0, 3.0, 3, 0.0),
+        straight_strip(206.0, 105.0, 3.0, 6, 0.0),
+    ];
+    let out = conform(&base, &strips, &[]).unwrap();
+    assert!((at(&out.heightmap, 64, 64) - 105.0).abs() < 1e-3);
 }
 
 #[test]
