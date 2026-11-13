@@ -658,3 +658,52 @@ to the next limits when the profile has left the ground). 1024: 1079 spans, 362 
 has the grades of the ground, a straight ramp had the gentlest grade that fits; that is the price of not cutting 37 m
 through a hill. **Better:** the cut of the Mud track and the other extremes of the Mud family (37.5 m to 15.4 m) and
 `earthworks_capped` at 2048 (92 to 87). The changes are small against the counts (under 2 %).
+
+### 7.5 Bridges by surface and scaled (2026-11-13)
+
+Bridge models are now chosen by the road's surface (wooden for `Grav` and `Mud`, every other model for the paved
+families), the narrowest that is at least as wide as the road, and a model narrower than its road is scaled up to the
+road's width, at most 1.5 times (`MAX_BRIDGE_SCALE`). Before, paved roads were offered the stone models only, and the
+width warning was given once per bridge run. Measured with `road-analysis 1024` and `2048` (the bridge lines are new in
+the example; placement does not depend on the size, so both sizes give the same bridges). **Scaled bridges have not been
+tested in the game.**
+
+**Bridge objects by model** (the same at 1024 and 2048): 24 objects in all.
+
+| Model | objects | scaled |
+|---|---|---|
+| `bridge_metal_25` | 13 | 0 |
+| `bridge_stone_25` | 9 | 0 |
+| `bridge_wood_25` | 2 | 2 |
+
+**Scale:** only the 2 wooden pieces are scaled, both by 1.18 (a 5 m deck for the 6 m of a `Grav` road); no bridge reached
+the cap of 1.5, so nothing was held back. All 22 paved bridge objects fit their road unscaled: the metal model (12 m) now
+serves the wide roads that were given the 9 m stone model before.
+
+**Width warnings** (`bridge on ...`): 0, was 15.
+
+**Wooden against paved, by road family** (objects): `Asf1` 0 / 6, `Asf2` 0 / 1, `Asf3` 0 / 8, `City` 0 / 7, `Grav` 2 / 0;
+no bridge on a `Mud` track.
+
+**All violations against the final figures of 7.4** (1024 before / after, 2048 before / after):
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 239 | 240 | 236 | 236 |
+| not drivable | 5.6 km | 5.6 km | 5.3 km | 5.3 km |
+| `road_grade` | 1587 | 1583 | 1353 | 1352 |
+| `road_misses_terrain` | 4588 | 4589 | 4004 | 4001 |
+| of these above 0.5 m | 1457 | 1455 | 1374 | 1373 |
+| above 2 m | 123 | 123 | 130 | 131 |
+| `road_conflict` | 744 | 743 | 1134 | 1132 |
+| `path_too_steep` | 130 | 130 | 77 | 77 |
+| `earthworks_capped` | 101 | 101 | 87 | 87 |
+| `junction_too_steep` | 1 | 1 | 1 | 1 |
+| `road_far_from_ground` | 0 | 0 | 0 | 0 |
+
+**What got worse:** `road_not_drivable` at 1024 by 1 (239 to 240) and the misses above 2 m at 2048 by 1 (130 to 131);
+`road_misses_terrain` at 1024 by 1. These are noise-level shifts from bridges of another length (a wider or a scaled model
+changes where the run ends); no count moved by more than 4 (`road_misses_terrain` at 2048, 4004 to 4001, is a gain). The
+real catalog is little affected because only 24 objects are bridges. What the step does not show is how a scaled
+bridge behaves in the game: it is untested, and the fallback of spec 6.1 (the widest model at scale 1 with a warning) is
+a one-line change in `choose_bridge`.

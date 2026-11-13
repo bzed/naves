@@ -953,6 +953,42 @@ fn main() {
         &frame,
     );
     println!("violations total {}", violations.len());
+    {
+        // bridge objects: by model, scale distribution, width warnings, wooden against paved by family
+        let mut by_model: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut by_family: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut scales: BTreeMap<String, usize> = BTreeMap::new();
+        for r in net.roads.iter().filter(|r| r.kind == PlacedKind::Bridge) {
+            let scaled = r.scale > 1.0 + 1e-9;
+            let e = by_model.entry(r.model.clone()).or_default();
+            e.0 += 1;
+            e.1 += usize::from(scaled);
+            let f = by_family.entry(format!("{:?}", r.family)).or_default();
+            if r.model.contains("wood") {
+                f.0 += 1;
+            } else {
+                f.1 += 1;
+            }
+            if scaled {
+                *scales.entry(format!("{:.2}", r.scale)).or_default() += 1;
+            }
+        }
+        for (m, (n, sc)) in &by_model {
+            println!("BRIDGE model {m}: {n} objects, {sc} scaled");
+        }
+        for (s, n) in &scales {
+            println!("BRIDGE scale {s}: {n}");
+        }
+        for (f, (w, p)) in &by_family {
+            println!("BRIDGE family {f}: wooden {w}, paved {p}");
+        }
+        let width_warnings = net
+            .warnings
+            .iter()
+            .filter(|w| w.starts_with("bridge on"))
+            .count();
+        println!("BRIDGE width warnings {width_warnings}");
+    }
     for rule in Rule::ALL {
         let n = violations.iter().filter(|v| v.rule == rule).count();
         println!("RULE {:24} {n}", rule.id());
