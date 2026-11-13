@@ -37,7 +37,7 @@ const ROUNDS: usize = 30;
 const SMOOTHNESS: f64 = 30.0;
 
 /// The importance of a road when two want the same ground: higher wins.
-fn rank(family: Family) -> u8 {
+pub(crate) fn rank(family: Family) -> u8 {
     match family {
         Family::Asf1 => 6,
         Family::Asf2 => 5,
@@ -119,7 +119,7 @@ struct Solved {
 /// A place where a chain end meets a road solved earlier: on the strip `owner`, between its
 /// joints `segment` and `segment + 1`, `t` of the way from the first to the second.
 #[derive(Clone, Copy, Debug)]
-struct Meeting {
+pub(crate) struct Meeting {
     owner: usize,
     segment: usize,
     t: f64,
@@ -535,12 +535,12 @@ fn meeting_height(strip: &RoadStrip, meet: &Meeting) -> Option<f64> {
 }
 
 /// A chain end this far beyond the edge of another road still counts as meeting it.
-const ON_ROAD_M: f64 = 1.0;
+pub(crate) const ON_ROAD_M: f64 = 1.0;
 
 /// Where a point lies on one road's surface: the nearest place on `strip` whose surface it is on.
 /// `reach` is how far beyond the edge it may be; on a junction piece `junction_reach` is how far
 /// beyond the piece's own reach its side ports lie. The ground under a bridge does not count.
-fn meeting_on(
+pub(crate) fn meeting_on(
     strip: &RoadStrip,
     owner: usize,
     at: (f64, f64),
@@ -612,7 +612,7 @@ fn meeting(strips: &[RoadStrip], bounds: &[[f64; 4]], at: (f64, f64)) -> Option<
 /// The box in which [`meeting`] can find a place on `strip` for a point: `(min x, min y, max x, max y)` of
 /// its joints, widened by the strip's half width, [`ON_ROAD_M`] and the longest of its segments (a junction
 /// piece reaches that far from its centre).
-fn meeting_bounds(strip: &RoadStrip) -> [f64; 4] {
+pub(crate) fn meeting_bounds(strip: &RoadStrip) -> [f64; 4] {
     let mut bounds = [
         f64::INFINITY,
         f64::INFINITY,

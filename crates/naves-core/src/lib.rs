@@ -11,6 +11,7 @@ pub mod features;
 pub mod heightmap;
 pub mod ident;
 pub mod imagery;
+pub mod junctions;
 pub mod landcover;
 pub mod limits;
 pub mod objects;
