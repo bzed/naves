@@ -576,8 +576,11 @@ fn two_roads_side_by_side_at_different_heights_each_keep_their_ground() {
         for (y, h) in [(194.0, 100.0), (206.0, 105.0)] {
             for dy in [-3.0, 0.0, 3.0] {
                 let got = sample(&out.heightmap, f64::from(x), y + dy);
+                // the vertex between the roads (y = 200) is the higher road's; at y = 197 the bilinear value
+                // is 0.2 m above the lower road (0.125 of a 3.125 m cell towards a vertex 5 m higher), so
+                // the limit is above that
                 assert!(
-                    (got - h).abs() < 0.2,
+                    (got - h).abs() < 0.3,
                     "x {x} y {} is {got}, not {h}",
                     y + dy
                 );
@@ -750,21 +753,24 @@ fn two_legs_of_one_road_at_different_heights_each_keep_their_ground() {
 #[test]
 fn a_patch_that_is_not_a_circle_on_the_map_claims_nothing() {
     let base = terrain(32, 3.125, |_, _| 102.0);
-    for (at, radius) in [
-        ((f64::NAN, 50.0), 8.0),
-        ((50.0, 50.0), f64::NAN),
-        ((50.0, 50.0), f64::INFINITY),
-        ((50.0, 50.0), 0.0),
-        ((50.0, 50.0), -4.0),
+    for (at, radius, height) in [
+        ((f64::NAN, 50.0), 8.0, 120.0),
+        ((50.0, f64::NAN), 8.0, 120.0),
+        ((50.0, 50.0), f64::NAN, 120.0),
+        ((50.0, 50.0), f64::INFINITY, 120.0),
+        ((50.0, 50.0), 0.0, 120.0),
+        ((50.0, 50.0), -4.0, 120.0),
+        ((50.0, 50.0), 8.0, f64::NAN),
+        ((50.0, 50.0), 8.0, f64::INFINITY),
     ] {
         let patch = LevelPatch {
             at,
             radius,
-            height: 120.0,
+            height,
             rank: 3,
         };
         let out = conform(&base, &[], &[patch]).unwrap();
-        assert_eq!(out.heightmap, base, "{at:?} {radius}");
+        assert_eq!(out.heightmap, base, "{at:?} {radius} {height}");
     }
 }
 
@@ -798,4 +804,31 @@ fn a_vertex_both_roads_need_goes_to_the_higher_rank_even_where_the_other_edge_is
     assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
     assert!((sample(&out.heightmap, 200.0, 206.25) - 100.0).abs() < 0.05);
     assert!((sample(&out.heightmap, 200.0, 210.0) - 105.0).abs() < 0.05);
+}
+
+#[test]
+fn a_vertex_inside_the_lower_roads_width_stays_with_it_in_the_higher_roads_ring() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    // the higher road (rank 6, y = 200, half width 3) reaches 7.7 m; the lower (rank 3, y = 207, half width 4) has
+    // the vertex at y = 203.125 inside its width (3.9 m from its centre), the higher road has it in its ring
+    let strips = [
+        straight_strip(200.0, 100.0, 3.0, 6, 0.0),
+        straight_strip(207.0, 105.0, 4.0, 3, 0.0),
+    ];
+    let out = conform(&base, &strips, &[]).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    assert!((at(&out.heightmap, 64, 65) - 105.0).abs() < 1e-3);
+    assert!((at(&out.heightmap, 64, 64) - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn equal_ranks_and_equal_edges_go_to_the_first_road() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let strips = [
+        straight_strip(194.0, 100.0, 3.0, 3, 0.0),
+        straight_strip(206.0, 105.0, 3.0, 3, 0.0),
+    ];
+    let out = conform(&base, &strips, &[]).unwrap();
+    // the vertex at y = 200 is 6 m from both
+    assert!((at(&out.heightmap, 64, 64) - 100.0).abs() < 1e-3);
 }

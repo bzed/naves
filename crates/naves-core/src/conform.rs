@@ -497,19 +497,20 @@ fn tie_distance(metres: f64) -> f64 {
 /// vertex is contested (two of them want heights more than [`CONFLICT_M`] apart).
 ///
 /// A vertex inside a road's own width belongs to that road: a patch takes only what is outside every road's
-/// width. Where the heights are compatible the higher rank wins. Where they are contested the higher rank wins
-/// too, and the one whose edge is nearer wins between equal ranks (measured to leave fewer pieces missing the
-/// terrain by more than half a metre than the nearer edge winning).
+/// width. Where the heights are compatible the higher rank wins. Where they are contested a candidate inside its
+/// own width (edge not positive) beats every candidate that has the vertex only in its ring, whatever the
+/// ranks; among candidates that are both inside their width, or both in the ring, the higher rank wins, and
+/// between equal ranks the one whose edge is nearer. Two inside their width remain a clash, which the caller
+/// reports.
 fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
     if wanting.iter().any(|c| !c.patch && c.edge <= 0.0) {
         wanting.retain(|c| !c.patch);
     }
-    let Some(&first) = wanting.first() else {
-        return false;
-    };
-    let contested = wanting
-        .iter()
-        .any(|c| f64::from((c.height - first.height).abs()) > CONFLICT_M);
+    let contested = wanting.first().is_some_and(|first| {
+        wanting
+            .iter()
+            .any(|c| f64::from((c.height - first.height).abs()) > CONFLICT_M)
+    });
     let by_rank = |a: &Candidate, b: &Candidate| {
         b.rank
             .cmp(&a.rank)
@@ -518,8 +519,9 @@ fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
     };
     if contested {
         wanting.sort_by(|a, b| {
-            b.rank
-                .cmp(&a.rank)
+            (a.edge > 0.0)
+                .cmp(&(b.edge > 0.0))
+                .then_with(|| b.rank.cmp(&a.rank))
                 .then_with(|| tie_distance(a.edge).total_cmp(&tie_distance(b.edge)))
                 .then_with(|| by_rank(a, b))
         });
@@ -530,8 +532,8 @@ fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
 }
 
 /// Gives every vertex near a road or a patch the height of what claims it. Where two want different heights
-/// the vertex goes to the higher rank, between equal ranks to the one whose edge is nearer; the height
-/// difference becomes a face between them. It is a clash only where the vertex is within the width of both.
+/// the vertex goes to the one that has it inside its own width, otherwise to the higher rank, between equal
+/// ranks to the one whose edge is nearer; the height difference becomes a face between them. It is a clash only where the vertex is within the width of both.
 /// Returns the cores and, per pair of owners, the worst clash and where it is.
 #[expect(
     clippy::type_complexity,
