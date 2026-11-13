@@ -887,6 +887,7 @@ is 38.7 m, at 2048 `max_fill_m` is 68.5 m and 1053 vertices are capped, which I 
 probably that the 245 bridges are decks level between two ground heights: the road beside a long span has to climb to
 the deck or leave it within its grade limit, and a deck over a dip cannot follow the ground the way the road did, so
 the piece at each end is steeper and its ground is shaped to a deck, not the other way round. I did not isolate this
-(no run without the bridges over dips at the same sizes except for the time). What got better: 380 dips that were
-a road in the air over a hollow now stand on the ground where a bridge fits; the road over 93 / 95 of them no longer
-embankments, and the share of pieces with fill over 2 m is below the figures of section 6 in every band up to 35 %.
+(no run without the bridges over dips at the same sizes except for the time). What got better: 93 / 95 dips are bridged instead of embankments, and the share of pieces with fill over 2 m is
+below the figures of section 6 in every band up to 35 % (not isolated to this step). The cause of the rise in the
+other numbers is a guess: the decks are level between two ground heights, so the roads at their ends carry the
+grade, as in 7.6; I did not check it.
