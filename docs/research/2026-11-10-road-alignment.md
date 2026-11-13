@@ -783,3 +783,110 @@ probably carry the grade (not isolated by a separate run); the `road_grade` rise
 `earthworks_capped` at 2048 by 2, not drivable at 2048 by 0.1 km. The bridges are 23 more objects of 47 in a 200 km
 network. Nothing was done about the 19 bridges without room; they show again as ordinary road, and the build's warning
 names each.
+
+### 7.7 Dips (2026-11-13)
+
+A dip is a run where the planned road stands more than 3 m above the original ground. Each is bridged when a model
+fits (a chain of models over a long dip), else filled when dry, else left and reported as `road_over_water`. When a
+dip gets a bridge, the roads are placed a second time with the spans cut in; the dips that are left are not bridged
+again. Measured with `road-analysis 1024` and `2048` (the example calls the same `plan_roads` as the build and prints
+the `DIPS` lines). The numbers below are of the first placement, which has the dips as the solver left them; the second
+placement is at the end. **Bridges over dips have not been tested in the game.**
+
+**Dips found, first placement:** 480 at 1024, 468 at 2048.
+
+| Action | 1024 | 2048 | of which over water |
+|---|---|---|---|
+| bridge | 93 | 95 | 0 |
+| fill | 383 | 369 | 0 |
+| report | 4 | 4 | 4 |
+
+**By road family** (1024; 2048 in brackets):
+
+| Family | bridge | fill | report |
+|---|---|---|---|
+| `Asf1` | 7 (6) | 1 (8) | 0 |
+| `Asf2` | 4 (6) | 9 (4) | 0 |
+| `Asf3` | 23 (23) | 35 (38) | 0 |
+| `City` | 19 (26) | 90 (69) | 1 |
+| `Grav` | 19 (15) | 124 (126) | 2 |
+| `Mud` | 21 (19) | 124 (124) | 1 |
+
+**Length and depth of the runs** (minimum / median / p90 / maximum, in metres, 1024; 2048 in brackets for the median
+and maximum):
+
+| Group | length | depth |
+|---|---|---|
+| bridge | 16 / 32 / 96 / 268 (28.1, 271.9) | 3.2 / 4.7 / 7.8 / 17.0 (4.4, 17.2) |
+| fill | 2 / 24 / 88 / 208 (21.9, 209.4) | 3.0 / 4.4 / 7.6 / 22.5 (4.1, 22.5) |
+| report | 6.4 / 40 / 112 / 112 (37.5, 100.0) | 3.5 / 4.2 / 6.9 / 6.9 (4.3, 5.7) |
+
+Most dips are shallow (median 4 to 5 m) and most of them are filled, not bridged: a fill is short (median 24 m, the
+half of a 25 m model is 12.5 m) or too close to a junction or in a bend. The longest bridge is a chain of 11 models.
+
+**`road_over_water` (4, the same at both sizes)**, position in map metres and how far the road stands above the
+ground (1024): (446, 2105) 4 m, (635, 4505) 3 m, (693, 2465) 4 m, (3498, 2663) 7 m. The stream lines of OpenStreetMap
+make four of the 480 dips wet; none of them could take a bridge. (635, 4505) lies by the OSM bridge without room at
+(635, 4508) of 7.6.
+
+**Bridge objects by model** (before: the 47 of 7.6, 27 metal, 12 stone, 8 wooden):
+
+| Model | 1024 after | 2048 after |
+|---|---|---|
+| `bridge_metal_25` | 93 | 90 |
+| `bridge_stone_25` | 81 | 79 |
+| `bridge_wood_25` | 71 (31 scaled, 1.18) | 60 (27 scaled, 1.18) |
+| in all | 245 | 229 |
+
+**After the second placement:** the placement finds 457 dips at 1024 and 458 at 2048, none to bridge: 453 / 454 to
+fill and the same 4 to report. That is more than the 387 / 373 that were left after the 93 / 95 bridges: the second
+placement finds some 70 to 80 new dips, probably the roads beside the bridges, whose ends now hold the ground height
+and whose neighbours are solved again. I did not look at them one by one.
+
+**Fill at the downhill edge** (share of the pieces with more than 2 m / more than 5 m of fill, 1024; section 6 was
+25 / 7 % at 0 to 10 % and 38 / 19 % at 35 to 60 %, as the table at the top of section 6):
+
+| Side slope | 1024 | 2048 |
+|---|---|---|
+| 0 to 10 % | 9 % / 2 % | 9 % / 1 % |
+| 10 to 20 % | 17 % / 3 % | 17 % / 3 % |
+| 20 to 35 % | 25 % / 6 % | 27 % / 6 % |
+| 35 to 60 % | 33 % / 11 % | 35 % / 9 % |
+| above 60 % | 41 % / 13 % | 41 % / 15 % |
+
+This is the figure of the whole of 7.1 to 7.7, not of this step alone; I have no run of 7.6 with the same print.
+
+**`earthworks_capped`:** 103 at 1024 and 93 at 2048 (7.6: 102 and 85).
+
+**Wall time of the road placement** (placing, junction heights, profiles; one machine, release build): 1024: 146.9 s
+with one round (the placement as it was before this step) and 273.2 s with dips (two rounds), 1.9 times. 2048: 267.3 s
+with two rounds (I did not run it with one).
+
+**All violations against the final figures of 7.6** (1024 before / after, 2048 before / after):
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 242 | 292 | 235 | 272 |
+| not drivable | 5.7 km | 6.75 km | 5.2 km | 5.8 km |
+| `road_grade` | 1617 | 1683 | 1405 | 1528 |
+| `road_misses_terrain` | 4598 | 4750 | 4010 | 4192 |
+| of these above 0.5 m | 1465 | 1571 | 1366 | 1481 |
+| above 2 m | 140 | 176 | 135 | 190 |
+| `road_conflict` | 746 | 758 | 1125 | 1125 |
+| `path_too_steep` | 133 | 132 | 79 | 87 |
+| `earthworks_capped` | 102 | 103 | 85 | 93 |
+| `junction_too_steep` | 1 | 2 | 1 | 1 |
+| `road_far_from_ground` | 0 | 0 | 0 | 4 |
+| `road_over_water` | | 4 | | 4 |
+
+**What got worse:** nearly everything except `road_conflict` and `path_too_steep`. `road_not_drivable` by 50 at 1024
+(242 to 292, 1.05 km more road that cannot be driven) and by 37 at 2048; `road_grade` by 66 and 123; `road_misses_terrain`
+by 152 and 182, the misses above 2 m by 36 and 55 (the largest miss is now 15.7 m at 1024 and 20.1 m at 2048); the
+build takes about twice as long; and at 2048 four pieces are now `road_far_from_ground` (the highest embankment at 1024
+is 38.7 m, at 2048 `max_fill_m` is 68.5 m and 1053 vertices are capped, which I did not compare with 7.6). The cause is
+probably that the 245 bridges are decks level between two ground heights: the road beside a long span has to climb to
+the deck or leave it within its grade limit, and a deck over a dip cannot follow the ground the way the road did, so
+the piece at each end is steeper and its ground is shaped to a deck, not the other way round. I did not isolate this
+(no run without the bridges over dips at the same sizes except for the time). What got better: 380 dips that were
+a road in the air over a hollow now stand on the ground where a bridge fits; the road over 93 / 95 of them no longer
+embankments, and the share of pieces with fill over 2 m is below the figures of section 6 in every band up to 35 %.
