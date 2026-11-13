@@ -746,7 +746,7 @@ longer than 10 m and were built before; they too grew to one model.)
 | `74208422:877758668-877758670` | 5.3 m | 5130, 5763 |
 | `953825999:8828196890-8828196891` | 3.3 m | 643, 4433 |
 
-Five of them lie within 40 m of each other near 4580, 5440 (a multi-ramp junction); two near 640, 4490.
+Six of them lie within 40 m of 4575, 5430 (a cluster of ramps and junctions).
 
 **Bridge objects by model** (the same at both sizes): 47 in all, before 24.
 
@@ -779,7 +779,7 @@ warnings: 0.
 17 at 1024 (123 to 140) and by 4 at 2048; `road_misses_terrain` by 9 at both sizes; `road_not_drivable` by 2 at 1024;
 `path_too_steep` by 3 and 2; `road_conflict` by 3 at 1024. A bridge deck is level between its ends, and a bridge that
 is now 25 m or more long (it was a road piece of a few metres) holds two joints further apart, so the roads beside it
-carry the grade; the `road_grade` rise is the largest effect of this step. Better: `road_conflict` at 2048 by 7,
+probably carry the grade (not isolated by a separate run); the `road_grade` rise is the largest effect of this step. Better: `road_conflict` at 2048 by 7,
 `earthworks_capped` at 2048 by 2, not drivable at 2048 by 0.1 km. The bridges are 23 more objects of 47 in a 200 km
 network. Nothing was done about the 19 bridges without room; they show again as ordinary road, and the build's warning
 names each.
