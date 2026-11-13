@@ -5,7 +5,8 @@
 //!
 //! A junction is a place where roads meet: a junction piece, a crossing where roads meet without a junction
 //! piece, or a chain end that lies on another road. Each gets one height, the median of the original ground
-//! around it; a link is the road between two neighbouring junctions. Where the ground of two junctions needs
+//! around it; a link is the road between two neighbouring junctions, from the joint that holds one to the joint
+//! that holds the other. Where the ground of two junctions needs
 //! a steeper grade between them than their road may have, [`repair`] moves both toward each other by just
 //! enough, the one on the more important road less. The design is
 //! `docs/superpowers/specs/2026-11-13-road-heights-design.md`, section 4.
@@ -15,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::heightmap::Heightmap;
 use crate::limits::grade_ceiling;
-use crate::profile::{ON_ROAD_M, RoadStrip, meeting_bounds, meeting_on, rank};
+use crate::profile::{ON_ROAD_M, RoadStrip, chain_holds, meeting_bounds, meeting_on, rank};
 use crate::roadnet::RoadGraph;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
@@ -84,7 +85,7 @@ pub struct Link {
     pub a: usize,
     /// Index into [`Junctions::points`], the higher of the two.
     pub b: usize,
-    /// Road length from junction edge to junction edge, at least 1 m.
+    /// Road length along the chain between the two joints that are held to the two junctions, at least 1 m.
     pub length: f64,
     /// `grade_ceiling` of the road's family.
     pub ceiling: f64,
@@ -544,8 +545,56 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
     end_junctions(&lines, &claimed, &mut raw);
     raw.sort_by(|a, b| by_position(&a.at, &b.at).then(kind_order(a.kind).cmp(&kind_order(b.kind))));
     let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base);
+    junctions.links = held_links(net, base, &junctions);
     repair(&mut junctions);
     junctions
+}
+
+/// The links of the junctions as the roads hold them: along every chain, the road between two consecutive
+/// joints that are held (by [`chain_holds`], the rules `solve_profiles` uses) to different junctions. Its
+/// length is the length along the chain between the two joints, at least 1 m, so that a link that `repair`
+/// made climbable is climbable between the places where the heights are actually held. Sorted by ends and
+/// length, which does not depend on the order of the roads.
+fn held_links(net: &PlacedNetwork, base: &Heightmap, junctions: &Junctions) -> Vec<Link> {
+    let mut out = Vec::new();
+    for chain in &net.chains {
+        let Some(family) = chain
+            .first()
+            .and_then(|i| net.roads.get(*i))
+            .map(|r| r.family)
+        else {
+            continue;
+        };
+        let holds = chain_holds(net, chain, f64::from(base.cell_m), junctions);
+        let mut along = 0.0;
+        let mut previous: Option<((f64, f64), usize, f64)> = None;
+        let mut last: Option<(f64, f64)> = None;
+        for (at, hold) in &holds {
+            if let Some(from) = last {
+                along += distance(from, *at);
+            }
+            last = Some(*at);
+            let Some(hold) = hold else { continue };
+            if let Some((_, junction, station)) = previous
+                && junction != hold.junction
+            {
+                out.push(Link {
+                    a: junction.min(hold.junction),
+                    b: junction.max(hold.junction),
+                    length: (along - station).max(MIN_LINK_M),
+                    ceiling: grade_ceiling(family),
+                });
+            }
+            previous = Some((*at, hold.junction, along));
+        }
+    }
+    out.sort_by(|x, y| {
+        x.a.cmp(&y.a)
+            .then(x.b.cmp(&y.b))
+            .then(x.length.total_cmp(&y.length))
+            .then(x.ceiling.total_cmp(&y.ceiling))
+    });
+    out
 }
 
 /// The junction that the raw junctions `members` make: at the mean of their points, the first kind, the
@@ -731,11 +780,19 @@ impl Junctions {
     /// reach of 0. Chain ends and junction pieces use [`HOLD_M`].
     #[must_use]
     pub fn near(&self, point: (f64, f64), reach: f64) -> Option<&Junction> {
+        self.index_near(point, reach)
+            .and_then(|i| self.points.get(i))
+    }
+
+    /// The index in [`Junctions::points`] of what [`Junctions::near`] finds.
+    #[must_use]
+    pub fn index_near(&self, point: (f64, f64), reach: f64) -> Option<usize> {
         self.points
             .iter()
-            .map(|j| (distance(j.at, point), j))
-            .filter(|(d, j)| *d <= j.patch_m + reach)
+            .enumerate()
+            .map(|(i, j)| (distance(j.at, point), i, j))
+            .filter(|(d, _, j)| *d <= j.patch_m + reach)
             .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, j)| j)
+            .map(|(_, i, _)| i)
     }
 }

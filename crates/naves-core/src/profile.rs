@@ -40,6 +40,10 @@ pub const RELAX_OFF_M: f64 = 4.0;
 
 /// Rounds of smoothing and clipping.
 const ROUNDS: usize = 30;
+/// The spacing at which the second difference of the smoothing is (1, -2, 1).
+const REFERENCE_M: f64 = 12.5;
+/// The smallest spacing the second difference is built on.
+const MIN_STENCIL_M: f64 = 1.0;
 /// Weight of the second difference against the terrain heights.
 const SMOOTHNESS: f64 = 30.0;
 
@@ -161,7 +165,12 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
     let mut deck: Vec<Option<DeckEnds>> = vec![None];
     for &i in roads {
         let r = net.roads.get(i)?;
-        let length = (r.end.x - r.start.x).hypot(r.end.y - r.start.y);
+        // the run between the joints, not the length of the piece: a piece that starts a little before or after
+        // the end of the one before it (the pieces of a chain do not all meet end to start) is a run of the
+        // profile from one joint to the next, and the grades are measured on that
+        let length = joints
+            .last()
+            .map_or(0.0, |(x, y, _)| (r.end.x - x).hypot(r.end.y - y));
         if r.kind == PlacedKind::Bridge {
             let v = at.len() - 1;
             joints.push((r.end.x, r.end.y, v));
@@ -316,6 +325,8 @@ fn segment_grades(
     held: &[Option<f64>],
 ) -> Vec<f64> {
     let mut limits = Vec::new();
+    let first_held = held.iter().position(Option::is_some);
+    let last_held = held.iter().rposition(Option::is_some);
     for &index in roads {
         let Some(road) = net.roads.get(index) else {
             continue;
@@ -327,11 +338,12 @@ fn segment_grades(
         // a track may meet another road at its own grade: the meeting grade would lift the lower end of a
         // steep track out of the ground
         let track = matches!(road.family, Family::Grav | Family::Mud);
-        // and a piece between two junction heights has the grade those heights make (`repair` kept it under
-        // the ceiling): the meeting grade is for the approach to a height that is still free
-        let between_junctions = [limits.len(), limits.len() + 1]
-            .iter()
-            .all(|v| held.get(*v).is_some_and(Option::is_some));
+        // and a piece between the first and the last junction height of the chain has the grades those heights
+        // make (`repair` kept the links under the ceiling, and a free joint between two held ones is part of
+        // the span): the meeting grade is for the approach from a free end to a junction
+        let between_junctions = first_held
+            .zip(last_held)
+            .is_some_and(|(first, last)| first <= limits.len() && limits.len() < last);
         if !track
             && !between_junctions
             && (road.kind == PlacedKind::Junction || meets_another_chain(net, ends, roads, road))
@@ -361,7 +373,7 @@ struct Bands {
     rhs: Vec<f64>,
 }
 
-fn bands(target: &[f64], fixed: &[bool]) -> Bands {
+fn bands(target: &[f64], fixed: &[bool], spacing: &[f64]) -> Bands {
     let count = target.len();
     let mut bands = Bands {
         main: vec![0.0; count],
@@ -377,8 +389,26 @@ fn bands(target: &[f64], fixed: &[bool]) -> Bands {
         }
     }
     // each row (1, -2, 1) of the second difference adds its outer product
-    let row = [1.0, -2.0, 1.0];
     for centre in 1..count.saturating_sub(1) {
+        // the second difference of three joints that are not equally far apart, scaled so that it is
+        // (1, -2, 1) for the usual spacing of [`REFERENCE_M`]: a pair of joints a metre apart is nearly one
+        // joint, not a free point that may be a few metres off the line through its neighbours
+        let before = spacing
+            .get(centre - 1)
+            .copied()
+            .unwrap_or(REFERENCE_M)
+            .max(MIN_STENCIL_M);
+        let after = spacing
+            .get(centre)
+            .copied()
+            .unwrap_or(REFERENCE_M)
+            .max(MIN_STENCIL_M);
+        let scale = 2.0 * REFERENCE_M * REFERENCE_M;
+        let row = [
+            scale / (before * (before + after)),
+            -scale / (before * after),
+            scale / (after * (before + after)),
+        ];
         for (first, &first_weight) in row.iter().enumerate() {
             for (second, &second_weight) in row.iter().enumerate().skip(first) {
                 let at = centre - 1 + first;
@@ -459,8 +489,8 @@ fn solve_bands(bands: &Bands) -> Vec<f64> {
     solution
 }
 
-fn smooth(target: &[f64], fixed: &[bool]) -> Vec<f64> {
-    solve_bands(&bands(target, fixed))
+fn smooth(target: &[f64], fixed: &[bool], spacing: &[f64]) -> Vec<f64> {
+    solve_bands(&bands(target, fixed, spacing))
 }
 
 /// The grade limits of a chain: one grade per segment between two variables, and the smallest vertical
@@ -547,7 +577,7 @@ fn solve_chain(
                 pinned.unwrap_or_else(|| 0.5 * wanted + 0.5 * current)
             })
             .collect();
-        heights = smooth(&blended, &fixed);
+        heights = smooth(&blended, &fixed, spacing);
         clip(&mut heights, spacing, &fixed, limits, true);
         clip(&mut heights, spacing, &fixed, limits, false);
     }
@@ -742,11 +772,72 @@ fn end_joins(
     (fixed, joins)
 }
 
-/// Sets the height a junction gives variable `var`.
-fn hold(held: &mut [Option<f64>], var: usize, height: f64) {
-    if let Some(slot) = held.get_mut(var) {
-        *slot = Some(height);
+/// Which rule holds a variable of a chain to a junction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldRule {
+    /// The variable lies in the junction's patch.
+    Patch,
+    /// A variable of a junction piece.
+    Piece,
+    /// An end of the chain.
+    End,
+    /// Up to eight variables inward from a held end, on the other road's level strip.
+    Inward,
+    /// A variable of the piece that passes the junction within [`ARM_REACH_M`].
+    Arm,
+}
+
+/// The junction that holds a variable, and why.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hold {
+    /// The rule.
+    pub rule: HoldRule,
+    /// Index into [`Junctions::points`].
+    pub junction: usize,
+    /// The height it gives.
+    pub height: f64,
+}
+
+/// Sets the junction that holds variable `var`.
+fn hold(
+    held: &mut [Option<Hold>],
+    var: usize,
+    junction: usize,
+    junctions: &Junctions,
+    rule: HoldRule,
+) {
+    if let (Some(slot), Some(j)) = (held.get_mut(var), junctions.points.get(junction)) {
+        *slot = Some(Hold {
+            rule,
+            junction,
+            height: j.height,
+        });
     }
+}
+
+/// The holds of the joints of the chain `roads`, one per joint of the strip as `solve_profiles` builds it (the
+/// joints of a bridge deck share one variable), with the position of each joint. For measuring;
+/// `solve_profiles` uses the same holds.
+#[must_use]
+pub fn chain_holds(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    cell: f64,
+    junctions: &Junctions,
+) -> Vec<((f64, f64), Option<Hold>)> {
+    let Some(chain) = chain_of(net, roads) else {
+        return Vec::new();
+    };
+    let half_width = roads
+        .first()
+        .and_then(|i| net.roads.get(*i))
+        .map_or(0.0, |r| r.width / 2.0);
+    let held = junction_heights(net, &chain, roads, half_width, cell, junctions);
+    chain
+        .joints
+        .iter()
+        .map(|j| ((j.0, j.1), held.get(j.2).copied().flatten()))
+        .collect()
 }
 
 /// The height a junction gives each variable of a chain: the two variables of a junction piece (the centre of
@@ -759,12 +850,18 @@ fn junction_heights(
     half_width: f64,
     cell: f64,
     junctions: &Junctions,
-) -> Vec<Option<f64>> {
+) -> Vec<Option<Hold>> {
     let count = chain.at.len();
-    let mut held: Vec<Option<f64>> = chain
+    let mut held: Vec<Option<Hold>> = chain
         .at
         .iter()
-        .map(|point| junctions.at(*point).map(|j| j.height))
+        .map(|point| {
+            junctions.index_near(*point, 0.0).map(|junction| Hold {
+                rule: HoldRule::Patch,
+                junction,
+                height: junctions.points.get(junction).map_or(0.0, |j| j.height),
+            })
+        })
         .collect();
     for (k, &road) in roads.iter().enumerate() {
         let Some(road) = net
@@ -779,12 +876,12 @@ fn junction_heights(
             f64::midpoint(road.start.y, road.end.y),
         );
         if let (Some(junction), Some(from), Some(to)) = (
-            junctions.near(centre, HOLD_M),
+            junctions.index_near(centre, HOLD_M),
             chain.joints.get(k),
             chain.joints.get(k + 1),
         ) {
-            hold(&mut held, from.2, junction.height);
-            hold(&mut held, to.2, junction.height);
+            hold(&mut held, from.2, junction, junctions, HoldRule::Piece);
+            hold(&mut held, to.2, junction, junctions, HoldRule::Piece);
         }
     }
     // An end held by a junction holds the variables inward too while they lie on the ground that the other
@@ -792,10 +889,11 @@ fn junction_heights(
     // there misses it. That is the half width of the other road and 1.5 cells; on a junction piece it is
     // counted from the end of the piece.
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
-        let Some(junction) = chain
+        let Some((junction_index, junction)) = chain
             .at
             .get(end)
-            .and_then(|point| junctions.near(*point, HOLD_M))
+            .and_then(|point| junctions.index_near(*point, HOLD_M))
+            .and_then(|i| junctions.points.get(i).map(|j| (i, j)))
         else {
             continue;
         };
@@ -816,7 +914,12 @@ fn junction_heights(
             if var != end && !near_enough(var) {
                 break;
             }
-            hold(&mut held, var, junction.height);
+            let rule = if var == end {
+                HoldRule::End
+            } else {
+                HoldRule::Inward
+            };
+            hold(&mut held, var, junction_index, junctions, rule);
             let following = if side == 0 {
                 var.checked_add(1)
             } else {
@@ -846,15 +949,61 @@ fn junction_heights(
         let nearest = junctions
             .points
             .iter()
-            .map(|j| (point_segment_distance(j.at, *from, *to), j))
+            .enumerate()
+            .map(|(i, j)| (point_segment_distance(j.at, *from, *to), i))
             .filter(|(distance, _)| *distance <= reach)
             .min_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((_, junction)) = nearest {
-            hold(&mut held, var, junction.height);
-            hold(&mut held, var + 1, junction.height);
+            hold(&mut held, var, junction, junctions, HoldRule::Arm);
+            hold(&mut held, var + 1, junction, junctions, HoldRule::Arm);
         }
     }
     held
+}
+
+/// A span between two fixed heights that needs this share of the grade limit or more has no room to follow the
+/// ground.
+const TIGHT_SPAN: f64 = 0.8;
+
+/// For the spans between two consecutive fixed variables that need most of their grade limit, the targets of the
+/// variables between them become the straight line between the two heights. `repair` brings a link to its
+/// ceiling and no further, so such a span can only be solved by a profile of nearly that grade everywhere; with
+/// the ground as target the smoothing lags behind it and the clipping ends in one short piece with a grade of
+/// several hundred percent. Returns whether a span needs more than its limit, so that the limit is to be relaxed.
+fn ramp_targets(
+    targets: &mut [f64],
+    fixed: &[Option<f64>],
+    spacing: &[f64],
+    limits: &[f64],
+) -> bool {
+    let mut infeasible = false;
+    let mut previous: Option<(usize, f64)> = None;
+    for (var, height) in fixed.iter().enumerate() {
+        let Some(height) = height else { continue };
+        if let Some((from, low)) = previous {
+            let lengths: Vec<f64> = spacing
+                .get(from..var)
+                .map_or_else(Vec::new, |s| s.iter().map(|l| l.max(0.5)).collect());
+            let run: f64 = lengths.iter().sum();
+            let limit = limits
+                .get(from..var)
+                .and_then(|l| l.iter().copied().reduce(f64::min))
+                .unwrap_or(f64::INFINITY);
+            let required = (height - low).abs() / run.max(0.5);
+            infeasible |= required > limit;
+            if var > from + 1 && required >= TIGHT_SPAN * limit {
+                let mut along = 0.0;
+                for (offset, length) in lengths.iter().enumerate().take(lengths.len() - 1) {
+                    along += length;
+                    if let Some(target) = targets.get_mut(from + offset + 1) {
+                        *target = low + (height - low) * along / run;
+                    }
+                }
+            }
+        }
+        previous = Some((var, *height));
+    }
+    infeasible
 }
 
 /// What a chain's variables are held to: the heights of the junctions, the heights of the roads its ends meet
@@ -870,7 +1019,8 @@ fn fixed_heights(
 ) -> Option<FixedHeights> {
     let cell = f64::from(hm.cell_m);
     let half_width = net.roads.get(*roads.first()?)?.width / 2.0;
-    let held = junction_heights(net, chain, roads, half_width, cell, junctions);
+    let holds = junction_heights(net, chain, roads, half_width, cell, junctions);
+    let held: Vec<Option<f64>> = holds.iter().map(|h| h.map(|h| h.height)).collect();
     let (mut fixed, meetings) = end_joins(chain, strips, &index.strips, cell, &held);
     for (slot, height) in fixed.iter_mut().zip(&held) {
         if height.is_some() {
@@ -918,6 +1068,8 @@ fn profile_chain(
             grade: segment_grades(net, &index.ends, roads, base, &held),
             radius,
         };
+        let mut targets = targets.clone();
+        let tight = ramp_targets(&mut targets, &fixed, &spacing, &limits.grade);
         let heights = if count == 1 || fixed.iter().all(Option::is_some) {
             targets
                 .iter()
@@ -927,14 +1079,15 @@ fn profile_chain(
         } else {
             solve_chain(&targets, &spacing, &fixed, &limits)
         };
-        let off = heights
-            .iter()
-            .zip(&targets)
-            .zip(&fixed)
-            .zip(&chain.deck)
-            .any(|(((height, target), pinned), deck)| {
-                pinned.is_none() && deck.is_none() && (height - target).abs() > RELAX_OFF_M
-            });
+        let off = tight
+            || heights
+                .iter()
+                .zip(&targets)
+                .zip(&fixed)
+                .zip(&chain.deck)
+                .any(|(((height, target), pinned), deck)| {
+                    pinned.is_none() && deck.is_none() && (height - target).abs() > RELAX_OFF_M
+                });
         solved = Some((heights, limits));
         if !off {
             break;
@@ -1377,5 +1530,25 @@ fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32) {
         for (joint, &var) in strip.joints.iter_mut().zip(&chain.joint_variable) {
             joint.2 = chain.heights.get(var).copied().unwrap_or(joint.2);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::smooth;
+
+    #[test]
+    fn a_joint_a_metre_from_a_fixed_one_is_smoothed_as_if_it_were_a_metre_away() {
+        // 100 m fixed, a free joint 1 m on whose ground is 0.6 m lower, then free joints 12.5 m apart down to a
+        // fixed 99.4 m: the free joint cannot be 0.6 m off the fixed one while the line through them is flat
+        let target = [100.0, 99.4, 99.4, 99.4, 99.4, 99.4];
+        let fixed = [true, false, false, false, false, true];
+        let spacing = [1.0, 12.5, 12.5, 12.5, 12.5];
+        let heights = smooth(&target, &fixed, &spacing);
+        let slope_at_the_start = (heights[1] - heights[0]).abs() / 1.0;
+        assert!(slope_at_the_start < 0.1, "{heights:?}");
+        // equally spaced joints are smoothed as before
+        let uniform = smooth(&target, &fixed, &[12.5; 5]);
+        assert!(uniform[1] < 100.0 && uniform[1] > 99.3, "{uniform:?}");
     }
 }

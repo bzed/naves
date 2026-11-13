@@ -5,6 +5,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     reason = "test helper code; failing loudly is the point"
 )]
@@ -17,6 +18,7 @@ use naves_core::junctions::{
     Junction, JunctionKind, Junctions, Link, find_junctions, ground_median, repair,
 };
 use naves_core::limits::grade_ceiling;
+use naves_core::profile::chain_holds;
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot, place_network};
@@ -495,4 +497,95 @@ fn near_reaches_beyond_the_patch_by_the_given_distance() {
     assert!(j.at((8.0, 0.0)).is_none());
     assert_eq!(j.near((8.0, 0.0), 4.0).map(|p| p.at), Some((0.0, 0.0)));
     assert!(j.near((10.0, 0.0), 4.0).is_none());
+}
+
+/// For every two consecutive held joints of a chain that take their heights from different junctions: a link
+/// between those junctions with the length along the chain between the two joints.
+fn assert_links_are_the_spans(net: &PlacedNetwork, hm: &Heightmap, j: &Junctions) {
+    let mut pairs = 0;
+    for chain in &net.chains {
+        let holds = chain_holds(net, chain, f64::from(hm.cell_m), j);
+        let mut along = 0.0;
+        let mut previous: Option<(usize, f64)> = None;
+        for (i, (at, hold)) in holds.iter().enumerate() {
+            if i > 0 {
+                let before = holds[i - 1].0;
+                along += (at.0 - before.0).hypot(at.1 - before.1);
+            }
+            let Some(hold) = hold else { continue };
+            if let Some((junction, station)) = previous
+                && junction != hold.junction
+            {
+                pairs += 1;
+                let key = (junction.min(hold.junction), junction.max(hold.junction));
+                let span = (along - station).max(1.0);
+                assert!(
+                    j.links
+                        .iter()
+                        .any(|l| (l.a, l.b) == key && (l.length - span).abs() < 1e-6),
+                    "no link {key:?} of {span} m in {:?}",
+                    j.links
+                );
+            }
+            previous = Some((hold.junction, along));
+        }
+    }
+    assert!(pairs > 0);
+}
+
+#[test]
+fn the_links_are_the_spans_between_the_joints_that_are_held() {
+    let (net, graph) = grid_of_roads();
+    let hm = terrain(256, 3.125, |x, y| 100.0 + 0.2 * x - 0.1 * y);
+    assert_links_are_the_spans(&net, &hm, &find_junctions(&net, &graph, &hm));
+    let (net, graph) = two_side_roads_meeting_a_road_at(20.0, 120.0);
+    let hm = terrain(128, 3.125, |x, _| 100.0 + 0.01 * x);
+    assert_links_are_the_spans(&net, &hm, &find_junctions(&net, &graph, &hm));
+}
+
+#[test]
+fn a_junction_between_two_joints_holds_both_and_the_link_is_the_span_between_them() {
+    // two side tracks end on a through road 12 m after one of its joints: no joint lies in either patch, so the
+    // joints on both sides of each hold the height, and the link between the junctions is 75 m, not the 100 m
+    // between the junctions
+    let through: Vec<PlacedRoad> = (0..12)
+        .map(|i| {
+            let x = 25.0 * f64::from(i);
+            piece(
+                "a",
+                i,
+                PlacedKind::Piece,
+                Family::Asf3,
+                (x, 100.0),
+                (x + 25.0, 100.0),
+            )
+        })
+        .collect();
+    let side = |name: &str, x: f64| -> Vec<PlacedRoad> {
+        (0..4)
+            .map(|i| {
+                let y = 103.0 + 25.0 * f64::from(i);
+                piece(
+                    name,
+                    i,
+                    PlacedKind::Piece,
+                    Family::Mud,
+                    (x, y),
+                    (x, y + 25.0),
+                )
+            })
+            .collect()
+    };
+    let mut net = PlacedNetwork::default();
+    for chain in [through, side("b", 112.0), side("c", 212.0)] {
+        let base = net.roads.len();
+        net.chains.push((base..base + chain.len()).collect());
+        net.roads.extend(chain);
+    }
+    let hm = terrain(128, 3.125, |_, _| 100.0);
+    let j = find_junctions(&net, &RoadGraph::default(), &hm);
+    assert_eq!(j.points.len(), 2, "{j:?}");
+    let spans: Vec<f64> = j.links.iter().map(|l| l.length).collect();
+    assert!(spans.iter().any(|s| (s - 75.0).abs() < 1e-6), "{spans:?}");
+    assert_links_are_the_spans(&net, &hm, &j);
 }

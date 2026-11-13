@@ -40,9 +40,9 @@ use naves_core::dem::Dem;
 use naves_core::features::road_features;
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
 use naves_core::junctions::{HOLD_M, find_junctions};
-use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim};
+use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_radius};
 use naves_core::osm::read_ways;
-use naves_core::profile::{RoadStrip, solve_profiles};
+use naves_core::profile::{RoadStrip, chain_holds, solve_profiles};
 use naves_core::project::Project;
 use naves_core::roadnet::build_graph;
 use naves_core::roadplace::{PlacedKind, place_network};
@@ -162,7 +162,11 @@ fn main() {
     let net = place_network(&graph, &catalog).expect("place");
     let t_place = t0.elapsed();
     let junctions = find_junctions(&net, &graph, &base);
-    let profiles = solve_profiles(&net, &base, &junctions);
+    let profiles = if std::env::var("NO_JUNCTIONS").is_ok() {
+        solve_profiles(&net, &base, &naves_core::junctions::Junctions::default())
+    } else {
+        solve_profiles(&net, &base, &junctions)
+    };
     let t_profiles = t0.elapsed();
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
         dump_strips(&path, &profiles.strips, &net);
@@ -1867,7 +1871,9 @@ fn main() {
     };
     let (mut over_100, mut over_hard, mut over_hard_unreported) = (0, 0, 0);
     let mut worst_planned = (0.0_f64, (0.0, 0.0), String::new());
-    for strip in &profiles.strips {
+    let mut causes: BTreeMap<String, usize> = BTreeMap::new();
+    let net_ref = &net;
+    for (strip_index, strip) in profiles.strips.iter().enumerate() {
         for (k, w) in strip.joints.windows(2).enumerate() {
             let run = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
             if run < 0.5 || strip.bridge.get(k).copied().unwrap_or(false) {
@@ -1885,12 +1891,17 @@ fn main() {
             if grade > 1.0 {
                 over_100 += 1;
                 println!(
-                    "  planned grade {:.0} % at ({:.1},{:.1}) stretch {}",
+                    "  planned grade {:.0} % at ({:.1},{:.1}) stretch {} strip {} piece {}",
                     grade * 100.0,
                     w[0].0,
                     w[0].1,
-                    road.map_or("?", |r| r.slot.stretch.as_str())
+                    road.map_or("?", |r| r.slot.stretch.as_str()),
+                    strip_index,
+                    k
                 );
+                let cause =
+                    explain_piece(net_ref, strip, k, &junctions, f64::from(base.cell_m), &base);
+                *causes.entry(cause).or_default() += 1;
             }
             if let Some(road) = road
                 && grade > drive_grade(road.family)
@@ -1898,11 +1909,78 @@ fn main() {
                 over_hard += 1;
                 if !covered(w[0].0, w[0].1) && !covered(w[1].0, w[1].1) {
                     over_hard_unreported += 1;
+                    let near_excess: Vec<String> = profiles
+                        .excesses
+                        .iter()
+                        .filter(|e| (e.at.0 - w[0].0).hypot(e.at.1 - w[0].1) <= 60.0)
+                        .map(|e| {
+                            format!(
+                                "{:?} {:.0} % > {:.0} % at ({:.1},{:.1})",
+                                e.kind,
+                                e.grade * 100.0,
+                                e.limit * 100.0,
+                                e.at.0,
+                                e.at.1
+                            )
+                        })
+                        .collect();
+                    let first_family = strip
+                        .slots
+                        .first()
+                        .and_then(|i| net.roads.get(*i))
+                        .map(|r| r.family);
+                    let kinds: Vec<String> = (k.saturating_sub(2)..(k + 3).min(strip.slots.len()))
+                        .filter_map(|i| {
+                            let r = net.roads.get(*strip.slots.get(i)?)?;
+                            let j0 = strip.joints.get(i)?;
+                            let j1 = strip.joints.get(i + 1)?;
+                            Some(format!(
+                                "[{i}: {:?} len {:.1} run {:.1} dh {:.2} start-gap {:.1}]",
+                                r.kind,
+                                (r.end.x - r.start.x).hypot(r.end.y - r.start.y),
+                                (j1.0 - j0.0).hypot(j1.1 - j0.1),
+                                j1.2 - j0.2,
+                                (r.start.x - j0.0).hypot(r.start.y - j0.1)
+                            ))
+                        })
+                        .collect();
+                    println!("      pieces {kinds:?}");
+                    println!(
+                        "  UNREPORTED grade {:.0} % (hard {:.0} %) at ({:.1},{:.1}) strip {strip_index} piece {k} kind {:?} family {:?} chain family {:?}; excesses within 60 m: {near_excess:?}",
+                        grade * 100.0,
+                        drive_grade(road.family) * 100.0,
+                        w[0].0,
+                        w[0].1,
+                        road.kind,
+                        road.family,
+                        first_family
+                    );
                 }
             }
         }
     }
     println!("DONE 1 pieces with a planned grade above 100 %: {over_100}");
+    for (cause, n) in &causes {
+        println!("DONE 1 cause {n:4} {cause}");
+    }
+    if let Ok(v) = std::env::var("DBG_STRIP") {
+        let si: usize = v.parse().unwrap();
+        let st = &profiles.strips[si];
+        let holds = chain_holds(&net, &st.slots, f64::from(base.cell_m), &junctions);
+        for (i, ((x, y), h)) in holds.iter().enumerate() {
+            println!(
+                "STRIP {si} joint {i} ({x:.1},{y:.1}) h {:.2} ground {:.2} {}",
+                st.joints[i].2,
+                base.sample(*x, *y).height,
+                h.map_or(String::from("free"), |h| format!(
+                    "{:?} j{} {:.2}",
+                    h.rule, h.junction, h.height
+                ))
+            );
+        }
+    }
+    held_pairs(&net, &profiles, &junctions, f64::from(base.cell_m));
+    bend_report(&net, &profiles, &junctions, &base);
     println!(
         "DONE 2 pieces above the hard limit (drive_grade): {over_hard}, of them without a road_grade or road_not_drivable violation within 30 m: {over_hard_unreported}"
     );
@@ -1977,6 +2055,314 @@ fn main() {
         base.size,
         t0.elapsed().as_secs_f64()
     );
+}
+
+/// The held joints of a strip within 50 m along the chain of piece `k`, printed, and the cause of a steep piece:
+/// the rules and junctions of the held joints on both sides and what `find_junctions` knows of the pair.
+fn explain_piece(
+    net: &naves_core::roadplace::PlacedNetwork,
+    strip: &RoadStrip,
+    k: usize,
+    junctions: &naves_core::junctions::Junctions,
+    cell: f64,
+    ground: &Heightmap,
+) -> String {
+    let holds = chain_holds(net, &strip.slots, cell, junctions);
+    let mut along = vec![0.0];
+    for w in strip.joints.windows(2) {
+        let last = along.last().copied().unwrap_or(0.0);
+        along.push(last + (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1));
+    }
+    let here = along.get(k).copied().unwrap_or(0.0);
+    for (i, ((x, y), hold)) in holds.iter().enumerate() {
+        let d = along.get(i).copied().unwrap_or(0.0) - here;
+        if d.abs() <= 120.0 && hold.is_none() {
+            println!(
+                "      joint {i} at {d:+.1} m ({x:.1},{y:.1}) free, joint height {:.2} ground {:.2}",
+                strip.joints.get(i).map_or(0.0, |q| q.2),
+                ground.sample(*x, *y).height
+            );
+        }
+        if d.abs() <= 120.0
+            && let Some(h) = hold
+        {
+            let j = &junctions.points[h.junction];
+            println!(
+                "      joint {i} at {d:+.1} m ({x:.1},{y:.1}) height {:.2} (joint height {:.2}): {:?} junction {} {:?} at ({:.1},{:.1}) ground {:.2}",
+                h.height,
+                strip.joints.get(i).map_or(0.0, |q| q.2),
+                h.rule,
+                h.junction,
+                j.kind,
+                j.at.0,
+                j.at.1,
+                j.ground
+            );
+        }
+    }
+    let before = (0..=k)
+        .rev()
+        .find_map(|i| holds.get(i).and_then(|(_, h)| h.map(|h| (i, h))));
+    let after =
+        (k + 1..holds.len()).find_map(|i| holds.get(i).and_then(|(_, h)| h.map(|h| (i, h))));
+    let deck = strip.bridge.iter().any(|b| *b);
+    let state = match (before, after) {
+        (Some((i, a)), Some((m, b))) => {
+            let gap = along.get(m).copied().unwrap_or(0.0) - along.get(i).copied().unwrap_or(0.0);
+            let rise = (a.height - b.height).abs();
+            if a.junction == b.junction {
+                format!("{:?}/{:?} same junction", a.rule, b.rule)
+            } else {
+                let link = junctions.links.iter().position(|l| {
+                    (l.a, l.b) == (a.junction.min(b.junction), a.junction.max(b.junction))
+                });
+                match link {
+                    None => format!("{:?}/{:?} different junctions, no link", a.rule, b.rule),
+                    Some(li) => {
+                        let l = &junctions.links[li];
+                        format!(
+                            "{:?}/{:?} link {} (unresolved {}): rise {rise:.1} m over {gap:.0} m held-to-held, link length {:.0} m ceiling {:.2}",
+                            a.rule,
+                            b.rule,
+                            li,
+                            junctions.unresolved.contains(&li),
+                            l.length,
+                            l.ceiling
+                        )
+                    }
+                }
+            }
+        }
+        (None, None) => "no held joint on the chain".to_string(),
+        _ => "held joint on one side only".to_string(),
+    };
+    let _ = deck;
+    // the key groups by what matters, not by numbers
+    state
+        .split(" link ")
+        .next()
+        .unwrap_or("")
+        .split(": rise")
+        .next()
+        .unwrap_or("")
+        .to_string()
+        + if state.contains(" link ") {
+            if state.contains("(unresolved true)") {
+                " [link, unresolved]"
+            } else {
+                " [link]"
+            }
+        } else {
+            ""
+        }
+}
+
+/// The invariant of the heights: for any two consecutive held joints of a chain that take their heights from
+/// different junctions, a link between those junctions exists, and unless it is unresolved the grade between the
+/// two heights, over the distance along the chain, is within the link's ceiling. Prints the pairs that break it.
+fn held_pairs(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    junctions: &naves_core::junctions::Junctions,
+    cell: f64,
+) {
+    let (mut pairs, mut no_link, mut over) = (0, 0, 0);
+    for (si, strip) in profiles.strips.iter().enumerate() {
+        let holds = chain_holds(net, &strip.slots, cell, junctions);
+        let mut along = vec![0.0];
+        for w in strip.joints.windows(2) {
+            let last = along.last().copied().unwrap_or(0.0);
+            along.push(last + (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1));
+        }
+        let mut previous: Option<(usize, naves_core::profile::Hold)> = None;
+        for (i, (_, hold)) in holds.iter().enumerate() {
+            let Some(h) = hold else { continue };
+            if let Some((pi, p)) = previous
+                && p.junction != h.junction
+            {
+                pairs += 1;
+                let key = (p.junction.min(h.junction), p.junction.max(h.junction));
+                let distance0 = (along[i] - along[pi]).max(1.0);
+                let link = junctions
+                    .links
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| (l.a, l.b) == key)
+                    .min_by(|x, y| {
+                        (x.1.length - distance0)
+                            .abs()
+                            .total_cmp(&(y.1.length - distance0).abs())
+                    });
+                let distance = (along[i] - along[pi]).max(0.5);
+                match link {
+                    None => {
+                        no_link += 1;
+                        println!(
+                            "  PAIR no link: strip {si} joints {pi}-{i} junctions {} and {} ({:?}/{:?}) {distance:.0} m apart, rise {:.1} m",
+                            p.junction,
+                            h.junction,
+                            p.rule,
+                            h.rule,
+                            (p.height - h.height).abs()
+                        );
+                    }
+                    Some((li, l)) => {
+                        let grade = (p.height - h.height).abs() / distance;
+                        if (p.height - h.height).abs() > l.ceiling * distance + 0.011
+                            && !junctions.unresolved.contains(&li)
+                        {
+                            over += 1;
+                            println!(
+                                "  PAIR over: strip {si} joints {pi}-{i} junctions {} and {} ({:?}/{:?}) grade {:.0} % over {distance:.0} m, ceiling {:.0} % (link length {:.0} m)",
+                                p.junction,
+                                h.junction,
+                                p.rule,
+                                h.rule,
+                                grade * 100.0,
+                                l.ceiling * 100.0,
+                                l.length
+                            );
+                        }
+                    }
+                }
+            }
+            previous = Some((i, *h));
+        }
+    }
+    println!(
+        "DONE 1 invariant: consecutive held joints of different junctions {pairs}, without a link {no_link}, over the ceiling of a resolved link {over}"
+    );
+}
+
+/// Part 3 of the junction heights measurement: where the vertical-bend findings lie against the held joints, and
+/// how far each junction height along a through chain would have to move to keep the minimum vertical radius.
+///
+/// The estimate: a run of joints held to one junction, on a chain that has a held run of another junction before
+/// and after it, is at station `s` (the mean of its joints') at height `h`; its neighbours are at `s1`, `h1` and
+/// `s2`, `h2`. The straight line through the neighbours has the height `h*` at `s`; the change of grade at `s`
+/// may be at most `(d1 + d2) / 2 / R` per metre of run (`R` the minimum vertical radius of the road's family,
+/// the same measure as the finding), which allows `h` to differ from `h*` by `(d1 + d2) / 2 / R / (1/d1 + 1/d2)`.
+/// The move needed is the distance beyond that. The neighbours are not moved, so it is an upper bound on what
+/// moving both would take.
+fn bend_report(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    junctions: &naves_core::junctions::Junctions,
+    base: &Heightmap,
+) {
+    let cell = f64::from(base.cell_m);
+    let mut all_holds = Vec::new();
+    for strip in &profiles.strips {
+        all_holds.push(chain_holds(net, &strip.slots, cell, junctions));
+    }
+    // the bends by where they lie
+    let (mut at_held, mut near_held, mut elsewhere, mut unmatched) = (0, 0, 0, 0);
+    let mut bends = 0;
+    for e in &profiles.excesses {
+        if e.kind != naves_core::profile::GradeExcessKind::VerticalBend {
+            continue;
+        }
+        bends += 1;
+        let found = profiles
+            .strips
+            .iter()
+            .zip(&all_holds)
+            .find_map(|(strip, holds)| {
+                strip
+                    .joints
+                    .iter()
+                    .position(|q| (q.0 - e.at.0).abs() < 1e-6 && (q.1 - e.at.1).abs() < 1e-6)
+                    .map(|i| (i, holds))
+            });
+        match found {
+            None => unmatched += 1,
+            Some((i, holds)) => {
+                let is_held = |j: usize| holds.get(j).is_some_and(|(_, h)| h.is_some());
+                if is_held(i) {
+                    at_held += 1;
+                } else if is_held(i + 1) || i.checked_sub(1).is_some_and(is_held) {
+                    near_held += 1;
+                } else {
+                    elsewhere += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "DONE bends: {bends} vertical-bend findings; at a held joint {at_held}, next to one {near_held}, elsewhere {elsewhere}, position not matched to a joint (bridge deck) {unmatched}; grade findings {}",
+        profiles.excesses.len() - bends
+    );
+    // the moves
+    let mut by_family: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for (strip, holds) in profiles.strips.iter().zip(&all_holds) {
+        let Some(family) = strip
+            .slots
+            .first()
+            .and_then(|i| net.roads.get(*i))
+            .map(|r| r.family)
+        else {
+            continue;
+        };
+        let mut along = vec![0.0];
+        for w in strip.joints.windows(2) {
+            let last = along.last().copied().unwrap_or(0.0);
+            along.push(last + (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1));
+        }
+        // runs of joints held to one junction: (mean station, height)
+        let mut runs: Vec<(usize, f64, f64)> = Vec::new();
+        let mut sum = (0.0, 0usize);
+        let mut current: Option<(usize, f64)> = None;
+        for (i, (_, hold)) in holds.iter().enumerate() {
+            match (hold, current) {
+                (Some(h), Some((j, _))) if h.junction == j => {
+                    sum.0 += along[i];
+                    sum.1 += 1;
+                }
+                _ => {
+                    if let Some((j, height)) = current.take() {
+                        runs.push((j, sum.0 / sum.1 as f64, height));
+                    }
+                    if let Some(h) = hold {
+                        current = Some((h.junction, h.height));
+                        sum = (along[i], 1);
+                    }
+                }
+            }
+        }
+        if let Some((j, height)) = current {
+            runs.push((j, sum.0 / sum.1 as f64, height));
+        }
+        let radius = min_vertical_radius(family);
+        for w in runs.windows(3) {
+            let [(_, s1, h1), (_, s, h), (_, s2, h2)] = w else {
+                continue;
+            };
+            let (d1, d2) = ((s - s1).max(0.5), (s2 - s).max(0.5));
+            let straight = (h1 / d1 + h2 / d2) / (1.0 / d1 + 1.0 / d2);
+            let allowed = (d1 + d2) / 2.0 / radius / (1.0 / d1 + 1.0 / d2);
+            let need = ((h - straight).abs() - allowed).max(0.0);
+            by_family
+                .entry(format!("{family:?}"))
+                .or_default()
+                .push(need);
+        }
+    }
+    let line = |name: &str, v: &mut Vec<f64>| {
+        let n = v.len();
+        let over = |t: f64| v.iter().filter(|x| **x > t).count();
+        let (o5, o1, o2) = (over(0.5), over(1.0), over(2.0));
+        println!(
+            "DONE bends move needed {name:6} n {n:5}: p50 {:.2} p90 {:.2} max {:.2} m; above 0.5 m {o5}, above 1 m {o1}, above 2 m {o2}",
+            pct(v, 0.5),
+            pct(v, 0.9),
+            pct(v, 1.0)
+        );
+    };
+    let mut everything: Vec<f64> = by_family.values().flatten().copied().collect();
+    line("all", &mut everything);
+    for (family, v) in &mut by_family {
+        line(family, v);
+    }
 }
 
 // ======================================================================================================

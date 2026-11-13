@@ -1320,3 +1320,190 @@ fn a_junction_below_the_ground_pulls_the_road_down_to_it_and_back() {
         .unwrap();
     assert!((at.2 - 90.0).abs() < 1e-9);
 }
+
+#[test]
+fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
+    // the ground is level; two junctions 400 m apart differ by exactly what the road may climb: the profile
+    // has to be a straight ramp, not a ramp with one short steep piece where the smoothing lagged behind
+    let ceiling = grade_ceiling(Family::Asf3);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![straight(
+        "a",
+        Family::Asf3,
+        (100.0, 100.0),
+        (100.0, 500.0),
+    )]);
+    let junction = |y: f64, height: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: 100.0,
+        height,
+        rank: 3,
+        patch_m: 3.5,
+    };
+    let junctions = Junctions {
+        points: vec![
+            junction(100.0, 100.0),
+            junction(500.0, 100.0 + ceiling * 400.0),
+        ],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions);
+    let steepest = grades(&p, 0).iter().fold(0.0_f64, |m, g| m.max(g.abs()));
+    assert!(
+        steepest <= 1.1 * ceiling + 1e-6,
+        "{steepest} against {ceiling}"
+    );
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}
+
+#[test]
+fn a_short_piece_between_a_free_joint_and_a_held_one_does_not_carry_the_whole_drop() {
+    // held joint, 12.5 m, a free joint, 1.1 m, a held joint 98 % of the ceiling lower: no piece is steeper than
+    // the ceiling (the short piece took 260 % on the Berchtesgaden example)
+    let ceiling = grade_ceiling(Family::Asf3);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let mut roads = vec![
+        piece(
+            "a",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 100.0),
+            (100.0, 112.5),
+        ),
+        piece(
+            "a",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 112.5),
+            (100.0, 113.6),
+        ),
+    ];
+    roads.extend(straight("a", Family::Asf3, (100.0, 113.6), (100.0, 300.0)));
+    let net = network(vec![roads]);
+    let junction = |y: f64, height: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: 100.0,
+        height,
+        rank: 3,
+        patch_m: 0.5,
+    };
+    let junctions = Junctions {
+        points: vec![
+            junction(100.0, 100.0),
+            junction(113.6, 100.0 - 0.98 * ceiling * 13.6),
+        ],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions);
+    for (i, g) in grades(&p, 0).iter().take(3).enumerate() {
+        assert!(g.abs() <= ceiling + 1e-3, "piece {i}: {g}");
+    }
+}
+
+#[test]
+fn the_grade_is_kept_over_the_run_between_the_joints_not_the_length_of_the_piece() {
+    // pieces of 25 m that each start 15 m before the end of the one before: the joints are 10 m apart. On a 50 %
+    // slope the profile keeps its limit over those 10 m (it was kept over 25 m and the strip came out at 67 %)
+    let hm = terrain(128, 6.25, |_, y| 100.0 + 0.5 * y);
+    let roads: Vec<PlacedRoad> = (0..20)
+        .map(|i| {
+            let y = 100.0 + 10.0 * f64::from(i);
+            piece(
+                "a",
+                u32::try_from(i).unwrap(),
+                PlacedKind::Piece,
+                Family::Asf3,
+                (100.0, y - 15.0),
+                (100.0, y + 10.0),
+            )
+        })
+        .collect();
+    let p = solve(&network(vec![roads]), &hm);
+    let steepest = grades(&p, 0).iter().fold(0.0_f64, |m, g| m.max(g.abs()));
+    assert!(steepest <= grade_ceiling(Family::Asf3) + 1e-3, "{steepest}");
+}
+
+#[test]
+fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() {
+    // the same span, with a side road that ends beside its first piece: the span needs 98 % of the ceiling and the
+    // 6 % of a meeting would make that impossible
+    let ceiling = grade_ceiling(Family::Asf3);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let mut roads = vec![
+        piece(
+            "a",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 100.0),
+            (100.0, 112.5),
+        ),
+        piece(
+            "a",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 112.5),
+            (100.0, 113.6),
+        ),
+    ];
+    roads.extend(straight("a", Family::Asf3, (100.0, 113.6), (100.0, 300.0)));
+    let side = straight("s", Family::Asf3, (103.5, 106.0), (200.0, 106.0));
+    let net = network(vec![roads, side]);
+    let junction = |y: f64, height: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: 100.0,
+        height,
+        rank: 3,
+        patch_m: 0.5,
+    };
+    let junctions = Junctions {
+        points: vec![
+            junction(100.0, 100.0),
+            junction(113.6, 100.0 - 0.98 * ceiling * 13.6),
+        ],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions);
+    for (i, g) in grades(&p, 0).iter().take(2).enumerate() {
+        assert!(g.abs() <= ceiling + 1e-3, "piece {i}: {g}");
+    }
+}
+
+#[test]
+fn a_short_piece_beside_a_junction_does_not_start_a_long_dip() {
+    // level ground at 100 m, a junction at 100 m, then a piece of 1 m, then pieces of 25 m, and a junction 2 m
+    // lower 200 m on: the road runs between the two, it does not sag tens of metres under the ground between
+    let hm = terrain(128, 6.25, |_, y| if y <= 101.0 { 100.0 } else { 99.4 });
+    let mut roads = vec![piece(
+        "a",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (100.0, 100.0),
+        (100.0, 101.0),
+    )];
+    roads.extend(straight("a", Family::Asf3, (100.0, 101.0), (100.0, 301.0)));
+    let net = network(vec![roads]);
+    let junction = |y: f64, height: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: 100.0,
+        height,
+        rank: 3,
+        patch_m: 0.5,
+    };
+    let junctions = Junctions {
+        points: vec![junction(100.0, 100.0), junction(301.0, 99.4)],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions);
+    for joint in &p.strips[0].joints {
+        assert!(joint.2 > 98.4 && joint.2 < 100.6, "{joint:?}");
+    }
+}

@@ -142,7 +142,7 @@ road that reaches the junction is held to that height, the through road at the j
 road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
 together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
 of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less.
-What cannot be repaired is the `junction_too_steep` finding.
+The road between two junctions is measured from the joint that holds one height to the joint that holds the other, which are the places where the road actually has the junction's height. What cannot be repaired is the `junction_too_steep` finding.
 
 A road is at most **6 % steep where another road meets it** (asphalt and streets; gravel and dirt tracks keep their own
 limit, so a steep track is not lifted out of the ground), and gentler in a tight bend: the inner edge of a bend is
