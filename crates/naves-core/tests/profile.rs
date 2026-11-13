@@ -468,6 +468,7 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
         height,
         rank: 3,
         patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction(280.0, 100.0), junction(320.0, 160.0)],
@@ -779,6 +780,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
         height: 110.0,
         rank: 3,
         patch_m: 6.25,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![piece_junction],
@@ -1306,6 +1308,7 @@ fn a_junction_below_the_ground_pulls_the_road_down_to_it_and_back() {
             height: 90.0,
             rank: 3,
             patch_m: 6.25,
+            stretches: std::collections::BTreeSet::new(),
         }],
         ..Junctions::default()
     };
@@ -1340,6 +1343,7 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         height,
         rank: 3,
         patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![
@@ -1390,6 +1394,7 @@ fn a_short_piece_between_a_free_joint_and_a_held_one_does_not_carry_the_whole_dr
         height,
         rank: 3,
         patch_m: 0.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![
@@ -1461,6 +1466,7 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
         height,
         rank: 3,
         patch_m: 0.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![
@@ -1497,6 +1503,7 @@ fn a_short_piece_beside_a_junction_does_not_start_a_long_dip() {
         height,
         rank: 3,
         patch_m: 0.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction(100.0, 100.0), junction(301.0, 99.4)],

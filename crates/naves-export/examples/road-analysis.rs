@@ -42,7 +42,7 @@ use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
 use naves_core::junctions::{HOLD_M, find_junctions};
 use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_radius};
 use naves_core::osm::read_ways;
-use naves_core::profile::{RoadStrip, chain_holds, solve_profiles};
+use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
 use naves_core::project::Project;
 use naves_core::roadnet::build_graph;
 use naves_core::roadplace::{PlacedKind, place_network};
@@ -1980,6 +1980,7 @@ fn main() {
         }
     }
     held_pairs(&net, &profiles, &junctions, f64::from(base.cell_m));
+    hold_report(&net, &profiles, &junctions, f64::from(base.cell_m));
     bend_report(&net, &profiles, &junctions, &base);
     println!(
         "DONE 2 pieces above the hard limit (drive_grade): {over_hard}, of them without a road_grade or road_not_drivable violation within 30 m: {over_hard_unreported}"
@@ -2231,6 +2232,51 @@ fn held_pairs(
     }
     println!(
         "DONE 1 invariant: consecutive held joints of different junctions {pairs}, without a link {no_link}, over the ceiling of a resolved link {over}"
+    );
+}
+
+/// How much road the junctions hold level: the length of the runs of joints held to one junction that are
+/// longer than one joint, and how many holds the check that a chain belongs to the junction removed.
+fn hold_report(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    junctions: &naves_core::junctions::Junctions,
+    cell: f64,
+) {
+    let (mut level_m, mut runs, mut held, mut unchecked) = (0.0, 0, 0, 0);
+    for strip in &profiles.strips {
+        let holds = chain_holds(net, &strip.slots, cell, junctions);
+        held += holds.iter().filter(|(_, h)| h.is_some()).count();
+        unchecked += chain_holds_unchecked(net, &strip.slots, cell, junctions)
+            .iter()
+            .filter(|(_, h)| h.is_some())
+            .count();
+        let mut start: Option<(usize, usize)> = None;
+        for i in 0..=holds.len() {
+            let here = holds.get(i).and_then(|(_, h)| h.map(|h| h.junction));
+            match (start, here) {
+                (Some((_, j)), Some(h)) if j == h => {}
+                (Some((first, _)), _) => {
+                    if i - 1 > first {
+                        runs += 1;
+                        level_m += (first..i - 1)
+                            .map(|k| {
+                                let (a, b) = (holds[k].0, holds[k + 1].0);
+                                (b.0 - a.0).hypot(b.1 - a.1)
+                            })
+                            .sum::<f64>();
+                    }
+                    start = here.map(|h| (i, h));
+                }
+                (None, Some(h)) => start = Some((i, h)),
+                (None, None) => {}
+            }
+        }
+    }
+    println!(
+        "DONE held: {held} joints held to junctions; {runs} runs of more than one joint, {:.0} m of road held level; the check that a chain belongs to the junction removed {} holds (without it {unchecked})",
+        level_m,
+        unchecked - held
     );
 }
 

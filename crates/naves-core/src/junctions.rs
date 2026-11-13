@@ -26,6 +26,9 @@ pub const GROUND_RADIUS_M: f64 = 10.0;
 pub const MERGE_M: f64 = 3.0;
 /// Rounds of [`repair`].
 pub const REPAIR_ROUNDS: usize = 50;
+/// The most [`repair`] moves a junction from its ground median, in metres. A link that is still over its
+/// ceiling then is unresolved.
+pub const MAX_MOVE_M: f64 = 3.0;
 
 /// How far beyond a junction's patch a chain end or a junction piece may lie and still belong to the junction:
 /// the side ports of a junction piece lie as far from its centre as the patch reaches, and the centre of the
@@ -33,7 +36,7 @@ pub const REPAIR_ROUNDS: usize = 50;
 pub const HOLD_M: f64 = 4.0;
 
 /// How far from a crossing a road may pass and still be one of its arms.
-pub const ARM_REACH_M: f64 = 13.0;
+pub(crate) const ARM_REACH_M: f64 = 13.0;
 /// A projection this close to the end of a road is the end.
 const END_M: f64 = 3.0;
 /// A junction piece whose centre is this close to a station is the one the station lies on.
@@ -76,6 +79,10 @@ pub struct Junction {
     /// Radius of the level patch: half the length of the junction piece, or half the width of the widest
     /// road meeting here.
     pub patch_m: f64,
+    /// The ids of the stretches of the roads that belong to this junction (they end here, cross here in the graph,
+    /// or are the road a chain end lies on), junction pieces' `a|b` ids split. A chain that has none of them is
+    /// not held to this junction, whatever its distance. Empty: not recorded, every chain counts.
+    pub stretches: BTreeSet<String>,
 }
 
 /// The road between two neighbouring junctions.
@@ -545,7 +552,7 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
     end_junctions(&lines, &claimed, &mut raw);
     raw.sort_by(|a, b| by_position(&a.at, &b.at).then(kind_order(a.kind).cmp(&kind_order(b.kind))));
     let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base);
-    junctions.links = held_links(net, base, &junctions);
+    junctions.links = held_links(net, f64::from(base.cell_m), &junctions);
     repair(&mut junctions);
     junctions
 }
@@ -555,7 +562,7 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
 /// length is the length along the chain between the two joints, at least 1 m, so that a link that `repair`
 /// made climbable is climbable between the places where the heights are actually held. Sorted by ends and
 /// length, which does not depend on the order of the roads.
-fn held_links(net: &PlacedNetwork, base: &Heightmap, junctions: &Junctions) -> Vec<Link> {
+fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link> {
     let mut out = Vec::new();
     for chain in &net.chains {
         let Some(family) = chain
@@ -565,7 +572,7 @@ fn held_links(net: &PlacedNetwork, base: &Heightmap, junctions: &Junctions) -> V
         else {
             continue;
         };
-        let holds = chain_holds(net, chain, f64::from(base.cell_m), junctions);
+        let holds = chain_holds(net, chain, cell, junctions);
         let mut along = 0.0;
         let mut previous: Option<((f64, f64), usize, f64)> = None;
         let mut last: Option<(f64, f64)> = None;
@@ -609,6 +616,7 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
     let (mut sx, mut sy) = (0.0, 0.0);
     let mut kind = JunctionKind::EndOnRoad;
     let (mut top_rank, mut patch) = (0, 0.0_f64);
+    let mut stretches = BTreeSet::new();
     for r in members.iter().filter_map(|m| raw.get(*m)) {
         sx += r.at.0;
         sy += r.at.1;
@@ -627,6 +635,9 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
             width_of(&r.arms)
         };
         patch = patch.max(own_patch);
+        for line in r.arms.iter().filter_map(|a| lines.get(a.line)) {
+            stretches.extend(line.ids.iter().cloned());
+        }
     }
     let n = count(members.len());
     let at = (sx / n, sy / n);
@@ -638,6 +649,7 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
         height: ground,
         rank: top_rank,
         patch_m: patch,
+        stretches,
     }
 }
 
@@ -719,7 +731,7 @@ fn merged(lines: &[Line], raw: &[Raw], raw_links: &[RawLink], base: &Heightmap) 
 ///
 /// [`REPAIR_ROUNDS`] rounds over the links in their stored order. A link over its ceiling by `excess` moves
 /// both ends by `excess` and a margin of 1 mm in all, shared by mobility `2^-rank`: the junction on the more
-/// important road moves less. Links still over by more than 1 cm after the last round are listed in
+/// important road moves less. No junction moves more than [`MAX_MOVE_M`] from its ground median. Links still over by more than 1 cm after the last round are listed in
 /// [`Junctions::unresolved`].
 pub fn repair(junctions: &mut Junctions) {
     let mobility = |j: &Junction| 0.5_f64.powi(i32::from(j.rank));
@@ -752,11 +764,11 @@ pub fn repair(junctions: &mut Junctions) {
                 .is_some_and(|(pa, pb)| pa.height > pb.height);
             // the higher end goes down by its share, the lower goes up by its share
             let sign = if a_is_higher { 1.0 } else { -1.0 };
-            if let Some(p) = junctions.points.get_mut(link.a) {
-                p.height -= sign * share_a;
-            }
-            if let Some(p) = junctions.points.get_mut(link.b) {
-                p.height += sign * share_b;
+            for (index, delta) in [(link.a, -sign * share_a), (link.b, sign * share_b)] {
+                if let Some(p) = junctions.points.get_mut(index) {
+                    p.height =
+                        (p.height + delta).clamp(p.ground - MAX_MOVE_M, p.ground + MAX_MOVE_M);
+                }
             }
         }
     }
@@ -786,7 +798,7 @@ impl Junctions {
 
     /// The index in [`Junctions::points`] of what [`Junctions::near`] finds.
     #[must_use]
-    pub fn index_near(&self, point: (f64, f64), reach: f64) -> Option<usize> {
+    fn index_near(&self, point: (f64, f64), reach: f64) -> Option<usize> {
         self.points
             .iter()
             .enumerate()

@@ -141,8 +141,7 @@ piece, a road that ends on another) gets a single height: the median of the orig
 road that reaches the junction is held to that height, the through road at the junction piece as much as the side
 road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
 together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
-of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less.
-The road between two junctions is measured from the joint that holds one height to the joint that holds the other, which are the places where the road actually has the junction's height. What cannot be repaired is the `junction_too_steep` finding.
+of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece is level along its length; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. What cannot be repaired within 3 m is the `junction_too_steep` finding.
 
 A road is at most **6 % steep where another road meets it** (asphalt and streets; gravel and dirt tracks keep their own
 limit, so a steep track is not lifted out of the ground), and gentler in a tight bend: the inner edge of a bend is

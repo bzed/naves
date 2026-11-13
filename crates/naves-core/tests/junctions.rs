@@ -15,10 +15,10 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{
-    Junction, JunctionKind, Junctions, Link, find_junctions, ground_median, repair,
+    Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions, ground_median, repair,
 };
 use naves_core::limits::grade_ceiling;
-use naves_core::profile::chain_holds;
+use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot, place_network};
@@ -194,6 +194,7 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
         height: ground,
         rank,
         patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
     }
 }
 
@@ -369,11 +370,12 @@ fn two_junctions_too_close_for_their_ground_move_toward_each_other() {
 
 #[test]
 fn the_junction_on_the_more_important_road_moves_less() {
+    // 4 m of ground over 10 m of road (the cap of 3 m is not reached)
     let mut j = two_junctions(
-        10.0, 0.27, 100.0, 108.0, /* asf1 */ 6, /* mud */ 1,
+        10.0, 0.27, 100.0, 104.0, /* asf1 */ 6, /* mud */ 1,
     );
     repair(&mut j);
-    assert!((j.points[0].height - 100.0).abs() < (108.0 - j.points[1].height).abs() / 16.0);
+    assert!((j.points[0].height - 100.0).abs() < (104.0 - j.points[1].height).abs() / 16.0);
 }
 
 #[test]
@@ -484,7 +486,7 @@ fn no_roads_have_no_junctions() {
 
 #[test]
 fn a_link_of_no_length_repairs_without_nan() {
-    let mut j = two_junctions(0.0, 0.27, 100.0, 108.0, 4, 4);
+    let mut j = two_junctions(0.0, 0.27, 100.0, 105.0, 4, 4);
     repair(&mut j);
     assert!(j.points.iter().all(|p| p.height.is_finite()), "{j:?}");
     assert!((j.points[0].height - j.points[1].height).abs() < 0.01);
@@ -501,10 +503,10 @@ fn near_reaches_beyond_the_patch_by_the_given_distance() {
 
 /// For every two consecutive held joints of a chain that take their heights from different junctions: a link
 /// between those junctions with the length along the chain between the two joints.
-fn assert_links_are_the_spans(net: &PlacedNetwork, hm: &Heightmap, j: &Junctions) {
+fn assert_links_are_the_spans(net: &PlacedNetwork, j: &Junctions) {
     let mut pairs = 0;
     for chain in &net.chains {
-        let holds = chain_holds(net, chain, f64::from(hm.cell_m), j);
+        let holds = chain_holds(net, chain, 3.125, j);
         let mut along = 0.0;
         let mut previous: Option<(usize, f64)> = None;
         for (i, (at, hold)) in holds.iter().enumerate() {
@@ -537,17 +539,16 @@ fn assert_links_are_the_spans(net: &PlacedNetwork, hm: &Heightmap, j: &Junctions
 fn the_links_are_the_spans_between_the_joints_that_are_held() {
     let (net, graph) = grid_of_roads();
     let hm = terrain(256, 3.125, |x, y| 100.0 + 0.2 * x - 0.1 * y);
-    assert_links_are_the_spans(&net, &hm, &find_junctions(&net, &graph, &hm));
+    assert_links_are_the_spans(&net, &find_junctions(&net, &graph, &hm));
     let (net, graph) = two_side_roads_meeting_a_road_at(20.0, 120.0);
     let hm = terrain(128, 3.125, |x, _| 100.0 + 0.01 * x);
-    assert_links_are_the_spans(&net, &hm, &find_junctions(&net, &graph, &hm));
+    assert_links_are_the_spans(&net, &find_junctions(&net, &graph, &hm));
 }
 
 #[test]
-fn a_junction_between_two_joints_holds_both_and_the_link_is_the_span_between_them() {
+fn a_junction_between_two_joints_holds_the_nearer_one() {
     // two side tracks end on a through road 12 m after one of its joints: no joint lies in either patch, so the
-    // joints on both sides of each hold the height, and the link between the junctions is 75 m, not the 100 m
-    // between the junctions
+    // nearer joint of the piece holds the height (one joint each, not both ends of the piece)
     let through: Vec<PlacedRoad> = (0..12)
         .map(|i| {
             let x = 25.0 * f64::from(i);
@@ -585,7 +586,243 @@ fn a_junction_between_two_joints_holds_both_and_the_link_is_the_span_between_the
     let hm = terrain(128, 3.125, |_, _| 100.0);
     let j = find_junctions(&net, &RoadGraph::default(), &hm);
     assert_eq!(j.points.len(), 2, "{j:?}");
+    let held: Vec<usize> = chain_holds(&net, &net.chains[0], 3.125, &j)
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, h))| h.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(held, vec![4, 8], "{j:?}");
     let spans: Vec<f64> = j.links.iter().map(|l| l.length).collect();
-    assert!(spans.iter().any(|s| (s - 75.0).abs() < 1e-6), "{spans:?}");
-    assert_links_are_the_spans(&net, &hm, &j);
+    assert!(spans.iter().any(|s| (s - 100.0).abs() < 1e-6), "{spans:?}");
+    assert_links_are_the_spans(&net, &j);
+}
+
+#[test]
+fn a_junction_never_moves_more_than_three_metres_from_its_ground() {
+    // 10 m of road between grounds 20 m apart: 3 m each is not enough, so both stop at 3 m and the link is
+    // reported
+    let mut j = two_junctions(10.0, 0.27, 100.0, 120.0, 4, 4);
+    repair(&mut j);
+    assert!((j.points[0].height - 103.0).abs() < 1e-9, "{:?}", j.points);
+    assert!((j.points[1].height - 117.0).abs() < 1e-9, "{:?}", j.points);
+    assert_eq!(j.unresolved, vec![0]);
+}
+
+#[test]
+fn a_link_that_needs_less_than_the_cap_is_still_repaired() {
+    let mut j = two_junctions(10.0, 0.27, 100.0, 106.0, 4, 4);
+    repair(&mut j);
+    assert!(j.unresolved.is_empty());
+    assert!(
+        j.points
+            .iter()
+            .all(|p| (p.height - p.ground).abs() <= MAX_MOVE_M)
+    );
+}
+
+/// A chain of `count` pieces of `length` metres from `from` along `direction` (a unit vector), as one stretch.
+fn run_of(
+    name: &str,
+    family: Family,
+    from: (f64, f64),
+    direction: (f64, f64),
+    length: f64,
+    count: u32,
+) -> Vec<PlacedRoad> {
+    (0..count)
+        .map(|i| {
+            let at = |k: u32| {
+                (
+                    from.0 + direction.0 * length * f64::from(k),
+                    from.1 + direction.1 * length * f64::from(k),
+                )
+            };
+            piece(name, i, PlacedKind::Piece, family, at(i), at(i + 1))
+        })
+        .collect()
+}
+
+fn net_of(chains: Vec<Vec<PlacedRoad>>) -> PlacedNetwork {
+    let mut net = PlacedNetwork::default();
+    for chain in chains {
+        let base = net.roads.len();
+        net.chains.push((base..base + chain.len()).collect());
+        net.roads.extend(chain);
+    }
+    net
+}
+
+/// One junction at `at`, to which the stretches `names` belong.
+fn one_junction_of(at: (f64, f64), patch_m: f64, names: &[&str], kind: JunctionKind) -> Junctions {
+    Junctions {
+        points: vec![Junction {
+            at,
+            kind,
+            ground: 100.0,
+            height: 100.0,
+            rank: 3,
+            patch_m,
+            stretches: names.iter().map(|n| (*n).to_string()).collect(),
+        }],
+        ..Junctions::default()
+    }
+}
+
+fn held_rules(net: &PlacedNetwork, chain: usize, j: &Junctions) -> Vec<Option<HoldRule>> {
+    chain_holds(net, &net.chains[chain], 3.125, j)
+        .iter()
+        .map(|(_, h)| h.map(|h| h.rule))
+        .collect()
+}
+
+#[test]
+fn a_chain_that_ends_beyond_the_patch_is_held_at_its_end() {
+    // the junction's patch is 0.5 m, the side road ends 3 m from it: only the end rule holds it
+    let net = net_of(vec![
+        run_of("t", Family::Asf3, (50.0, 100.0), (1.0, 0.0), 25.0, 8),
+        run_of("s", Family::Asf3, (100.0, 103.0), (0.0, 1.0), 25.0, 4),
+    ]);
+    let j = one_junction_of((100.0, 100.0), 0.5, &["s", "t"], JunctionKind::Join);
+    let rules = held_rules(&net, 1, &j);
+    assert_eq!(rules[0], Some(HoldRule::End), "{rules:?}");
+    assert!(rules[1..].iter().all(Option::is_none), "{rules:?}");
+}
+
+#[test]
+fn joints_inward_of_a_held_end_are_held_while_they_lie_on_the_other_road() {
+    // a side road with joints 3.0, 4.2 and 29 m from a junction with a patch of 3.5 m: the end is in the
+    // patch, the second joint is on the through road's surface (3.5 m and 1 m), the third is not
+    // the chain runs from the far end to the junction, so the end is the last joint
+    let side = vec![
+        piece(
+            "s",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 129.0),
+            (100.0, 104.2),
+        ),
+        piece(
+            "s",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 104.2),
+            (100.0, 103.0),
+        ),
+    ];
+    let net = net_of(vec![
+        run_of("t", Family::Asf3, (50.0, 100.0), (1.0, 0.0), 25.0, 8),
+        side,
+    ]);
+    let j = one_junction_of((100.0, 100.0), 3.5, &["s", "t"], JunctionKind::Join);
+    let rules = held_rules(&net, 1, &j);
+    assert_eq!(
+        rules,
+        vec![None, Some(HoldRule::Inward), Some(HoldRule::Patch)]
+    );
+}
+
+#[test]
+fn a_junction_piece_holds_both_its_joints() {
+    let (net, graph) = t_of(Family::Asf3, Family::Asf3);
+    let hm = terrain(128, 3.125, |_, _| 100.0);
+    let j = find_junctions(&net, &graph, &hm);
+    let through = net
+        .chains
+        .iter()
+        .position(|c| c.iter().any(|i| net.roads[*i].kind == PlacedKind::Junction))
+        .unwrap();
+    let rules = held_rules(&net, through, &j);
+    assert_eq!(
+        rules
+            .iter()
+            .filter(|r| **r == Some(HoldRule::Piece))
+            .count(),
+        2,
+        "{rules:?}"
+    );
+}
+
+#[test]
+fn a_chain_that_passes_a_junction_is_held_at_the_one_joint_nearest_it() {
+    // a chain of 3 m pieces with five joints in a patch of 7 m: the nearest one holds, not all five
+    let net = net_of(vec![run_of(
+        "t",
+        Family::Asf3,
+        (71.5, 100.0),
+        (1.0, 0.0),
+        3.0,
+        20,
+    )]);
+    let j = one_junction_of((100.0, 100.0), 7.0, &["t"], JunctionKind::Join);
+    let rules = held_rules(&net, 0, &j);
+    assert_eq!(rules.iter().filter(|r| r.is_some()).count(), 1, "{rules:?}");
+    assert!(rules.contains(&Some(HoldRule::Patch)), "{rules:?}");
+}
+
+#[test]
+fn a_parallel_street_beside_a_junction_keeps_its_own_height() {
+    // a street 10 m south of a T junction, with no node in common: within the reach of an arm, but not one of its
+    // roads
+    let (net, graph) = placed(&[
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(50.0, 200.0), (200.0, 200.0), (350.0, 200.0)],
+        ),
+        feature(2, Family::City, &[2, 4], &[(200.0, 200.0), (200.0, 350.0)]),
+        feature(
+            3,
+            Family::City,
+            &[11, 12, 13],
+            &[(50.0, 190.0), (200.0, 190.0), (350.0, 190.0)],
+        ),
+    ]);
+    let hm = terrain(128, 3.125, |_, _| 100.0);
+    let j = find_junctions(&net, &graph, &hm);
+    let street = net
+        .chains
+        .iter()
+        .position(|c| net.roads[c[0]].slot.stretch.starts_with("3:"))
+        .unwrap();
+    assert!(held_rules(&net, street, &j).iter().all(Option::is_none));
+    // without the check it would be held: the check is what keeps it
+    let unchecked = chain_holds_unchecked(&net, &net.chains[street], 3.125, &j);
+    assert!(unchecked.iter().any(|(_, h)| h.is_some()));
+}
+
+#[test]
+fn a_road_that_crosses_a_junction_above_it_is_not_held_to_it() {
+    // a road over the junction point (a bridge in the real data), with no node in common
+    let (net, graph) = placed(&[
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(50.0, 200.0), (200.0, 200.0), (350.0, 200.0)],
+        ),
+        feature(2, Family::City, &[2, 4], &[(200.0, 200.0), (200.0, 350.0)]),
+        feature(
+            3,
+            Family::City,
+            &[21, 22],
+            &[(120.0, 280.0), (280.0, 120.0)],
+        ),
+    ]);
+    let hm = terrain(128, 3.125, |_, _| 100.0);
+    let j = find_junctions(&net, &graph, &hm);
+    let above = net
+        .chains
+        .iter()
+        .position(|c| net.roads[c[0]].slot.stretch.starts_with("3:"))
+        .unwrap();
+    assert!(held_rules(&net, above, &j).iter().all(Option::is_none));
+    assert!(
+        chain_holds_unchecked(&net, &net.chains[above], 3.125, &j)
+            .iter()
+            .any(|(_, h)| h.is_some())
+    );
 }

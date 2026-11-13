@@ -481,6 +481,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         height,
         rank: 3,
         patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![at(100.0, 100.0), at(160.0, 112.0)],
