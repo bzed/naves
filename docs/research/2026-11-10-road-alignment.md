@@ -912,3 +912,73 @@ inside a headless sway, under `systemd-run --scope -p MemoryMax=32G`. No game wa
   reported); planned grade above 100 %: one piece (268 % against a limit of 6 %), not met; junctions further than
   3 m from the ground median: none (met, one `junction_too_steep` for a link).
 - Not tested in the game: roads, bridges over dips and scaled bridges.
+
+### 7.9 Bridges over dips only from 8 m (2026-11-14)
+
+The maintainer set the depth from which a dip gets a bridge to 8 m (`BRIDGE_DIP_M`). A run still counts as a dip from
+3 m (`DIP_M`): below 8 m it is filled when dry and reported as `road_over_water` when a water line crosses it. The reason:
+nine tenths of the dips bridged at 3 m in 7.7 were shallower than 7.8 m (median 4.7 m), and a road crosses such a
+hollow on an embankment. Measured as in 7.7 with `road-analysis 1024` and `2048`, release build, one machine, after the
+change. Nothing else changed in the code. **Bridges over dips have not been tested in the game.**
+
+**Dips found, first placement:** 480 at 1024, 468 at 2048 (as in 7.7: the same roads are found; only the decision
+differs).
+
+| Action | 1024 | 2048 | of which over water |
+|---|---|---|---|
+| bridge | 8 (7.7: 93) | 9 (95) | 0 |
+| fill | 468 (383) | 455 (369) | 0 |
+| report | 4 (4) | 4 (4) | 4 |
+
+The 8 and 9 bridged dips are 16 to 160 m (1024) and 25 to 159 m (2048) long, median 72 m and 69 m; their depth is
+8.8 / 9.6 / 10.3 / 17.0 m (minimum / median / p90 / maximum, 1024) and 8.0 / 9.3 / 10.2 / 17.2 m (2048): the same
+deepest dip as in 7.7. By family at 1024: 5 `Asf3`, 2 `City`, 1 `Grav` (2048: 5, 2, 2). The four `road_over_water`
+are the same four places as in 7.7 (depths 4, 3, 4 and 7 m at 1024; 4, 3, 4 and 6 m at 2048), none deep enough for a
+bridge.
+
+**Bridge objects by model** (the 47 of 7.6 are the OSM bridges: 27 metal, 12 stone, 8 wooden; 7.7 in brackets):
+
+| Model | 1024 | 2048 |
+|---|---|---|
+| `bridge_metal_25` | 34 (93) | 34 (90) |
+| `bridge_stone_25` | 29 (81) | 30 (79) |
+| `bridge_wood_25` | 9, 8 scaled by 1.18 (71, 31 scaled) | 12, 11 scaled (60, 27 scaled) |
+| in all | 72 (245) | 76 (229) |
+
+So the dips add about 25 bridge objects at 1024 and 29 at 2048 to the OSM bridges, instead of about 200.
+
+**The roads are still placed twice** (the second placement is made whenever one dip gets a bridge): 286.3 s for the
+placement with dips at 1024 and 285.7 s at 2048 (7.7: 273.2 s and 267.3 s; one round took 146.9 s at 1024). With 8 or 9
+bridges the time is the same as with 95: the saving is not in the time. After the second placement the build finds 482 dips at 1024 and 470 at
+2048 (7.7: 457 and 458), none to bridge, 478 / 466 to fill and the same 4 to report; the deepest fill is 28.3 m at 1024
+and 36.7 m at 2048 (before the second placement 22.5 m).
+
+**All violations** (1024 / 2048; 7.7 at 3 m in brackets; 7.6, before dips, in the last two columns):
+
+| Rule | 1024 at 8 m | 2048 at 8 m | 7.7 (3 m) | 7.6 (no dips) |
+|---|---|---|---|---|
+| `road_not_drivable` | 246 | 235 | 292 / 272 | 242 / 235 |
+| not drivable (km) | 5.64 | 5.05 | 6.75 / 5.8 | 5.7 / 5.2 |
+| `road_grade` | 1640 | 1409 | 1683 / 1528 | 1617 / 1405 |
+| `road_misses_terrain` | 4604 | 4015 | 4750 / 4192 | 4598 / 4010 |
+| of these above 0.5 m | 1465 | 1358 | 1571 / 1481 | 1465 / 1366 |
+| above 2 m | 136 | 135 | 176 / 190 | 140 / 135 |
+| `road_conflict` | 749 | 1130 | 758 / 1125 | 746 / 1125 |
+| `path_too_steep` | 133 | 78 | 132 / 87 | 133 / 79 |
+| `earthworks_capped` | 105 | 93 | 103 / 93 | 102 / 85 |
+| `junction_too_steep` | 2 | 1 | 2 / 1 | 1 / 1 |
+| `road_far_from_ground` | 0 | 4 | 0 / 4 | 0 / 0 |
+| `road_over_water` | 4 | 4 | 4 / 4 | |
+
+Largest miss 8.19 m at 1024 and 20.11 m at 2048 (7.7: 15.7 and 20.1); highest embankment 38.1 m at 1024 (7.7: 38.7), at
+2048 `max_fill_m` 68.9 m (68.5) with 1032 vertices capped (1053). The "not drivable" length is the `not_drivable_m` figure of `STATS`.
+
+**What changed, in which direction:** against 7.7 every rule that got worse with 95 bridges went most of the way back:
+`road_not_drivable` by 46 and 37 fewer, `road_grade` by 43 and 119 fewer, `road_misses_terrain` by 146 and 177 fewer, the
+misses above 2 m by 40 and 55 fewer, the largest miss at 1024 by 7.5 m. `road_conflict` and `path_too_steep` are the
+same within a few (749 against 758, 1130 against 1125). Against 7.6 (no bridges over dips) the figures are within a few
+of each other: 4 more `road_not_drivable` at 1024 and none more at 2048, 23 and 4 more `road_grade`, 6 and 5 more misses,
+and 1 more `junction_too_steep` at 1024; the 4 `road_far_from_ground` at 2048 are also in 7.7 and 7.6 did not have them.
+That supports the guess of 7.7 that the decks of the many shallow bridges cost the neighbouring roads their grade. What
+this step costs: about 460 dips of 3 to 8 m are filled, embankments, where 7.7 bridged 93 and 95 of them; the build time of the
+roads is not lower.

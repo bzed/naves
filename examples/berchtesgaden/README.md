@@ -100,6 +100,11 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
   models (104 times; they are not on `P:`) and finishes. 21 127 road pieces in 2735 stretches.
 - Findings: 4192 `road_misses_terrain`, 1528 `road_grade`, 1125 `road_conflict`, 741 `join_without_junction`,
   368 `road_gap`, 272 `road_not_drivable`, 4 `road_over_water`, 1 `junction_too_steep`; one planned grade above 100 %.
+- These build figures (time, memory, PBO size and the rule counts above) are from the build made when a dip got a
+  bridge from 3 m. Since then a dip gets one only from 8 m and the build was not repeated through `binarize`. The
+  measurement of the roads at 8 m and 2048 (`docs/research/2026-11-10-road-alignment.md`, section 7.9) gives
+  `road_misses_terrain` 4015, `road_grade` 1409, `road_conflict` 1130, `road_not_drivable` 235, `road_over_water` 4,
+  `junction_too_steep` 1, `road_far_from_ground` 4 and 76 bridge objects (OSM bridges and bridges over dips).
 - **Roads, bridges over dips and scaled bridges have not been tested in the game.**
 - The navigation mesh below was made for the old terrain; regenerate it (`naves build` warns).
 
