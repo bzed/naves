@@ -102,7 +102,11 @@ fn osm_ways_seeds() {
     };
     for (name, data) in seeds("osm_ways") {
         let result = naves_core::osm::read_ways_from_bytes(&data, window);
-        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+        assert_eq!(
+            result.is_ok(),
+            name.starts_with("valid"),
+            "seed {name}: {result:?}"
+        );
     }
 }
 

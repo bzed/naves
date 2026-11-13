@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::Family;
 use crate::heightmap::MapGeo;
-use crate::osm::OsmWays;
+use crate::osm::{OsmWay, OsmWays};
 
 /// How far inside the map's edge ways are cut, in metres: half the longest straight piece (12.5 m)
 /// and a little more.
@@ -283,6 +283,21 @@ fn clip_polyline(
     Some(runs)
 }
 
+/// The parts of `way` that lie in `[lo, hi]²` in map metres, or `None` if a position cannot be projected or
+/// is not a number, or a cut end cannot get an id.
+fn clipped_runs(way: &OsmWay, frame: &MapGeo, lo: f64, hi: f64) -> Option<Vec<Run>> {
+    let points: Vec<(f64, f64)> = way
+        .points
+        .iter()
+        .map(|&(lat, lon)| frame.to_map(lat, lon))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+        return None;
+    }
+    clip_polyline(&points, &way.nodes, lo, hi, way.id)
+}
+
 /// The roads and paths of `ways` that lie on the map, in map coordinates, in way id order.
 ///
 /// `map_size_m` is the side of the square map. Ways are cut [`CLIP_INSET_M`] inside its edge; the cut ends
@@ -303,17 +318,7 @@ pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Fea
         let Some(kind) = classify(&way.tags) else {
             continue;
         };
-        let projected: Result<Vec<(f64, f64)>, _> = way
-            .points
-            .iter()
-            .map(|&(lat, lon)| frame.to_map(lat, lon))
-            .collect();
-        // a position that cannot be projected, or is not a number, leaves the way out
-        let Ok(points) = projected else { continue };
-        if points.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
-            continue;
-        }
-        let Some(runs) = clip_polyline(&points, &way.nodes, lo, hi, way.id) else {
+        let Some(runs) = clipped_runs(way, frame, lo, hi) else {
             continue;
         };
         for (part, (points, nodes)) in runs.into_iter().enumerate() {
@@ -328,4 +333,37 @@ pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Fea
         }
     }
     features
+}
+
+/// The streams, rivers and canals of `ways` that lie on the map, in map metres, by way id and along each way.
+///
+/// A way is a water line if `waterway` is `stream`, `river` or `canal`, it has no `highway` tag (such a way is a
+/// road) and it is not a tunnel (`tunnel=*` other than `no`, a culvert: the water is not at the surface). The
+/// lines are cut at the map as [`road_features`] cuts roads, so a way that leaves the map and comes back gives
+/// several lines. `map_size_m` is the side of the square map.
+#[must_use]
+pub fn water_lines(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Vec<(f64, f64)>> {
+    let (lo, hi) = (CLIP_INSET_M, map_size_m - CLIP_INSET_M);
+    if hi <= lo {
+        return Vec::new();
+    }
+    let mut ordered: Vec<_> = ways
+        .ways
+        .iter()
+        .filter(|w| {
+            !w.tags.contains_key("highway")
+                && matches!(
+                    w.tags.get("waterway").map(String::as_str),
+                    Some("stream" | "river" | "canal")
+                )
+                && !flagged(&w.tags, "tunnel")
+        })
+        .collect();
+    ordered.sort_by_key(|w| w.id);
+    ordered
+        .into_iter()
+        .filter_map(|way| clipped_runs(way, frame, lo, hi))
+        .flatten()
+        .map(|(points, _)| points)
+        .collect()
 }

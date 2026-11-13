@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use naves_core::catalog::Family;
-use naves_core::features::{Feature, FeatureKind, Source, classify, road_features};
+use naves_core::features::{Feature, FeatureKind, Source, classify, road_features, water_lines};
 use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::osm::{OsmWay, OsmWays, read_ways};
@@ -536,4 +536,157 @@ fn the_fixture_has_the_main_road_a_bridge_and_paths() {
             assert!((INSET - 1e-6..=900.0 - INSET + 1e-6).contains(&y), "y {y}");
         }
     }
+}
+
+// --- streams and rivers --------------------------------------------------------------------------------------------
+
+fn water_fixture() -> OsmWays {
+    let frame = MapGeo::new(&project(MAP, 1.0)).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/osm/waterways.osm.pbf");
+    read_ways(&[fixture], frame.window(100.0).unwrap()).unwrap()
+}
+
+fn water_of(ways: Vec<OsmWay>) -> Vec<Vec<(f64, f64)>> {
+    let frame = MapGeo::new(&project(MAP, 1.0)).unwrap();
+    water_lines(&OsmWays { ways, skipped: 0 }, &frame, MAP)
+}
+
+fn water_way(id: i64, nodes: &[i64], at: &[(f64, f64)], pairs: &[(&str, &str)]) -> OsmWay {
+    let mut w = way_on_map(id, nodes, at);
+    w.tags = tags(pairs);
+    w
+}
+
+#[test]
+fn streams_rivers_and_canals_are_water_lines_and_not_roads() {
+    let ways = water_fixture();
+    let frame = MapGeo::new(&project(MAP, 1.0)).unwrap();
+    // road: the track (1) and the way with highway and waterway (5)
+    let roads: Vec<i64> = road_features(&ways, &frame, MAP)
+        .iter()
+        .map(|f| f.way_id)
+        .collect();
+    assert_eq!(roads, vec![1, 5]);
+    // water: stream 2, culvert 4 left out, 5 is a road, intermittent stream 6, river 7, canal 8, tunnel=no 10
+    let lines = water_lines(&ways, &frame, MAP);
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    let first = &lines[0];
+    assert_eq!(first.len(), 3);
+    // 12.980 .. 12.990 at 47.6 N, the map centre is 47.601 N 12.985 E: 375 m either side of the middle, 111 m south
+    assert!(first[0].0 < first[1].0 && first[1].0 < first[2].0);
+    assert!((first[1].0 - 1000.0).abs() < 5.0, "{first:?}");
+    assert!((first[2].0 - first[0].0 - 750.0).abs() < 10.0, "{first:?}");
+    assert!(first.iter().all(|p| (p.1 - 889.0).abs() < 20.0));
+}
+
+#[test]
+fn water_lines_come_in_way_id_order_and_in_order_along_the_way() {
+    let w = |id| {
+        water_way(
+            id,
+            &[1, 2],
+            &[
+                (100.0, 100.0 + f64::from(i32::try_from(id).unwrap())),
+                (400.0, 400.0),
+            ],
+            &[("waterway", "stream")],
+        )
+    };
+    let lines = water_of(vec![w(9), w(3), w(5)]);
+    let ys: Vec<f64> = lines.iter().map(|l| l[0].1).collect();
+    assert!(
+        near(ys[0], 103.0) && near(ys[1], 105.0) && near(ys[2], 109.0),
+        "{ys:?}"
+    );
+    // a way that leaves the map and comes back is two lines, in order along the way
+    let out = water_of(vec![water_way(
+        1,
+        &[1, 2, 3, 4],
+        &[
+            (500.0, 500.0),
+            (-500.0, 500.0),
+            (-500.0, 900.0),
+            (600.0, 900.0),
+        ],
+        &[("waterway", "river")],
+    )]);
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert!(near(out[0][0].1, 500.0) && near(out[1][0].1, 900.0));
+}
+
+#[test]
+fn a_water_way_off_the_map_or_without_room_gives_no_line() {
+    let off = water_way(
+        1,
+        &[1, 2],
+        &[(-900.0, 100.0), (-100.0, 100.0)],
+        &[("waterway", "stream")],
+    );
+    assert!(water_of(vec![off]).is_empty());
+    // a way of one node has no line
+    let mut one = water_way(2, &[1], &[(500.0, 500.0)], &[("waterway", "stream")]);
+    assert!(water_of(vec![one.clone()]).is_empty());
+    one.nodes.clear();
+    one.points.clear();
+    assert!(water_of(vec![one]).is_empty());
+    // nothing of a map smaller than the inset
+    let frame = MapGeo::new(&project(MAP, 1.0)).unwrap();
+    let ok = water_way(
+        3,
+        &[1, 2],
+        &[(5.0, 5.0), (20.0, 20.0)],
+        &[("waterway", "stream")],
+    );
+    assert!(
+        water_lines(
+            &OsmWays {
+                ways: vec![ok],
+                skipped: 0
+            },
+            &frame,
+            20.0
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_water_way_with_a_position_that_is_not_a_number_is_left_out() {
+    let mut bad = water_way(
+        1,
+        &[1, 2],
+        &[(500.0, 500.0), (900.0, 900.0)],
+        &[("waterway", "stream")],
+    );
+    bad.points[1].0 = f64::NAN;
+    let mut far = water_way(
+        2,
+        &[1, 2],
+        &[(500.0, 500.0), (900.0, 900.0)],
+        &[("waterway", "stream")],
+    );
+    far.points[0].1 = f64::INFINITY;
+    let good = water_way(
+        3,
+        &[1, 2],
+        &[(500.0, 500.0), (900.0, 900.0)],
+        &[("waterway", "stream")],
+    );
+    assert_eq!(water_of(vec![bad, far, good]).len(), 1);
+}
+
+#[test]
+fn only_streams_rivers_and_canals_that_are_not_tunnels_are_water_lines() {
+    let at = [(500.0, 500.0), (900.0, 900.0)];
+    let count = |pairs: &[(&str, &str)]| water_of(vec![water_way(1, &[1, 2], &at, pairs)]).len();
+    assert_eq!(count(&[("waterway", "stream")]), 1);
+    assert_eq!(count(&[("waterway", "river"), ("tunnel", "no")]), 1);
+    assert_eq!(count(&[("waterway", "canal"), ("intermittent", "yes")]), 1);
+    assert_eq!(count(&[("waterway", "ditch")]), 0);
+    assert_eq!(count(&[("waterway", "drain")]), 0);
+    assert_eq!(count(&[("waterway", "stream"), ("tunnel", "culvert")]), 0);
+    assert_eq!(count(&[("waterway", "stream"), ("tunnel", "yes")]), 0);
+    assert_eq!(count(&[("waterway", "stream"), ("highway", "track")]), 0);
+    assert_eq!(count(&[("highway", "track")]), 0);
 }

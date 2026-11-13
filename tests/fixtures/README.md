@@ -98,7 +98,7 @@ osmium tags-filter all.osm.pbf w/highway -o koenigssee_roads.osm.pbf
 `schoenau.osm.pbf` (138 KB) is every element that touches 12.978–12.992 °E, 47.596–47.606 °N in Schönau am Königssee:
 a secondary road, tertiary, residential and service streets, tracks (`tracktype` grade 1, 2 and 4), footpaths,
 steps, hiking paths (`sac_scale`), a via ferrata, 8 bridges and a tunnel. It tests the road classification and the
-reading of `highway` ways. `schoenau_cut.osm.pbf` (8 KB) is that file cut again with `-s simple`: its 22 highway ways
+reading of `highway` ways. `schoenau_cut.osm.pbf` (8 KB) is that file cut again with `-s simple`: its 22 highway ways and its 2 streams and rivers
 keep all their node references but only the nodes inside the box, so most of them miss nodes, as in a regional
 extract that cuts a road. It is also the valid seed of the `osm_ways` fuzz target.
 
@@ -129,3 +129,11 @@ gdal_translate -q -projwin_srs EPSG:4326 -projwin 12.970 47.5600 12.9785 47.5542
 
 Reference values: the pixel centres (347275, 5269395), (347605, 5269065) and (347935, 5268735) in EPSG:32633 are
 (100, 105, 75), (2, 8, 5) and (1, 9, 5) in `gdallocationinfo -wgs84 -valonly`.
+
+## `osm/waterways.osm.pbf`: streams, rivers and roads, synthetic
+
+Made up for the tests, not taken from OpenStreetMap, so it has no attribution. Ten ways of three nodes each,
+from 12.980 to 12.990 °E at 47.5995 to 47.604 °N: a `highway=track`, `waterway=stream`, `ditch` and `drain`, a stream
+with `tunnel=culvert`, a way with `highway=track` and `waterway=stream`, a stream with `intermittent=yes`, a river, a
+canal and a stream with `tunnel=no`. It tests which ways `read_ways` keeps and which `water_lines` returns. It is
+also a valid seed (`valid_waterways`) of the `osm_ways` fuzz target. Made with `osmium cat` from an `.osm` file.

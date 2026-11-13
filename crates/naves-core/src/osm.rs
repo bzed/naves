@@ -540,7 +540,7 @@ pub fn read_land_from_bytes(bytes: &[u8], window: GeoWindow) -> Result<OsmLand, 
 // --- highway ways -------------------------------------------------------------------------------------------------
 
 /// The tags of a highway way that are kept: the ones the road classification reads.
-const WAY_TAGS: [&str; 10] = [
+const WAY_TAGS: [&str; 11] = [
     "highway",
     "tracktype",
     "surface",
@@ -551,14 +551,18 @@ const WAY_TAGS: [&str; 10] = [
     "bridge",
     "tunnel",
     "area",
+    "waterway",
 ];
 
-/// A way with a `highway` tag and the positions of its nodes.
+/// The `waterway` values that are kept: the water lines that are wide or steady enough to be a dip in a road.
+const WATERWAYS: [&str; 3] = ["stream", "river", "canal"];
+
+/// A way with a `highway` tag, or a stream, river or canal, and the positions of its nodes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OsmWay {
     /// The OSM way id.
     pub id: i64,
-    /// The tags that the classification reads (`highway`, `tracktype`, `surface`, `smoothness`, `service`, `sac_scale`, `trail_visibility`, `bridge`, `tunnel`, `area`).
+    /// The tags that the classification reads (`highway`, `tracktype`, `surface`, `smoothness`, `service`, `sac_scale`, `trail_visibility`, `bridge`, `tunnel`, `area`, `waterway`).
     pub tags: BTreeMap<String, String>,
     /// Node ids in order.
     pub nodes: Vec<i64>,
@@ -566,7 +570,7 @@ pub struct OsmWay {
     pub points: Vec<(f64, f64)>,
 }
 
-/// The highway ways that touch a window.
+/// The highway ways and the streams, rivers and canals that touch a window.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OsmWays {
     /// The ways, each once, in id order.
@@ -611,7 +615,11 @@ fn highways_of<R: Read + Send>(
 ) -> Result<Vec<HighwayRecord>, OsmError> {
     let found = reader.par_map_reduce(
         |element| match element {
-            Element::Way(way) if way.tags().any(|(key, _)| key == "highway") => {
+            Element::Way(way)
+                if way.tags().any(|(key, value)| {
+                    key == "highway" || (key == "waterway" && WATERWAYS.contains(&value))
+                }) =>
+            {
                 if way.refs().any(|id| inside.binary_search(&id).is_ok()) {
                     vec![HighwayRecord {
                         id: way.id(),
