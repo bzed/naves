@@ -11,7 +11,7 @@
 
 use naves_core::catalog::Family;
 use naves_core::checks::{
-    DriveState, MAX_MISS_M, WALK_LIMIT_DEG, check_roads_on_terrain, check_walkable,
+    DriveState, MAX_MISS_M, PieceCheck, WALK_LIMIT_DEG, check_roads_on_terrain, check_walkable,
 };
 use naves_core::conform::{CUT_SLOPE, FILL_SLOPE_MAX, conform};
 use naves_core::features::{Feature, FeatureKind, Source};
@@ -161,11 +161,13 @@ fn ramp(grade: f64) -> Heightmap {
     terrain(100, 6.25, move |_, y| 100.0 + grade * y)
 }
 
+/// The checks of `net` on `hm` when `hm` is also the original ground.
+fn measure_on(net: &PlacedNetwork, hm: &Heightmap) -> Vec<PieceCheck> {
+    check_roads_on_terrain(net, hm, hm, &side_slopes(net, hm))
+}
+
 fn states(net: &PlacedNetwork, hm: &Heightmap) -> Vec<DriveState> {
-    check_roads_on_terrain(net, hm)
-        .iter()
-        .map(|c| c.state)
-        .collect()
+    measure_on(net, hm).iter().map(|c| c.state).collect()
 }
 
 #[test]
@@ -245,7 +247,7 @@ fn a_short_steep_spot_within_the_window_counts() {
         100.0 + 2.0 * ((y - 196.0) / 4.0).clamp(0.0, 1.0)
     });
     let net = chain(Family::Asf3, true, (50.0, 100.0), (50.0, 300.0));
-    let checks = check_roads_on_terrain(&net, &hm);
+    let checks = measure_on(&net, &hm);
     assert!(
         checks.iter().any(|c| c.state == DriveState::Steep),
         "{:?}",
@@ -299,7 +301,7 @@ fn an_arc_on_a_spiral_ramp_has_no_cross_fall() {
         100.0 + 0.10 * 10.0 * (x - centre.0).atan2(y - centre.1)
     });
     let net = arc(Family::Asf3, centre, 10.0, 20.0, 60.0);
-    let check = &check_roads_on_terrain(&net, &hm)[0];
+    let check = &measure_on(&net, &hm)[0];
     assert!(check.cross_fall < 0.02, "{}", check.cross_fall);
     assert!((check.grade - 0.10).abs() < 0.02, "{}", check.grade);
 }
@@ -308,7 +310,7 @@ fn an_arc_on_a_spiral_ramp_has_no_cross_fall() {
 fn a_straight_is_measured_as_before() {
     let hm = terrain(100, 6.25, |x, y| 100.0 + 0.07 * y - 0.03 * x);
     let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
-    let check = &check_roads_on_terrain(&net, &hm)[0];
+    let check = &measure_on(&net, &hm)[0];
     assert!((check.grade - 0.07).abs() < 0.005 && (check.cross_fall - 0.03).abs() < 0.005);
 }
 
@@ -317,7 +319,7 @@ fn a_bump_shows_as_grade_change() {
     // flat for 100 m, then a 10 % ramp
     let hm = terrain(100, 6.25, |_, y| 100.0 + 0.10 * (y - 200.0).max(0.0));
     let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
-    let checks = check_roads_on_terrain(&net, &hm);
+    let checks = measure_on(&net, &hm);
     let biggest = checks.iter().map(|c| c.grade_change).fold(0.0, f64::max);
     assert!(biggest > 0.05 && biggest < 0.15, "{biggest}");
     assert!(
@@ -345,7 +347,7 @@ fn miss_is_zero_on_shaped_terrain() {
     let net = chain(Family::Asf3, true, (100.0, 375.0), (650.0, 375.0));
     let profiles = solve(&net, &base);
     let shaped = conform(&base, &profiles.strips, &[]).unwrap().heightmap;
-    for c in check_roads_on_terrain(&net, &shaped) {
+    for c in measure_on(&net, &shaped) {
         assert!(
             c.miss_m < MAX_MISS_M,
             "piece {} misses by {}",
@@ -365,7 +367,7 @@ fn a_side_road_starts_on_the_ground_of_the_road_it_leaves() {
     append_chain(&mut net, Family::Grav, true, (303.5, 500.0), (600.0, 500.0));
     let profiles = solve(&net, &base);
     let shaped = conform(&base, &profiles.strips, &[]).unwrap().heightmap;
-    for c in check_roads_on_terrain(&net, &shaped)
+    for c in measure_on(&net, &shaped)
         .iter()
         .filter(|c| c.family == Family::Grav)
     {
@@ -385,7 +387,7 @@ fn miss_finds_a_road_in_the_air() {
         100.0 - 25.0 * (1.0 - ((y - 375.0).abs() / 15.0).min(1.0))
     });
     let net = chain(Family::Asf3, true, (100.0, 375.0), (650.0, 375.0));
-    let worst = check_roads_on_terrain(&net, &base)
+    let worst = measure_on(&net, &base)
         .iter()
         .map(|c| c.miss_m)
         .fold(0.0, f64::max);
@@ -395,7 +397,7 @@ fn miss_finds_a_road_in_the_air() {
         if (y - 300.0).abs() < 4.0 { 70.0 } else { 100.0 }
     });
     let net = chain(Family::Asf3, true, (300.0, 280.0), (300.0, 330.0));
-    let worst = check_roads_on_terrain(&net, &hm)
+    let worst = measure_on(&net, &hm)
         .iter()
         .map(|c| c.miss_m)
         .fold(0.0, f64::max);
@@ -424,7 +426,7 @@ fn miss_tries_both_diagonals() {
         chains: vec![vec![0]],
         ..PlacedNetwork::default()
     };
-    let miss = check_roads_on_terrain(&net, &hm)[0].miss_m;
+    let miss = measure_on(&net, &hm)[0].miss_m;
     assert!(miss > 1.0, "{miss}");
 }
 
@@ -434,7 +436,7 @@ fn a_bridge_is_not_checked() {
     for r in &mut net.roads {
         r.kind = PlacedKind::Bridge;
     }
-    assert!(check_roads_on_terrain(&net, &ramp(0.5)).is_empty());
+    assert!(measure_on(&net, &ramp(0.5)).is_empty());
 }
 
 fn path(id: &str, points: &[(f64, f64)]) -> Feature {
@@ -526,8 +528,43 @@ fn a_road_can_always_be_left_downhill() {
 fn checks_are_deterministic() {
     let net = chain(Family::Grav, true, (300.0, 100.0), (300.0, 400.0));
     let hm = terrain(100, 6.25, |x, y| 100.0 + 0.1 * y + 5.0 * (x / 40.0).sin());
-    assert_eq!(
-        check_roads_on_terrain(&net, &hm),
-        check_roads_on_terrain(&net, &hm)
+    assert_eq!(measure_on(&net, &hm), measure_on(&net, &hm));
+}
+
+#[test]
+fn off_ground_is_the_planned_height_less_the_original_ground() {
+    let base = terrain(100, 6.25, |_, _| 100.0);
+    let planned = terrain(100, 6.25, |_, _| 95.0);
+    let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
+    let side = side_slopes(&net, &base);
+    let checks = check_roads_on_terrain(&net, &planned, &base, &side);
+    assert!(!checks.is_empty());
+    for c in &checks {
+        assert!((c.off_ground_m + 5.0).abs() < 0.1, "{}", c.off_ground_m);
+        assert!(c.side_slope.abs() < 1e-9, "{}", c.side_slope);
+    }
+    // an embankment is positive
+    let high = terrain(100, 6.25, |_, _| 112.0);
+    for c in check_roads_on_terrain(&net, &high, &base, &side) {
+        assert!((c.off_ground_m - 12.0).abs() < 0.1, "{}", c.off_ground_m);
+    }
+}
+
+#[test]
+fn a_bridge_is_not_measured_against_the_ground() {
+    let base = terrain(100, 6.25, |_, _| 100.0);
+    let planned = terrain(100, 6.25, |_, _| 60.0);
+    let mut net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
+    let bridge_slot = 3;
+    net.roads[bridge_slot].kind = PlacedKind::Bridge;
+    let side = side_slopes(&net, &base);
+    let checks = check_roads_on_terrain(&net, &planned, &base, &side);
+    // a bridge deck has no check, so nothing reports it as far from the ground
+    assert!(checks.iter().all(|c| c.slot != bridge_slot));
+    assert!(
+        checks
+            .iter()
+            .filter(|c| c.slot != bridge_slot)
+            .all(|c| c.off_ground_m < -30.0)
     );
 }

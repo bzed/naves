@@ -7,7 +7,8 @@
 
 use naves_core::catalog::Family;
 use naves_core::limits::{
-    CROSS_FALL_AIM, CROSS_FALL_LIMIT, drive_grade, grade_aim, grade_ceiling, min_vertical_radius,
+    CROSS_FALL_AIM, CROSS_FALL_LIMIT, drive_grade, earthwork_allowance_m, grade_aim, grade_ceiling,
+    min_vertical_radius,
 };
 
 #[test]
@@ -57,4 +58,21 @@ fn tracks_have_the_limits_of_a_car_at_its_best_and_of_a_4wd() {
     for family in Family::ALL {
         assert!(grade_aim(family) < grade_ceiling(family));
     }
+}
+
+#[test]
+fn the_allowance_grows_with_the_side_slope() {
+    for (slope, want) in [
+        (0.0, 30.0),
+        (0.20, 30.0),
+        (0.40, 65.0),
+        (0.60, 100.0),
+        (2.0, 100.0),
+    ] {
+        assert!(
+            (earthwork_allowance_m(slope) - want).abs() < 1e-9,
+            "{slope}"
+        );
+    }
+    assert!((earthwork_allowance_m(f64::NAN) - 30.0).abs() < 1e-9);
 }

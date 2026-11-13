@@ -68,7 +68,7 @@ does.
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,
 `road_misses_terrain`, `path_too_steep`, `road_grade`, `road_gap`, `road_in_water`, `road_conflict`,
-`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`) and then lists only that rule. If
+`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`) and then lists only that rule. If
 the tools are missing, the error starts with "Roads need armake2" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the

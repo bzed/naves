@@ -66,6 +66,11 @@ pub struct PieceCheck {
     pub grade_change: f64,
     /// The most it is above or below the terrain inside its footprint, with either way of splitting a cell.
     pub miss_m: f64,
+    /// The planned height at the middle of the piece less the original ground there (negative is a cut); 0
+    /// where the piece is not measured against the ground, and NaN where the ground has no data.
+    pub off_ground_m: f64,
+    /// The side slope of the original ground at the piece (see [`crate::sideslope::side_slopes`]).
+    pub side_slope: f64,
     /// What follows from all that.
     pub state: DriveState,
 }
@@ -277,8 +282,17 @@ fn measure(road: &PlacedRoad, hm: &Heightmap) -> Option<Measured> {
 
 /// Measures every road piece and junction of `net` on the terrain `hm`; bridges and end caps are not checked
 /// (nothing under a bridge has to fit).
+///
+/// `base` is the original ground before any road shaped it, and `side` the side slope of it at each road of
+/// `net` ([`crate::sideslope::side_slopes`], in the order of `net.roads`); they give each piece its
+/// `off_ground_m` and `side_slope`.
 #[must_use]
-pub fn check_roads_on_terrain(net: &PlacedNetwork, hm: &Heightmap) -> Vec<PieceCheck> {
+pub fn check_roads_on_terrain(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    base: &Heightmap,
+    side: &[f64],
+) -> Vec<PieceCheck> {
     let mut checks: Vec<Option<PieceCheck>> = Vec::new();
     let mut signed: Vec<f64> = Vec::new();
     for (slot, road) in net.roads.iter().enumerate() {
@@ -310,6 +324,14 @@ pub fn check_roads_on_terrain(net: &PlacedNetwork, hm: &Heightmap) -> Vec<PieceC
                 cross_fall: m.cross_fall,
                 grade_change: 0.0,
                 miss_m: m.miss,
+                off_ground_m: {
+                    let middle = (
+                        f64::midpoint(road.start.x, road.end.x),
+                        f64::midpoint(road.start.y, road.end.y),
+                    );
+                    height(hm, middle) - height(base, middle)
+                },
+                side_slope: side.get(slot).copied().unwrap_or(f64::NAN),
                 state,
             }
         }));

@@ -63,6 +63,8 @@ fn check(slot: usize, state: DriveState, grade: f64, miss: f64) -> PieceCheck {
         cross_fall: 0.0,
         grade_change: 0.0,
         miss_m: miss,
+        off_ground_m: 0.0,
+        side_slope: 0.0,
         state,
     }
 }
@@ -459,6 +461,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::JoinWithoutJunction,
         Rule::TunnelOmitted,
         Rule::JunctionTooSteep,
+        Rule::RoadFarFromGround,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -528,4 +531,53 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         )
         .is_empty()
     );
+}
+
+fn far_check(slot: usize, off_ground_m: f64, side_slope: f64) -> PieceCheck {
+    PieceCheck {
+        off_ground_m,
+        side_slope,
+        ..check(slot, DriveState::Fine, 0.05, 0.0)
+    }
+}
+
+fn far_from_ground(pieces: &[PieceCheck]) -> Vec<Violation> {
+    let roads: Vec<PlacedRoad> = (0..pieces.len())
+        .map(|i| road(u32::try_from(i).unwrap(), PlacedKind::Piece, (100.0, 100.0)))
+        .collect();
+    let v = run(
+        &net(roads),
+        &Profiles::default(),
+        &conformed(),
+        pieces,
+        &[],
+        &[],
+        &[],
+    );
+    only(Rule::RoadFarFromGround, &v)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_deep_cut_on_flat_ground_is_reported_and_the_same_cut_on_a_mountainside_is_not() {
+    let far = far_from_ground(&[far_check(0, -40.0, 0.05), far_check(1, -40.0, 0.60)]);
+    assert_eq!(far.len(), 1, "{far:?}");
+    assert_eq!(far[0].rule.id(), "road_far_from_ground");
+    assert_eq!(far[0].message, "Cut 40 m deep; 30 m fit this ground");
+}
+
+#[test]
+fn an_embankment_over_the_allowance_is_reported_and_nan_or_a_small_height_is_not() {
+    let far = far_from_ground(&[
+        far_check(0, 70.0, 0.40),
+        far_check(1, 64.0, 0.40),
+        far_check(2, f64::NAN, 0.0),
+        far_check(3, 30.0, f64::NAN),
+    ]);
+    assert_eq!(far.len(), 1, "{far:?}");
+    assert_eq!(far[0].message, "Embankment 70 m high; 65 m fit this ground");
+    // the cut at the allowance is within it
+    assert!(far_from_ground(&[far_check(0, -30.0, 0.0)]).is_empty());
 }

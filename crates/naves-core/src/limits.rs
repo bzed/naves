@@ -87,3 +87,18 @@ pub const CROSS_FALL_AIM: f64 = 0.08;
 /// This is an estimate from real cars, not measured in the game:
 /// `docs/research/2026-11-10-road-alignment.md`, section 3.
 pub const CROSS_FALL_LIMIT: f64 = 0.20;
+
+/// How far from the original ground a road may be planned, in metres, on ground whose side slope is
+/// `side_slope` (rise over run, across the road).
+///
+/// 30 m on gentle ground (up to 0.20), growing linearly to 100 m at 0.60 and staying there on steeper
+/// ground, where a road is cut into or built out from the mountainside. A NaN slope (no ground data) gets the
+/// 30 m. This is a design choice, not measured in the game: `docs/superpowers/specs/2026-11-13-road-heights-design.md`,
+/// section 5.1.
+#[must_use]
+pub fn earthwork_allowance_m(side_slope: f64) -> f64 {
+    if side_slope.is_nan() {
+        return 30.0;
+    }
+    30.0 + (side_slope.clamp(0.20, 0.60) - 0.20) / 0.40 * 70.0
+}

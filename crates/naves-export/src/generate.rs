@@ -483,7 +483,12 @@ pub fn generate(
     );
 
     progress("Checking the roads");
-    let pieces = check_roads_on_terrain(&roads.net, &heightmap);
+    let pieces = check_roads_on_terrain(
+        &roads.net,
+        &heightmap,
+        &base,
+        &side_slopes(&roads.net, &base),
+    );
     let steep_paths = check_walkable(&features, &heightmap);
     let empty = Conformed {
         heightmap: heightmap.clone(),

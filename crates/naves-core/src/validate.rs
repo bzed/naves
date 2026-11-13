@@ -12,7 +12,7 @@ use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::Conformed;
 use crate::heightmap::MapGeo;
 use crate::junctions::Junctions;
-use crate::limits::CROSS_FALL_LIMIT;
+use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{GradeExcessKind, Profiles};
@@ -50,11 +50,13 @@ pub enum Rule {
     TunnelOmitted,
     /// Two junctions too close together for the difference of their heights.
     JunctionTooSteep,
+    /// A road planned further from the original ground than fits its terrain.
+    RoadFarFromGround,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 12] = [
+    pub const ALL: [Rule; 13] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -67,6 +69,7 @@ impl Rule {
         Rule::JoinWithoutJunction,
         Rule::TunnelOmitted,
         Rule::JunctionTooSteep,
+        Rule::RoadFarFromGround,
     ];
 
     /// The stable id of the rule.
@@ -85,6 +88,7 @@ impl Rule {
             Rule::JoinWithoutJunction => "join_without_junction",
             Rule::TunnelOmitted => "tunnel_omitted",
             Rule::JunctionTooSteep => "junction_too_steep",
+            Rule::RoadFarFromGround => "road_far_from_ground",
         }
     }
 }
@@ -260,6 +264,31 @@ fn junction_violations(junctions: &Junctions) -> Vec<Violation> {
         .collect()
 }
 
+/// A piece planned further from the original ground than [`earthwork_allowance_m`] allows for its side
+/// slope, at its middle; a piece without ground data (NaN) is not reported.
+fn far_from_ground(piece: &PieceCheck) -> Option<Violation> {
+    let allowance = earthwork_allowance_m(piece.side_slope);
+    if piece.off_ground_m.is_nan() || piece.off_ground_m.abs() <= allowance {
+        return None;
+    }
+    let message = if piece.off_ground_m < 0.0 {
+        format!(
+            "Cut {:.0} m deep; {allowance:.0} m fit this ground",
+            -piece.off_ground_m
+        )
+    } else {
+        format!(
+            "Embankment {:.0} m high; {allowance:.0} m fit this ground",
+            piece.off_ground_m
+        )
+    };
+    let at = (
+        f64::midpoint(piece.start.0, piece.end.0),
+        f64::midpoint(piece.start.1, piece.end.1),
+    );
+    Some(violation(Rule::RoadFarFromGround, at, message))
+}
+
 /// All the violations of a generated road network, sorted by rule and then by position.
 ///
 /// `water` are the OSM areas of the project; only those with the priority of water count. Bridges may stand
@@ -290,6 +319,7 @@ pub fn check_roads(
                 )
             }),
     );
+    out.extend(pieces.iter().filter_map(far_from_ground));
     out.extend(steep_paths.iter().map(|s| {
         violation(
             Rule::PathTooSteep,

@@ -434,6 +434,8 @@ fn piece(state: DriveState, from: (f64, f64), to: (f64, f64)) -> PieceCheck {
         cross_fall: 0.0,
         grade_change: 0.0,
         miss_m: 0.0,
+        off_ground_m: 0.0,
+        side_slope: 0.0,
         state,
     }
 }

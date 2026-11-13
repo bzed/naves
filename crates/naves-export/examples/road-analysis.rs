@@ -184,8 +184,8 @@ fn main() {
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
     let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
     let t_conform = t0.elapsed();
-    let pieces = check_roads_on_terrain(&net, &conformed.heightmap);
-    let raw = check_roads_on_terrain(&net, &base);
+    let pieces = check_roads_on_terrain(&net, &conformed.heightmap, &base, &side);
+    let raw = check_roads_on_terrain(&net, &base, &base, &side);
     let raw_by: BTreeMap<usize, &PieceCheck> = raw.iter().map(|p| (p.slot, p)).collect();
     let cell = f64::from(base.cell_m);
 
@@ -956,6 +956,61 @@ fn main() {
     for rule in Rule::ALL {
         let n = violations.iter().filter(|v| v.rule == rule).count();
         println!("RULE {:24} {n}", rule.id());
+    }
+    // roads far from the ground: by family, the extremes and the distribution of |off_ground_m|
+    {
+        println!("off ground: family, pieces, over the allowance, p50/p90/max |off_ground_m|");
+        let mut by_family: BTreeMap<String, Vec<&PieceCheck>> = BTreeMap::new();
+        for p in pieces.iter().filter(|p| !p.off_ground_m.is_nan()) {
+            by_family
+                .entry(format!("{:?}", p.family))
+                .or_default()
+                .push(p);
+        }
+        for (family, list) in &by_family {
+            let over = list
+                .iter()
+                .filter(|p| {
+                    p.off_ground_m.abs() > naves_core::limits::earthwork_allowance_m(p.side_slope)
+                })
+                .count();
+            let mut abs: Vec<f64> = list.iter().map(|p| p.off_ground_m.abs()).collect();
+            println!(
+                "  OFFGROUND {family:5} {:6} {over:4}   {:.1}/{:.1}/{:.1}",
+                list.len(),
+                pct(&mut abs, 0.5),
+                pct(&mut abs, 0.9),
+                pct(&mut abs, 1.0)
+            );
+        }
+        let by_height =
+            |a: &&PieceCheck, b: &&PieceCheck| a.off_ground_m.total_cmp(&b.off_ground_m);
+        let all: Vec<&PieceCheck> = pieces.iter().filter(|p| !p.off_ground_m.is_nan()).collect();
+        if let (Some(cut), Some(bank)) = (
+            all.iter().copied().min_by(by_height),
+            all.iter().copied().max_by(by_height),
+        ) {
+            for (what, p) in [("deepest cut", cut), ("highest embankment", bank)] {
+                println!(
+                    "  OFFGROUND {what}: {:.1} m, side slope {:.2}, allowance {:.0} m, at ({:.0},{:.0}), {:?}",
+                    p.off_ground_m,
+                    p.side_slope,
+                    naves_core::limits::earthwork_allowance_m(p.side_slope),
+                    f64::midpoint(p.start.0, p.end.0),
+                    f64::midpoint(p.start.1, p.end.1),
+                    p.family
+                );
+            }
+        }
+        for v in violations
+            .iter()
+            .filter(|v| v.rule == Rule::RoadFarFromGround)
+        {
+            println!(
+                "  OFFGROUND violation at ({:.0},{:.0}): {}",
+                v.at.0, v.at.1, v.message
+            );
+        }
     }
     println!("sizes (m, % or degrees as named); '>t' counts values above t");
     dist_line(

@@ -128,6 +128,14 @@ each other (which the build does) was not enough, for instance because a third j
 position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
 the finding: the road between them is then steeper than its limit and shows as `road_grade`.
 
+**`road_far_from_ground`: "Cut 40 m deep; 30 m fit this ground" or "Embankment 45 m high; 30 m fit this ground"**
+A piece of road is planned further from the original ground than fits its terrain. The limit is 30 m on gentle
+ground and grows with the side slope of the ground across the road (0.20 and below: 30 m; 0.40: 65 m; 0.60 and
+above: 100 m), since a road on a steep mountainside is cut into it or built out from it. The position is the middle
+of the piece, which is measured at its middle against the ground before any road shaped it; bridges are not
+measured. It usually means a road held to a height far from its ground, for instance by a junction on a
+different slope, or a wrong node of the OSM data. Move the junction or fix the data, or accept the finding.
+
 **`bridge on ...: the widest bridge model is ... m, the road is ... m wide`**
 The game has no bridge as wide as the road. The widest is used; the road is wider than the deck.
 
