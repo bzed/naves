@@ -193,3 +193,62 @@ fn a_scaled_osm_bridge_reaches_the_object_transform_with_its_scale() {
         "the transform carries the height"
     );
 }
+
+#[test]
+fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
+    let proj = dir.path().join("proj");
+    std::fs::create_dir_all(proj.join("dem")).unwrap();
+    std::fs::create_dir_all(proj.join("osm")).unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
+    std::fs::copy(fixture, proj.join("dem/koenigssee.tif")).unwrap();
+
+    // the same track, with a side road at each end of the 8 m bridge: no stretch continues it, so there is
+    // no room for a model
+    let lat = 47.55;
+    let nodes = [
+        (1, lat, 12.9715),
+        (2, lat, 12.9745),
+        (3, lat, 12.9746),
+        (4, lat, 12.9776),
+        (5, lat + 0.0015, 12.9745),
+        (6, lat + 0.0015, 12.9746),
+    ];
+    let track = vec![("highway", "track"), ("tracktype", "grade2")];
+    let mut bridge_tags = track.clone();
+    bridge_tags.push(("bridge", "yes"));
+    let ways = [
+        (10, vec![1, 2], track.clone()),
+        (11, vec![2, 3], bridge_tags),
+        (12, vec![3, 4], track.clone()),
+        (13, vec![2, 5], track.clone()),
+        (14, vec![3, 6], track),
+    ];
+    std::fs::write(proj.join("osm/bridge.osm.pbf"), pbf(&nodes, &ways)).unwrap();
+
+    let mut p = Project::new("Test", 47.55, 12.975, 1500.0);
+    p.grid.terrain_size = 256;
+    p.grid.land_size = 32;
+    p.sources.dem = vec!["dem/koenigssee.tif".into()];
+    p.sources.osm = vec!["osm/bridge.osm.pbf".into()];
+    p.save(&proj).unwrap();
+
+    let generated = generate(&proj, &p, &env.tools(), &|_| {}).unwrap();
+    let wanted = "bridge on 11:2-3: no room for a bridge model between the junctions";
+    assert!(
+        generated.warnings.iter().any(|w| w == wanted),
+        "{:?}",
+        generated.warnings
+    );
+    assert!(
+        generated
+            .objects
+            .iter()
+            .all(|o| !o.model.contains("bridge")),
+        "no bridge model is laid"
+    );
+    // the stretch is ordinary road now: the roads and junctions around it are built and none of it is a bridge
+    assert!(!generated.objects.is_empty());
+}
