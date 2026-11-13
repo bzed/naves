@@ -521,3 +521,39 @@ off a face is open.
 (817 to 1443, 735 to 1378, against section 6) and `path_too_steep` (81 to 130, 70 to 75). **Better:** `road_conflict`
 (2148 to 742; 1882 to 1130), `road_not_drivable` and the length that cannot be driven, `earthworks_capped`, the
 largest miss at 1024.
+
+### 7.4 A road far from the ground (2026-11-13)
+
+The new rule `road_far_from_ground` reports a piece whose planned height at its middle (the conformed terrain
+there) differs from the original ground there by more than `earthwork_allowance_m` of the side slope of the original
+ground: 30 m up to a side slope of 0.20, linear to 100 m at 0.60. A cut is a negative `off_ground_m`, an embankment a
+positive one; bridges have no check and so are not measured, and a piece without ground data reports nothing. Like
+`road_misses_terrain` it is one violation per piece, not per stretch. This step only reports: nothing in the shaping
+changed. Measured with `road-analysis 1024` (and `2048`).
+
+**Count of the new rule.** 11 at 1024 and 11 at 2048, all of them cuts, all on one dirt track (family `Mud`) in the
+south-west of the map, positions (2442, 5579) to (2500, 5496), 11 consecutive pieces, cuts of 34 to 38 m on ground with
+a side slope of 0.06 (allowance 30 m). The trial expected none on tracks; this is one track. No other family has a
+piece over its allowance, on public roads or elsewhere, and there is no embankment over its allowance.
+
+| Family | pieces | over the allowance (1024 / 2048) | p50 | p90 | max, of the absolute value (1024 / 2048) |
+|---|---|---|---|---|---|
+| Asf1 | 857 | 0 / 0 | 0.7 / 0.7 m | 4.1 / 3.8 m | 14.6 / 13.8 m |
+| Asf2 | 709 | 0 / 0 | 0.9 / 0.9 m | 4.5 / 4.3 m | 10.8 / 10.0 m |
+| Asf3 | 2363 | 0 / 0 | 1.3 / 1.1 m | 5.4 / 4.9 m | 22.1 / 22.0 m |
+| City | 7264 | 0 / 0 | 0.9 / 0.8 m | 4.1 / 3.8 m | 17.4 / 16.7 m |
+| Grav | 4610 | 0 / 0 | 1.6 / 1.5 m | 5.5 / 5.2 m | 17.1 / 17.2 m |
+| Mud | 4170 | 11 / 11 | 2.1 / 1.8 m | 6.6 / 6.2 m | 37.5 / 37.7 m |
+
+**Extremes.** The deepest cut is the Mud track above: 37.5 m at 1024 (37.7 m at 2048) at (2485, 5529), side slope 0.06,
+allowance 30 m. The highest embankment is 22.1 m (22.0 m) of an `Asf3` road at (5943, 4655) on a side slope of 1.05
+(allowance 100 m), well within what fits.
+
+**What it means.** The ground at the track is flat across (0.06) while the profile cuts it 37 m: the road is held to
+heights at both ends, which are far apart in height, with a flat or nearly flat ground between (a pass or a ridge
+crossed by a cut, or a wrong node at one end). That is what the rule is for. Whether the track should be moved or the
+profile should follow the ground more closely is open.
+
+**The other counts did not change** (1024 / 2048, equal to the final figures of 7.3): `road_not_drivable` 236 / 232,
+`road_grade` 1559 / 1336, `road_misses_terrain` 4561 / 3978, `road_conflict` 742 / 1130, `path_too_steep` 130 / 75,
+`earthworks_capped` 100 / 92, `junction_too_steep` 1 / 1.
