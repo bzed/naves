@@ -1974,6 +1974,246 @@ fn main() {
         }
     }
 
+    // ---- DIAG=x,y,r: everything about the roads, junctions and ground near a place
+    if let Ok(spec) = std::env::var("DIAG") {
+        let v: Vec<f64> = spec
+            .split(',')
+            .map(|v| v.trim().parse().expect("number"))
+            .collect();
+        let (cx, cy, r) = (v[0], v[1], v.get(2).copied().unwrap_or(60.0));
+        let h_of = |m: &Heightmap, p: (f64, f64)| f64::from(m.sample(p.0, p.1).height);
+        println!("\nDIAG at ({cx},{cy}) radius {r}");
+        let near = |poly: &[(f64, f64)], rr: f64| {
+            poly.windows(2)
+                .any(|w| seg_dist((cx, cy), w[0], w[1]).0 <= rr)
+        };
+        for f in features.iter().filter(|f| near(&f.points, r)) {
+            let tags = ways.ways.iter().find(|w| w.id == f.way_id).map(|w| &w.tags);
+            println!(
+                "DIAG feature {} way {} {:?} tags {tags:?}",
+                f.id, f.way_id, f.kind
+            );
+            let first = f.points.first().copied().unwrap_or((0.0, 0.0));
+            let last = f.points.last().copied().unwrap_or((0.0, 0.0));
+            println!(
+                "  {} points, nodes {:?}..{:?}, ({:.0},{:.0}) to ({:.0},{:.0}), base {:.1} to {:.1}",
+                f.points.len(),
+                f.nodes.first(),
+                f.nodes.last(),
+                first.0,
+                first.1,
+                last.0,
+                last.1,
+                h_of(&base, first),
+                h_of(&base, last)
+            );
+            for (i, pt) in f.points.iter().enumerate() {
+                println!(
+                    "    node {} ({:.0},{:.0}) base {:.1}",
+                    f.nodes[i],
+                    pt.0,
+                    pt.1,
+                    h_of(&base, *pt)
+                );
+            }
+        }
+        for (si, st) in strips.iter().enumerate() {
+            if !st.joints.iter().any(|j| (j.0 - cx).hypot(j.1 - cy) <= r) {
+                continue;
+            }
+            let stretch = st.slots.first().map(|s| net.roads[*s].slot.stretch.clone());
+            println!(
+                "DIAG strip {si} stretch {stretch:?} family {:?} rank {} joints {}",
+                st.slots.first().map(|s| net.roads[*s].family),
+                st.rank,
+                st.joints.len()
+            );
+            let holds = chain_holds(&net, &st.slots, f64::from(base.cell_m), &junctions);
+            for (i, (at, hold)) in holds.iter().enumerate() {
+                if let Some(h) = hold {
+                    println!(
+                        "  HOLD joint {i} ({:.0},{:.0}) {:?} junction {} height {:.2}",
+                        at.0, at.1, h.rule, h.junction, h.height
+                    );
+                }
+            }
+            // the ways under the joints of the chain
+            let mut chain_ways: BTreeMap<i64, usize> = BTreeMap::new();
+            for j in &st.joints {
+                for f in &features {
+                    if f.points
+                        .windows(2)
+                        .any(|w| seg_dist((j.0, j.1), w[0], w[1]).0 < 4.0)
+                    {
+                        *chain_ways.entry(f.way_id).or_default() += 1;
+                    }
+                }
+            }
+            for (way, n) in &chain_ways {
+                let w = ways.ways.iter().find(|w| w.id == *way);
+                let kind = features.iter().find(|f| f.way_id == *way).map(|f| &f.kind);
+                println!(
+                    "  CHAINWAY {way} ({n} joints within 4 m) {kind:?} tags {:?}",
+                    w.map(|w| &w.tags)
+                );
+            }
+            // the spans between two held joints: what the solver sees (profile.rs `ramp_targets`)
+            let held: Vec<usize> = holds
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, h))| h.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            for pair in held.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let (ha, hb) = (
+                    holds[a].1.map_or(0.0, |h| h.height),
+                    holds[b].1.map_or(0.0, |h| h.height),
+                );
+                let mut run = 0.0;
+                let mut min_factor = 1.0_f64;
+                let mut tightest = (0, f64::MAX);
+                for k in a..b {
+                    let (p, q) = (st.joints[k], st.joints[k + 1]);
+                    run += (q.0 - p.0).hypot(q.1 - p.1).max(0.5);
+                    let road = &net.roads[st.slots[k]];
+                    let turn = (road.end.heading - road.start.heading + std::f64::consts::PI)
+                        .rem_euclid(std::f64::consts::TAU)
+                        - std::f64::consts::PI;
+                    if turn.abs() > 0.001 {
+                        let chord = (road.end.x - road.start.x).hypot(road.end.y - road.start.y);
+                        let radius = chord / (2.0 * (turn.abs() / 2.0).sin());
+                        let factor = ((radius - road.width / 2.0) / radius).max(0.5);
+                        if factor < min_factor {
+                            min_factor = factor;
+                        }
+                        if radius < tightest.1 {
+                            tightest = (k, radius);
+                        }
+                    }
+                }
+                let required = (hb - ha).abs() / run.max(0.5);
+                let aim = grade_aim(net.roads[st.slots[a]].family);
+                let ceil = naves_core::limits::grade_ceiling(net.roads[st.slots[a]].family);
+                println!(
+                    "  SPAN joints {a}-{b}: {ha:.2} to {hb:.2}, run {run:.0} m, required grade {:.3}; smallest bend radius {:.0} m at piece {} (factor {min_factor:.2})",
+                    required, tightest.1, tightest.0
+                );
+                for base_grade in [aim, f64::midpoint(aim, ceil), ceil] {
+                    let limit = base_grade * min_factor;
+                    println!(
+                        "    base grade {base_grade:.3}: span limit {limit:.3}, required/limit {:.2}, tight (>= 0.8) {}, infeasible {}",
+                        required / limit,
+                        required >= 0.8 * limit,
+                        required > limit
+                    );
+                }
+            }
+            println!("  i | x y | planned | base | finished | planned-base | flags | side slope");
+            for (i, j) in st.joints.iter().enumerate() {
+                println!(
+                    "  {i:3} | {:7.1} {:7.1} | {:7.2} | {:7.2} | {:7.2} | {:7.2} | {}{} | {:.2}",
+                    j.0,
+                    j.1,
+                    j.2,
+                    h_of(&base, (j.0, j.1)),
+                    h_of(hm, (j.0, j.1)),
+                    j.2 - h_of(&base, (j.0, j.1)),
+                    if st.bridge.get(i).copied().unwrap_or(false) {
+                        "bridge "
+                    } else {
+                        ""
+                    },
+                    if st.junction.get(i).copied().unwrap_or(false) {
+                        "junction"
+                    } else {
+                        ""
+                    },
+                    st.side_slope.get(i).copied().unwrap_or(0.0)
+                );
+            }
+        }
+        for (ji, j) in junctions.points.iter().enumerate() {
+            if (j.at.0 - cx).hypot(j.at.1 - cy) <= r + 400.0 {
+                println!(
+                    "DIAG junction {ji} at ({:.0},{:.0}) {:?} ground {:.2} height {:.2} (moved {:.2}) rank {} stretches {:?}, {:.0} m away",
+                    j.at.0,
+                    j.at.1,
+                    j.kind,
+                    j.ground,
+                    j.height,
+                    j.height - j.ground,
+                    j.rank,
+                    j.stretches,
+                    (j.at.0 - cx).hypot(j.at.1 - cy)
+                );
+            }
+        }
+        for (li, l) in junctions.links.iter().enumerate() {
+            let (a, b) = (&junctions.points[l.a], &junctions.points[l.b]);
+            if (a.at.0 - cx).hypot(a.at.1 - cy) <= r + 400.0
+                || (b.at.0 - cx).hypot(b.at.1 - cy) <= r + 400.0
+            {
+                println!(
+                    "DIAG link {li}: junction {} - {} length {:.0} ceiling {:.2} height difference {:.2}",
+                    l.a,
+                    l.b,
+                    l.length,
+                    l.ceiling,
+                    (a.height - b.height).abs()
+                );
+            }
+        }
+        println!(
+            "DIAG ground along x (y = {cy}) and along y (x = {cx}), base every 10 m, -100..100:"
+        );
+        for (name, dir) in [("across x", (1.0, 0.0)), ("across y", (0.0, 1.0))] {
+            let row: Vec<String> = (-10..=10)
+                .map(|k| {
+                    let t = f64::from(k) * 10.0;
+                    format!("{:.0}", h_of(&base, (cx + dir.0 * t, cy + dir.1 * t)))
+                })
+                .collect();
+            println!("  {name}: {}", row.join(" "));
+        }
+        let (mut lo, mut hi, mut step, mut nan) = (f64::MAX, f64::MIN, 0.0_f64, 0);
+        let cell = f64::from(base.cell_m);
+        let mut t = -50.0;
+        while t <= 50.0 {
+            let mut u = -50.0;
+            while u <= 50.0 {
+                let h = h_of(&base, (cx + t, cy + u));
+                if h.is_nan() {
+                    nan += 1;
+                } else {
+                    lo = lo.min(h);
+                    hi = hi.max(h);
+                }
+                step = step.max((h - h_of(&base, (cx + t + cell, cy + u))).abs());
+                step = step.max((h - h_of(&base, (cx + t, cy + u + cell))).abs());
+                u += cell;
+            }
+            t += cell;
+        }
+        println!(
+            "DIAG base within 50 m: min {lo:.1} max {hi:.1}, largest step between neighbouring cells {step:.1} m, NaN {nan}, cell {cell} m"
+        );
+        // the DEM itself: raw samples every 10 m through the centre
+        for (name, dir) in [("DEM along x", (1.0, 0.0)), ("DEM along y", (0.0, 1.0))] {
+            let row: Vec<String> = (-10..=10)
+                .map(|k| {
+                    let t = f64::from(k) * 10.0;
+                    frame
+                        .to_geo(cx + dir.0 * t, cy + dir.1 * t)
+                        .ok()
+                        .and_then(|(lat, lon)| dem.height(lat, lon))
+                        .map_or("none".to_string(), |h| format!("{h:.0}"))
+                })
+                .collect();
+            println!("  {name}: {}", row.join(" "));
+        }
+    }
+
     // ---- done: the criteria of the road heights plan (2026-11-13)
     println!("\n#### done");
     println!(

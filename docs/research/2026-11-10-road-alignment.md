@@ -532,7 +532,7 @@ positive one; bridges have no check and so are not measured, and a piece without
 changed. Measured with `road-analysis 1024` (and `2048`).
 
 **Count of the new rule.** 11 at 1024 and 11 at 2048, all of them cuts, all on one dirt track (family `Mud`) in the
-south-west of the map, positions (2442, 5579) to (2500, 5496), 11 consecutive pieces, cuts of 34 to 38 m on ground with
+north-west of the map, positions (2442, 5579) to (2500, 5496), 11 consecutive pieces, cuts of 34 to 38 m on ground with
 a side slope of 0.06 (allowance 30 m). The trial expected none on tracks; this is one track. No other family has a
 piece over its allowance, on public roads or elsewhere, and there is no embankment over its allowance.
 
@@ -549,10 +549,43 @@ piece over its allowance, on public roads or elsewhere, and there is no embankme
 allowance 30 m. The highest embankment is 22.1 m (22.0 m) of an `Asf3` road at (5943, 4655) on a side slope of 1.05
 (allowance 100 m), well within what fits.
 
-**What it means.** The ground at the track is flat across (0.06) while the profile cuts it 37 m: the road is held to
-heights at both ends, which are far apart in height, with a flat or nearly flat ground between (a pass or a ridge
-crossed by a cut, or a wrong node at one end). That is what the rule is for. Whether the track should be moved or the
-profile should follow the ground more closely is open.
+**Diagnosis of the 11 pieces: (e), a solver fault in `ramp_targets`.** The pieces are joints 62 to 72 of strip 968, a
+Mud chain of 134 pieces with joints held at four places (`road-analysis` with `DIAG=2470,5537,100`: ways, strips,
+holds, spans, ground and DEM near a place). Its ways are all `highway=track` (323475941, 323475937 and the track ways
+1121665286, 1121665289 and 1121665290 under the 11 pieces; no `bridge`, `tunnel`, `layer` or `tracktype`), family Mud,
+drivable, none a bridge or a tunnel; footpaths run beside it (1121665287, 1121665288) and no road passes above or below it.
+Its holds: joint 0 to the patch of junction 211 (348.37 m), joints 10 and 11 to the piece of junction 198 (365.06 m),
+joint 100 to junction 166 as an arm (555.19 m), joint 134 to junction 182 as the end (519.65 m). Both ends of the long
+span are held at the ground median (junctions 198 and 166 were moved 0.00 m, so (b) is out); the link between them
+(183) is 1053 m long with 190.13 m of height difference, a required grade of 0.181, under its ceiling of 0.45.
+The ground is real (so (d) and (a) are out): a smooth DEM (raw samples 10 m apart rise 943 to 1052 m along y through
+the place), no no-data cell and a largest step of 4.5 m between neighbouring 6.25 m cells within 50 m (a hillside,
+not a fault); the map is built at `horizontal = 0.5`, so all the heights here are half the real ones. The ground
+along the span climbs about 21 % on average to 561 m near the end (joint 92) and falls back to 555 m at the end
+junction, a convex ramp with a plateau: a profile with the ground as target follows it within a few metres (the profile of the
+sections held to the ground, after joint 100, does).
+
+What cuts it is `ramp_targets` in `profile.rs`. For a span between two held heights whose required grade is at least
+80 % of the span's grade limit, it replaces the ground targets of the span with the straight line between the two
+heights ("has no room to follow the ground"). The limit of the span is the **smallest** limit of any piece in it, and a
+bend lowers the limit of its piece by `(r - w/2) / r`, at most to 0.5. This span has one hairpin of radius 10 m (piece
+37, near (2594, 5263)), which gives a factor of 0.75 and a span limit of 0.25 x 0.75 = 0.188 at the first of the three
+base grades (aim 0.25, 0.35, ceiling 0.45); the required 0.181 is 96 % of it, so the whole kilometre becomes one
+straight ramp at about 18 %. The grade the ramp needs is 72 % of the aim, so the ground itself asks for nothing the road cannot do. Then `profile_chain` accepts the first base grade
+because its test for a profile that left the ground, `|height - target| > 4 m`, compares the heights with the
+**replaced** targets: the maximum deviation was 3.3 m, though the heights are 37.5 m from the ground (a temporary probe
+in `profile_chain`, removed again). The result is a profile that stays below the ground by up to 37 m wherever the
+ground is above the line, while the ground is flat across (side slope 0.06), which is what the new rule is for. The
+same path through the other bases would not have happened: at 0.35 and 0.45 the span is not tight (ratios 0.69 and
+0.53).
+
+**The smallest correct fix** (not made, it changes the shaping and belongs in its own task; owner: `ramp_targets` /
+`profile_chain` in `crates/naves-core/src/profile.rs`): judge the span by what its pieces can do together, not by its
+worst piece. Either test `required >= TIGHT_SPAN * limit` against the length-weighted mean limit of the span, or limit
+the straight line to the stretch around the tight piece; and compare the heights with the ground, not with the replaced
+targets, in the `off` test, so that a profile that has left the ground by more than `RELAX_OFF_M` goes on to the next
+base grade. Other spans with a ratio near 0.8 and a single tight bend are likely to be flattened the same way; the 11
+pieces here are the only ones over the allowance, others may be within it.
 
 **The other counts did not change** (1024 / 2048, equal to the final figures of 7.3): `road_not_drivable` 236 / 232,
 `road_grade` 1559 / 1336, `road_misses_terrain` 4561 / 3978, `road_conflict` 742 / 1130, `path_too_steep` 130 / 75,
