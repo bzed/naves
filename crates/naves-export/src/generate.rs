@@ -27,7 +27,7 @@ use naves_core::objects::{
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::{RoadGraph, build_graph, widen_bridges, with_bridge_spans};
+use naves_core::roadnet::{RoadGraph, build_graph, lost_bridges, widen_bridges, with_bridge_spans};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
@@ -270,20 +270,11 @@ pub fn plan_roads(
             .collect();
         (graph, placed, left, true)
     };
-    // a stretch that was an OpenStreetMap bridge and is none any more, found by its id
-    let ids: BTreeSet<&str> = graph
-        .stretches
-        .iter()
-        .filter(|s| s.bridge)
-        .map(|s| s.id.as_str())
-        .collect();
-    for before in &built.stretches {
-        if before.bridge && !ids.contains(before.id.as_str()) {
-            placed.net.warnings.push(format!(
-                "bridge on {}: no room for a bridge model between the junctions",
-                before.id
-            ));
-        }
+    // a stretch that was an OpenStreetMap bridge and is none any more, not even by a dip bridge
+    for id in lost_bridges(&built, &graph) {
+        placed.net.warnings.push(format!(
+            "bridge on {id}: no room for a bridge model between the junctions"
+        ));
     }
     Ok(RoadPlan {
         graph,

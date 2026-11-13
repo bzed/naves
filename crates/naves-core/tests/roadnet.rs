@@ -661,3 +661,27 @@ fn a_neighbour_is_never_used_up() {
             .all(|s| len(s) >= 1.0 - 1e-9)
     );
 }
+
+#[test]
+fn a_bridge_that_a_dip_bridge_covers_is_not_lost() {
+    use naves_core::roadnet::lost_bridges;
+    let mut osm = line_200();
+    osm.stretches[0].bridge = true;
+    let id = osm.stretches[0].id.clone();
+    // the OSM bridge stayed a road in the first round
+    let mut road = osm.clone();
+    road.stretches[0].bridge = false;
+    assert_eq!(lost_bridges(&osm, &road), vec![id.as_str()]);
+    // a dip bridge cut from the middle, or covering all of it, is a bridge after all
+    for (from_m, to_m) in [(80.0, 110.0), (0.0, 200.0)] {
+        let span = BridgeSpan {
+            stretch: 0,
+            from_m,
+            to_m,
+        };
+        let out = with_bridge_spans(&road, &[span]);
+        assert!(lost_bridges(&osm, &out).is_empty(), "{from_m}");
+    }
+    // and one that stays a bridge is kept
+    assert!(lost_bridges(&osm, &osm).is_empty());
+}

@@ -172,6 +172,17 @@ fn segments_meet(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> 
 
 /// Whether the polylines cross.
 fn lines_cross(road: &[(f64, f64)], water: &[(f64, f64)]) -> bool {
+    let bounds = |line: &[(f64, f64)]| {
+        line.iter().fold(
+            (f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+            |(x0, y0, x1, y1), p| (x0.min(p.0), y0.min(p.1), x1.max(p.0), y1.max(p.1)),
+        )
+    };
+    let (a, b) = (bounds(road), bounds(water));
+    // a water line whose box does not touch the run's box cannot cross it
+    if a.0 > b.2 || b.0 > a.2 || a.1 > b.3 || b.1 > a.3 {
+        return false;
+    }
     road.windows(2).any(|r| {
         water.windows(2).any(|w| match (r, w) {
             ([a, b], [c, d]) => segments_meet(*a, *b, *c, *d),

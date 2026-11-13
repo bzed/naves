@@ -688,6 +688,25 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
     }
 }
 
+/// The ids of the bridge stretches of `before` that are no bridge in `after`: a bridge stretch of `after`
+/// with the same id, or one cut from it by [`with_bridge_spans`] (`<id>/bridge<n>`), keeps it a bridge.
+#[must_use]
+pub fn lost_bridges<'a>(before: &'a RoadGraph, after: &RoadGraph) -> Vec<&'a str> {
+    let kept = |id: &str| {
+        let cut = format!("{id}/bridge");
+        after
+            .stretches
+            .iter()
+            .any(|s| s.bridge && (s.id == id || s.id.starts_with(&cut)))
+    };
+    before
+        .stretches
+        .iter()
+        .filter(|s| s.bridge && !kept(&s.id))
+        .map(|s| s.id.as_str())
+        .collect()
+}
+
 /// The stretch that continues stretch `i` at its start or end: the only other one at a crossing of exactly
 /// two stretches, if it is a plain road (not a bridge, a tunnel or a loop).
 fn continuation(graph: &RoadGraph, i: usize, at_start: bool) -> Option<usize> {

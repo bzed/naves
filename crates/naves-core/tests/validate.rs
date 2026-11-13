@@ -570,7 +570,7 @@ fn a_deep_cut_on_flat_ground_is_reported_and_the_same_cut_on_a_mountainside_is_n
     let far = far_from_ground(&[far_check(0, -40.0, 0.05), far_check(1, -40.0, 0.60)]);
     assert_eq!(far.len(), 1, "{far:?}");
     assert_eq!(far[0].rule.id(), "road_far_from_ground");
-    assert_eq!(far[0].message, "Cut 40 m deep; 30 m fit this ground");
+    assert_eq!(far[0].message, "Cut 40.0 m deep; 30 m fit this ground");
 }
 
 #[test]
@@ -582,7 +582,13 @@ fn an_embankment_over_the_allowance_is_reported_and_nan_or_a_small_height_is_not
         far_check(3, 30.0, f64::NAN),
     ]);
     assert_eq!(far.len(), 1, "{far:?}");
-    assert_eq!(far[0].message, "Embankment 70 m high; 65 m fit this ground");
+    assert_eq!(
+        far[0].message,
+        "Embankment 70.0 m high; 65 m fit this ground"
+    );
+    // the depth has one decimal: 30.4 m is over a 30 m allowance and says so
+    let far = far_from_ground(&[far_check(0, -30.4, 0.0)]);
+    assert_eq!(far[0].message, "Cut 30.4 m deep; 30 m fit this ground");
     // the cut at the allowance is within it
     assert!(far_from_ground(&[far_check(0, -30.0, 0.0)]).is_empty());
 }

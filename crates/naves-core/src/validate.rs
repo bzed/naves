@@ -278,12 +278,12 @@ fn far_from_ground(piece: &PieceCheck) -> Option<Violation> {
     }
     let message = if piece.off_ground_m < 0.0 {
         format!(
-            "Cut {:.0} m deep; {allowance:.0} m fit this ground",
+            "Cut {:.1} m deep; {allowance:.0} m fit this ground",
             -piece.off_ground_m
         )
     } else {
         format!(
-            "Embankment {:.0} m high; {allowance:.0} m fit this ground",
+            "Embankment {:.1} m high; {allowance:.0} m fit this ground",
             piece.off_ground_m
         )
     };

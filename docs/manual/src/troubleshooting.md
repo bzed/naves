@@ -128,7 +128,7 @@ each other (which the build does) was not enough, for instance because a third j
 position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
 the finding: the road between them is then steeper than its limit and shows as `road_grade`.
 
-**`road_far_from_ground`: "Cut 40 m deep; 30 m fit this ground" or "Embankment 45 m high; 30 m fit this ground"**
+**`road_far_from_ground`: "Cut 40.0 m deep; 30 m fit this ground" or "Embankment 45.0 m high; 30 m fit this ground"**
 A piece of road is planned further from the original ground than fits its terrain. The limit is 30 m on gentle
 ground and grows with the side slope of the ground across the road (0.20 and below: 30 m; 0.40: 65 m; 0.60 and
 above: 100 m), since a road on a steep mountainside is cut into it or built out from it. The position is the middle

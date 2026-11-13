@@ -368,6 +368,9 @@ fn a_stream_under_the_run_makes_it_wet_and_one_beside_it_does_not() {
     // a stream that crosses the road far from the run
     let elsewhere = vec![vec![(50.0, 150.0), (50.0, 250.0)]];
     assert!(!dips_with(&base, &graph, &elsewhere, &[])[0].over_water);
+    // a stream far away on both axes, and a line without points
+    let far = vec![vec![(9000.0, 9000.0), (9100.0, 9200.0)], vec![]];
+    assert!(!dips_with(&base, &graph, &far, &[])[0].over_water);
     // a stream that ends before the road
     let short = vec![vec![(200.0, 150.0), (200.0, 195.0)]];
     assert!(!dips_with(&base, &graph, &short, &[])[0].over_water);
