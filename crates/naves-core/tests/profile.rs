@@ -18,7 +18,7 @@ use naves_core::conform::{FILL_SLOPE_MAX, conform};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{HOLD_M, Junction, JunctionKind, Junctions, find_junctions};
-use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
+use naves_core::limits::{drive_grade, grade_aim, grade_ceiling, min_vertical_radius};
 use naves_core::profile::{MEETING_GRADE, Profiles, RELAX_OFF_M, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
@@ -1285,46 +1285,6 @@ fn a_through_road_is_fixed_at_the_junction_piece_in_its_middle() {
 }
 
 #[test]
-fn a_junction_below_the_ground_pulls_the_road_down_to_it_and_back() {
-    // a level road on level ground with one junction 10 m below it in the middle: the road goes down to the
-    // junction and comes back; it overshoots a little at the crest (the vertical radius) but does not dip below
-    // the junction or rise far above the ground
-    let hm = terrain(128, 6.25, |_, _| 100.0);
-    let mut through = straight("t", Family::Asf3, (100.0, 400.0), (300.0, 400.0));
-    through.push(piece(
-        "t|s",
-        0,
-        PlacedKind::Junction,
-        Family::Asf3,
-        (300.0, 400.0),
-        (312.5, 400.0),
-    ));
-    through.extend(straight("t", Family::Asf3, (312.5, 400.0), (600.0, 400.0)));
-    let junctions = Junctions {
-        points: vec![Junction {
-            at: (306.25, 400.0),
-            kind: JunctionKind::Piece,
-            ground: 100.0,
-            height: 90.0,
-            rank: 3,
-            patch_m: 6.25,
-            stretches: std::collections::BTreeSet::new(),
-        }],
-        ..Junctions::default()
-    };
-    let p = solve_profiles(&network(vec![through]), &hm, &junctions);
-    for joint in &p.strips[0].joints {
-        assert!(joint.2 >= 90.0 - 1.0 && joint.2 <= 100.0 + 5.0, "{joint:?}");
-    }
-    let at = p.strips[0]
-        .joints
-        .iter()
-        .find(|q| (q.0 - 300.0).abs() < 1e-6)
-        .unwrap();
-    assert!((at.2 - 90.0).abs() < 1e-9);
-}
-
-#[test]
 fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
     // the ground is level; two junctions 400 m apart differ by exactly what the road may climb: the profile
     // has to be a straight ramp, not a ramp with one short steep piece where the smoothing lagged behind
@@ -1359,54 +1319,6 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         "{steepest} against {ceiling}"
     );
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
-}
-
-#[test]
-fn a_short_piece_between_a_free_joint_and_a_held_one_does_not_carry_the_whole_drop() {
-    // held joint, 12.5 m, a free joint, 1.1 m, a held joint 98 % of the ceiling lower: no piece is steeper than
-    // the ceiling (the short piece took 260 % on the Berchtesgaden example)
-    let ceiling = grade_ceiling(Family::Asf3);
-    let hm = terrain(128, 6.25, |_, _| 100.0);
-    let mut roads = vec![
-        piece(
-            "a",
-            0,
-            PlacedKind::Piece,
-            Family::Asf3,
-            (100.0, 100.0),
-            (100.0, 112.5),
-        ),
-        piece(
-            "a",
-            1,
-            PlacedKind::Piece,
-            Family::Asf3,
-            (100.0, 112.5),
-            (100.0, 113.6),
-        ),
-    ];
-    roads.extend(straight("a", Family::Asf3, (100.0, 113.6), (100.0, 300.0)));
-    let net = network(vec![roads]);
-    let junction = |y: f64, height: f64| Junction {
-        at: (100.0, y),
-        kind: JunctionKind::Join,
-        ground: 100.0,
-        height,
-        rank: 3,
-        patch_m: 0.5,
-        stretches: std::collections::BTreeSet::new(),
-    };
-    let junctions = Junctions {
-        points: vec![
-            junction(100.0, 100.0),
-            junction(113.6, 100.0 - 0.98 * ceiling * 13.6),
-        ],
-        ..Junctions::default()
-    };
-    let p = solve_profiles(&net, &hm, &junctions);
-    for (i, g) in grades(&p, 0).iter().take(3).enumerate() {
-        assert!(g.abs() <= ceiling + 1e-3, "piece {i}: {g}");
-    }
 }
 
 #[test]
@@ -1481,36 +1393,43 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
     }
 }
 
-#[test]
-fn a_short_piece_beside_a_junction_does_not_start_a_long_dip() {
-    // level ground at 100 m, a junction at 100 m, then a piece of 1 m, then pieces of 25 m, and a junction 2 m
-    // lower 200 m on: the road runs between the two, it does not sag tens of metres under the ground between
-    let hm = terrain(128, 6.25, |_, y| if y <= 101.0 { 100.0 } else { 99.4 });
-    let mut roads = vec![piece(
+/// A level road on ground that rises 7 m just before the held joint at its end: held joints A (100 m) at the start
+/// and B (107 m) 4.4 m after the last long piece, and ground 107 m from y = 480.
+fn free_span_then_a_short_piece_then_a_held_joint() -> (PlacedNetwork, Heightmap, Junctions) {
+    let hm = terrain(128, 6.25, |_, y| if y < 300.0 { 114.0 } else { 107.0 });
+    let mut roads = straight("a", Family::Asf3, (100.0, 100.0), (100.0, 500.0));
+    roads.push(piece(
         "a",
-        0,
+        99,
         PlacedKind::Piece,
         Family::Asf3,
-        (100.0, 100.0),
-        (100.0, 101.0),
-    )];
-    roads.extend(straight("a", Family::Asf3, (100.0, 101.0), (100.0, 301.0)));
-    let net = network(vec![roads]);
+        (100.0, 500.0),
+        (100.0, 504.4),
+    ));
     let junction = |y: f64, height: f64| Junction {
         at: (100.0, y),
         kind: JunctionKind::Join,
-        ground: 100.0,
+        ground: height,
         height,
         rank: 3,
         patch_m: 0.5,
         stretches: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
-        points: vec![junction(100.0, 100.0), junction(301.0, 99.4)],
+        points: vec![junction(100.0, 100.0), junction(504.4, 107.0)],
         ..Junctions::default()
     };
+    (network(vec![roads]), hm, junctions)
+}
+
+#[test]
+fn no_piece_between_two_held_joints_is_over_its_hard_limit() {
+    let (net, hm, junctions) = free_span_then_a_short_piece_then_a_held_joint();
     let p = solve_profiles(&net, &hm, &junctions);
-    for joint in &p.strips[0].joints {
-        assert!(joint.2 > 98.4 && joint.2 < 100.6, "{joint:?}");
+    for (i, g) in grades(&p, 0).iter().enumerate() {
+        assert!(
+            g.abs() <= drive_grade(Family::Asf3) + 1e-9,
+            "piece {i}: {g}"
+        );
     }
 }

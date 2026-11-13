@@ -29,7 +29,7 @@ use crate::catalog::Family;
 use crate::conform::FILL_SLOPE_MAX;
 use crate::heightmap::Heightmap;
 use crate::junctions::{ARM_REACH_M, HOLD_M, JunctionKind, Junctions};
-use crate::limits::{grade_aim, grade_ceiling, min_vertical_radius};
+use crate::limits::{drive_grade, grade_aim, grade_ceiling, min_vertical_radius};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
 /// The steepest grade a road may carry where another road meets it (rise over run).
@@ -127,6 +127,8 @@ struct Solved {
     held: Vec<Option<f64>>,
     /// The heights as first solved: [`settle`] moves a variable only so far from them.
     origin: Vec<f64>,
+    /// The steepest grade a vehicle manages on this road, which no piece between two junction heights may exceed.
+    hard: f64,
 }
 
 /// A place where a chain end meets a road solved earlier: on the strip `owner`, between its
@@ -537,9 +539,14 @@ fn clip(heights: &mut [f64], spacing: &[f64], fixed: &[bool], limits: &Limits, f
             (segment, to)
         };
         if fixed.get(moved).copied().unwrap_or(true) {
-            // a fixed height stays, whatever grade that makes; what is past it does not inherit that grade
-            // (a break at a fixed height would carry on as a long crest or dip)
-            previous = None;
+            // a fixed height stays, whatever grade that makes. The grade that leads into it is not kept (the
+            // free joints before it are what the other pass adjusts), but the change of grade across it is
+            // limited like anywhere else, from the grade the limit allows: an unclamped break would carry on as
+            // a long crest or dip
+            previous = Some((
+                ((to - from) / length).clamp(-grade_limit, grade_limit),
+                length,
+            ));
             continue;
         }
         let new = if forward {
@@ -1104,7 +1111,11 @@ fn ramp_targets(
             infeasible |= required > limit;
             if var > from + 1 && required >= TIGHT_SPAN * limit {
                 let mut along = 0.0;
-                for (offset, length) in lengths.iter().enumerate().take(lengths.len() - 1) {
+                for (offset, length) in lengths
+                    .iter()
+                    .enumerate()
+                    .take(lengths.len().saturating_sub(1))
+                {
                     along += length;
                     if let Some(target) = targets.get_mut(from + offset + 1) {
                         *target = low + (height - low) * along / run;
@@ -1247,6 +1258,7 @@ fn profile_chain(
         heights,
         spacing,
         limits,
+        hard: drive_grade(family),
     };
     Some((strip, variables))
 }
@@ -1614,6 +1626,76 @@ fn resolve(wanted: BTreeMap<(usize, usize), (f64, f64)>, chains: &mut [Solved]) 
     }
 }
 
+/// Where the solve of a chain could not keep the grade between two junction heights, the last resort: the free
+/// variables between two consecutive held ones are blended toward the straight line between the two held
+/// heights by the smallest share, 0 to 1, that brings every piece of the span within `hard`. A piece's grade is
+/// linear in the share, so each piece has a closed form and the span takes the largest. Every resolved link is
+/// within its ceiling, below `hard`, so the straight line always qualifies. A variable that is not `movable`
+/// (held, or fixed to a road it meets) stays.
+fn bound_spans(
+    heights: &mut [f64],
+    spacing: &[f64],
+    held: &[Option<f64>],
+    movable: &[bool],
+    hard: f64,
+) {
+    let anchors: Vec<usize> = held
+        .iter()
+        .enumerate()
+        .filter_map(|(i, h)| h.map(|_| i))
+        .collect();
+    for pair in anchors.windows(2) {
+        let [from, to] = pair else { continue };
+        let (from, to) = (*from, *to);
+        let length = |i: usize| spacing.get(i).copied().unwrap_or(1.0).max(0.5);
+        let total: f64 = (from..to).map(length).sum();
+        let (low, high) = (
+            heights.get(from).copied().unwrap_or(0.0),
+            heights.get(to).copied().unwrap_or(0.0),
+        );
+        let mut along = 0.0;
+        let mut shift = vec![0.0; to - from + 1];
+        for i in from + 1..to {
+            along += length(i - 1);
+            if movable.get(i).copied().unwrap_or(false)
+                && let (Some(slot), Some(h)) = (shift.get_mut(i - from), heights.get(i))
+            {
+                *slot = low + (high - low) * along / total - h;
+            }
+        }
+        // grade of piece i at share s: a + b s
+        let grade = |i: usize, s: f64| {
+            let (h0, h1) = (heights.get(i).copied()?, heights.get(i + 1).copied()?);
+            let (d0, d1) = (
+                shift.get(i - from).copied()?,
+                shift.get(i + 1 - from).copied()?,
+            );
+            Some((h1 + s * d1 - h0 - s * d0) / length(i))
+        };
+        let mut share = 0.0_f64;
+        for i in from..to {
+            let (Some(a), Some(at_line)) = (grade(i, 0.0), grade(i, 1.0)) else {
+                continue;
+            };
+            if a.abs() > hard && (a - at_line).abs() > 1e-12 {
+                let wanted = hard * a.signum();
+                share = share.max(((a - wanted) / (a - at_line)).clamp(0.0, 1.0));
+            }
+        }
+        // a piece that was fine may not be at that share: then the whole line
+        if (from..to).any(|i| grade(i, share).is_some_and(|g| g.abs() > hard + 1e-9)) {
+            share = 1.0;
+        }
+        if share > 0.0 {
+            for (i, d) in shift.iter().enumerate() {
+                if let Some(h) = heights.get_mut(from + i) {
+                    *h += share * d;
+                }
+            }
+        }
+    }
+}
+
 /// Brings roads that run close together to heights the terrain can follow.
 ///
 /// The terrain cells under a road are all given the road's height, `1.5` cells beyond its edge. Where two
@@ -1637,6 +1719,21 @@ fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32) {
         }
         resolve(wanted, chains);
     }
+    for chain in chains.iter_mut() {
+        let movable: Vec<bool> = (0..chain.heights.len())
+            .map(|v| {
+                chain.held.get(v).is_some_and(Option::is_none)
+                    && !chain.joins.iter().any(|(var, _)| *var == v)
+            })
+            .collect();
+        bound_spans(
+            &mut chain.heights,
+            &chain.spacing,
+            &chain.held,
+            &movable,
+            chain.hard,
+        );
+    }
     for (strip, chain) in strips.iter_mut().zip(chains.iter()) {
         for (joint, &var) in strip.joints.iter_mut().zip(&chain.joint_variable) {
             joint.2 = chain.heights.get(var).copied().unwrap_or(joint.2);
@@ -1646,7 +1743,105 @@ fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::smooth;
+    use super::{Limits, bound_spans, smooth, solve_chain};
+
+    #[test]
+    fn a_span_with_a_steep_short_piece_is_blended_toward_the_line_just_enough() {
+        // held 100 m, free joints sunk 7 m under the ground (107 m) and a short piece of 4.4 m that climbs 7 m
+        // to the held 107 m: the shape the solve left on the Berchtesgaden example
+        let mut heights = vec![100.0, 100.0, 100.0, 100.0, 100.0, 107.0];
+        let spacing = [25.0, 25.0, 25.0, 25.0, 4.4];
+        let held = [Some(100.0), None, None, None, None, Some(107.0)];
+        let movable = [false, true, true, true, true, false];
+        bound_spans(&mut heights, &spacing, &held, &movable, 0.3);
+        for (i, w) in heights.windows(2).enumerate() {
+            let grade = (w[1] - w[0]) / spacing[i];
+            assert!(
+                grade.abs() <= 0.3 + 1e-9,
+                "piece {i}: {grade} in {heights:?}"
+            );
+        }
+        assert!((heights[0] - 100.0).abs() < 1e-12 && (heights[5] - 107.0).abs() < 1e-12);
+        // just enough: the piece sits on the limit and the others are short of the straight line
+        assert!(
+            ((heights[5] - heights[4]) / 4.4 - 0.3).abs() < 1e-9,
+            "{heights:?}"
+        );
+        assert!(
+            heights[1] > 100.0 && heights[1] < 100.0 + 7.0 * 25.0 / 104.4 - 0.1,
+            "{heights:?}"
+        );
+    }
+
+    #[test]
+    fn a_span_between_two_held_heights_does_not_sag_under_the_ground() {
+        // a span of the Berchtesgaden example (strip 2): the ground at about 412 m, held 414.3 m and 410.9 m, pieces
+        // from 0.4 to 25 m. With the second difference of equal spacing it sagged to 380 m; with the radius of
+        // the crest dropped at the held joint it dipped again
+        let targets = [
+            416.2, 413.7, 413.7, 413.1, 412.4, 411.8, 411.8, 411.7, 411.8, 412.0, 412.1, 412.6,
+            414.1, 416.5, 414.1, 412.1, 412.3,
+        ];
+        let fixed = [
+            Some(414.261),
+            Some(414.261),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(410.916),
+        ];
+        let spacing = [
+            24.999, 1.005, 13.080, 25.000, 12.500, 0.357, 19.578, 6.249, 5.304, 13.073, 19.509,
+            13.073, 12.940, 4.357, 9.999, 4.357,
+        ];
+        let grade = [
+            0.27, 0.27, 0.253, 0.27, 0.27, 0.27, 0.248, 0.27, 0.27, 0.248, 0.237, 0.248, 0.205,
+            0.205, 0.135, 0.205,
+        ];
+        let limits = Limits {
+            grade: grade.to_vec(),
+            radius: 250.0,
+        };
+        let mut heights = solve_chain(&targets, &spacing, &fixed, &limits);
+        // the solve may leave a bump before the last held joint (the radius is kept across held joints now);
+        // what `settle` does after it bounds the span
+        let movable: Vec<bool> = fixed.iter().map(Option::is_none).collect();
+        bound_spans(&mut heights, &spacing, &fixed, &movable, 0.3);
+        for (h, t) in heights.iter().zip(&targets) {
+            assert!((h - t).abs() < 5.0, "{heights:?}");
+        }
+        for (i, w) in heights.windows(2).enumerate() {
+            assert!(
+                ((w[1] - w[0]) / spacing[i]).abs() <= 0.3 + 1e-9,
+                "piece {i}: {heights:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_span_within_the_limit_is_left_alone() {
+        let mut heights = vec![100.0, 101.0, 102.0, 103.0];
+        let before = heights.clone();
+        bound_spans(
+            &mut heights,
+            &[25.0, 25.0, 25.0],
+            &[Some(100.0), None, None, Some(103.0)],
+            &[false, true, true, false],
+            0.3,
+        );
+        assert_eq!(heights, before);
+    }
 
     #[test]
     fn a_joint_a_metre_from_a_fixed_one_is_smoothed_as_if_it_were_a_metre_away() {
