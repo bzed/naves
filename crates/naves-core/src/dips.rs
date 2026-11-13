@@ -304,7 +304,8 @@ pub fn decide(
         DipAction::Fill
     };
     let span = (|| {
-        let length = model_length.filter(|l| l.is_finite() && *l > 0.0)?;
+        let length =
+            model_length.filter(|l| l.is_finite() && *l >= crate::roadplace::MIN_BRIDGE_M)?;
         let stretch = graph.stretches.get(dip.stretch)?;
         let run = dip.to_m - dip.from_m;
         if !run.is_finite() || run * 2.0 + SLACK_M < length {

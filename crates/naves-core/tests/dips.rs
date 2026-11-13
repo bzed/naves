@@ -337,7 +337,7 @@ fn no_model_means_fill_or_report() {
         (DipAction::Report, None)
     );
     // a model without a usable length is no model
-    for length in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+    for length in [0.0, -5.0, 1e-9, 0.99, f64::NAN, f64::INFINITY] {
         assert_eq!(
             decide(&dip(0, 180.0, 220.0, false), &graph, Some(length)).0,
             DipAction::Fill,

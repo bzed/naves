@@ -25,19 +25,24 @@ const JUNCTION_TOLERANCE_M: f64 = 3.0;
 const SIDE_OVERLAP_M: f64 = 2.0;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
+/// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
+pub const MIN_BRIDGE_M: f64 = 1.0;
 
 /// The bridge model for a road of `family`, the scale to lay it with and whether the scale was capped at
 /// [`MAX_BRIDGE_SCALE`] so that the bridge is still narrower than the road: wooden models for gravel and
 /// dirt, the others for the paved families. The narrowest model that is at least as wide as the road, at
 /// scale 1; else the widest, scaled up to the road's width but at most [`MAX_BRIDGE_SCALE`]. Never scaled
-/// down. A model whose length is zero, negative or not finite is never chosen (the catalog is untrusted).
+/// down. A model whose length is not finite or below [`MIN_BRIDGE_M`], or whose width is not finite or not
+/// positive, is never chosen (the catalog is untrusted); a road width that is not finite counts as 0.
 #[must_use]
 pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Option<(&BridgeModel, f64, bool)> {
     let wooden = matches!(family, Family::Grav | Family::Mud);
     let all: Vec<&BridgeModel> = catalog
         .bridges()
         .iter()
-        .filter(|b| b.length.is_finite() && b.length > 0.0)
+        .filter(|b| {
+            b.length.is_finite() && b.length >= MIN_BRIDGE_M && b.width.is_finite() && b.width > 0.0
+        })
         .collect();
     let of_material: Vec<&BridgeModel> = all
         .iter()
@@ -49,7 +54,12 @@ pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Option<(&BridgeMode
     } else {
         of_material
     };
-    let width = catalog.pieces(family).first().map_or(0.0, |p| p.width);
+    let width = catalog
+        .pieces(family)
+        .first()
+        .map_or(0.0, |p| p.width)
+        .max(0.0);
+    let width = if width.is_finite() { width } else { 0.0 };
     let enough = pool
         .iter()
         .filter(|b| b.width + 1e-6 >= width)

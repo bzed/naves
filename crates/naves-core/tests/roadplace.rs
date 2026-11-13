@@ -691,3 +691,63 @@ fn a_bridge_model_without_a_usable_length_is_never_chosen() {
     let net = place_with(&[("bridge_stone_bad", 0.0, 12.0, 7.9)], &bridged(100.0));
     assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
 }
+
+fn assert_finite_bridges(net: &PlacedNetwork) {
+    for b in of_kind(net, PlacedKind::Bridge) {
+        assert!(b.scale.is_finite(), "{b:?}");
+        assert!(b.start.y.is_finite() && b.end.y.is_finite(), "{b:?}");
+        assert!(b.width.is_finite(), "{b:?}");
+    }
+}
+
+#[test]
+fn a_bridge_model_without_a_width_is_not_used() {
+    // the ports of a catalog read from f32 points cannot give a width that is not a number, but they
+    // can coincide
+    let catalog = PieceCatalog::from_models(&synthetic_models_with_bridges(&[(
+        "bridge_stone_25",
+        25.0,
+        0.0,
+        7.9,
+    )]))
+    .unwrap();
+    assert!(bridge_for(&catalog, Family::Asf3).is_none());
+    let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
+    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+    assert_finite_bridges(&net);
+}
+
+#[test]
+fn a_road_width_that_is_not_a_number_gives_an_unscaled_bridge() {
+    use naves_core::catalog::PARTS_PREFIX;
+    let mut models = synthetic_models_with_bridges(&[("bridge_stone_25", 25.0, 9.0, 7.9)]);
+    for (path, m) in &mut models {
+        if path.starts_with(PARTS_PREFIX) && path.contains("asf3") {
+            for points in m.memory.values_mut() {
+                for p in points {
+                    p[0] = f32::NAN;
+                }
+            }
+        }
+    }
+    let Ok(catalog) = PieceCatalog::from_models(&models) else {
+        return; // the catalog refuses the model already: nothing reaches the placement
+    };
+    let (model, scale, _) = bridge_for(&catalog, Family::Asf3).unwrap();
+    assert!(scale.is_finite() && (scale - 1.0).abs() < 1e-12, "{scale}");
+    assert!(model.width.is_finite());
+}
+
+#[test]
+fn a_bridge_model_shorter_than_a_metre_is_not_used() {
+    let catalog = PieceCatalog::from_models(&synthetic_models_with_bridges(&[(
+        "bridge_stone_25",
+        1e-9,
+        9.0,
+        7.9,
+    )]))
+    .unwrap();
+    assert!(bridge_for(&catalog, Family::Asf3).is_none());
+    let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
+    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+}
