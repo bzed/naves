@@ -357,3 +357,53 @@ the ground and other roads differently.
 
 Not measured: the share of `mud` length cut deeper than 10 m. The tool does not print it and this task does not
 extend the tool.
+
+### 7.2 Roads tied to the junction heights (2026-11-13)
+
+`solve_profiles` now takes the junctions of `find_junctions`: every chain variable in a junction's patch, both
+variables of a junction piece, both ends of a chain (and up to eight variables inward on the other road's level
+strip), and the two variables of a piece that passes a junction without a variable in its patch (within 13 m,
+the reach of an arm), are fixed to the junction's height. The meeting grade of 6 % no longer applies to gravel and
+dirt, nor between two junction heights. `clip` also stopped carrying the grade of a break at a fixed height on as a
+long crest or dip. Measured with
+`cargo run --release -p naves-export --example road-analysis 1024` (and `2048`) on the tree with this change; the
+"before" columns are the "after" columns of 7.1.
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 227 | 377 | 226 | 338 |
+| not drivable | 5.1 km | 8.1 km | 4.7 km | 5.8 km |
+| `road_grade` | 1035 | 2548 | 957 | 2480 |
+| `road_misses_terrain` | 3935 | 4948 | 3540 | 4156 |
+| largest miss | 9.8 m | 13.1 m | 22.0 m | 15.4 m |
+| `road_conflict` | 2007 | 2084 | 1702 | 1742 |
+| `path_too_steep` | 92 | 88 | 85 | 71 |
+| `earthworks_capped` | 133 | 132 | 115 | 136 |
+| `junction_too_steep` | n/a | 0 | n/a | 0 |
+| `road_gap`, `join_without_junction`, `tunnel_omitted`, `road_in_water` | unchanged | | | |
+
+**Junctions:** `find_junctions` finds 1194 junctions (452 pieces, 629 joins, 113 ends on roads) and 1471 links,
+none unresolved; the earlier study found 1269 and 1535 (6 % and 4 % more). The difference was not examined: the
+study computed its own junctions from a dump of the strips, the library from the placed network and the graph.
+
+**The three "done" criteria** (not met):
+
+1. Pieces with a planned grade above 100 %: **79** (at 1024 and at 2048). Before, the largest was 235 % at 2048.
+2. Pieces above the hard limit (`drive_grade`) without a `road_grade` or `road_not_drivable` violation within
+   30 m: **65** at 1024, **75** at 2048 (of 335 and 350 above the limit).
+3. Largest distance of a junction from its ground median: **2.4 m** at 1024, **2.7 m** at 2048 (met; `repair`
+   moves a junction at most that far, p50 and p90 0 m).
+
+The distance of the planned junction height from the ground median, which was p50 1.64 m and p90 6.80 m, is now
+p50 0.00 m, p90 0.00 m, max 3.2 m (1024) and 2.7 m (2048). The largest `road_grade` was 235 % at 2048 and is
+438 % (347 % at 1024), at (5499.7, 5586.0).
+
+**Worse:** every count above except `path_too_steep` and the junction distance. `road_grade` grew 2.5 times, and
+about two thirds of it are `VerticalBend` findings (1700 of 2548 at 1024): a junction height from the ground median
+is a fixed point, the ground there is not smooth, and the vertical radius limit (250 to 600 m on asphalt) allows
+a deviation of only about 1 m from a smooth curve between junctions 50 m apart. The rest is mostly pieces near a
+meeting at 6 % whose ends are held by junctions on a slope. The planned grades over 100 % are on roads whose
+junction heights (all within 3 m of the ground) are held by a chain that cannot reach them within its limits
+(the first cases: (5113.3, 6289.3) 1147 % at 1024, (167.1, 5041.1), (761.9, 4931.5)); a bridge deck whose
+variable sits at the deck's middle does not hold a junction at its start. These were not worked on further.
+The `road_misses_terrain` and `road_not_drivable` increases follow from the same excesses.
