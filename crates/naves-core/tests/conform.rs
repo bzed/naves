@@ -652,17 +652,46 @@ fn a_patch_beside_a_road_at_another_height_takes_the_vertices_nearer_to_its_edge
 }
 
 #[test]
-fn a_patch_that_overlaps_a_road_at_another_height_is_a_conflict() {
+fn a_patch_over_a_road_at_another_height_leaves_the_road_its_width() {
     let base = terrain(128, 3.125, |_, _| 102.0);
     let road = straight_strip(200.0, 100.0, 3.0, 3, 0.0);
     let patch = LevelPatch {
         at: (200.0, 204.0),
         radius: 7.0,
-        height: 110.0,
+        height: 100.8,
         rank: 3,
     };
     let out = conform(&base, &[road], &[patch]).unwrap();
-    assert!(!out.conflicts.is_empty());
+    // a patch is not a conflict with a road; the road keeps the vertices of its own width
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    assert!((sample(&out.heightmap, 200.0, 200.0) - 100.0).abs() < 0.05);
+    assert!((sample(&out.heightmap, 200.0, 206.25) - 100.8).abs() < 0.05);
+}
+
+#[test]
+fn a_road_sloping_through_a_patch_keeps_its_own_heights_across_its_width() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    // 8 % to the east; the patch is at the height of the road at x = 200
+    let road = road((20.0, 200.0), (380.0, 200.0), 100.0, 128.8, 4.0, 3);
+    let at_x = |x: f64| 100.0 + 0.08 * (x - 20.0);
+    let patch = LevelPatch {
+        at: (200.0, 200.0),
+        radius: 9.125,
+        height: at_x(200.0),
+        rank: 3,
+    };
+    let out = conform(&base, &[road], &[patch]).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    for x in [193.75, 196.875, 200.0, 203.125, 206.25] {
+        // the vertices of the road's own width: 3.125 m either side of the centre line
+        for dy in [-3.125, 0.0, 3.125] {
+            let got = sample(&out.heightmap, x, 200.0 + dy);
+            assert!((got - at_x(x)).abs() < 0.05, "x {x} dy {dy}: {got}");
+        }
+    }
+    // beside the road the patch levels the ground
+    let got = sample(&out.heightmap, 206.25, 206.25);
+    assert!((got - at_x(200.0)).abs() < 0.1, "{got}");
 }
 
 #[test]
@@ -716,4 +745,57 @@ fn two_legs_of_one_road_at_different_heights_each_keep_their_ground() {
         assert!((sample(&out.heightmap, x, 200.0) - 100.0).abs() < 0.2);
         assert!((sample(&out.heightmap, x, 212.0) - 105.0).abs() < 0.2);
     }
+}
+
+#[test]
+fn a_patch_that_is_not_a_circle_on_the_map_claims_nothing() {
+    let base = terrain(32, 3.125, |_, _| 102.0);
+    for (at, radius) in [
+        ((f64::NAN, 50.0), 8.0),
+        ((50.0, 50.0), f64::NAN),
+        ((50.0, 50.0), f64::INFINITY),
+        ((50.0, 50.0), 0.0),
+        ((50.0, 50.0), -4.0),
+    ] {
+        let patch = LevelPatch {
+            at,
+            radius,
+            height: 120.0,
+            rank: 3,
+        };
+        let out = conform(&base, &[], &[patch]).unwrap();
+        assert_eq!(out.heightmap, base, "{at:?} {radius}");
+    }
+}
+
+#[test]
+fn an_empty_map_with_a_patch_is_left_alone() {
+    let base = Heightmap {
+        size: 0,
+        cell_m: 3.125,
+        h: Vec::new(),
+    };
+    let patch = LevelPatch {
+        at: (10.0, 10.0),
+        radius: 8.0,
+        height: 120.0,
+        rank: 3,
+    };
+    let out = conform(&base, &[], &[patch]).unwrap();
+    assert!(out.heightmap.h.is_empty());
+}
+
+#[test]
+fn a_vertex_both_roads_need_goes_to_the_higher_rank_even_where_the_other_edge_is_nearer() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    // edges 4 m apart; the vertex at y = 206.25 is 3.25 m from the edge of the road at 200 (rank 6) and 0.75 m
+    // from the edge of the road at 210 (rank 3), and both want it
+    let strips = [
+        straight_strip(200.0, 100.0, 3.0, 6, 0.0),
+        straight_strip(210.0, 105.0, 3.0, 3, 0.0),
+    ];
+    let out = conform(&base, &strips, &[]).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    assert!((sample(&out.heightmap, 200.0, 206.25) - 100.0).abs() < 0.05);
+    assert!((sample(&out.heightmap, 200.0, 210.0) - 105.0).abs() < 0.05);
 }

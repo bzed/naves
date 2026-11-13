@@ -1100,6 +1100,10 @@ fn main() {
         println!("--- variant: other-road/hairpin margin {variant} = {near:.1} m edge to edge");
         let mut recs: Vec<Rec> = Vec::new();
         let mut no_segment = 0usize;
+        // pieces missing by more than 0.5 m whose cause is another road at a different height: all, with a ring
+        // vertex given to another core that is also within one cell of the other road's width (contested), with
+        // such a vertex that is not (taken without need), with only the latter
+        let mut ring = [0usize; 5];
         for p in pieces.iter().filter(|p| p.miss_m > MAX_MISS_M) {
             let Some(&own) = slot_seg.get(&p.slot) else {
                 no_segment += 1;
@@ -1200,6 +1204,71 @@ fn main() {
             } else {
                 "9 unknown"
             };
+            if cause.starts_with("3 ") && p.miss_m > 0.5 {
+                let hw = strips[s.strip].half_width;
+                let reach = hw + cell;
+                let (mut contested, mut needless, mut by_patch) = (false, false, false);
+                let c0 = ((s.a.0.min(s.b.0) - reach) / cell).floor().max(0.0) as u32;
+                let c1 = ((s.a.0.max(s.b.0) + reach) / cell).ceil().max(0.0) as u32;
+                let r0 = ((s.a.1.min(s.b.1) - reach) / cell).floor().max(0.0) as u32;
+                let r1 = ((s.a.1.max(s.b.1) + reach) / cell).ceil().max(0.0) as u32;
+                for row in r0..=r1.min(hm.size - 1) {
+                    for col in c0..=c1.min(hm.size - 1) {
+                        let v = (f64::from(col) * cell, f64::from(row) * cell);
+                        let (d, t) = seg_dist(v, (s.a.0, s.a.1), (s.b.0, s.b.1));
+                        if d > reach {
+                            continue;
+                        }
+                        let own_h = s.a.2 + t * (s.b.2 - s.a.2);
+                        if (f64::from(hm.at(col, row)) - own_h).abs() <= dh_limit {
+                            continue;
+                        }
+                        // not taken: the strip itself has this height there (a neighbouring piece of the same
+                        // strip, a bend)
+                        let mut own_strip = false;
+                        let mut near_other = false;
+                        for gx in bucket(v.0) - 1..=bucket(v.0) + 1 {
+                            for gy in bucket(v.1) - 1..=bucket(v.1) + 1 {
+                                for &j in grid.get(&(gx, gy)).map_or(&[][..], Vec::as_slice) {
+                                    let o = &segs[j];
+                                    if o.bridge {
+                                        continue;
+                                    }
+                                    let (od, u) = seg_dist(v, (o.a.0, o.a.1), (o.b.0, o.b.1));
+                                    let oh = o.a.2 + u * (o.b.2 - o.a.2);
+                                    if o.strip == s.strip {
+                                        own_strip |= od <= hw + 1.5 * cell
+                                            && (f64::from(hm.at(col, row)) - oh).abs() <= dh_limit;
+                                    } else if od <= strips[o.strip].half_width + cell
+                                        && (oh - own_h).abs() > dh_limit
+                                    {
+                                        near_other = true;
+                                    }
+                                }
+                            }
+                        }
+                        if own_strip {
+                            continue;
+                        }
+                        if near_other {
+                            contested = true;
+                        } else {
+                            needless = true;
+                            if patches
+                                .iter()
+                                .any(|q| (q.at.0 - v.0).hypot(q.at.1 - v.1) <= q.radius)
+                            {
+                                by_patch = true;
+                            }
+                        }
+                    }
+                }
+                ring[0] += 1;
+                ring[1] += usize::from(contested);
+                ring[2] += usize::from(needless);
+                ring[3] += usize::from(needless && !contested);
+                ring[4] += usize::from(needless && by_patch);
+            }
             recs.push(Rec {
                 slot: p.slot,
                 cause,
@@ -1209,6 +1278,10 @@ fn main() {
                 cap_d,
             });
         }
+        println!(
+            "RINGTAKEN {variant}: pieces missing > 0.5 m by another road at a different height {} | with a vertex within one cell of their width given to another core that is also within one cell of the other road's width {} | with such a vertex that is not (taken without need) {} | with only such vertices {} | of the needless, inside a level patch {}",
+            ring[0], ring[1], ring[2], ring[3], ring[4]
+        );
         println!("pieces with a miss but no profile segment (skipped): {no_segment}");
         for (title, lo, hi) in [
             ("MISS > 0.5 m", 0.5, f64::MAX),

@@ -136,9 +136,12 @@ side of a road may be a rock face:** where the original ground rises more than 3
 each side of the road, as the median over the pieces within 25 m), the cutting is as steep as the terrain grid allows,
 one cell wide, and nobody can walk up it. A player can then no longer always walk off a road on its uphill side. The
 ground under a junction without a junction piece is levelled to the junction's height, in a circle of half the width
-of the widest road plus one cell. **Roads close together keep their own ground:** where two roads, or two legs of one
-road, at different heights come closer than their level strips, the terrain between them is split halfway between
-their edges and the height difference becomes a face one cell wide. Only where the widths of two roads at different
+of the widest road plus one cell. **Roads close together keep their own ground:** where two roads, or two legs of one road, at different heights
+come closer than their level strips, each keeps the terrain inside its own width and the height difference becomes a
+face one cell wide between them; the vertices of the strip that both need go to the road of the higher rank. The ground
+under a junction patch never takes a road's own width. On the Berchtesgaden example this means that where roads at
+different heights are less than about three cells apart both can miss the terrain a little, more pieces than before
+(the largest miss is not larger); a finer terrain grid lowers it. Only where the widths of two roads at different
 heights overlap is it still a conflict (`road_conflict`). The earthworks reach only as
 far as they are connected to the road (up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles
 cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every

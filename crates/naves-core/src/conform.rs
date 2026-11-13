@@ -389,6 +389,8 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
 /// A core that wants a vertex: one leg of a strip, or a level patch.
 #[derive(Clone, Copy)]
 struct Candidate {
+    /// Whether it is a level patch.
+    patch: bool,
     /// The strip's index, or the number of strips plus the patch's index.
     owner: usize,
     rank: u8,
@@ -430,6 +432,7 @@ fn candidates(
                 let steep =
                     strip.side_slope.get(hit.segment).copied().unwrap_or(0.0) > FACE_SIDE_SLOPE;
                 found.entry(vertex).or_default().push(Candidate {
+                    patch: false,
                     owner: index,
                     rank: strip.rank,
                     height: narrow(hit.height),
@@ -443,6 +446,15 @@ fn candidates(
     }
     let last = grid.size.saturating_sub(1);
     for (number, patch) in patches.iter().enumerate() {
+        // a patch that is not a circle on the map claims nothing
+        if !(patch.at.0.is_finite()
+            && patch.at.1.is_finite()
+            && patch.radius.is_finite()
+            && patch.radius > 0.0
+            && patch.height.is_finite())
+        {
+            continue;
+        }
         let cols = (
             grid.nearest(patch.at.0 - patch.radius).saturating_sub(1),
             (grid.nearest(patch.at.0 + patch.radius) + 1).min(last),
@@ -461,6 +473,7 @@ fn candidates(
                 }
                 let (cut, fill) = hillside_slopes(base, grid, vertex);
                 found.entry(vertex).or_default().push(Candidate {
+                    patch: true,
                     owner: strips.len() + number,
                     rank: patch.rank,
                     height: narrow(patch.height),
@@ -480,9 +493,45 @@ fn tie_distance(metres: f64) -> f64 {
     (metres * 1000.0).round()
 }
 
+/// Puts the candidates for one vertex in the order of their claim, the winner first, and says whether the
+/// vertex is contested (two of them want heights more than [`CONFLICT_M`] apart).
+///
+/// A vertex inside a road's own width belongs to that road: a patch takes only what is outside every road's
+/// width. Where the heights are compatible the higher rank wins. Where they are contested the higher rank wins
+/// too, and the one whose edge is nearer wins between equal ranks (measured to leave fewer pieces missing the
+/// terrain by more than half a metre than the nearer edge winning).
+fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
+    if wanting.iter().any(|c| !c.patch && c.edge <= 0.0) {
+        wanting.retain(|c| !c.patch);
+    }
+    let Some(&first) = wanting.first() else {
+        return false;
+    };
+    let contested = wanting
+        .iter()
+        .any(|c| f64::from((c.height - first.height).abs()) > CONFLICT_M);
+    let by_rank = |a: &Candidate, b: &Candidate| {
+        b.rank
+            .cmp(&a.rank)
+            .then(a.owner.cmp(&b.owner))
+            .then(a.distance.total_cmp(&b.distance))
+    };
+    if contested {
+        wanting.sort_by(|a, b| {
+            b.rank
+                .cmp(&a.rank)
+                .then_with(|| tie_distance(a.edge).total_cmp(&tie_distance(b.edge)))
+                .then_with(|| by_rank(a, b))
+        });
+    } else {
+        wanting.sort_by(by_rank);
+    }
+    contested
+}
+
 /// Gives every vertex near a road or a patch the height of what claims it. Where two want different heights
-/// the vertex goes to the one whose edge is nearer, a tie to the higher rank; the height difference becomes
-/// a face between them. It is a clash only where the vertex is within the width of both.
+/// the vertex goes to the higher rank, between equal ranks to the one whose edge is nearer; the height
+/// difference becomes a face between them. It is a clash only where the vertex is within the width of both.
 /// Returns the cores and, per pair of owners, the worst clash and where it is.
 #[expect(
     clippy::type_complexity,
@@ -501,27 +550,7 @@ fn claim_cores(
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
     let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
     for (vertex, mut wanting) in candidates(strips, patches, grid, base, shadow) {
-        let Some(&first) = wanting.first() else {
-            continue;
-        };
-        let contested = wanting
-            .iter()
-            .any(|c| f64::from((c.height - first.height).abs()) > CONFLICT_M);
-        let by_rank = |a: &Candidate, b: &Candidate| {
-            b.rank
-                .cmp(&a.rank)
-                .then(a.owner.cmp(&b.owner))
-                .then(a.distance.total_cmp(&b.distance))
-        };
-        if contested {
-            wanting.sort_by(|a, b| {
-                tie_distance(a.edge)
-                    .total_cmp(&tie_distance(b.edge))
-                    .then_with(|| by_rank(a, b))
-            });
-        } else {
-            wanting.sort_by(by_rank);
-        }
+        let contested = order_wanting(&mut wanting);
         let Some(&winner) = wanting.first() else {
             continue;
         };
@@ -628,6 +657,15 @@ pub fn conform(
         return Err(ConformError::BadHeightmap {
             size: base.size,
             len: base.h.len(),
+        });
+    }
+    if size == 0 {
+        return Ok(Conformed {
+            heightmap: base.clone(),
+            max_cut_m: 0.0,
+            max_fill_m: 0.0,
+            conflicts: Vec::new(),
+            capped: Vec::new(),
         });
     }
     let grid = Grid {
