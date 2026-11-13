@@ -590,3 +590,71 @@ pieces here are the only ones over the allowance, others may be within it.
 **The other counts did not change** (1024 / 2048, equal to the final figures of 7.3): `road_not_drivable` 236 / 232,
 `road_grade` 1559 / 1336, `road_misses_terrain` 4561 / 3978, `road_conflict` 742 / 1130, `path_too_steep` 130 / 75,
 `earthworks_capped` 100 / 92, `junction_too_steep` 1 / 1.
+
+#### After the fix of the ramp targets (2026-11-13)
+
+Two changes in `profile.rs`. (1) `ramp_targets` judges a span between two held heights by the mean of the limits of its
+pieces, weighted by length, not by the lowest: `required >= 0.8 * mean limit` makes the straight line. Of the two ways
+named in the diagnosis (the mean, or the straight line only around the tight piece) the mean is the simpler: one
+number per span, the same test as before, and a span of one kind of piece (the case `ramp_targets` was written for)
+gives the same answer, since the mean and the lowest limit are then equal. The straight line around a piece would need
+a rule for how far around, which has no natural answer. (2) The test in `profile_chain` for a profile that has left the
+ground (`RELAX_OFF_M`) compares the heights with the ground targets, not with the replaced ones, so a straight ramp that
+is far from the ground makes the solver try the next grade limit. Tests: `one_tight_bend_does_not_turn_a_long_span_into_a_straight_ramp`
+(a kilometre with one 10 m bend: 21.5 m from the ground before, within 4 m after) and
+`a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser_limit` (30 m before change (2), within
+12 m after). No existing test changed.
+
+**Count of the rule:** `road_far_from_ground` is 0 at 1024 and at 2048 (11 / 11 before); the Mud track is now at most
+15.4 m (14.8 m) from the ground.
+
+**Spans turned into straight ramps** (`road-analysis`, `RAMPSPANS`: the spans between two held joints, tested at the
+first, aim, grade limit with the piece limits from the bends only, so a proxy for the solver's own test, which goes on
+to the next limits when the profile has left the ground). 1024: 1079 spans, 362 (48.6 km) by the lowest limit, 288
+(33.9 km) by the mean. 2048: 1131 spans, 376 (50.1 km) against 291 (33.8 km). So a fifth of those spans by number and three tenths by length follow the ground now.
+
+**Distribution of the absolute `off_ground_m`** (p50 / p90 / max, m; before, from the table above, then after), 1024:
+
+| Family | before | after |
+|---|---|---|
+| Asf1 | 0.7 / 4.1 / 14.6 | 0.7 / 4.1 / 14.6 |
+| Asf2 | 0.9 / 4.5 / 10.8 | 0.9 / 4.5 / 10.4 |
+| Asf3 | 1.3 / 5.4 / 22.1 | 1.3 / 5.2 / 22.1 |
+| City | 0.9 / 4.1 / 17.4 | 0.9 / 4.0 / 17.4 |
+| Grav | 1.6 / 5.5 / 17.1 | 1.6 / 5.3 / 17.1 |
+| Mud | 2.1 / 6.6 / 37.5 | 2.0 / 5.9 / 15.4 |
+
+2048:
+
+| Family | before | after |
+|---|---|---|
+| Asf1 | 0.7 / 3.8 / 13.8 | 0.7 / 3.7 / 13.8 |
+| Asf2 | 0.9 / 4.3 / 10.0 | 0.9 / 4.2 / 10.1 |
+| Asf3 | 1.1 / 4.9 / 22.0 | 1.1 / 4.6 / 22.0 |
+| City | 0.8 / 3.8 / 16.7 | 0.8 / 3.6 / 16.7 |
+| Grav | 1.5 / 5.2 / 17.2 | 1.4 / 4.8 / 17.0 |
+| Mud | 1.8 / 6.2 / 37.7 | 1.7 / 5.5 / 14.8 |
+
+**All violations against the final figures of 7.3** (1024 before / after, 2048 before / after):
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 236 | 239 | 232 | 236 |
+| not drivable | 5.5 km | 5.6 km | 5.3 km | 5.3 km |
+| `road_grade` | 1559 | 1587 | 1336 | 1353 |
+| `road_misses_terrain` | 4561 | 4588 | 3978 | 4004 |
+| of these above 0.5 m | 1443 | 1457 | 1378 | 1374 |
+| above 2 m | 122 | 123 | 123 | 130 |
+| largest miss | 6.7 m | 6.7 m | 10.1 m | 10.1 m |
+| `road_conflict` | 742 | 744 | 1130 | 1134 |
+| `path_too_steep` | 130 | 130 | 75 | 77 |
+| `earthworks_capped` | 100 | 101 | 92 | 87 |
+| `junction_too_steep` | 1 | 1 | 1 | 1 |
+| `road_far_from_ground` | 11 | 0 | 11 | 0 |
+
+**What got worse:** a little of everything that depends on how close the profile stays to steep ground: `road_grade`
+(1559 to 1587, 1336 to 1353), `road_not_drivable` (236 to 239, 232 to 236), `road_misses_terrain` (4561 to 4588,
+3978 to 4004), the misses above 2 m at 2048 (123 to 130) and `road_conflict` by 2 and 4. A profile that follows steep ground
+has the grades of the ground, a straight ramp had the gentlest grade that fits; that is the price of not cutting 37 m
+through a hill. **Better:** the cut of the Mud track and the other extremes of the Mud family (37.5 m to 15.4 m) and
+`earthworks_capped` at 2048 (92 to 87). The changes are small against the counts (under 2 %).
