@@ -792,7 +792,8 @@ fn end_joins(
 /// ground.
 const TIGHT_SPAN: f64 = 0.8;
 
-/// For the spans between two consecutive fixed variables that need most of their grade limit, the targets of the
+/// For the spans between two consecutive fixed variables that need most of their grade limit (the mean of the
+/// limits of their pieces by length, not the lowest: one hairpin must not flatten a kilometre), the targets of the
 /// variables between them become the straight line between the two heights. `repair` brings a link to its
 /// ceiling and no further, so such a span can only be solved by a profile of nearly that grade everywhere; with
 /// the ground as target the smoothing lags behind it and the clipping ends in one short piece with a grade of
@@ -812,13 +813,23 @@ fn ramp_targets(
                 .get(from..var)
                 .map_or_else(Vec::new, |s| s.iter().map(|l| l.max(0.5)).collect());
             let run: f64 = lengths.iter().sum();
-            let limit = limits
-                .get(from..var)
-                .and_then(|l| l.iter().copied().reduce(f64::min))
+            let span_limits = limits.get(from..var).unwrap_or_default();
+            let limit = span_limits
+                .iter()
+                .copied()
+                .reduce(f64::min)
                 .unwrap_or(f64::INFINITY);
+            // what the span can do as a whole: the mean of the limits of its pieces, by length. One short
+            // piece with a low limit (a hairpin) is not a span that has no room to follow the ground
+            let mean_limit = span_limits
+                .iter()
+                .zip(&lengths)
+                .map(|(l, length)| l * length)
+                .sum::<f64>()
+                / run.max(0.5);
             let required = (height - low).abs() / run.max(0.5);
             infeasible |= required > limit;
-            if var > from + 1 && required >= TIGHT_SPAN * limit {
+            if var > from + 1 && required >= TIGHT_SPAN * mean_limit {
                 let mut along = 0.0;
                 for (offset, length) in lengths
                     .iter()
@@ -854,7 +865,7 @@ fn profile_chain(
     let radius = min_vertical_radius(family);
     let count = chain.at.len();
     let ground = |point: (f64, f64)| f64::from(hm.sample(point.0, point.1).height);
-    let targets: Vec<f64> = chain
+    let ground_targets: Vec<f64> = chain
         .at
         .iter()
         .zip(&chain.deck)
@@ -873,7 +884,7 @@ fn profile_chain(
             grade: segment_grades(net, &index.ends, roads, base, &held),
             radius,
         };
-        let mut targets = targets.clone();
+        let mut targets = ground_targets.clone();
         let tight = ramp_targets(&mut targets, &fixed, &spacing, &limits.grade);
         let heights = if count == 1 || fixed.iter().all(Option::is_some) {
             targets
@@ -887,7 +898,7 @@ fn profile_chain(
         let off = tight
             || heights
                 .iter()
-                .zip(&targets)
+                .zip(&ground_targets)
                 .zip(&fixed)
                 .zip(&chain.deck)
                 .any(|(((height, target), pinned), deck)| {

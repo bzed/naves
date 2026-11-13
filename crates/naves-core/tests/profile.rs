@@ -1444,3 +1444,103 @@ fn no_piece_between_two_held_joints_is_over_its_hard_limit() {
         );
     }
 }
+
+/// A chain of about a kilometre: 450 m north, a 90 degree arc of radius 10 m (a hairpin-like bend that lowers
+/// the limit of its piece), 450 m east. Its ends are held at the ground, which rises on a convex ramp along the
+/// way (steep first, then levelling off) by what is 96 % of the limit of the whole chain at its tight bend.
+fn tight_bend_chain(family: Family) -> (PlacedNetwork, Heightmap, Junctions) {
+    let mut roads = straight("a", family, (100.0, 100.0), (100.0, 550.0));
+    let mut arc = piece(
+        "a",
+        100,
+        PlacedKind::Piece,
+        family,
+        (100.0, 550.0),
+        (110.0, 560.0),
+    );
+    arc.origin.heading = 0.0;
+    arc.start.heading = 0.0;
+    arc.end.heading = std::f64::consts::FRAC_PI_2;
+    roads.push(arc);
+    roads.extend(straight("b", family, (110.0, 560.0), (560.0, 560.0)));
+    let net = network(vec![roads]);
+    // the limit at the aim of the arc piece: the aim reduced by (r - w/2) / r
+    let limit = grade_aim(family) * (10.0 - 3.5) / 10.0;
+    let rise = 0.96 * limit * (450.0 + 14.14 + 450.0);
+    let ground = move |x: f64, y: f64| {
+        let t = ((x + y - 200.0) / 920.0).clamp(0.0, 1.0);
+        100.0 + rise * (1.0 - (1.0 - t).powf(1.5))
+    };
+    let hm = terrain(200, 6.25, ground);
+    let junction = |at: (f64, f64)| Junction {
+        at,
+        kind: JunctionKind::Join,
+        ground: ground(at.0, at.1),
+        height: ground(at.0, at.1),
+        rank: 1,
+        patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
+    };
+    let junctions = Junctions {
+        points: vec![junction((100.0, 100.0)), junction((560.0, 560.0))],
+        ..Junctions::default()
+    };
+    (net, hm, junctions)
+}
+
+#[test]
+fn one_tight_bend_does_not_turn_a_long_span_into_a_straight_ramp() {
+    let family = Family::Mud;
+    let (net, hm, junctions) = tight_bend_chain(family);
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
+    let joints = &p.strips[0].joints;
+    let ground = |x: f64, y: f64| f64::from(hm.sample(x, y).height);
+    let mut worst = 0.0_f64;
+    for j in joints
+        .iter()
+        .filter(|j| (j.0 - 100.0).hypot(j.1 - 560.0) > 40.0)
+    {
+        worst = worst.max((j.2 - ground(j.0, j.1)).abs());
+    }
+    assert!(worst <= 4.0, "the profile is {worst} m from the ground");
+    assert!(
+        grades(&p, 0)
+            .iter()
+            .all(|g| g.abs() <= drive_grade(family) + 1e-6)
+    );
+}
+
+#[test]
+fn a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser_limit() {
+    // a convex ground whose rise needs 90 % of the aim over 900 m: at the aim the span is a straight ramp, 25
+    // m below the ground in the middle; the ground itself asks for no more than the middle of aim and
+    // ceiling, so the next limit has to be tried and follows it
+    let family = Family::Mud;
+    let rise = 0.9 * grade_aim(family) * 900.0;
+    let ground = move |_: f64, y: f64| {
+        let t = ((y - 100.0) / 900.0).clamp(0.0, 1.0);
+        100.0 + rise * (1.0 - (1.0 - t).powf(1.5))
+    };
+    let hm = terrain(200, 6.25, ground);
+    let net = network(vec![straight("a", family, (100.0, 100.0), (100.0, 1000.0))]);
+    let junction = |y: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: ground(100.0, y),
+        height: ground(100.0, y),
+        rank: 1,
+        patch_m: 3.5,
+        stretches: std::collections::BTreeSet::new(),
+    };
+    let junctions = Junctions {
+        points: vec![junction(100.0), junction(1000.0)],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
+    let worst = p.strips[0]
+        .joints
+        .iter()
+        .map(|j| (j.2 - ground(j.0, j.1)).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(worst <= 12.0, "the profile is {worst} m from the ground");
+}

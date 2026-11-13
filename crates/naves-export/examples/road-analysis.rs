@@ -1974,6 +1974,66 @@ fn main() {
         }
     }
 
+    // spans between two held joints that `ramp_targets` turns into a straight ramp at the first (aim) grade
+    // limit: by the lowest limit of the span (the rule before 2026-11-13's fix) and by the mean by length
+    {
+        let (mut old_n, mut old_len, mut new_n, mut new_len) = (0, 0.0, 0, 0.0);
+        let mut spans = 0;
+        for st in strips {
+            let holds = chain_holds(&net, &st.slots, f64::from(base.cell_m), &junctions);
+            let held: Vec<usize> = holds
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, h))| h.is_some())
+                .map(|(i, _)| i)
+                .collect();
+            for pair in held.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                if b <= a + 1 {
+                    continue;
+                }
+                spans += 1;
+                let aim = grade_aim(net.roads[st.slots[a]].family);
+                let (mut run, mut weighted, mut min_factor) = (0.0, 0.0, 1.0_f64);
+                for k in a..b {
+                    let (p, q) = (st.joints[k], st.joints[k + 1]);
+                    let length = (q.0 - p.0).hypot(q.1 - p.1).max(0.5);
+                    let road = &net.roads[st.slots[k]];
+                    let turn = (road.end.heading - road.start.heading + std::f64::consts::PI)
+                        .rem_euclid(std::f64::consts::TAU)
+                        - std::f64::consts::PI;
+                    let mut factor = 1.0;
+                    if turn.abs() > 0.001 {
+                        let chord = (road.end.x - road.start.x).hypot(road.end.y - road.start.y);
+                        let radius = chord / (2.0 * (turn.abs() / 2.0).sin());
+                        factor = ((radius - road.width / 2.0) / radius).max(0.5);
+                    }
+                    min_factor = min_factor.min(factor);
+                    run += length;
+                    weighted += factor * length;
+                }
+                let (ha, hb) = (
+                    holds[a].1.map_or(0.0, |h| h.height),
+                    holds[b].1.map_or(0.0, |h| h.height),
+                );
+                let required = (hb - ha).abs() / run;
+                if required >= 0.8 * aim * min_factor {
+                    old_n += 1;
+                    old_len += run;
+                }
+                if required >= 0.8 * aim * weighted / run {
+                    new_n += 1;
+                    new_len += run;
+                }
+            }
+        }
+        println!(
+            "RAMPSPANS spans {spans}; straight at the aim by the lowest limit {old_n} ({:.1} km), by the mean limit {new_n} ({:.1} km)",
+            old_len / 1000.0,
+            new_len / 1000.0
+        );
+    }
+
     // ---- DIAG=x,y,r: everything about the roads, junctions and ground near a place
     if let Ok(spec) = std::env::var("DIAG") {
         let v: Vec<f64> = spec
