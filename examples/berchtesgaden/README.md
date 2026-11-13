@@ -77,6 +77,10 @@ Cost of the satellite image (release binary, `naves build`; same map without ima
 | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) |
 | 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) |
 
+The project is at 2048 now. With the roads (OpenStreetMap, bridges over dips, binarize included) the 2048 build
+takes 315 s, peaks at 1.8 GiB and gives a 223 MB PBO; the roads are placed twice when a dip gets a bridge, which
+is most of the time. The 1024 build with roads took 185 s, 1.7 GiB and gave 78 MB.
+
 On steep ground with hairpins the finer grid also leaves fewer roads in conflict: after the road alignment fixes,
 2048 has 1729 conflicts and 618 short hairpin pieces against 1979 and 1345 at 1024 (`docs/research/2026-11-10-road-alignment.md`,
 section 5).
@@ -92,6 +96,15 @@ naves build examples/berchtesgaden
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
 
+## Results with roads at 2048 (2026-11-13)
+
+- `naves build`: exit 0, 315 s, 1.8 GiB, signed PBO 223 MB. `binarize` reports "Cannot open object" for the road
+  models (104 times; they are not on `P:`) and finishes. 21 127 road pieces in 2735 stretches.
+- Findings: 4192 `road_misses_terrain`, 1528 `road_grade`, 1125 `road_conflict`, 741 `join_without_junction`,
+  368 `road_gap`, 272 `road_not_drivable`, 4 `road_over_water`, 1 `junction_too_steep`; one planned grade above 100 %.
+- **Roads, bridges over dips and scaled bridges have not been tested in the game.**
+- The navigation mesh below was made for the old terrain; regenerate it (`naves build` warns).
+
 ## Results with land cover and OpenStreetMap (2026-11-06)
 
 - `naves build`: 15 s, peak memory 1.2 GiB, PBO 50.9 MB, no warnings (the two extracts are merged before the
@@ -105,7 +118,7 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 ## Results of the first version, procedural ground only (2026-11-06)
 
 - `naves build`: no error. Mod `build/@naves_berchtesgaden`, mission `build/missions/dayzOffline.berchtesgaden`.
-- Grids: 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
+- Grids (at the time; the project is at 2048 now): 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
 - Local DayZ Server 1.30 (own tree, non-default ports, `verifySignatures = 2`, key from `keys/`): loads the mod and
   the mission, `Player connect enabled`, no `Unable to load navmesh`.
 - Navigation mesh: `dznav generate`, 16 383 tiles in 749 s, 93 377 reachable polygons.

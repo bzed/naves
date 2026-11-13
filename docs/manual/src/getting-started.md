@@ -163,7 +163,7 @@ A road keeps to its family's grade where it can. Where holding it would put the 
 the ground**, the road gives way and becomes steeper, up to nine tenths of what vehicles manage; it is then amber in
 the Drivable layer, not red.
 
-The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map), and every cell under a road takes the road's height
+The terrain grid is coarse (a cell is 3.1 m on a 6.4 km map at the default `terrain_size = 2048`, 6.25 m at 1024), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
 streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
 it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the
@@ -187,7 +187,7 @@ a long dip; the ground below is left alone. Otherwise a dip without water is fil
 bridge the roads are placed a second time and the road part of the build takes about twice as long** (there are no
 further rounds). The bridges of a dip are objects like any other and can be changed in `edits/overrides.toml`; their
 ids are `road/<stretch>/bridge<n>/<slot>`.
-**Scaled bridges have not been tested in the game**; if one misbehaves, replace it in `edits/overrides.toml`. The ground under the pieces that were placed
+**Roads, bridges over dips and scaled bridges have not been tested in the game.** The build, including `binarize`, finishes without the road models (they are not in the game's `P:` drive, which `binarize` only reports); draping on the terrain, scaled bridges and the vehicle limits are unverified. If a bridge misbehaves, replace it in `edits/overrides.toml`. The ground under the pieces that were placed
 (not under the OSM line, which they may leave by some metres) is painted as soil, 2 m wider than the road.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`

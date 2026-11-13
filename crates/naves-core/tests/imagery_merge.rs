@@ -20,7 +20,10 @@ use naves_core::project::Project;
 
 /// 3200 real metres, scale 0.5: a map of 1600 m with 128 land cells of 12.5 map metres (25 real metres).
 fn project() -> Project {
-    Project::new("merge test", 47.0, 12.0, 3200.0)
+    let mut p = Project::new("merge test", 47.0, 12.0, 3200.0);
+    p.grid.terrain_size = 1024;
+    p.grid.land_size = 128;
+    p
 }
 
 const MAP: f64 = 1600.0;

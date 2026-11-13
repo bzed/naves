@@ -891,3 +891,24 @@ the piece at each end is steeper and its ground is shaped to a deck, not the oth
 below the figures of section 6 in every band up to 35 % (not isolated to this step). The cause of the rise in the
 other numbers is a guess: the decks are level between two ground heights, so the roads at their ends carry the
 grade, as in 7.6; I did not check it.
+
+### 7.8 The example through binarize at 2048 (2026-11-13)
+
+`naves build` of the Berchtesgaden example at `terrain_size = 2048`, release binary, `NAVES_BINARIZE_TIMEOUT=3600`,
+inside a headless sway, under `systemd-run --scope -p MemoryMax=32G`. No game was started.
+
+- Exit 0 after 314.9 s for the whole build (binarize alone is not timed separately in the logs); peak memory of the
+  children 1776 MiB. The default timeout of 30 min was not needed. The signed PBO is 223 MB (223 308 017 bytes),
+  the world file holds the three bridge models (`bridge_metal_25`, `bridge_stone_25`, `bridge_wood_25`) and road
+  models of `dz\structures\roads\parts`.
+- binarize logged "Cannot open object" 104 times (one per model name, the road and bridge models under
+  `dz\structures\roads`, which are not on `P:`): known, not a failure. The 1024 run gave 185 s, 1.7 GiB, 78 MB.
+- `build/report.json`: 21 127 pieces in 2735 stretches (2367 closed, 368 open); `road_misses_terrain` 4192,
+  `road_grade` 1528, `road_conflict` 1125, `join_without_junction` 741, `road_gap` 368, `road_not_drivable` 272,
+  `earthworks_capped` 93, `path_too_steep` 87, `road_in_water` 24, `tunnel_omitted` 21, `road_far_from_ground` 4,
+  `road_over_water` 4, `junction_too_steep` 1. 19 OSM bridges got "no room for a bridge model".
+  The count of bridge objects over dips was not taken from this build.
+- Done criteria of section 9: no unreported piece above its hard limit (met, `road_far_from_ground` 4 are
+  reported); planned grade above 100 %: one piece (268 % against a limit of 6 %), not met; junctions further than
+  3 m from the ground median: none (met, one `junction_too_steep` for a link).
+- Not tested in the game: roads, bridges over dips and scaled bridges.

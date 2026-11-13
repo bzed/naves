@@ -120,7 +120,7 @@ the limit of 12 %" (a stretch that is steeper than its limit, usually between tw
 sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 helps: at `terrain_size = 2048` the Berchtesgaden example has 1729 road conflicts instead of 1979 and 618 hairpin
-pieces short instead of 1345, at the cost of build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB).
+pieces short instead of 1345, at the cost of build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB). 2048 is the default for new projects; a project file that names `terrain_size = 1024` keeps it.
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward

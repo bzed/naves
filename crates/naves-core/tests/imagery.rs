@@ -483,10 +483,10 @@ fn sixteen_bit_names_gdal_translate() {
 
 #[test]
 fn real_px_m_is_the_map_pixel_in_real_metres() {
-    // 6400 m map, 128 land cells of 50 m, 60 pixels per cell: 0.833 m, 1.667 real metres at scale 0.5
+    // 6400 m map, 256 land cells of 25 m, 60 pixels per cell: 0.417 m, 0.833 real metres at scale 0.5
     let p = project(47.58, 12.97, 12_800.0);
     assert!(
-        (real_px_m(&p) - 1.0 / 0.6).abs() < 1e-9,
+        (real_px_m(&p) - 1.0 / 1.2).abs() < 1e-9,
         "{}",
         real_px_m(&p)
     );
