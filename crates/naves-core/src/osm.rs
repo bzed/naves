@@ -573,10 +573,10 @@ pub struct OsmWay {
 /// The highway ways and the streams, rivers and canals that touch a window.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OsmWays {
-    /// The ways, each once, in id order.
+    /// The highway ways and the water ways (streams, rivers, canals), each once, in id order.
     pub ways: Vec<OsmWay>,
-    /// Ways that touch the window but miss nodes in all sources (an extract that cut them), and so
-    /// were left out.
+    /// Highway or water ways that touch the window but miss nodes in all sources (an extract that cut
+    /// them), and so were left out.
     pub skipped: usize,
 }
 

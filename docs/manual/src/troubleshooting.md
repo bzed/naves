@@ -119,8 +119,11 @@ moves roads further apart in map metres; otherwise accept the finding. `road_gra
 the limit of 12 %" (a stretch that is steeper than its limit, usually between two fixed ends) or "Crest or dip too
 sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
 allow over a crest or a dip). On steep ground with hairpins a finer grid
-helps: at `terrain_size = 2048` the Berchtesgaden example has 1729 road conflicts instead of 1979 and 618 hairpin
-pieces short instead of 1345, at the cost of build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB). 2048 is the default for new projects; a project file that names `terrain_size = 1024` keeps it.
+follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
+is 4750 at `terrain_size = 1024` and 4192 at 2048, `road_conflict` 758 and 1125. The finer grid costs build time and PBO
+size: with the roads the build takes 315 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 185 s, 1.7 GiB and 78 MB at
+1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
+names `terrain_size = 1024` keeps it.
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward

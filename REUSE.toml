@@ -53,10 +53,17 @@ SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Cop
 SPDX-License-Identifier = "CC-BY-4.0"
 
 [[annotations]]
-path = "tests/fixtures/osm/*.osm.pbf"
+path = ["tests/fixtures/osm/koenigssee*.osm.pbf", "tests/fixtures/osm/schoenau*.osm.pbf"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "© OpenStreetMap contributors"
 SPDX-License-Identifier = "ODbL-1.0"
+
+# Synthetic: written by the tests' own generator, not OpenStreetMap data.
+[[annotations]]
+path = "tests/fixtures/osm/waterways.osm.pbf"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
 
 [[annotations]]
 path = "tests/fixtures/imagery/*.tif"

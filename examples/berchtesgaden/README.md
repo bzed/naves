@@ -70,20 +70,18 @@ of colour remains at the border to Austria. Without the files, remove the `[[sou
 from a smaller file and has no band. For a non-commercial map, `eox-cloudless-2025` is the newest cloud-free
 mosaic; the map then says that it is non-commercial.
 
-Cost of the satellite image (release binary, `naves build`; same map without imagery in brackets):
+Cost of the satellite image (release binary, `naves build`, **without roads**; same map without imagery in brackets)
+and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` included):
 
-| `terrain_size` | Build time | Peak memory | PBO |
-|---|---|---|---|
-| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) |
-| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) |
+| `terrain_size` | Build time | Peak memory | PBO | With roads: time | memory | PBO |
+|---|---|---|---|---|---|---|
+| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 185 s | 1.7 GiB | 78 MB |
+| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 315 s | 1.8 GiB | 223 MB |
 
-The project is at 2048 now. With the roads (OpenStreetMap, bridges over dips, binarize included) the 2048 build
-takes 315 s, peaks at 1.8 GiB and gives a 223 MB PBO; the roads are placed twice when a dip gets a bridge, which
-is most of the time. The 1024 build with roads took 185 s, 1.7 GiB and gave 78 MB.
+The project is at 2048 now. The roads are placed twice when a dip gets a bridge, which is most of the extra time.
 
-On steep ground with hairpins the finer grid also leaves fewer roads in conflict: after the road alignment fixes,
-2048 has 1729 conflicts and 618 short hairpin pieces against 1979 and 1345 at 1024 (`docs/research/2026-11-10-road-alignment.md`,
-section 5).
+The finer grid does not remove the road findings: `road_misses_terrain` is 4750 at 1024 and 4192 at 2048,
+`road_conflict` 758 and 1125 (`docs/research/2026-11-10-road-alignment.md`, section 7.7).
 
 ## Build
 

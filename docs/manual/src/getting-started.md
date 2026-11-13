@@ -155,8 +155,9 @@ road at its end, so a road no longer inherits the height error of the road it me
 together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
 of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece is level along its length; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. What cannot be repaired within 3 m is the `junction_too_steep` finding.
 
-A road is at most **6 % steep where another road meets it** (asphalt and streets; gravel and dirt tracks keep their own
-limit, so a steep track is not lifted out of the ground), and gentler in a tight bend: the inner edge of a bend is
+Between a free end and a junction a road is at most **6 % steep** (asphalt and streets; gravel and dirt tracks keep their
+own limit, so a steep track is not lifted out of the ground, and between two junction heights the road's own grade limits
+apply), and gentler in a tight bend: the inner edge of a bend is
 steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
 
 A road keeps to its family's grade where it can. Where holding it would put the road more than **4 m above or below
@@ -173,7 +174,9 @@ ground between two roads is too steep for that, the terrain under one of them is
 **What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
 line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
-roads simply meet; the build lists those places. On a bridge, the span has a level deck and the ground below keeps
+roads simply meet; the build lists those places.
+
+**Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
 the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
@@ -187,8 +190,11 @@ a long dip; the ground below is left alone. Otherwise a dip without water is fil
 bridge the roads are placed a second time and the road part of the build takes about twice as long** (there are no
 further rounds). The bridges of a dip are objects like any other and can be changed in `edits/overrides.toml`; their
 ids are `road/<stretch>/bridge<n>/<slot>`.
-**Roads, bridges over dips and scaled bridges have not been tested in the game.** The build, including `binarize`, finishes without the road models (they are not in the game's `P:` drive, which `binarize` only reports); draping on the terrain, scaled bridges and the vehicle limits are unverified. If a bridge misbehaves, replace it in `edits/overrides.toml`. The ground under the pieces that were placed
-(not under the OSM line, which they may leave by some metres) is painted as soil, 2 m wider than the road.
+
+The ground under the pieces that were placed (not under the OSM line, which they may leave by some metres) is painted
+as soil, 2 m wider than the road.
+
+**Roads, bridges over dips and scaled bridges have not been tested in the game.** The build, including `binarize`, finishes without the road models (they are not in the game's `P:` drive, which `binarize` only reports); draping on the terrain, scaled bridges and the vehicle limits are unverified. If a bridge misbehaves, replace it in `edits/overrides.toml`.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`
 ([the project file](project-file.md#editsoverridestoml)).

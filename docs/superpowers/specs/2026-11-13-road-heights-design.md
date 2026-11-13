@@ -180,6 +180,10 @@ at different heights come closer than that, the strip of each ends halfway betwe
 difference becomes a face between them, as steep as the grid allows. Where their edges overlap, it remains a
 conflict and is reported as today. This is where the finer grid of section 7 matters: the face is one cell wide.
 
+**As built (2026-11-14).** A vertex that two roads contest goes to the road whose edge is nearer, and a tie to the
+higher-ranked road; a road's own width always beats a level patch of another road. Measured: fewer conflicts, more
+small misses (`road_misses_terrain` 4750 at 1024 and 4192 at 2048, `road_conflict` 758 and 1125; research note 7.7).
+
 ## 6. Dips and bridges
 
 **(maintainer)** Where OSM has a bridge, the game has a bridge. A road that crosses a dip without an OSM bridge gets
@@ -209,6 +213,10 @@ on it **(my call)**. Today a bridge shorter than a model is laid as ordinary roa
 its height from the ground at its two ends (already so after the review fixes), and the ground under it is left
 alone.
 
+**As built (2026-11-14).** A short OSM bridge grows evenly into its neighbouring stretches until one model fits, each
+neighbour keeping at least 1 m. With no room between the junctions it stays a road and the build warns; 19 warnings
+on the example.
+
 ### 6.3 Dips without an OSM bridge
 
 A dip is a run where the road, solved within its limits, would stand more than 3 m above the original ground
@@ -233,6 +241,11 @@ stretch from the bridge onward, becomes an orphan and is kept and reported as or
 the first bridge of a stretch keep their identity. Existing overrides need no migration:
 object identity comes from the placing, which does not depend on the grid or the heights (measured: identical at
 1024, 2048 and 4096).
+
+**As built (2026-11-14).** When a dip gets a bridge the roads are placed a second time as a whole, not only the links
+with a bridge; the dips that are left are not bridged again. A dip over water that gets no bridge is filled like a dry
+one, not left in the air, and is reported as `road_over_water`. The dip threshold of 3 m gave 93 to 95 bridged dips on
+the example, median 4.7 m deep (the maintainer may raise it).
 
 ### 6.4 Water
 
@@ -285,6 +298,9 @@ example, after step 2: no piece with a planned grade above its hard limit that i
 100 % at all, and every junction within 3 m of its ground median. The other figures of section 8 are compared,
 not gated. Violations never stop a build, as today; a link that the repair cannot bring within its ceiling is a
 violation.
+
+**As built (2026-11-14).** "No grade above 100 %" is not met: one piece stands at 268 % on a stretch from a junction
+to a free end (research note 7.8).
 
 1. Grade limits (section 3).
 2. Junction heights (section 4). The largest step; it changes how chains are solved.

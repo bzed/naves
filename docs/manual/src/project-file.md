@@ -75,7 +75,7 @@ A new project has a grid of 2048 (3.1 m on a 6.4 km map); the finer grid follows
 A project file that names a size keeps it: an existing project with `terrain_size = 1024` is built at 1024 as before,
 and changing the grid is a choice, not an update. `land_size` has no default in the file: a file that names
 only `terrain_size` is refused with a message that names the missing `land_size`. A grid of 2048 costs build time
-and disk (see the cost table in `examples/berchtesgaden/README.md`); a coarser grid is still valid.
+and disk (see the table of costs in `examples/berchtesgaden/README.md`, which has the figures with roads); a coarser grid is still valid.
 
 `land_size` is not a free choice: the game needs 8 heightmap cells per material cell, as on Livonia and
 Chernarus, and the game client crashes on other ratios. Náves rejects any other value and names the right one;
