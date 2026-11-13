@@ -568,3 +568,18 @@ fn a_bridge_is_not_measured_against_the_ground() {
             .all(|c| c.off_ground_m < -30.0)
     );
 }
+
+#[test]
+fn a_side_slice_shorter_than_the_roads_leaves_a_nan_slope_and_the_allowance_is_30_m() {
+    let base = terrain(100, 6.25, |_, _| 100.0);
+    let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
+    assert!(net.roads.len() > 2);
+    let checks = check_roads_on_terrain(&net, &base, &base, &[0.7, 0.7]);
+    let (known, missing): (Vec<_>, Vec<_>) = checks.iter().partition(|c| c.slot < 2);
+    assert!(known.iter().all(|c| (c.side_slope - 0.7).abs() < 1e-9));
+    assert!(!missing.is_empty());
+    for c in missing {
+        assert!(c.side_slope.is_nan());
+        assert!((naves_core::limits::earthwork_allowance_m(c.side_slope) - 30.0).abs() < 1e-9);
+    }
+}

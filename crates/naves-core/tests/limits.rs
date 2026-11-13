@@ -76,3 +76,10 @@ fn the_allowance_grows_with_the_side_slope() {
     }
     assert!((earthwork_allowance_m(f64::NAN) - 30.0).abs() < 1e-9);
 }
+
+#[test]
+fn the_allowance_is_30_m_at_a_negative_slope_and_100_m_at_an_infinite_one() {
+    assert!((earthwork_allowance_m(-0.5) - 30.0).abs() < 1e-9);
+    assert!((earthwork_allowance_m(f64::NEG_INFINITY) - 30.0).abs() < 1e-9);
+    assert!((earthwork_allowance_m(f64::INFINITY) - 100.0).abs() < 1e-9);
+}

@@ -66,10 +66,11 @@ pub struct PieceCheck {
     pub grade_change: f64,
     /// The most it is above or below the terrain inside its footprint, with either way of splitting a cell.
     pub miss_m: f64,
-    /// The planned height at the middle of the piece less the original ground there (negative is a cut); 0
-    /// where the piece is not measured against the ground, and NaN where the ground has no data.
+    /// The planned height at the middle of the piece less the original ground there (negative is a cut); NaN
+    /// where the ground has no data. Pieces that are not measured (bridges, end caps) have no `PieceCheck`.
     pub off_ground_m: f64,
-    /// The side slope of the original ground at the piece (see [`crate::sideslope::side_slopes`]).
+    /// The side slope of the original ground at the piece (see [`crate::sideslope::side_slopes`]); NaN when
+    /// `side` has no value for it.
     pub side_slope: f64,
     /// What follows from all that.
     pub state: DriveState,
