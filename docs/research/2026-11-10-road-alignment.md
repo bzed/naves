@@ -360,84 +360,65 @@ extend the tool.
 
 ### 7.2 Roads tied to the junction heights (2026-11-13)
 
-`solve_profiles` takes the junctions of `find_junctions`: every chain variable in a junction's patch, both
-variables of a junction piece, both ends of a chain (and up to eight variables inward on the other road's level
-strip), and the two variables of a piece that passes a junction within 13 m without a variable in its patch, are
-fixed to the junction's height. Measured with `cargo run --release -p naves-export --example road-analysis 1024`
+`solve_profiles` takes the junctions of `find_junctions` and holds the heights of the roads that belong to a
+junction (its stretches: they end there, cross there in the graph, or are the road a chain end lies on) at as few
+joints as it can: both joints of a junction piece, one joint where a road passes a junction, the end where a road
+ends and inward only along the other road's level strip. A junction moves at most 3 m from its ground median in the
+repair; a link still over its ceiling is unresolved (`junction_too_steep`). The vertical radius is kept across a held
+joint, and as a last resort the free joints between two held joints are blended toward the straight line until no
+piece is over the hard limit. Measured with `cargo run --release -p naves-export --example road-analysis 1024`
 (and `2048`); the "before" columns are the "after" columns of 7.1.
 
-**What the first attempt showed:** `road_grade` 2548, 79 pieces with a planned grade above 100 % (up to 1147 %) and
-65 to 75 pieces above the hard limit without a violation. The causes, found with the `#### done` diagnostics of
-`road-analysis` (which rule holds each joint near a steep piece, and whether the two junctions of a pair are
-linked), were four, all in how the heights are held and none in the terrain: a link was measured from junction
-edge to junction edge, but the road holds the height at joints up to 13 m from the junction, so the span the
-repair had made exactly climbable was shorter than the link (110 pairs of consecutive held joints had no link at
-all); the grade of a piece was kept over its own length and not over the run between its joints (pieces that
-overlap), which hid steep pieces from `road_grade`; the second difference of the smoothing assumed equal spacing,
-so a joint a metre from a fixed one started a dip of tens of metres; and the meeting grade of 6 % held a free
-joint between two junction heights. The fixes are in the commit that precedes this note.
+**What the first attempts showed:** with every joint of a junction held, `road_grade` was 2548 and 79 pieces had a
+planned grade above 100 % (up to 1147 %); the causes were links measured edge to edge (the span the road holds is
+shorter), piece grades measured over the length of a piece and not the run between joints, a smoothing that assumed
+equal spacing, and the 6 % meeting grade between two junction heights. The review then found that the holds were
+longer than needed, that unrelated roads within 13 m were held to a junction, and that junctions moved up to 7.5 m.
 
 | Rule | 1024 before | 1024 after | 2048 before | 2048 after |
 |---|---|---|---|---|
-| `road_not_drivable` | 227 | 252 | 226 | 197 |
-| not drivable | 5.1 km | 6.6 km | 4.7 km | 4.2 km |
-| `road_grade` | 1035 | 1859 | 957 | 1819 |
-| `road_misses_terrain` | 3935 | 3705 | 3540 | 2881 |
-| largest miss | 9.8 m | 11.0 m | 22.0 m | 10.1 m |
-| `road_conflict` | 2007 | 2063 | 1702 | 1715 |
-| `path_too_steep` | 92 | 81 | 85 | 72 |
-| `earthworks_capped` | 133 | 125 | 115 | 118 |
-| `junction_too_steep` | n/a | 0 | n/a | 0 |
+| `road_not_drivable` | 227 | 278 | 226 | 258 |
+| not drivable | 5.1 km | 7.4 km | 4.7 km | 5.7 km |
+| `road_grade` | 1035 | 1559 | 957 | 1336 |
+| `road_misses_terrain` | 3935 | 3599 | 3540 | 2999 |
+| largest miss | 9.8 m | 10.3 m | 22.0 m | 10.1 m |
+| `road_conflict` | 2007 | 2148 | 1702 | 1882 |
+| `path_too_steep` | 92 | 81 | 85 | 70 |
+| `earthworks_capped` | 133 | 123 | 115 | 114 |
+| `junction_too_steep` | n/a | 1 | n/a | 1 |
 | `road_gap`, `join_without_junction`, `tunnel_omitted`, `road_in_water` | unchanged | | | |
 
-The same tool with the junctions left out (`NO_JUNCTIONS=1`, on the new solver, 1024): `road_grade` 970,
-`road_misses_terrain` 2357, `road_not_drivable` 152, `road_conflict` 1887. So what the junction heights cost is
-the difference to those numbers, 889, 1348, 100 and 176; what the other fixes bought is in the table.
-
-**Junctions:** `find_junctions` finds 1194 junctions (452 pieces, 629 joins, 113 ends on roads) at both sizes and
-1399 links at 1024 (1453 at 2048), none unresolved; the earlier study found 1269 and 1535. The links differ
-because they are now the spans between the joints that hold the heights (so a pair of junctions that no chain
-holds consecutively is not linked); the difference in junctions (6 % fewer) was not examined.
+**Junctions:** 1194 (452 pieces, 629 joins, 113 ends on roads) at both sizes, 1403 links at 1024 and 1420 at 2048,
+one unresolved at each; the earlier study found 1269 and 1535. The links differ by definition (the span between held
+joints); the 6 % fewer junctions was not examined. The membership check removed 86 holds at 1024 and 110 at 2048
+(4604 and 3988 without it); 4518 and 3878 joints are held, in 1484 and 1159 runs of more than one joint (junction
+pieces and ends), which is **15.7 km** (1024) and **10.5 km** (2048) of road held level.
 
 **The three "done" criteria:**
 
-1. Pieces with a planned grade above 100 %: **8** at 1024, **6** at 2048 (79 in the first attempt). They are on
-   one long chain through the mountains (strip 21, around (5990, 5790), (4943, 5692) and (4812, 5688)) where a
-   free span before a held joint ends in a short steep piece, and a few others; the largest `road_grade` is
-   2518 % at (5199.0, 6240.4) (the largest planned piece is 133 % at 1024, 149 % at 2048).
-2. Pieces above the hard limit (`drive_grade`) without a `road_grade` or `road_not_drivable` violation within
-   30 m: **0** (65 and 64 pieces are above the limit, all reported). The cause was the piece grade measured over
-   the wrong run (above).
-3. Largest distance of a junction from its ground median: **7.5 m** at 1024, **7.9 m** at 2048 (p50 0.00 m, p90
-   0.34 m and 0.44 m). Not met: the repair now works on the shorter held spans and moves some junctions further.
+1. Pieces with a planned grade above 100 %: **not met**: 1 at 1024 (332 % at (1021.0, 4505.6), stretch
+   `216815452:21623801-2611724029`), 2 at 2048 (309 % there and 218 % at (841.7, 4818.7)). All have a held joint on
+   one side only (a span from a held joint to a free end, where there is no line to blend to).
+2. Pieces above the hard limit without a `road_grade` or `road_not_drivable` violation within 30 m: **met**: 0 (63 and
+   48 pieces are above the limit, all reported).
+3. Largest distance of a junction from its ground median: **met**: 3.00 m at both sizes (the cap; p50 and p90 0.00 m).
 
-The invariant of the heights (any two consecutive held joints of different junctions have a link, and the grade
-between them is within its ceiling unless the link is unresolved): 1399 pairs at 1024 and 1453 at 2048, none
-without a link, none over the ceiling.
+The largest `road_grade` is **332 %** (1024) and **309 %** (2048), at (1021.0, 4505.6), against 235 % in 7.1: worse.
+The invariant of the heights (consecutive held joints of different junctions have a link, and the grade between
+them is within its ceiling unless the link is unresolved): 1403 and 1420 pairs, none without a link, 2 over the ceiling
+at each size, all on links of 1 m between held joints that lie 0 m apart (a link is at least 1 m long).
 
-**The vertical bends (measured, nothing changed for them):** `road_grade` is 1859 at 1024, of which 1502 are
-vertical-bend findings: 1053 at a held joint, 146 next to one, 299 elsewhere, 4 at a bridge deck (2048: 1480, 1024,
-160, 293, 3). With no junctions (new solver, 1024) there are 668 bends, 181 at joints that would be held. How far
-each junction height along a through chain would have to move for the chain to keep the minimum vertical radius,
-estimated as the distance of the middle height from the straight line through its two neighbouring held heights
-beyond what the radius allows (`(d1 + d2) / 2 / R / (1/d1 + 1/d2)`, the neighbours not moved), over the 873
-(1024) triples of a held run with a held run of another junction before and after it:
+**The vertical bends:** `road_grade` is 1559 at 1024, of which 1180 are vertical-bend findings: **640 at a held joint,
+220 next to one, 317 elsewhere**, 3 at a bridge deck (2048: 1019; 520, 201, 296, 2). Before the holds were cut down (7.2
+first attempt) 1053 were at a held joint. Estimate of how far each junction height along a through chain would have
+to move for the chain to keep the minimum vertical radius (the distance of the middle height from the straight line
+through its two neighbouring held heights beyond what the radius allows, `(d1 + d2) / 2 / R / (1/d1 + 1/d2)`,
+neighbours not moved): 798 triples at 1024, p50 0.00 m, p90 0.00 m, max 1.28 m, above 0.5 m 11, above 1 m 3, above
+2 m 0 (2048: 804, max 1.42 m, 10, 1, 0). The heights themselves are nearly collinear, but 640 bends are still at held
+joints, so something other than the heights makes them there: the solver's treatment next to a fixed height (the
+change of grade across a held joint is limited in the clip, but the pieces beside it are short and the radius is
+long). The estimate cannot show that, since it treats a run as a point.
 
-| through road | triples | p50 | p90 | max | above 0.5 m | above 1 m | above 2 m |
-|---|---|---|---|---|---|---|---|
-| all | 873 | 0.00 m | 0.00 m | 2.43 m | 13 | 4 | 1 |
-| `asf1` | 80 | 0.00 m | 0.35 m | 1.12 m | 6 | 2 | 0 |
-| `asf2` | 81 | 0.00 m | 0.00 m | 0.52 m | 1 | 0 | 0 |
-| `asf3` | 177 | 0.00 m | 0.00 m | 1.74 m | 2 | 1 | 0 |
-| `city` | 403 | 0.00 m | 0.00 m | 2.43 m | 4 | 1 | 0 |
-| `grav` | 90 | 0.00 m | 0.00 m | 0.00 m | 0 | 0 | 0 |
-| `mud` | 42 | 0.00 m | 0.00 m | 0.00 m | 0 | 0 | 0 |
-
-(2048: all 891 triples, p90 0.00 m, max 1.53 m, 13 above 0.5 m, 4 above 1 m, none above 2 m.) By this estimate the
-junction heights along through roads are nearly collinear already: smoothing them would move 13 of 873 by more
-than 0.5 m. The bends at held joints are mostly not made by the junction heights themselves, but by what the
-solver does next to a fixed height.
-
-**Worse than before 7.1:** `road_grade` (1035 to 1859 at 1024), `road_not_drivable` at 1024 (227 to 252), the
-junction distance (criterion 3), `road_conflict` at 1024 (+56). Better: `road_misses_terrain` (3935 to 3705, 3540 to
-2881), `path_too_steep`, `earthworks_capped` at 1024, the largest miss at 2048.
+**Worse than before 7.1:** `road_grade` (1035 to 1559 at 1024, 957 to 1336 at 2048), `road_not_drivable` (227 to
+278, 226 to 258), `road_conflict` (+141, +180) and the largest `road_grade`. Better: `road_misses_terrain` (3935 to
+3599, 3540 to 2999), `path_too_steep`, `earthworks_capped`, the largest miss at 2048.

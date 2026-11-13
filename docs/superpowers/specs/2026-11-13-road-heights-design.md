@@ -109,6 +109,11 @@ junctions into 65 groups.
 3. **Edits:** a junction height is derived, not stored. (A user override of a junction height is not part of this
    design.)
 
+**As built (2026-11-13).** A link is the road between the two joints that hold the heights of two consecutive junctions
+on a chain, not from junction edge to junction edge: the repair works on what the road can actually climb. A junction
+moves at most 3 m from its ground median; a link still over its ceiling then is unresolved and is the rule
+`junction_too_steep`.
+
 ### 4.3 Roads and junctions
 
 - Every road through or ending at a junction has that height there, **the through road included**. A through chain
@@ -126,6 +131,13 @@ junctions into 65 groups.
   Measured: the ground inside the 10 m circle varies by 3.2 m at the median, by more than 10 m at 54 junctions.
 - A junction at the end of a bridge takes its height from the ground at that abutment like any other. A junction on
   a bridge span has the deck's height there and no level patch **(my call)**.
+
+**As built (2026-11-13).** A road is held at as few joints as it can: both joints of a junction piece, one joint where
+a road passes a junction, the end where it ends, and inward from an end only along the other road's level strip; only
+the roads that belong to the junction are held (a parallel street, a road on a bridge above it, are not). The 6 %
+meeting grade is not applied between two held joints, nor on gravel and dirt. The vertical radius is kept across a
+held joint, and as a last resort the free joints between two held joints are blended toward the straight line between
+them until no piece is over the hard limit of its road.
 
 ## 5. Cut, fill and the ground beside the road
 
