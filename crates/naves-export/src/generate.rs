@@ -16,17 +16,18 @@ use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
 use naves_core::dem::Dem;
-use naves_core::features::{Feature, FeatureKind, road_features};
+use naves_core::dips::{Dip, DipAction, decide, find_dips};
+use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{JunctionKind, Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     road_objects,
 };
-use naves_core::osm::{OsmWays, read_ways};
+use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::{RoadGraph, build_graph, widen_bridges};
+use naves_core::roadnet::{RoadGraph, build_graph, widen_bridges, with_bridge_spans};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
@@ -113,6 +114,15 @@ struct Roads {
     junctions: Junctions,
     conformed: Option<Conformed>,
     catalog: Option<PieceCatalog>,
+    /// The dips of the final placement and what is done about each.
+    dips: Vec<(Dip, DipAction)>,
+}
+
+/// The roads and streams read from OpenStreetMap.
+struct Read {
+    features: Vec<Feature>,
+    /// Streams, rivers and canals in map metres, for the dips.
+    water: Vec<Vec<(f64, f64)>>,
 }
 
 fn read_features(
@@ -120,9 +130,12 @@ fn read_features(
     project_dir: &Path,
     frame: &MapGeo,
     progress: &dyn Fn(&str),
-) -> Result<Vec<Feature>, BuildError> {
+) -> Result<Read, BuildError> {
     if project.sources.osm.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Read {
+            features: Vec::new(),
+            water: Vec::new(),
+        });
     }
     progress("Reading the roads");
     let window = frame.window(WAY_MARGIN_M).map_err(HeightmapError::from)?;
@@ -133,15 +146,163 @@ fn read_features(
         .map(|p| project_dir.join(p))
         .collect();
     let ways: OsmWays = read_ways(&files, window).map_err(SurfaceError::from)?;
-    Ok(road_features(&ways, frame, project.map_size_m()))
+    Ok(Read {
+        features: road_features(&ways, frame, project.map_size_m()),
+        water: water_lines(&ways, frame, project.map_size_m()),
+    })
+}
+
+/// One placement of a graph: the pieces, the junction heights and the profiles of the roads.
+pub struct Placed {
+    /// The placed objects.
+    pub net: PlacedNetwork,
+    /// The junctions and their heights.
+    pub junctions: Junctions,
+    /// The side slope of the original ground at each road of `net`.
+    pub side: Vec<f64>,
+    /// The height profiles.
+    pub profiles: Profiles,
+}
+
+/// Places `graph` on `base` and solves the heights of the roads.
+///
+/// # Errors
+/// A stretch that cannot be fitted.
+pub fn place_once(
+    graph: &RoadGraph,
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+) -> Result<Placed, BuildError> {
+    let net = place_network(graph, catalog)?;
+    let junctions = find_junctions(&net, graph, base);
+    let side = side_slopes(&net, base);
+    let profiles = solve_profiles(&net, base, &junctions, &side);
+    Ok(Placed {
+        net,
+        junctions,
+        side,
+        profiles,
+    })
+}
+
+/// The graph of `features` and the same with every OpenStreetMap bridge grown to the length of the bridge
+/// model it gets (see [`widen_bridges`]).
+#[must_use]
+pub fn widened_graph(features: &[Feature], catalog: &PieceCatalog) -> (RoadGraph, RoadGraph) {
+    let built = build_graph(features);
+    let widened = widen_bridges(&built, &|s| model_length(catalog, s.family).unwrap_or(0.0));
+    (built, widened)
+}
+
+/// The scaled length of the bridge model a road of `family` gets.
+fn model_length(catalog: &PieceCatalog, family: naves_core::catalog::Family) -> Option<f64> {
+    bridge_for(catalog, family).map(|(model, scale, _)| model.length * scale)
+}
+
+/// The roads as they are built: the final graph, its placement and what was decided about the dips.
+pub struct RoadPlan {
+    /// The graph the roads were placed from: with the bridge spans over dips cut in.
+    pub graph: RoadGraph,
+    /// The final placement.
+    pub placed: Placed,
+    /// The dips of the first placement and what was decided about each.
+    pub first_round: Vec<(Dip, DipAction)>,
+    /// The dips of the final placement and what is done about each: never `Bridge`, a bridge is cut in once.
+    pub dips: Vec<(Dip, DipAction)>,
+    /// Whether the roads were placed a second time with bridges over dips.
+    pub placed_twice: bool,
+}
+
+/// Places the roads and decides what to do about each dip: the order is fixed. Place the graph with the
+/// bridges of OpenStreetMap, find the dips, and where a bridge fits cut it into the graph and place again;
+/// there are no further rounds, the dips that are left are only told apart into fill and report.
+///
+/// `water` are the streams in map metres and `lakes` the areas of the project, which tell whether a dip lies
+/// over water.
+///
+/// # Errors
+/// A stretch that cannot be fitted.
+pub fn plan_roads(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+    water: &[Vec<(f64, f64)>],
+    lakes: &[LandPolygon],
+    frame: &MapGeo,
+    progress: &dyn Fn(&str),
+) -> Result<RoadPlan, BuildError> {
+    let (built, widened) = widened_graph(features, catalog);
+    let first = place_once(&widened, catalog, base)?;
+    let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
+        find_dips(
+            graph,
+            &placed.net,
+            &placed.profiles,
+            base,
+            water,
+            lakes,
+            frame,
+        )
+        .into_iter()
+        .map(|dip| {
+            let length = bridges
+                .then(|| graph.stretches.get(dip.stretch))
+                .flatten()
+                .and_then(|s| model_length(catalog, s.family));
+            let (action, span) = decide(&dip, graph, length);
+            (dip, action, span)
+        })
+        .collect::<Vec<_>>()
+    };
+    let decided = dips(&widened, &first, true);
+    let spans: Vec<_> = decided.iter().filter_map(|d| d.2.clone()).collect();
+    let first_round: Vec<(Dip, DipAction)> = decided.into_iter().map(|d| (d.0, d.1)).collect();
+    let (graph, mut placed, dips, placed_twice) = if spans.is_empty() {
+        (widened.clone(), first, first_round.clone(), false)
+    } else {
+        progress("Placing the roads again with bridges over the dips");
+        let graph = with_bridge_spans(&widened, &spans);
+        let placed = place_once(&graph, catalog, base)?;
+        // the dips that are left cannot be bridged any more
+        let left = dips(&graph, &placed, false)
+            .into_iter()
+            .map(|d| (d.0, d.1))
+            .collect();
+        (graph, placed, left, true)
+    };
+    // a stretch that was an OpenStreetMap bridge and is none any more, found by its id
+    let ids: BTreeSet<&str> = graph
+        .stretches
+        .iter()
+        .filter(|s| s.bridge)
+        .map(|s| s.id.as_str())
+        .collect();
+    for before in &built.stretches {
+        if before.bridge && !ids.contains(before.id.as_str()) {
+            placed.net.warnings.push(format!(
+                "bridge on {}: no room for a bridge model between the junctions",
+                before.id
+            ));
+        }
+    }
+    Ok(RoadPlan {
+        graph,
+        placed,
+        first_round,
+        dips,
+        placed_twice,
+    })
 }
 
 fn place_roads(
-    features: &[Feature],
+    read: &Read,
+    lakes: &[LandPolygon],
     base: &Heightmap,
+    frame: &MapGeo,
     tools: &Tools,
     progress: &dyn Fn(&str),
 ) -> Result<Roads, BuildError> {
+    let features = &read.features;
     if !features
         .iter()
         .any(|f| matches!(f.kind, FeatureKind::Road { .. }))
@@ -153,38 +314,38 @@ fn place_roads(
             junctions: Junctions::default(),
             conformed: None,
             catalog: None,
+            dips: Vec::new(),
         });
     }
     progress("Reading the road pieces of the game");
     let catalog = road_catalog(tools, &tools.cache_dir)?;
     progress("Placing the roads");
-    let built = build_graph(features);
-    // every OpenStreetMap bridge is a bridge: one that is shorter than a model grows into the roads beside it
-    let graph = widen_bridges(&built, &|s| {
-        bridge_for(&catalog, s.family).map_or(0.0, |(model, scale, _)| model.length * scale)
-    });
-    let mut net = place_network(&graph, &catalog)?;
-    for (before, after) in built.stretches.iter().zip(&graph.stretches) {
-        if before.bridge && !after.bridge {
-            net.warnings.push(format!(
-                "bridge on {}: no room for a bridge model between the junctions",
-                before.id
-            ));
-        }
-    }
+    let plan = plan_roads(
+        features,
+        &catalog,
+        base,
+        &read.water,
+        lakes,
+        frame,
+        progress,
+    )?;
     progress("Shaping the terrain to the roads");
-    let junctions = find_junctions(&net, &graph, base);
-    let side = side_slopes(&net, base);
-    let profiles = solve_profiles(&net, base, &junctions, &side);
+    let Placed {
+        net,
+        junctions,
+        profiles,
+        ..
+    } = plan.placed;
     let patches = level_patches(&junctions, f64::from(base.cell_m));
     let conformed = conform(base, &profiles.strips, &patches)?;
     Ok(Roads {
         net,
-        graph,
+        graph: plan.graph,
         profiles,
         junctions,
         conformed: Some(conformed),
         catalog: Some(catalog),
+        dips: plan.dips,
     })
 }
 
@@ -468,9 +629,14 @@ pub fn generate(
     let base = build_heightmap(project, &dem)?;
     let sources = LoadedSources::open(project, project_dir, progress)?;
     let frame = MapGeo::new(project).map_err(HeightmapError::from)?;
-    let features = read_features(project, project_dir, &frame, progress)?;
+    let read = read_features(project, project_dir, &frame, progress)?;
     let overrides = Overrides::load(project_dir)?;
-    let roads = place_roads(&features, &base, tools, progress)?;
+    let lakes = sources
+        .osm
+        .as_ref()
+        .map_or(&[][..], |o| o.polygons.as_slice());
+    let roads = place_roads(&read, lakes, &base, &frame, tools, progress)?;
+    let features = read.features;
 
     let heightmap = roads
         .conformed
@@ -525,6 +691,7 @@ pub fn generate(
         &orphans,
         water,
         &frame,
+        &roads.dips,
     );
     warnings.extend(roads.net.warnings.iter().cloned());
     let stats = statistics(&roads, &pieces, &steep_paths);

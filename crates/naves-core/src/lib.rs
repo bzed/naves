@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod checks;
 pub mod conform;
 pub mod dem;
+pub mod dips;
 pub mod features;
 pub mod heightmap;
 pub mod ident;

@@ -451,7 +451,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground) keeps only that rule. Generates the roads."
+        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water) keeps only that rule. Generates the roads."
     )]
     async fn validation_list(
         &self,

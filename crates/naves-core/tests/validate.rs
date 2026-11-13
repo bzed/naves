@@ -12,6 +12,7 @@
 use naves_core::catalog::Family;
 use naves_core::checks::{DriveState, PieceCheck, SteepPathSection};
 use naves_core::conform::{Conformed, RoadConflict};
+use naves_core::dips::{Dip, DipAction};
 use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, Link};
 use naves_core::objects::{ObjectId, OrphanedEdit};
@@ -115,6 +116,7 @@ fn run(
         orphans,
         water,
         &frame(),
+        &[],
     )
 }
 
@@ -463,6 +465,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::TunnelOmitted,
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
+        Rule::RoadOverWater,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -507,6 +510,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         &[],
         &[],
         &frame(),
+        &[],
     );
     let found = only(Rule::JunctionTooSteep, &v);
     assert_eq!(found.len(), 1, "{v:?}");
@@ -581,4 +585,45 @@ fn an_embankment_over_the_allowance_is_reported_and_nan_or_a_small_height_is_not
     assert_eq!(far[0].message, "Embankment 70 m high; 65 m fit this ground");
     // the cut at the allowance is within it
     assert!(far_from_ground(&[far_check(0, -30.0, 0.0)]).is_empty());
+}
+
+fn wet_dip(depth_m: f64, at: (f64, f64)) -> Dip {
+    Dip {
+        stretch: 0,
+        from_m: 100.0,
+        to_m: 130.0,
+        depth_m,
+        over_water: true,
+        at,
+    }
+}
+
+#[test]
+fn a_dip_over_water_that_got_no_bridge_is_reported_where_it_is() {
+    let dips = [
+        (wet_dip(7.6, (250.0, 40.0)), DipAction::Report),
+        // a bridge or a fill is nothing to look at
+        (wet_dip(9.0, (10.0, 10.0)), DipAction::Bridge),
+        (wet_dip(9.0, (20.0, 20.0)), DipAction::Fill),
+    ];
+    let v = check_roads(
+        &net(Vec::new()),
+        &Profiles::default(),
+        &Junctions::default(),
+        &conformed(),
+        &[],
+        &[],
+        &[],
+        &[],
+        &frame(),
+        &dips,
+    );
+    let found = only(Rule::RoadOverWater, &v);
+    assert_eq!(found.len(), 1, "{v:?}");
+    assert_eq!(found[0].rule.id(), "road_over_water");
+    assert_eq!(found[0].at, (250.0, 40.0));
+    assert_eq!(
+        found[0].message,
+        "Road crosses water 8 m below it without a bridge; look at it"
+    );
 }

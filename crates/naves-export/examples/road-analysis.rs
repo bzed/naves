@@ -37,18 +37,19 @@ use naves_core::checks::{
 };
 use naves_core::conform::{FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform};
 use naves_core::dem::Dem;
-use naves_core::features::road_features;
+use naves_core::dips::DipAction;
+use naves_core::features::{road_features, water_lines};
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
-use naves_core::junctions::{HOLD_M, find_junctions};
+use naves_core::junctions::{HOLD_M, Junctions};
 use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_radius};
 use naves_core::osm::read_ways;
 use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::{build_graph, widen_bridges};
-use naves_core::roadplace::{PlacedKind, bridge_for, place_network};
+use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, check_roads};
 use naves_export::catalog_read::road_catalog;
+use naves_export::generate::{Placed, place_once, plan_roads, widened_graph};
 use naves_export::tools::Tools;
 
 fn len(p: &PieceCheck) -> f64 {
@@ -158,10 +159,7 @@ fn main() {
     let features = road_features(&ways, &frame, project.map_size_m());
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
-    let built = build_graph(&features);
-    let graph = widen_bridges(&built, &|s| {
-        bridge_for(&catalog, s.family).map_or(0.0, |(m, scale, _)| m.length * scale)
-    });
+    let (built, widened) = widened_graph(&features, &catalog);
     {
         // OSM bridge stretches: before (built as a bridge only from 10 m chord) and after widening
         let chord = |s: &naves_core::roadnet::Stretch| match (s.points.first(), s.points.last()) {
@@ -171,7 +169,7 @@ fn main() {
         let osm: Vec<_> = built
             .stretches
             .iter()
-            .zip(&graph.stretches)
+            .zip(&widened.stretches)
             .filter(|(b, _)| b.bridge && !b.tunnel)
             .collect();
         let before = osm.iter().filter(|(b, _)| chord(b) >= 10.0).count();
@@ -216,21 +214,44 @@ fn main() {
             );
         }
     }
-    let net = place_network(&graph, &catalog).expect("place");
+    let sources = LoadedSources::open(&project, dir, &|_| {}).expect("sources");
+    let lakes = sources
+        .osm
+        .as_ref()
+        .map_or(&[][..], |o| o.polygons.as_slice());
+    let streams = water_lines(&ways, &frame, project.map_size_m());
+    if std::env::var("TIME_BEFORE").is_ok() {
+        // the placement as it was before dips: the graph with the bridges of OpenStreetMap, once
+        let started = Instant::now();
+        place_once(&widened, &catalog, &base).expect("place");
+        println!(
+            "TIMING placement without dips (one round) {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    let started = Instant::now();
+    let plan = plan_roads(&features, &catalog, &base, &streams, lakes, &frame, &|m| {
+        eprintln!("{m}");
+    })
+    .expect("plan");
+    let plan_s = started.elapsed().as_secs_f64();
+    println!(
+        "TIMING placement with dips {plan_s:.1} s ({} rounds)",
+        if plan.placed_twice { 2 } else { 1 }
+    );
+    let graph = plan.graph;
+    let (first_round, dips, placed_twice) = (plan.first_round, plan.dips, plan.placed_twice);
+    let Placed {
+        net,
+        junctions,
+        side,
+        mut profiles,
+    } = plan.placed;
+    if std::env::var("NO_JUNCTIONS").is_ok() {
+        profiles = solve_profiles(&net, &base, &Junctions::default(), &side);
+    }
     let t_place = t0.elapsed();
-    let junctions = find_junctions(&net, &graph, &base);
-    let side = naves_core::sideslope::side_slopes(&net, &base);
-    let profiles = if std::env::var("NO_JUNCTIONS").is_ok() {
-        solve_profiles(
-            &net,
-            &base,
-            &naves_core::junctions::Junctions::default(),
-            &side,
-        )
-    } else {
-        solve_profiles(&net, &base, &junctions, &side)
-    };
-    let t_profiles = t0.elapsed();
+    let t_profiles = t_place;
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
         dump_strips(&path, &profiles.strips, &net);
         dump_graph(&format!("{path}.graph"), &graph, &net);
@@ -992,11 +1013,7 @@ fn main() {
         t_conform.as_secs_f64() - t_profiles.as_secs_f64(),
         t_profiles.as_secs_f64()
     );
-    let sources = LoadedSources::open(&project, dir, &|_| {}).expect("sources");
-    let water = sources
-        .osm
-        .as_ref()
-        .map_or(&[][..], |o| o.polygons.as_slice());
+    let water = lakes;
     let steep_paths = check_walkable(&features, hm);
     let violations = check_roads(
         &net,
@@ -1008,8 +1025,59 @@ fn main() {
         &[],
         water,
         &frame,
+        &dips,
     );
     println!("violations total {}", violations.len());
+    {
+        // dips of the first placement by what was decided, and those of the final one
+        let describe = |label: &str,
+                        graph: &naves_core::roadnet::RoadGraph,
+                        list: &[(naves_core::dips::Dip, DipAction)]| {
+            println!("DIPS {label}: {} found", list.len());
+            for action in [DipAction::Bridge, DipAction::Fill, DipAction::Report] {
+                let mut by_family: BTreeMap<String, Vec<&naves_core::dips::Dip>> = BTreeMap::new();
+                for (dip, _) in list.iter().filter(|(_, a)| *a == action) {
+                    let family = graph
+                        .stretches
+                        .get(dip.stretch)
+                        .map_or("?".to_string(), |s| format!("{:?}", s.family));
+                    by_family.entry(family).or_default().push(dip);
+                }
+                let all: Vec<&naves_core::dips::Dip> =
+                    by_family.values().flatten().copied().collect();
+                println!(
+                    "DIPS {label} {action:?}: {} ({} over water)",
+                    all.len(),
+                    all.iter().filter(|d| d.over_water).count()
+                );
+                for (family, dips) in &by_family {
+                    println!("DIPS {label} {action:?} {family}: {}", dips.len());
+                }
+                if !all.is_empty() {
+                    let mut length: Vec<f64> = all.iter().map(|d| d.to_m - d.from_m).collect();
+                    let mut depth: Vec<f64> = all.iter().map(|d| d.depth_m).collect();
+                    for (what, v) in [("length", &mut length), ("depth", &mut depth)] {
+                        println!(
+                            "DIPS {label} {action:?} {what} min/p50/p90/max {:.1} {:.1} {:.1} {:.1} m",
+                            pct(v, 0.0),
+                            pct(v, 0.5),
+                            pct(v, 0.9),
+                            pct(v, 1.0)
+                        );
+                    }
+                }
+            }
+        };
+        describe("first placement", &widened, &first_round);
+        describe("final placement", &graph, &dips);
+        println!("DIPS placed twice: {placed_twice}");
+        for v in violations.iter().filter(|v| v.rule == Rule::RoadOverWater) {
+            println!(
+                "DIPS road_over_water at ({:.0}, {:.0}): {}",
+                v.at.0, v.at.1, v.message
+            );
+        }
+    }
     {
         // bridge objects: by model, scale distribution, width warnings, wooden against paved by family
         let mut by_model: BTreeMap<String, (usize, usize)> = BTreeMap::new();

@@ -534,7 +534,7 @@ const KEEP_M: f64 = 1.0;
 /// A polyline.
 type Points = Vec<(f64, f64)>;
 
-fn polyline_length(points: &[(f64, f64)]) -> f64 {
+pub(crate) fn polyline_length(points: &[(f64, f64)]) -> f64 {
     points
         .windows(2)
         .map(|p| match p {
@@ -545,7 +545,7 @@ fn polyline_length(points: &[(f64, f64)]) -> f64 {
 }
 
 /// The part of `points` between the distances `from` and `to` along it, with interpolated ends.
-fn slice_points(points: &[(f64, f64)], from: f64, to: f64) -> Vec<(f64, f64)> {
+pub(crate) fn slice_points(points: &[(f64, f64)], from: f64, to: f64) -> Vec<(f64, f64)> {
     let mut out: Vec<(f64, f64)> = Vec::new();
     let mut at = 0.0;
     for w in points.windows(2) {
@@ -591,6 +591,23 @@ fn first_free_node(graph: &RoadGraph) -> i64 {
         .map_or(1, |m| m.saturating_add(1))
 }
 
+/// The part of stretch `i`, in metres along it, that a bridge may cover: a stretch end that continues into
+/// exactly one other stretch may be reached, a crossing of three or more stretches or a dead end is kept
+/// 1 m clear. `None` for a stretch that is not in the graph.
+#[must_use]
+pub fn bridge_room(graph: &RoadGraph, i: usize) -> Option<(f64, f64)> {
+    let s = graph.stretches.get(i)?;
+    let through = |node: i64| {
+        graph
+            .crossings
+            .iter()
+            .any(|c| c.node == node && c.stretches.len() == 2 && c.stretches.contains(&i))
+    };
+    let lo = if through(s.start) { 0.0 } else { CLEARANCE_M };
+    let hi = polyline_length(&s.points) - if through(s.end) { 0.0 } else { CLEARANCE_M };
+    Some((lo, hi))
+}
+
 /// The graph with the spans cut out of their stretches as bridge stretches. The part before the first
 /// span keeps the stretch's id; a span is `<id>/bridge<n>` and the road after it `<id>/after<n>`, `n`
 /// counted from the stretch's start. A span that reaches a crossing with three or more stretches, or the
@@ -607,15 +624,7 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
     let mut stretches: Vec<Stretch> = Vec::new();
     for (i, s) in graph.stretches.iter().enumerate() {
         let total = polyline_length(&s.points);
-        // a stretch end that continues into exactly one other stretch may be reached; others not
-        let through = |node: i64| {
-            graph
-                .crossings
-                .iter()
-                .any(|c| c.node == node && c.stretches.len() == 2 && c.stretches.contains(&i))
-        };
-        let lo = if through(s.start) { 0.0 } else { CLEARANCE_M };
-        let hi = total - if through(s.end) { 0.0 } else { CLEARANCE_M };
+        let (lo, hi) = bridge_room(graph, i).unwrap_or((0.0, total));
         let mut mine: Vec<(f64, f64)> = spans
             .iter()
             .filter(|sp| sp.stretch == i && sp.from_m.is_finite() && sp.to_m.is_finite())

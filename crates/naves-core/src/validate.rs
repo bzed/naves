@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::Conformed;
+use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::Junctions;
 use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
@@ -19,7 +20,7 @@ use crate::profile::{GradeExcessKind, Profiles};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// The priority of water among the OSM areas.
-const WATER_PRIORITY: u8 = 3;
+pub(crate) const WATER_PRIORITY: u8 = 3;
 /// Places where the earthworks are capped are reported once per square of this many metres.
 const REGION_M: f64 = 50.0;
 
@@ -52,11 +53,13 @@ pub enum Rule {
     JunctionTooSteep,
     /// A road planned further from the original ground than fits its terrain.
     RoadFarFromGround,
+    /// A road standing high over water that got no bridge.
+    RoadOverWater,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 13] = [
+    pub const ALL: [Rule; 14] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -70,6 +73,7 @@ impl Rule {
         Rule::TunnelOmitted,
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
+        Rule::RoadOverWater,
     ];
 
     /// The stable id of the rule.
@@ -89,6 +93,7 @@ impl Rule {
             Rule::TunnelOmitted => "tunnel_omitted",
             Rule::JunctionTooSteep => "junction_too_steep",
             Rule::RoadFarFromGround => "road_far_from_ground",
+            Rule::RoadOverWater => "road_over_water",
         }
     }
 }
@@ -160,10 +165,10 @@ fn ring_contains(ring: &[(f64, f64)], point: (f64, f64)) -> bool {
 }
 
 /// A box `(min lat, max lat, min lon, max lon)`.
-type Bounds = (f64, f64, f64, f64);
+pub(crate) type Bounds = (f64, f64, f64, f64);
 
 /// The box around the outer ring of a polygon: `(min lat, max lat, min lon, max lon)`.
-fn outer_bounds(polygon: &LandPolygon) -> Bounds {
+pub(crate) fn outer_bounds(polygon: &LandPolygon) -> Bounds {
     polygon.outer.iter().fold(
         (
             f64::INFINITY,
@@ -179,7 +184,7 @@ fn outer_bounds(polygon: &LandPolygon) -> Bounds {
 
 /// Whether a position lies in one of the lakes, each given with the box around its outer ring: a position
 /// outside the box is not in the lake, which spares the walk over the ring.
-fn in_water(water: &[(Bounds, &LandPolygon)], lat: f64, lon: f64) -> bool {
+pub(crate) fn in_water(water: &[(Bounds, &LandPolygon)], lat: f64, lon: f64) -> bool {
     water.iter().any(|((lat0, lat1, lon0, lon1), polygon)| {
         (*lat0..=*lat1).contains(&lat)
             && (*lon0..=*lon1).contains(&lon)
@@ -289,10 +294,28 @@ fn far_from_ground(piece: &PieceCheck) -> Option<Violation> {
     Some(violation(Rule::RoadFarFromGround, at, message))
 }
 
+/// A road left standing over water: one violation for each dip that is reported, where it is.
+fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
+    dips.iter()
+        .filter(|(_, action)| *action == DipAction::Report)
+        .map(|(dip, _)| {
+            violation(
+                Rule::RoadOverWater,
+                dip.at,
+                format!(
+                    "Road crosses water {:.0} m below it without a bridge; look at it",
+                    dip.depth_m
+                ),
+            )
+        })
+        .collect()
+}
+
 /// All the violations of a generated road network, sorted by rule and then by position.
 ///
 /// `water` are the OSM areas of the project; only those with the priority of water count. Bridges may stand
-/// in water.
+/// in water. `dips` are the dips of the final placement with what was decided about each; a dip that is
+/// reported is a violation.
 #[must_use]
 #[expect(clippy::too_many_arguments, reason = "one input per kind of violation")]
 pub fn check_roads(
@@ -305,6 +328,7 @@ pub fn check_roads(
     orphans: &[OrphanedEdit],
     water: &[LandPolygon],
     frame: &MapGeo,
+    dips: &[(Dip, DipAction)],
 ) -> Vec<Violation> {
     let mut out = not_drivable(net, pieces);
     out.extend(
@@ -394,6 +418,7 @@ pub fn check_roads(
         )
     }));
     out.extend(junction_violations(junctions));
+    out.extend(dip_violations(dips));
     out.sort_by(|a, b| {
         a.rule
             .cmp(&b.rule)
