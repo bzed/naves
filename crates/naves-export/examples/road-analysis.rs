@@ -39,6 +39,7 @@ use naves_core::conform::{FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform};
 use naves_core::dem::Dem;
 use naves_core::features::road_features;
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
+use naves_core::junctions::{HOLD_M, find_junctions};
 use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim};
 use naves_core::osm::read_ways;
 use naves_core::profile::{RoadStrip, solve_profiles};
@@ -160,7 +161,8 @@ fn main() {
     let graph = build_graph(&features);
     let net = place_network(&graph, &catalog).expect("place");
     let t_place = t0.elapsed();
-    let profiles = solve_profiles(&net, &base);
+    let junctions = find_junctions(&net, &graph, &base);
+    let profiles = solve_profiles(&net, &base, &junctions);
     let t_profiles = t0.elapsed();
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
         dump_strips(&path, &profiles.strips, &net);
@@ -931,6 +933,7 @@ fn main() {
     let violations = check_roads(
         &net,
         &profiles,
+        &junctions,
         &conformed,
         &pieces,
         &steep_paths,
@@ -1831,6 +1834,136 @@ fn main() {
             }
         }
     }
+
+    // ---- done: the criteria of the road heights plan (2026-11-13)
+    println!("\n#### done");
+    println!(
+        "junctions {} (pieces {}, joins {}, ends on roads {}), links {}, unresolved {}",
+        junctions.points.len(),
+        junctions
+            .points
+            .iter()
+            .filter(|j| j.kind == naves_core::junctions::JunctionKind::Piece)
+            .count(),
+        junctions
+            .points
+            .iter()
+            .filter(|j| j.kind == naves_core::junctions::JunctionKind::Join)
+            .count(),
+        junctions
+            .points
+            .iter()
+            .filter(|j| j.kind == naves_core::junctions::JunctionKind::EndOnRoad)
+            .count(),
+        junctions.links.len(),
+        junctions.unresolved.len()
+    );
+    // (1) planned grade above 100 %, (2) above the hard limit without a violation near it
+    let covered = |x: f64, y: f64| {
+        violations.iter().any(|v| {
+            matches!(v.rule, Rule::RoadGrade | Rule::RoadNotDrivable)
+                && (v.at.0 - x).hypot(v.at.1 - y) <= 30.0
+        })
+    };
+    let (mut over_100, mut over_hard, mut over_hard_unreported) = (0, 0, 0);
+    let mut worst_planned = (0.0_f64, (0.0, 0.0), String::new());
+    for strip in &profiles.strips {
+        for (k, w) in strip.joints.windows(2).enumerate() {
+            let run = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            if run < 0.5 || strip.bridge.get(k).copied().unwrap_or(false) {
+                continue;
+            }
+            let grade = ((w[1].2 - w[0].2) / run).abs();
+            let road = strip.slots.get(k).and_then(|i| net.roads.get(*i));
+            if grade > worst_planned.0 {
+                worst_planned = (
+                    grade,
+                    (w[0].0, w[0].1),
+                    road.map(|r| r.slot.stretch.clone()).unwrap_or_default(),
+                );
+            }
+            if grade > 1.0 {
+                over_100 += 1;
+                println!(
+                    "  planned grade {:.0} % at ({:.1},{:.1}) stretch {}",
+                    grade * 100.0,
+                    w[0].0,
+                    w[0].1,
+                    road.map_or("?", |r| r.slot.stretch.as_str())
+                );
+            }
+            if let Some(road) = road
+                && grade > drive_grade(road.family)
+            {
+                over_hard += 1;
+                if !covered(w[0].0, w[0].1) && !covered(w[1].0, w[1].1) {
+                    over_hard_unreported += 1;
+                }
+            }
+        }
+    }
+    println!("DONE 1 pieces with a planned grade above 100 %: {over_100}");
+    println!(
+        "DONE 2 pieces above the hard limit (drive_grade): {over_hard}, of them without a road_grade or road_not_drivable violation within 30 m: {over_hard_unreported}"
+    );
+    println!(
+        "steepest planned piece {:.0} % at ({:.1},{:.1}) stretch {}",
+        worst_planned.0 * 100.0,
+        worst_planned.1.0,
+        worst_planned.1.1,
+        worst_planned.2
+    );
+    // (3) the junction's own height against its ground median, and what the profile has there
+    let mut from_ground: Vec<f64> = junctions
+        .points
+        .iter()
+        .map(|j| (j.height - j.ground).abs())
+        .collect();
+    println!(
+        "DONE 3 junction height from its ground median: p50 {:.2} p90 {:.2} max {:.2} m",
+        pct(&mut from_ground, 0.5),
+        pct(&mut from_ground, 0.9),
+        pct(&mut from_ground, 1.0)
+    );
+    let mut planned: Vec<f64> = Vec::new();
+    for j in &junctions.points {
+        let nearest = profiles
+            .strips
+            .iter()
+            .flat_map(|s| s.joints.iter())
+            .map(|q| ((q.0 - j.at.0).hypot(q.1 - j.at.1), q.2))
+            .filter(|(d, _)| *d <= j.patch_m + HOLD_M)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, height)) = nearest {
+            planned.push((height - j.ground).abs());
+            if (height - j.ground).abs() > 3.0 {
+                println!(
+                    "  junction at ({:.1},{:.1}) {:?}: planned {height:.1}, ground median {:.1}, height {:.1}",
+                    j.at.0, j.at.1, j.kind, j.ground, j.height
+                );
+            }
+        }
+    }
+    println!(
+        "planned junction height from the ground median (was p50 1.64, p90 6.80): p50 {:.2} p90 {:.2} max {:.2} m ({} junctions with a joint)",
+        pct(&mut planned, 0.5),
+        pct(&mut planned, 0.9),
+        pct(&mut planned, 1.0),
+        planned.len()
+    );
+    let worst_excess = profiles
+        .excesses
+        .iter()
+        .filter(|e| e.kind == naves_core::profile::GradeExcessKind::Grade)
+        .max_by(|a, b| a.grade.abs().total_cmp(&b.grade.abs()));
+    println!(
+        "largest road_grade excess {:.0} %{}",
+        worst_excess.map_or(0.0, |e| e.grade.abs() * 100.0),
+        worst_excess.map_or(String::new(), |e| format!(
+            " at ({:.1},{:.1})",
+            e.at.0, e.at.1
+        ))
+    );
 
     // ---- cost
     let hwm = std::fs::read_to_string("/proc/self/status")

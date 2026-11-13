@@ -26,8 +26,13 @@ pub const MERGE_M: f64 = 3.0;
 /// Rounds of [`repair`].
 pub const REPAIR_ROUNDS: usize = 50;
 
+/// How far beyond a junction's patch a chain end or a junction piece may lie and still belong to the junction:
+/// the side ports of a junction piece lie as far from its centre as the patch reaches, and the centre of the
+/// piece may be off the crossing by a few metres.
+pub const HOLD_M: f64 = 4.0;
+
 /// How far from a crossing a road may pass and still be one of its arms.
-const ARM_REACH_M: f64 = 13.0;
+pub const ARM_REACH_M: f64 = 13.0;
 /// A projection this close to the end of a road is the end.
 const END_M: f64 = 3.0;
 /// A junction piece whose centre is this close to a station is the one the station lies on.
@@ -719,10 +724,17 @@ impl Junctions {
     /// The junction whose patch holds `point`, the nearest if several.
     #[must_use]
     pub fn at(&self, point: (f64, f64)) -> Option<&Junction> {
+        self.near(point, 0.0)
+    }
+
+    /// The nearest junction within `reach` metres beyond whose patch `point` lies; `at` is `near` with a
+    /// reach of 0. Chain ends and junction pieces use [`HOLD_M`].
+    #[must_use]
+    pub fn near(&self, point: (f64, f64), reach: f64) -> Option<&Junction> {
         self.points
             .iter()
             .map(|j| (distance(j.at, point), j))
-            .filter(|(d, j)| *d <= j.patch_m)
+            .filter(|(d, j)| *d <= j.patch_m + reach)
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, j)| j)
     }

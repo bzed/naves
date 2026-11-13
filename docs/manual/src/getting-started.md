@@ -136,7 +136,16 @@ far as they are connected to the road (up to 60 m); a cliff beyond stays a cliff
 cannot drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every
 finding is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
-A road is at most **6 % steep where another road meets it**, and gentler in a tight bend: the inner edge of a bend is
+**Where roads meet, they meet at one height.** Every junction (a junction piece, a crossing without a junction
+piece, a road that ends on another) gets a single height: the median of the original ground within 10 m of it. Every
+road that reaches the junction is held to that height, the through road at the junction piece as much as the side
+road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
+together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
+of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less.
+What cannot be repaired is the `junction_too_steep` finding.
+
+A road is at most **6 % steep where another road meets it** (asphalt and streets; gravel and dirt tracks keep their own
+limit, so a steep track is not lifted out of the ground), and gentler in a tight bend: the inner edge of a bend is
 steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
 
 A road keeps to its family's grade where it can. Where holding it would put the road more than **4 m above or below

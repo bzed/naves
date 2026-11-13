@@ -18,6 +18,7 @@ use naves_core::conform::{Conformed, conform};
 use naves_core::dem::Dem;
 use naves_core::features::{Feature, FeatureKind, road_features};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
+use naves_core::junctions::{Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     road_objects,
@@ -108,6 +109,7 @@ struct Roads {
     net: PlacedNetwork,
     graph: RoadGraph,
     profiles: Profiles,
+    junctions: Junctions,
     conformed: Option<Conformed>,
     catalog: Option<PieceCatalog>,
 }
@@ -147,6 +149,7 @@ fn place_roads(
             net: PlacedNetwork::default(),
             graph: RoadGraph::default(),
             profiles: Profiles::default(),
+            junctions: Junctions::default(),
             conformed: None,
             catalog: None,
         });
@@ -157,12 +160,14 @@ fn place_roads(
     let graph = build_graph(features);
     let net = place_network(&graph, &catalog)?;
     progress("Shaping the terrain to the roads");
-    let profiles = solve_profiles(&net, base);
+    let junctions = find_junctions(&net, &graph, base);
+    let profiles = solve_profiles(&net, base, &junctions);
     let conformed = conform(base, &profiles.strips)?;
     Ok(Roads {
         net,
         graph,
         profiles,
+        junctions,
         conformed: Some(conformed),
         catalog: Some(catalog),
     })
@@ -473,6 +478,7 @@ pub fn generate(
     let violations = check_roads(
         &roads.net,
         &roads.profiles,
+        &roads.junctions,
         roads.conformed.as_ref().unwrap_or(&empty),
         &pieces,
         &steep_paths,

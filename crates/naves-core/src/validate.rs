@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::Conformed;
 use crate::heightmap::MapGeo;
+use crate::junctions::Junctions;
 use crate::limits::CROSS_FALL_LIMIT;
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
@@ -47,11 +48,13 @@ pub enum Rule {
     JoinWithoutJunction,
     /// A tunnel that got no pieces.
     TunnelOmitted,
+    /// Two junctions too close together for the difference of their heights.
+    JunctionTooSteep,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 11] = [
+    pub const ALL: [Rule; 12] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -63,6 +66,7 @@ impl Rule {
         Rule::OrphanedEdit,
         Rule::JoinWithoutJunction,
         Rule::TunnelOmitted,
+        Rule::JunctionTooSteep,
     ];
 
     /// The stable id of the rule.
@@ -80,6 +84,7 @@ impl Rule {
             Rule::OrphanedEdit => "orphaned_edit",
             Rule::JoinWithoutJunction => "join_without_junction",
             Rule::TunnelOmitted => "tunnel_omitted",
+            Rule::JunctionTooSteep => "junction_too_steep",
         }
     }
 }
@@ -233,6 +238,28 @@ fn capped_violations(capped: &[(f64, f64)]) -> Vec<Violation> {
         .collect()
 }
 
+/// One violation for each link that is still over its ceiling after the repair, at the middle of the two
+/// junctions.
+fn junction_violations(junctions: &Junctions) -> Vec<Violation> {
+    junctions
+        .unresolved
+        .iter()
+        .filter_map(|&i| junctions.links.get(i))
+        .filter_map(|link| {
+            let (a, b) = (junctions.points.get(link.a)?, junctions.points.get(link.b)?);
+            Some(violation(
+                Rule::JunctionTooSteep,
+                (f64::midpoint(a.at.0, b.at.0), f64::midpoint(a.at.1, b.at.1)),
+                format!(
+                    "Junctions too close for their heights: {:.1} m over {:.0} m",
+                    (a.height - b.height).abs(),
+                    link.length
+                ),
+            ))
+        })
+        .collect()
+}
+
 /// All the violations of a generated road network, sorted by rule and then by position.
 ///
 /// `water` are the OSM areas of the project; only those with the priority of water count. Bridges may stand
@@ -242,6 +269,7 @@ fn capped_violations(capped: &[(f64, f64)]) -> Vec<Violation> {
 pub fn check_roads(
     net: &PlacedNetwork,
     profiles: &Profiles,
+    junctions: &Junctions,
     conformed: &Conformed,
     pieces: &[PieceCheck],
     steep_paths: &[SteepPathSection],
@@ -335,6 +363,7 @@ pub fn check_roads(
             format!("Tunnel {id} has no pieces: real tunnels need terrain holes"),
         )
     }));
+    out.extend(junction_violations(junctions));
     out.sort_by(|a, b| {
         a.rule
             .cmp(&b.rule)

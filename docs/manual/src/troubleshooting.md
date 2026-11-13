@@ -122,6 +122,12 @@ allow over a crest or a dip). On steep ground with hairpins a finer grid
 helps: at `terrain_size = 2048` the Berchtesgaden example has 1729 road conflicts instead of 1979 and 618 hairpin
 pieces short instead of 1345, at the cost of build time and PBO size (38 s and 220 MB instead of 16 s and 75 MB).
 
+**`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
+Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
+each other (which the build does) was not enough, for instance because a third junction holds one of them. The
+position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
+the finding: the road between them is then steeper than its limit and shows as `road_grade`.
+
 **`bridge on ...: the widest bridge model is ... m, the road is ... m wide`**
 The game has no bridge as wide as the road. The widest is used; the road is wider than the deck.
 

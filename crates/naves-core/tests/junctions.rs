@@ -442,3 +442,57 @@ fn at_finds_the_nearest_junction_whose_patch_holds_the_point() {
     assert_eq!(j.at((4.0, 0.0)).map(|p| p.at), Some((6.0, 0.0)));
     assert!(j.at((3.0, 20.0)).is_none());
 }
+
+#[test]
+fn a_link_with_a_negative_ceiling_is_unresolved_and_named() {
+    // no height difference satisfies a ceiling below zero; the sound link next to it is not blamed
+    let mut j = Junctions {
+        points: vec![
+            junction((0.0, 0.0), 100.0, 4),
+            junction((10.0, 0.0), 100.0, 4),
+            junction((100.0, 0.0), 100.0, 4),
+            junction((110.0, 0.0), 100.0, 4),
+        ],
+        links: vec![
+            Link {
+                a: 0,
+                b: 1,
+                length: 10.0,
+                ceiling: 0.27,
+            },
+            Link {
+                a: 2,
+                b: 3,
+                length: 10.0,
+                ceiling: -1.0,
+            },
+        ],
+        unresolved: Vec::new(),
+    };
+    repair(&mut j);
+    assert_eq!(j.unresolved, vec![1]);
+}
+
+#[test]
+fn no_roads_have_no_junctions() {
+    let hm = terrain(16, 2.0, |_, _| 100.0);
+    let j = find_junctions(&PlacedNetwork::default(), &RoadGraph::default(), &hm);
+    assert_eq!(j, Junctions::default());
+}
+
+#[test]
+fn a_link_of_no_length_repairs_without_nan() {
+    let mut j = two_junctions(0.0, 0.27, 100.0, 108.0, 4, 4);
+    repair(&mut j);
+    assert!(j.points.iter().all(|p| p.height.is_finite()), "{j:?}");
+    assert!((j.points[0].height - j.points[1].height).abs() < 0.01);
+}
+
+#[test]
+fn near_reaches_beyond_the_patch_by_the_given_distance() {
+    let mut j = two_junctions(60.0, 0.27, 100.0, 100.0, 4, 4);
+    j.points[0].patch_m = 5.0;
+    assert!(j.at((8.0, 0.0)).is_none());
+    assert_eq!(j.near((8.0, 0.0), 4.0).map(|p| p.at), Some((0.0, 0.0)));
+    assert!(j.near((10.0, 0.0), 4.0).is_none());
+}

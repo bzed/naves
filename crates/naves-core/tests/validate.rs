@@ -13,6 +13,7 @@ use naves_core::catalog::Family;
 use naves_core::checks::{DriveState, PieceCheck, SteepPathSection};
 use naves_core::conform::{Conformed, RoadConflict};
 use naves_core::heightmap::{Heightmap, MapGeo};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, Link};
 use naves_core::objects::{ObjectId, OrphanedEdit};
 use naves_core::osm::LandPolygon;
 use naves_core::profile::{GradeExcess, GradeExcessKind, Profiles};
@@ -104,6 +105,7 @@ fn run(
     check_roads(
         net,
         profiles,
+        &Junctions::default(),
         conformed,
         pieces,
         steep,
@@ -456,7 +458,9 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::OrphanedEdit,
         Rule::JoinWithoutJunction,
         Rule::TunnelOmitted,
+        Rule::JunctionTooSteep,
     ];
+    assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
     assert!(
         ids.iter()
@@ -466,4 +470,61 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     ids.dedup();
     assert_eq!(ids.len(), rules.len());
     assert_eq!(Rule::RoadNotDrivable.id(), "road_not_drivable");
+}
+
+#[test]
+fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
+    let at = |x: f64, height: f64| Junction {
+        at: (x, 40.0),
+        kind: JunctionKind::Join,
+        ground: height,
+        height,
+        rank: 3,
+        patch_m: 3.5,
+    };
+    let junctions = Junctions {
+        points: vec![at(100.0, 100.0), at(160.0, 112.0)],
+        links: vec![Link {
+            a: 0,
+            b: 1,
+            length: 50.0,
+            ceiling: 0.12,
+        }],
+        unresolved: vec![0],
+    };
+    let v = check_roads(
+        &net(Vec::new()),
+        &Profiles::default(),
+        &junctions,
+        &conformed(),
+        &[],
+        &[],
+        &[],
+        &[],
+        &frame(),
+    );
+    let found = only(Rule::JunctionTooSteep, &v);
+    assert_eq!(found.len(), 1, "{v:?}");
+    assert_eq!(found[0].rule.id(), "junction_too_steep");
+    assert_eq!(found[0].at, (130.0, 40.0));
+    assert_eq!(
+        found[0].message,
+        "Junctions too close for their heights: 12.0 m over 50 m"
+    );
+    // a repaired junction set makes none
+    assert!(
+        only(
+            Rule::JunctionTooSteep,
+            &run(
+                &net(Vec::new()),
+                &Profiles::default(),
+                &conformed(),
+                &[],
+                &[],
+                &[],
+                &[]
+            )
+        )
+        .is_empty()
+    );
 }
