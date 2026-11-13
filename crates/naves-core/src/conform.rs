@@ -35,12 +35,29 @@ pub const FILL_SLOPE: f64 = 0.667;
 pub const FILL_SLOPE_MAX: f64 = 1.0;
 /// How far earthworks reach from a road's core, in metres.
 pub const MAX_EARTHWORK_M: f64 = 60.0;
+/// Side slope above which the uphill side of a road may be a face.
+pub const FACE_SIDE_SLOPE: f64 = 0.35;
+/// Rise over run of a face: steeper than any grid cell can show.
+pub const FACE_SLOPE: f64 = 50.0;
 /// Cores of different roads that differ by more than this are a conflict.
 const CONFLICT_M: f64 = 0.3;
 /// Passes of averaging over the changed vertices.
 const ROUNDING_PASSES: usize = 4;
 /// Impossible limits are reported once per square of this many metres.
 const CONFLICT_REGION_M: f64 = 50.0;
+
+/// A circle of ground levelled to one height, where roads meet without a junction piece.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelPatch {
+    /// Centre in map metres.
+    pub at: (f64, f64),
+    /// Radius in metres; every vertex within it takes `height`.
+    pub radius: f64,
+    /// The height of the patch.
+    pub height: f64,
+    /// Rank of the most important road meeting here; wins ties against a road of a lower rank.
+    pub rank: u8,
+}
 
 /// Two roads that want different heights at the same place.
 #[derive(Debug, Clone, PartialEq)]
@@ -140,16 +157,28 @@ impl Grid {
 #[derive(Clone, Copy)]
 struct Core {
     height: f32,
-    strip: usize,
     /// Rise over run of the cutting this vertex's hillside needs.
     cut: f32,
     /// Rise over run of the embankment this vertex's hillside needs.
     fill: f32,
 }
 
-/// The vertices within `reach` of the centre line of `strip`, with the height of the closest point.
-fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (f64, f64)> {
-    let mut found: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
+/// Where a centre line passes a vertex.
+#[derive(Clone, Copy)]
+struct Hit {
+    /// Distance from the vertex to the centre line.
+    distance: f64,
+    /// The height of the centre line at the closest point.
+    height: f64,
+    /// The segment of the strip that is closest.
+    segment: usize,
+}
+
+/// The vertices within `reach` of the centre line of `strip`. A vertex has one hit for each leg of the strip
+/// that passes it: the closest segment, and any segment more than one segment away from it (a road that
+/// folds back on itself, or a loop) that is near too.
+fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, Vec<Hit>> {
+    let mut found: BTreeMap<usize, Vec<Hit>> = BTreeMap::new();
     let last = grid.size.saturating_sub(1);
     for (segment, pair) in strip.joints.windows(2).enumerate() {
         let [from, to] = pair else { continue };
@@ -184,12 +213,19 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, (
                 let along = raw.clamp(0.0, 1.0);
                 let distance = (px - from.0 - along * dx).hypot(py - from.1 - along * dy);
                 if distance <= reach {
-                    let height = from.2 + along * (to.2 - from.2);
-                    let slot = found
-                        .entry(row * grid.size + col)
-                        .or_insert((distance, height));
-                    if distance < slot.0 {
-                        *slot = (distance, height);
+                    let hit = Hit {
+                        distance,
+                        height: from.2 + along * (to.2 - from.2),
+                        segment,
+                    };
+                    let hits = found.entry(row * grid.size + col).or_default();
+                    match hits
+                        .iter_mut()
+                        .find(|other| other.segment.abs_diff(segment) <= 1)
+                    {
+                        Some(other) if distance < other.distance => *other = hit,
+                        Some(_) => {}
+                        None => hits.push(hit),
                     }
                 }
             }
@@ -350,64 +386,172 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
     fields
 }
 
-/// Gives every vertex near a road the height of the road, the higher rank winning where two roads clash.
-/// Returns the cores and, per pair of roads, the worst clash and where it is.
+/// A core that wants a vertex: one leg of a strip, or a level patch.
+#[derive(Clone, Copy)]
+struct Candidate {
+    /// The strip's index, or the number of strips plus the patch's index.
+    owner: usize,
+    rank: u8,
+    height: f32,
+    /// Distance from the vertex to the centre line, or to the point of a patch.
+    distance: f64,
+    /// Distance from the vertex to the edge of the road (to the centre line less half the width), or of the
+    /// patch (to its point less its radius); not positive within the width.
+    edge: f64,
+    cut: f32,
+    fill: f32,
+}
+
+/// The cutting and embankment slopes the hillside under `vertex` needs.
+fn hillside_slopes(base: &Heightmap, grid: Grid, vertex: usize) -> (f32, f32) {
+    let (x, y) = grid.position(vertex);
+    let sample = base.sample(x, y);
+    let natural = f64::from(sample.dz_dx.hypot(sample.dz_dy));
+    (
+        narrow((1.5 * natural).clamp(CUT_SLOPE, CUT_SLOPE_MAX)),
+        narrow((1.5 * natural).clamp(FILL_SLOPE, FILL_SLOPE_MAX)),
+    )
+}
+
+/// Everything that wants each vertex: the legs of the strips, and the patches that are not under a bridge span.
+fn candidates(
+    strips: &[RoadStrip],
+    patches: &[LevelPatch],
+    grid: Grid,
+    base: &Heightmap,
+    shadow: &[bool],
+) -> BTreeMap<usize, Vec<Candidate>> {
+    let mut found: BTreeMap<usize, Vec<Candidate>> = BTreeMap::new();
+    for (index, strip) in strips.iter().enumerate() {
+        let reach = strip.half_width + 1.5 * grid.cell;
+        for (vertex, hits) in core_vertices(strip, grid, reach) {
+            let (cut, fill) = hillside_slopes(base, grid, vertex);
+            for hit in hits {
+                let steep =
+                    strip.side_slope.get(hit.segment).copied().unwrap_or(0.0) > FACE_SIDE_SLOPE;
+                found.entry(vertex).or_default().push(Candidate {
+                    owner: index,
+                    rank: strip.rank,
+                    height: narrow(hit.height),
+                    distance: hit.distance,
+                    edge: hit.distance - strip.half_width,
+                    cut: if steep { narrow(FACE_SLOPE) } else { cut },
+                    fill,
+                });
+            }
+        }
+    }
+    let last = grid.size.saturating_sub(1);
+    for (number, patch) in patches.iter().enumerate() {
+        let cols = (
+            grid.nearest(patch.at.0 - patch.radius).saturating_sub(1),
+            (grid.nearest(patch.at.0 + patch.radius) + 1).min(last),
+        );
+        let rows = (
+            grid.nearest(patch.at.1 - patch.radius).saturating_sub(1),
+            (grid.nearest(patch.at.1 + patch.radius) + 1).min(last),
+        );
+        for row in rows.0..=rows.1 {
+            for col in cols.0..=cols.1 {
+                let vertex = row * grid.size + col;
+                let (px, py) = grid.position(vertex);
+                let distance = (px - patch.at.0).hypot(py - patch.at.1);
+                if distance > patch.radius || shadow.get(vertex).copied().unwrap_or(false) {
+                    continue;
+                }
+                let (cut, fill) = hillside_slopes(base, grid, vertex);
+                found.entry(vertex).or_default().push(Candidate {
+                    owner: strips.len() + number,
+                    rank: patch.rank,
+                    height: narrow(patch.height),
+                    distance,
+                    edge: distance - patch.radius,
+                    cut,
+                    fill,
+                });
+            }
+        }
+    }
+    found
+}
+
+/// Rounds a distance to a millimetre, so that two that are equal but for rounding tie.
+fn tie_distance(metres: f64) -> f64 {
+    (metres * 1000.0).round()
+}
+
+/// Gives every vertex near a road or a patch the height of what claims it. Where two want different heights
+/// the vertex goes to the one whose edge is nearer, a tie to the higher rank; the height difference becomes
+/// a face between them. It is a clash only where the vertex is within the width of both.
+/// Returns the cores and, per pair of owners, the worst clash and where it is.
 #[expect(
     clippy::type_complexity,
-    reason = "a map from a pair of strips to (difference, place)"
+    reason = "a map from a pair of owners to (difference, place)"
 )]
 fn claim_cores(
     strips: &[RoadStrip],
+    patches: &[LevelPatch],
     grid: Grid,
     base: &Heightmap,
+    shadow: &[bool],
 ) -> (
     Vec<Option<Core>>,
     BTreeMap<(usize, usize), (f64, (f64, f64))>,
 ) {
-    let mut order: Vec<usize> = (0..strips.len()).collect();
-    order.sort_by(|&left, &right| {
-        let rank = |i: usize| strips.get(i).map_or(0, |s| s.rank);
-        rank(right).cmp(&rank(left)).then(left.cmp(&right))
-    });
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
     let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
-    for &index in &order {
-        let Some(strip) = strips.get(index) else {
+    for (vertex, mut wanting) in candidates(strips, patches, grid, base, shadow) {
+        let Some(&first) = wanting.first() else {
             continue;
         };
-        let reach = strip.half_width + 1.5 * grid.cell;
-        for (vertex, (_, height)) in core_vertices(strip, grid, reach) {
-            let height = narrow(height);
-            let (x, y) = grid.position(vertex);
-            let sample = base.sample(x, y);
-            let natural = f64::from(sample.dz_dx.hypot(sample.dz_dy));
-            let cut = narrow((1.5 * natural).clamp(CUT_SLOPE, CUT_SLOPE_MAX));
-            let fill = narrow((1.5 * natural).clamp(FILL_SLOPE, FILL_SLOPE_MAX));
-            let Some(slot) = cores.get_mut(vertex) else {
-                continue;
-            };
-            match slot {
-                None => {
-                    *slot = Some(Core {
-                        height,
-                        strip: index,
-                        cut,
-                        fill,
-                    });
-                }
-                Some(owner) => {
-                    let difference = f64::from((owner.height - height).abs());
-                    if difference > CONFLICT_M && owner.strip != index {
-                        let key = (owner.strip.min(index), owner.strip.max(index));
-                        let worst = clashes
-                            .entry(key)
-                            .or_insert((difference, grid.position(vertex)));
-                        if difference > worst.0 {
-                            *worst = (difference, grid.position(vertex));
-                        }
-                    }
+        let contested = wanting
+            .iter()
+            .any(|c| f64::from((c.height - first.height).abs()) > CONFLICT_M);
+        let by_rank = |a: &Candidate, b: &Candidate| {
+            b.rank
+                .cmp(&a.rank)
+                .then(a.owner.cmp(&b.owner))
+                .then(a.distance.total_cmp(&b.distance))
+        };
+        if contested {
+            wanting.sort_by(|a, b| {
+                tie_distance(a.edge)
+                    .total_cmp(&tie_distance(b.edge))
+                    .then_with(|| by_rank(a, b))
+            });
+        } else {
+            wanting.sort_by(by_rank);
+        }
+        let Some(&winner) = wanting.first() else {
+            continue;
+        };
+        for other in &wanting {
+            let difference = f64::from((winner.height - other.height).abs());
+            if difference > CONFLICT_M && winner.edge <= 0.0 && other.edge <= 0.0 {
+                let key = (winner.owner.min(other.owner), winner.owner.max(other.owner));
+                let worst = clashes
+                    .entry(key)
+                    .or_insert((difference, grid.position(vertex)));
+                if difference > worst.0 {
+                    *worst = (difference, grid.position(vertex));
                 }
             }
+        }
+        if let Some(slot) = cores.get_mut(vertex) {
+            *slot = Some(Core {
+                height: winner.height,
+                // between two roads at different heights the step is a face, as steep as the grid allows
+                cut: if contested {
+                    narrow(FACE_SLOPE)
+                } else {
+                    winner.cut
+                },
+                fill: if contested {
+                    narrow(FACE_SLOPE)
+                } else {
+                    winner.fill
+                },
+            });
         }
     }
     (cores, clashes)
@@ -474,7 +618,11 @@ fn flood(
 ///
 /// # Errors
 /// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.
-pub fn conform(base: &Heightmap, strips: &[RoadStrip]) -> Result<Conformed, ConformError> {
+pub fn conform(
+    base: &Heightmap,
+    strips: &[RoadStrip],
+    patches: &[LevelPatch],
+) -> Result<Conformed, ConformError> {
     let size = usize::try_from(base.size).unwrap_or(0);
     if base.h.len() != size * size {
         return Err(ConformError::BadHeightmap {
@@ -486,7 +634,8 @@ pub fn conform(base: &Heightmap, strips: &[RoadStrip]) -> Result<Conformed, Conf
         size,
         cell: f64::from(base.cell_m),
     };
-    let (cores, clashes) = claim_cores(strips, grid, base);
+    let shadow = bridge_shadow(strips, grid);
+    let (cores, clashes) = claim_cores(strips, patches, grid, base, &shadow);
     if cores.iter().all(Option::is_none) {
         return Ok(Conformed {
             heightmap: base.clone(),
@@ -497,7 +646,6 @@ pub fn conform(base: &Heightmap, strips: &[RoadStrip]) -> Result<Conformed, Conf
         });
     }
     let fields = sweep(&cores, grid);
-    let shadow = bridge_shadow(strips, grid);
     let (flooded, capped) = flood(base, &cores, &fields, &shadow, grid);
     let mut heights = base.h.clone();
     for (vertex, core) in cores.iter().enumerate() {

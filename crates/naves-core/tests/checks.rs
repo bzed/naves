@@ -22,6 +22,7 @@ use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::RoadGraph;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
+use naves_core::sideslope::side_slopes;
 
 fn terrain(size: u32, cell: f32, f: impl Fn(f64, f64) -> f64) -> Heightmap {
     let mut h = Vec::new();
@@ -327,7 +328,12 @@ fn a_bump_shows_as_grade_change() {
 
 /// The profiles with the junctions that `find_junctions` finds (chain ends on roads; no graph).
 fn solve(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
-    solve_profiles(net, hm, &find_junctions(net, &RoadGraph::default(), hm))
+    solve_profiles(
+        net,
+        hm,
+        &find_junctions(net, &RoadGraph::default(), hm),
+        &side_slopes(net, hm),
+    )
 }
 
 #[test]
@@ -338,7 +344,7 @@ fn miss_is_zero_on_shaped_terrain() {
     });
     let net = chain(Family::Asf3, true, (100.0, 375.0), (650.0, 375.0));
     let profiles = solve(&net, &base);
-    let shaped = conform(&base, &profiles.strips).unwrap().heightmap;
+    let shaped = conform(&base, &profiles.strips, &[]).unwrap().heightmap;
     for c in check_roads_on_terrain(&net, &shaped) {
         assert!(
             c.miss_m < MAX_MISS_M,
@@ -358,7 +364,7 @@ fn a_side_road_starts_on_the_ground_of_the_road_it_leaves() {
     let mut net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 900.0));
     append_chain(&mut net, Family::Grav, true, (303.5, 500.0), (600.0, 500.0));
     let profiles = solve(&net, &base);
-    let shaped = conform(&base, &profiles.strips).unwrap().heightmap;
+    let shaped = conform(&base, &profiles.strips, &[]).unwrap().heightmap;
     for c in check_roads_on_terrain(&net, &shaped)
         .iter()
         .filter(|c| c.family == Family::Grav)

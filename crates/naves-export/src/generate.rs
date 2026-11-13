@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 
 use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
-use naves_core::conform::{Conformed, conform};
+use naves_core::conform::{Conformed, LevelPatch, conform};
 use naves_core::dem::Dem;
 use naves_core::features::{Feature, FeatureKind, road_features};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::junctions::{Junctions, find_junctions};
+use naves_core::junctions::{JunctionKind, Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     road_objects,
@@ -28,6 +28,7 @@ use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
 use naves_core::roadnet::{RoadGraph, build_graph};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, place_network};
+use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
 use serde::Serialize;
@@ -161,8 +162,10 @@ fn place_roads(
     let net = place_network(&graph, &catalog)?;
     progress("Shaping the terrain to the roads");
     let junctions = find_junctions(&net, &graph, base);
-    let profiles = solve_profiles(&net, base, &junctions);
-    let conformed = conform(base, &profiles.strips)?;
+    let side = side_slopes(&net, base);
+    let profiles = solve_profiles(&net, base, &junctions, &side);
+    let patches = level_patches(&junctions, f64::from(base.cell_m));
+    let conformed = conform(base, &profiles.strips, &patches)?;
     Ok(Roads {
         net,
         graph,
@@ -171,6 +174,24 @@ fn place_roads(
         conformed: Some(conformed),
         catalog: Some(catalog),
     })
+}
+
+/// The level patches of `junctions`: a circle of the junction's `patch_m` plus one cell at its height under
+/// each join and each chain end on a road. A junction piece is already a level segment of its strip and gets
+/// none.
+#[must_use]
+pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
+    junctions
+        .points
+        .iter()
+        .filter(|j| matches!(j.kind, JunctionKind::Join | JunctionKind::EndOnRoad))
+        .map(|j| LevelPatch {
+            at: j.at,
+            radius: j.patch_m + cell_m,
+            height: j.height,
+            rank: j.rank,
+        })
+        .collect()
 }
 
 /// The deck level of every bridge object: the height of the profile at its start.

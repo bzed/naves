@@ -78,6 +78,9 @@ pub struct RoadStrip {
     /// For each segment between two joints, whether it is a junction piece: its side ports, where
     /// side roads end, lie beyond the through road's edge. May be shorter than the segments.
     pub junction: Vec<bool>,
+    /// For each segment between two joints, the side slope of the original ground there (rise over run, not
+    /// negative). May be shorter than the segments; a segment past its end has none (0).
+    pub side_slope: Vec<f64>,
     /// Half the width of the road.
     pub half_width: f64,
     /// How important the road is; higher wins where two roads clash.
@@ -842,6 +845,7 @@ fn profile_chain(
     hm: &Heightmap,
     strips: &[RoadStrip],
     junctions: &Junctions,
+    side: &[f64],
 ) -> Option<(RoadStrip, Solved)> {
     let chain = chain_of(net, roads)?;
     let first = net.roads.get(*roads.first()?)?;
@@ -925,6 +929,10 @@ fn profile_chain(
                     .is_some_and(|r| r.kind == PlacedKind::Junction)
             })
             .collect(),
+        side_slope: roads
+            .iter()
+            .map(|i| side.get(*i).copied().unwrap_or(0.0))
+            .collect(),
         half_width: first.width / 2.0,
         rank: rank(family),
     };
@@ -989,9 +997,15 @@ fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
 }
 
 /// Computes the profile of every chain of `net`, in placement order, on the terrain `hm`, with the heights
-/// of `junctions` where roads meet.
+/// of `junctions` where roads meet. `side` is the side slope of the original ground at each road of `net`
+/// (see [`crate::sideslope::side_slopes`]); it is kept in the strips for the terrain shaping.
 #[must_use]
-pub fn solve_profiles(net: &PlacedNetwork, hm: &Heightmap, junctions: &Junctions) -> Profiles {
+pub fn solve_profiles(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+) -> Profiles {
     let mut out = Profiles::default();
     let mut variables: Vec<Solved> = Vec::new();
     let mut index = Index {
@@ -999,7 +1013,8 @@ pub fn solve_profiles(net: &PlacedNetwork, hm: &Heightmap, junctions: &Junctions
         strips: Vec::new(),
     };
     for roads in &net.chains {
-        let Some((strip, vars)) = profile_chain(net, &index, roads, hm, &out.strips, junctions)
+        let Some((strip, vars)) =
+            profile_chain(net, &index, roads, hm, &out.strips, junctions, side)
         else {
             continue;
         };

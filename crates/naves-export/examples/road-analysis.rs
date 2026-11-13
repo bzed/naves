@@ -162,10 +162,16 @@ fn main() {
     let net = place_network(&graph, &catalog).expect("place");
     let t_place = t0.elapsed();
     let junctions = find_junctions(&net, &graph, &base);
+    let side = naves_core::sideslope::side_slopes(&net, &base);
     let profiles = if std::env::var("NO_JUNCTIONS").is_ok() {
-        solve_profiles(&net, &base, &naves_core::junctions::Junctions::default())
+        solve_profiles(
+            &net,
+            &base,
+            &naves_core::junctions::Junctions::default(),
+            &side,
+        )
     } else {
-        solve_profiles(&net, &base, &junctions)
+        solve_profiles(&net, &base, &junctions, &side)
     };
     let t_profiles = t0.elapsed();
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
@@ -175,7 +181,8 @@ fn main() {
             return;
         }
     }
-    let conformed = conform(&base, &profiles.strips).expect("conform");
+    let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
+    let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
     let t_conform = t0.elapsed();
     let pieces = check_roads_on_terrain(&net, &conformed.heightmap);
     let raw = check_roads_on_terrain(&net, &base);

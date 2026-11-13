@@ -251,6 +251,7 @@ fn lines_of(net: &PlacedNetwork) -> Vec<Line> {
                 .iter()
                 .map(|r| r.kind == PlacedKind::Junction)
                 .collect(),
+            side_slope: Vec::new(),
             half_width: first.width / 2.0,
             rank: rank(first.family),
         };

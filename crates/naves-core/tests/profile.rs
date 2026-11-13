@@ -23,6 +23,7 @@ use naves_core::profile::{MEETING_GRADE, Profiles, RELAX_OFF_M, solve_profiles};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot, place_network};
+use naves_core::sideslope::side_slopes;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -119,7 +120,12 @@ fn network(chains: Vec<Vec<PlacedRoad>>) -> PlacedNetwork {
 
 /// The profiles with the junctions that `find_junctions` finds (chain ends on roads; no graph).
 fn solve(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
-    solve_profiles(net, hm, &find_junctions(net, &RoadGraph::default(), hm))
+    solve_profiles(
+        net,
+        hm,
+        &find_junctions(net, &RoadGraph::default(), hm),
+        &side_slopes(net, hm),
+    )
 }
 
 fn grades(p: &Profiles, strip: usize) -> Vec<f64> {
@@ -474,7 +480,12 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
         points: vec![junction(280.0, 100.0), junction(320.0, 160.0)],
         ..Junctions::default()
     };
-    let p = solve_profiles(&network(vec![low, high, bridge_between]), &hm, &junctions);
+    let p = solve_profiles(
+        &network(vec![low, high, bridge_between]),
+        &hm,
+        &junctions,
+        &[],
+    );
     assert!(!p.excesses.is_empty(), "60 m in 40 m cannot be a road");
     let worst = p.excesses.iter().map(|e| e.grade.abs()).fold(0.0, f64::max);
     assert!(worst > grade_aim(Family::Mud));
@@ -601,7 +612,7 @@ fn legs_whose_level_strips_do_not_touch_keep_their_heights() {
     let p = solve(&network(vec![legs]), &hm);
     let apart = (leg_height(&p, 300.0, 400.0) - leg_height(&p, 327.0, 400.0)).abs();
     assert!(apart > 4.0, "{apart}");
-    let out = conform(&hm, &p.strips).unwrap();
+    let out = conform(&hm, &p.strips, &[]).unwrap();
     assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
 }
 
@@ -786,7 +797,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
         points: vec![piece_junction],
         ..Junctions::default()
     };
-    let p = solve_profiles(&network(vec![through, side]), &hm, &junctions);
+    let p = solve_profiles(&network(vec![through, side]), &hm, &junctions, &[]);
     let end = p.strips[1].joints.last().copied().unwrap();
     assert!(
         end.2 > 108.5,
@@ -1103,7 +1114,7 @@ fn all_roads_at_a_junction_have_its_height() {
     let hm = terrain(128, 3.125, |x, y| 100.0 + 0.08 * x + 0.03 * y);
     let j = find_junctions(&net, &graph, &hm);
     assert_eq!(j.points.len(), 1);
-    let p = solve_profiles(&net, &hm, &j);
+    let p = solve_profiles(&net, &hm, &j, &[]);
     let want = j.points[0].height;
     let mut seen = 0;
     for strip in &p.strips {
@@ -1142,14 +1153,14 @@ fn the_through_road_does_not_drag_the_side_road_off_the_ground() {
     let j = find_junctions(&net, &RoadGraph::default(), &hm);
     assert_eq!(j.points.len(), 1, "{j:?}");
     // without the junction the side road takes the through road's height, which is far off the ground
-    let drifting = solve_profiles(&net, &hm, &Junctions::default());
+    let drifting = solve_profiles(&net, &hm, &Junctions::default(), &[]);
     let end = drifting.strips[1].joints.last().copied().unwrap();
     assert!(
         end.2 - f64::from(hm.sample(end.0, end.1).height) > 2.0,
         "the through road does not drift: {}",
         end.2
     );
-    let p = solve_profiles(&net, &hm, &j);
+    let p = solve_profiles(&net, &hm, &j, &[]);
     let side_end = p.strips[1].joints.last().copied().unwrap();
     assert!((side_end.2 - f64::from(hm.sample(side_end.0, side_end.1).height)).abs() < 1.0);
 }
@@ -1159,9 +1170,9 @@ fn the_order_of_the_chains_does_not_change_the_heights() {
     let (net, graph) = grid_of_roads();
     let hm = terrain(256, 3.125, |x, y| 100.0 + 0.2 * x - 0.1 * y);
     let j = find_junctions(&net, &graph, &hm);
-    let a = solve_profiles(&net, &hm, &j);
+    let a = solve_profiles(&net, &hm, &j, &[]);
     let other = reordered(&net);
-    let b = solve_profiles(&other, &hm, &j);
+    let b = solve_profiles(&other, &hm, &j, &[]);
     let (ha, hb) = (heights_by_slot(&net, &a), heights_by_slot(&other, &b));
     assert_eq!(ha.len(), hb.len());
     for (slot, (s0, e0)) in &ha {
@@ -1193,7 +1204,7 @@ fn a_ring_meets_itself_at_one_height_and_a_lone_road_still_solves() {
     ]);
     let hm = terrain(128, 3.125, |x, _| 100.0 + 0.1 * x);
     let j = find_junctions(&ring, &graph, &hm);
-    let p = solve_profiles(&ring, &hm, &j);
+    let p = solve_profiles(&ring, &hm, &j, &[]);
     // the chain runs from the west road through the junction and round the ring back to it: it passes the
     // junction once on the way in and ends there
     let strip = p.strips.iter().find(|s| s.joints.len() > 20).unwrap();
@@ -1218,7 +1229,7 @@ fn a_ring_meets_itself_at_one_height_and_a_lone_road_still_solves() {
         (100.0, 300.0),
     )]);
     assert_eq!(
-        solve_profiles(&lone, &hm, &Junctions::default())
+        solve_profiles(&lone, &hm, &Junctions::default(), &[])
             .strips
             .len(),
         1
@@ -1235,7 +1246,7 @@ fn no_piece_carries_a_step() {
     let net = network(vec![low, high, track]);
     let j = find_junctions(&net, &RoadGraph::default(), &hm);
     assert_eq!(j.points.len(), 2, "{j:?}");
-    let p = solve_profiles(&net, &hm, &j);
+    let p = solve_profiles(&net, &hm, &j, &[]);
     for w in p.strips[2].joints.windows(2) {
         let run = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
         assert!(((w[1].2 - w[0].2) / run).abs() <= 0.45 + 1e-6, "{w:?}");
@@ -1269,7 +1280,7 @@ fn a_through_road_is_fixed_at_the_junction_piece_in_its_middle() {
     let side = straight("s", Family::Asf3, (306.25, 300.0), (306.25, 105.0));
     let net = network(vec![through, side]);
     let j = find_junctions(&net, &RoadGraph::default(), &hm);
-    let p = solve_profiles(&net, &hm, &j);
+    let p = solve_profiles(&net, &hm, &j, &[]);
     let piece_joints: Vec<_> = p.strips[0]
         .joints
         .iter()
@@ -1312,7 +1323,7 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         ],
         ..Junctions::default()
     };
-    let p = solve_profiles(&net, &hm, &junctions);
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
     let steepest = grades(&p, 0).iter().fold(0.0_f64, |m, g| m.max(g.abs()));
     assert!(
         steepest <= 1.1 * ceiling + 1e-6,
@@ -1387,7 +1398,7 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
         ],
         ..Junctions::default()
     };
-    let p = solve_profiles(&net, &hm, &junctions);
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
     for (i, g) in grades(&p, 0).iter().take(2).enumerate() {
         assert!(g.abs() <= ceiling + 1e-3, "piece {i}: {g}");
     }
@@ -1425,7 +1436,7 @@ fn free_span_then_a_short_piece_then_a_held_joint() -> (PlacedNetwork, Heightmap
 #[test]
 fn no_piece_between_two_held_joints_is_over_its_hard_limit() {
     let (net, hm, junctions) = free_span_then_a_short_piece_then_a_held_joint();
-    let p = solve_profiles(&net, &hm, &junctions);
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
     for (i, g) in grades(&p, 0).iter().enumerate() {
         assert!(
             g.abs() <= drive_grade(Family::Asf3) + 1e-9,

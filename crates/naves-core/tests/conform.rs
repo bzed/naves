@@ -10,7 +10,9 @@
     reason = "test helper code; failing loudly is the point and the numbers are tiny"
 )]
 
-use naves_core::conform::{CUT_SLOPE, FILL_SLOPE, FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform};
+use naves_core::conform::{
+    CUT_SLOPE, CUT_SLOPE_MAX, FILL_SLOPE, FILL_SLOPE_MAX, LevelPatch, MAX_EARTHWORK_M, conform,
+};
 use naves_core::heightmap::Heightmap;
 use naves_core::profile::RoadStrip;
 
@@ -37,6 +39,7 @@ fn strip(joints: &[(f64, f64, f64)], half_width: f64, rank: u8) -> RoadStrip {
         joints: joints.to_vec(),
         bridge: Vec::new(),
         junction: Vec::new(),
+        side_slope: Vec::new(),
         half_width,
         rank,
     }
@@ -83,7 +86,7 @@ fn the_road_core_is_at_the_profile() {
         100.0 + 8.0 * (x / 40.0).sin() * (y / 55.0).cos()
     });
     let r = road((300.0, 80.0), (300.0, 500.0), 105.0, 105.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     let reach = 3.5 + 1.5 * 6.25;
     let mut core = 0;
     for row in 0..100 {
@@ -103,7 +106,7 @@ fn the_road_core_is_at_the_profile() {
 fn the_cross_section_is_flat_and_the_terrain_straight_between_joints() {
     let base = terrain(100, 6.25, |_, _| 100.0);
     let r = road((300.0, 80.0), (300.0, 500.0), 100.0, 130.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     for row in 20..70 {
         let y = f64::from(row) * 6.25;
         let expected = 100.0 + 30.0 * (y - 80.0) / 420.0;
@@ -134,7 +137,7 @@ fn every_triangle_under_the_road_has_its_corners_on_the_road() {
             );
             let (from, to) = ((centre - dx, centre - dy), (centre + dx, centre + dy));
             let straight = road(from, to, 60.0, 60.0, 3.5, 3);
-            let out = conform(&base, std::slice::from_ref(&straight)).unwrap();
+            let out = conform(&base, std::slice::from_ref(&straight), &[]).unwrap();
             for row in 0..size - 1 {
                 for col in 0..size - 1 {
                     let middle = (
@@ -188,7 +191,7 @@ fn a_road_along_a_valley_side_gets_a_bench() {
         3.5,
         3,
     );
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(out.capped.is_empty(), "{:?}", out.capped);
     assert!(
         out.max_cut_m > 1.0 && out.max_fill_m > 1.0,
@@ -234,7 +237,7 @@ fn an_embankment_on_a_40_degree_side_reaches_the_ground() {
         3.5,
         3,
     );
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(out.capped.is_empty(), "{} capped", out.capped.len());
     let downhill = steepest(&out.heightmap, |col, row| {
         col > 100 && (40..150).contains(&row)
@@ -247,7 +250,7 @@ fn gentle_ground_keeps_the_gentle_slopes() {
     // a road 6 m above a 10 % slope: the embankment is 34 degrees, not steeper
     let base = terrain(200, 6.25, |x, _| 300.0 - 0.10 * x);
     let r = road((600.0, 200.0), (600.0, 1000.0), 246.0, 246.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     let steep = steepest(&out.heightmap, |_, row| (40..150).contains(&row));
     assert!(steep <= FILL_SLOPE + 0.05, "{steep}");
 }
@@ -257,7 +260,7 @@ fn level_ground_and_the_map_edge_are_shaped_as_before() {
     // natural slope zero, and a road whose core touches the border
     let base = terrain(64, 6.25, |_, _| 100.0);
     let r = road((3.0, 0.0), (3.0, 393.0), 103.0, 103.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(out.heightmap.h.iter().all(|h| h.is_finite()));
     let steep = steepest(&out.heightmap, |_, _| true);
     assert!(steep <= FILL_SLOPE + 0.05, "{steep}");
@@ -270,7 +273,7 @@ fn a_road_across_a_valley_floor_gets_an_embankment() {
         100.0 - 25.0 * (1.0 - ((y - 375.0).abs() / 15.0).min(1.0))
     });
     let r = road((100.0, 375.0), (650.0, 375.0), 100.0, 100.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     // the floor under the road is filled to the road, and the fill is wider than the road
     let col = 60;
     assert!((at(&out.heightmap, col, 60) - 100.0).abs() < 1e-3);
@@ -284,7 +287,7 @@ fn a_road_through_a_ridge_gets_a_cutting() {
         100.0 + 30.0 * (-((y - 375.0) / 25.0).powi(2)).exp()
     });
     let r = road((100.0, 375.0), (650.0, 375.0), 100.0, 100.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(out.max_cut_m > 25.0);
     assert!((at(&out.heightmap, 60, 60) - 100.0).abs() < 1e-3);
     assert!(out.capped.is_empty());
@@ -296,7 +299,7 @@ fn nothing_changes_outside_the_earthworks() {
         200.0 + 30.0 * (x / 120.0).sin() + 20.0 * (y / 90.0).cos()
     });
     let r = road((300.0, 100.0), (700.0, 800.0), 190.0, 215.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     let a = (300.0, 100.0);
     let b = (700.0, 800.0);
     let mut changed = 0;
@@ -325,7 +328,7 @@ fn a_cliff_beyond_the_meeting_line_stays() {
         100.0 + if x > 600.0 { wall * (x - 600.0) } else { 0.0 }
     });
     let r = road((400.0, 100.0), (400.0, 900.0), 100.0, 100.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     for row in 0..160 {
         for col in 0..160 {
             if f64::from(col) * 6.25 > 520.0 {
@@ -346,7 +349,7 @@ fn a_wall_next_to_the_road_stops_at_the_cap_and_is_reported() {
         100.0 + if x > 410.0 { wall * (x - 410.0) } else { 0.0 }
     });
     let r = road((400.0, 100.0), (400.0, 900.0), 100.0, 100.0, 3.5, 3);
-    let out = conform(&base, std::slice::from_ref(&r)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(!out.capped.is_empty());
     for row in 0..160 {
         for col in 0..160 {
@@ -364,8 +367,9 @@ fn a_wall_next_to_the_road_stops_at_the_cap_and_is_reported() {
 fn parallel_roads_at_different_heights_report_a_conflict() {
     let base = terrain(120, 6.25, |_, _| 100.0);
     let a = road((300.0, 100.0), (300.0, 650.0), 100.0, 100.0, 3.5, 3);
-    let b = road((312.0, 100.0), (312.0, 650.0), 110.0, 110.0, 3.5, 2);
-    let out = conform(&base, &[a, b]).unwrap();
+    // the widths overlap: 2 m apart, 7 m wide (roads whose widths do not overlap each keep their ground)
+    let b = road((302.0, 100.0), (302.0, 650.0), 110.0, 110.0, 3.5, 2);
+    let out = conform(&base, &[a, b], &[]).unwrap();
     assert!(!out.conflicts.is_empty());
     assert!(out.conflicts.iter().any(|c| c.height_difference_m > 5.0));
     let (lo, hi) = out.heightmap.min_max();
@@ -379,7 +383,7 @@ fn the_base_is_untouched() {
     let base = terrain(80, 6.25, |x, _| 100.0 + x / 10.0);
     let copy = base.clone();
     let r = road((200.0, 50.0), (200.0, 450.0), 120.0, 120.0, 3.5, 3);
-    conform(&base, &[r]).unwrap();
+    conform(&base, &[r], &[]).unwrap();
     assert_eq!(base, copy);
 }
 
@@ -393,7 +397,7 @@ fn a_road_along_the_map_edge_does_not_panic() {
         ((490.0, 490.0), (490.0, 0.0)),
     ] {
         let r = road(line.0, line.1, 110.0, 115.0, 3.5, 3);
-        let out = conform(&base, &[r]).unwrap();
+        let out = conform(&base, &[r], &[]).unwrap();
         assert_eq!(out.heightmap.size, 80);
     }
 }
@@ -401,7 +405,7 @@ fn a_road_along_the_map_edge_does_not_panic() {
 #[test]
 fn no_roads_change_nothing() {
     let base = terrain(40, 6.25, |x, _| x);
-    let out = conform(&base, &[]).unwrap();
+    let out = conform(&base, &[], &[]).unwrap();
     assert_eq!(out.heightmap, base);
     assert!(out.max_cut_m.abs() < f32::EPSILON && out.max_fill_m.abs() < f32::EPSILON);
 }
@@ -413,7 +417,7 @@ fn a_heightmap_of_the_wrong_size_is_an_error() {
         cell_m: 6.25,
         h: vec![0.0; 50],
     };
-    assert!(conform(&base, &[]).is_err());
+    assert!(conform(&base, &[], &[]).is_err());
 }
 
 #[test]
@@ -425,8 +429,8 @@ fn conforming_is_deterministic() {
         road((200.0, 100.0), (500.0, 600.0), 100.0, 90.0, 3.5, 3),
         road((100.0, 400.0), (650.0, 300.0), 95.0, 95.0, 2.5, 1),
     ];
-    let a = conform(&base, &rs).unwrap();
-    let b = conform(&base, &rs).unwrap();
+    let a = conform(&base, &rs, &[]).unwrap();
+    let b = conform(&base, &rs, &[]).unwrap();
     assert_eq!(a, b);
 }
 
@@ -450,7 +454,7 @@ fn the_ground_under_a_bridge_keeps_its_height() {
     joints.dedup();
     let mut road = strip(&joints, 3.5, 3);
     road.bridge = vec![false, true, false];
-    let out = conform(&base, std::slice::from_ref(&road)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&road), &[]).unwrap();
     // in the middle of the span the ground is as it was
     for row in 63..69 {
         for col in 40..56 {
@@ -489,7 +493,7 @@ fn short_bridge(cell: f32, span: f64, depth: f64) {
     ];
     let mut road = strip(&joints, 3.5, 3);
     road.bridge = vec![false, true, false];
-    let out = conform(&base, std::slice::from_ref(&road)).unwrap();
+    let out = conform(&base, std::slice::from_ref(&road), &[]).unwrap();
     let c = |m: f64| (m / f64::from(cell)).round() as u32;
     // the ground under the span, around the centre line, is as it was
     for row in 0..size {
@@ -531,4 +535,185 @@ fn the_ground_under_a_longer_bridge_keeps_its_height() {
 #[test]
 fn the_ground_under_a_short_bridge_keeps_its_height_on_fine_cells() {
     short_bridge(2.5, 25.0, 6.0);
+}
+
+/// The terrain height at a map position, bilinear.
+fn sample(hm: &Heightmap, x: f64, y: f64) -> f64 {
+    f64::from(hm.sample(x, y).height)
+}
+
+/// A road along x from 20 m to 380 m at `y` and the height `h`, with the side slope `side` of the ground.
+fn straight_strip(y: f64, h: f64, half: f64, rank: u8, side: f64) -> RoadStrip {
+    let mut r = road((20.0, y), (380.0, y), h, h, half, rank);
+    r.side_slope = vec![side; r.joints.len() - 1];
+    r
+}
+
+/// The steepest slope between neighbouring vertices in the columns around `x`, north of the road at `y`
+/// and beyond the level strip.
+fn max_slope_beside(hm: &Heightmap, y: f64) -> f64 {
+    let cell = f64::from(hm.cell_m);
+    let col = (200.0 / cell) as u32;
+    let first = ((y + 3.0 + 1.5 * cell) / cell).ceil() as u32;
+    let mut worst = 0.0_f64;
+    for row in first..first + 12 {
+        let step = (at(hm, col, row + 1) - at(hm, col, row)).abs() / cell;
+        worst = worst.max(step);
+    }
+    worst
+}
+
+#[test]
+fn two_roads_side_by_side_at_different_heights_each_keep_their_ground() {
+    // two 6 m wide roads, centre lines 12 m apart, at 100 and 105 m, on 3.125 m cells
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let strips = [
+        straight_strip(194.0, 100.0, 3.0, 3, 0.0),
+        straight_strip(206.0, 105.0, 3.0, 6, 0.0),
+    ];
+    let out = conform(&base, &strips, &[]).unwrap();
+    for x in (60..340).step_by(5) {
+        for (y, h) in [(194.0, 100.0), (206.0, 105.0)] {
+            for dy in [-3.0, 0.0, 3.0] {
+                let got = sample(&out.heightmap, f64::from(x), y + dy);
+                assert!(
+                    (got - h).abs() < 0.2,
+                    "x {x} y {} is {got}, not {h}",
+                    y + dy
+                );
+            }
+        }
+    }
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+}
+
+#[test]
+fn roads_that_overlap_at_different_heights_are_still_a_conflict() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let strips = [
+        straight_strip(200.0, 100.0, 3.0, 3, 0.0),
+        straight_strip(202.0, 105.0, 3.0, 6, 0.0),
+    ];
+    assert!(!conform(&base, &strips, &[]).unwrap().conflicts.is_empty());
+}
+
+#[test]
+fn on_a_steep_hillside_the_cut_is_a_face_one_cell_wide() {
+    // hillside rising 60 % to the north, road along x at the height of the ground under its centre
+    let base = terrain(128, 3.125, |_, y| 100.0 + 0.6 * y);
+    let strip = straight_strip(200.0, 220.0, 3.0, 3, 0.6);
+    let out = conform(&base, &[strip], &[]).unwrap();
+    // uphill: the original ground is back within two cells of the edge of the level strip
+    let edge = 200.0 + 3.0 + 1.5 * 3.125;
+    let y = edge + 2.0 * 3.125;
+    let got = sample(&out.heightmap, 200.0, y);
+    assert!((got - (100.0 + 0.6 * y)).abs() < 0.5, "{got}");
+}
+
+#[test]
+fn on_gentle_ground_the_cut_slope_is_as_before() {
+    let base = terrain(128, 3.125, |_, y| 100.0 + 0.1 * y);
+    let strip = straight_strip(200.0, 115.0, 3.0, 3, 0.1);
+    let out = conform(&base, &[strip], &[]).unwrap();
+    assert!(max_slope_beside(&out.heightmap, 200.0) <= CUT_SLOPE_MAX + 0.05);
+}
+
+#[test]
+fn a_patch_levels_the_ground_at_a_join() {
+    let base = terrain(128, 3.125, |x, _| 100.0 + 0.3 * x);
+    let patch = LevelPatch {
+        at: (200.0, 200.0),
+        radius: 8.0,
+        height: 160.0,
+        rank: 3,
+    };
+    let out = conform(&base, &[], &[patch]).unwrap();
+    for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (-6.0, 0.0), (0.0, 6.0)] {
+        let got = sample(&out.heightmap, 200.0 + dx, 200.0 + dy);
+        assert!((got - 160.0).abs() < 0.2, "{dx} {dy}: {got}");
+    }
+}
+
+#[test]
+fn a_patch_beside_a_road_at_another_height_takes_the_vertices_nearer_to_its_edge() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let road = straight_strip(200.0, 100.0, 3.0, 3, 0.0);
+    // its edge is 20 m from the road's edge
+    let patch = LevelPatch {
+        at: (200.0, 230.0),
+        radius: 7.0,
+        height: 110.0,
+        rank: 3,
+    };
+    let out = conform(&base, &[road], &[patch]).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    assert!((sample(&out.heightmap, 200.0, 200.0) - 100.0).abs() < 0.2);
+    assert!((sample(&out.heightmap, 200.0, 230.0) - 110.0).abs() < 0.2);
+}
+
+#[test]
+fn a_patch_that_overlaps_a_road_at_another_height_is_a_conflict() {
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let road = straight_strip(200.0, 100.0, 3.0, 3, 0.0);
+    let patch = LevelPatch {
+        at: (200.0, 204.0),
+        radius: 7.0,
+        height: 110.0,
+        rank: 3,
+    };
+    let out = conform(&base, &[road], &[patch]).unwrap();
+    assert!(!out.conflicts.is_empty());
+}
+
+#[test]
+fn a_patch_does_not_level_the_ground_under_a_bridge_span() {
+    let base = terrain(120, 6.25, |_, y| {
+        100.0
+            - if (300.0..500.0).contains(&y) {
+                30.0
+            } else {
+                0.0
+            }
+    });
+    let mut road = strip(
+        &[
+            (300.0, 100.0, 100.0),
+            (300.0, 300.0, 100.0),
+            (300.0, 500.0, 100.0),
+            (300.0, 700.0, 100.0),
+        ],
+        3.5,
+        3,
+    );
+    road.bridge = vec![false, true, false];
+    let patch = LevelPatch {
+        at: (300.0, 400.0),
+        radius: 8.0,
+        height: 100.0,
+        rank: 3,
+    };
+    let out = conform(&base, &[road], &[patch]).unwrap();
+    assert!((sample(&out.heightmap, 300.0, 400.0) - 70.0).abs() < 1e-3);
+}
+
+#[test]
+fn two_legs_of_one_road_at_different_heights_each_keep_their_ground() {
+    // a road out along y = 200 and back along y = 212, 12 m apart, 5 m higher on the way back
+    let base = terrain(128, 3.125, |_, _| 102.0);
+    let road = strip(
+        &[
+            (60.0, 200.0, 100.0),
+            (200.0, 200.0, 100.0),
+            (200.0, 212.0, 105.0),
+            (60.0, 212.0, 105.0),
+        ],
+        3.0,
+        3,
+    );
+    let out = conform(&base, &[road], &[]).unwrap();
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+    for x in [80.0, 120.0, 160.0] {
+        assert!((sample(&out.heightmap, x, 200.0) - 100.0).abs() < 0.2);
+        assert!((sample(&out.heightmap, x, 212.0) - 105.0).abs() < 0.2);
+    }
 }
