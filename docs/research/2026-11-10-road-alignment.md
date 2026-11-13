@@ -431,9 +431,9 @@ chain within 25 m). A join and a chain end on a road get a patch of the junction
 the widest road plus one cell; a junction piece is already a level segment and gets none. Where the side slope is
 above 35 % the cut at the uphill side is a face (rise over run 50, one cell wide). A vertex inside a road's own
 width belongs to that road, and a patch is never in conflict with a road. A vertex that two cores at heights more
-than 0.3 m apart both want goes to the one that has it inside its own width; between two that both have it in their
-ring (or both inside) the higher rank wins, between equal ranks the nearer edge, and the step between them is a
-face; it is a `road_conflict` only where the vertex is within the width of both. Measured with `road-analysis 1024`
+than 0.3 m apart both want goes to the one whose edge is nearer (so to the one that has it inside its own width), an
+exact tie to the higher rank, and the step between them is a face; it is a `road_conflict` only where the vertex is
+within the width of both. Measured with `road-analysis 1024`
 (and `2048`); the "before" columns are the "after" columns of 7.2, except the rows marked section 6, which were not
 in 7.2.
 
@@ -454,46 +454,46 @@ the higher rank, then the nearer edge. All with the patch fix. 1024 / 2048:
 | (b) rank first | 1384 / 1211 | 159 / 148 | 258 / 237 | 723 / 1113 |
 | (c) own width, then rank | 1587 / 1424 | 171 / 150 | 278 / 247 | 739 / 1126 |
 
-(b) was kept in the first round of fixes, but it lets the higher road take a vertex inside the lower road's width
-without a word (no clash is recorded), which contradicts spec 5.3. (c) is the only one of the three that keeps
-that: each road keeps the ground inside its own width. It is **worse than (b) on every figure** (misses above 0.5 m
-by 15 % at 1024 and 18 % at 2048, above 2 m by 8 % and 1 %, not drivable 278 against 258 and 247 against 237) and
-worse than (a) on the misses above 0.5 m (1587 against 1443, 1424 against 1378) and on not drivable at 1024 (278
-against 236) and on the misses above 2 m (171 against 122, 150 against 123); it is not better than (a) on any figure
-but the conflicts (739 against 742, 1126 against 1130). The rule stays at (c) because it is the one that does what the spec says, not because of these figures.
+(a) is the rule of the plan and of spec 5.3 (an edge not above zero is always nearer than one above zero, so each road
+keeps its own width), and it has the fewest misses above 2 m; it was kept. (b) has fewer misses above 0.5 m (1384
+against 1443, 1211 against 1378), but lets the higher road take a vertex inside the lower road's width without a word
+and has more misses above 2 m (159 against 122, 148 against 123). (c) keeps each road's width as well, but is worse than
+(a) on every miss figure (misses above 0.5 m 1587 against 1443 and 1424 against 1378, above 2 m 171 against 122 and 150
+against 123, not drivable 278 against 236 and 247 against 232).
 
 **Do roads lose vertices they did not have to lose?** Pieces missing by more than 0.5 m whose cause is another road at
 a different height, with a vertex within one cell of their own width whose final height is not the height of any
 piece of their own strip there, split by whether the vertex is also within one cell of the width of another road at
-another height (contested) or not (taken without need). On the final rule (c), 1024 / 2048:
+another height (contested) or not (taken without need). On the final rule (a), 1024 / 2048:
 
 | | 1024 | 2048 |
 |---|---|---|
-| pieces of that cause | 1466 | 1338 |
-| with a contested ring vertex | 1227 | 1239 |
-| with a vertex taken without need | 476 | 471 |
-| with only such vertices | 96 | 41 |
-| of the needless, inside a level patch | 38 | 113 |
+| pieces of that cause | 1327 | 1292 |
+| with a contested ring vertex | 1158 | 1217 |
+| with a vertex taken without need | 40 | 111 |
+| with only such vertices | 12 | 19 |
+| of the needless, inside a level patch | 40 | 111 |
 
-On the nearer-edge rule the needless count was 40 and 111 pieces, all inside a level patch (a patch taking a ring
-vertex from a road, which the decision allows). On (c) most of the 476 and 471 are vertices that the higher road takes
-from the lower road's ring between one and one and a half cells from the lower road's width: they are inside the
-reach of the strip (width plus 1.5 cells) but outside the one cell of the measure, so they are lost to a road that
-the measure does not count as near. They are not a defect of the claim. A first version of this count compared with
-the height of the one piece only and found about 900 pieces; those were vertices of the next piece of the same strip.
+All the vertices taken without need are inside a level patch: a patch takes a ring vertex from a road where the
+patch's edge is nearer, which the decision for patches allows. It is not a defect of the claim. Under (b) and (c) the
+count is higher (577 and 476 at 1024) because the higher road takes ring vertices of the lower road that lie between
+one and one and a half cells from its width, outside the one cell of the measure. A first version of this count
+compared with the height of the one piece only and found about 900 pieces; those were vertices of the next piece of
+the same strip.
 
-**Final figures** (rule (c)):
+**Final figures** (rule (a), patch rule):
 
 | Rule | 1024 before | 1024 after | 2048 before | 2048 after |
 |---|---|---|---|---|
-| `road_not_drivable` | 278 | 278 | 258 | 247 |
-| not drivable | 7.4 km | 7.2 km | 5.7 km | 5.9 km |
+| `road_not_drivable` | 278 | 236 | 258 | 232 |
+| not drivable | 7.4 km | 5.5 km | 5.7 km | 5.3 km |
 | `road_grade` | 1559 | 1559 | 1336 | 1336 |
-| `road_misses_terrain` | 3599 | 4701 | 2999 | 3952 |
-| of these above 0.5 m (section 6) | 817 | 1587 | 735 | 1424 |
-| largest miss | 10.3 m | 6.9 m | 10.1 m | 10.1 m |
-| `road_conflict` | 2148 | 739 | 1882 | 1126 |
-| `path_too_steep` | 81 | 127 | 70 | 77 |
+| `road_misses_terrain` | 3599 | 4561 | 2999 | 3978 |
+| of these above 0.5 m (section 6) | 817 | 1443 | 735 | 1378 |
+| above 2 m | n/a | 122 | n/a | 123 |
+| largest miss | 10.3 m | 6.7 m | 10.1 m | 10.1 m |
+| `road_conflict` | 2148 | 742 | 1882 | 1130 |
+| `path_too_steep` | 81 | 130 | 70 | 75 |
 | `earthworks_capped` | 123 | 100 | 114 | 92 |
 | `junction_too_steep` | 1 | 1 | 1 | 1 |
 
@@ -501,23 +501,23 @@ Misses above 0.5 m by cause (section 6 figures before), 1024 / 2048:
 
 | Cause | 1024 section 6 | 1024 now | 2048 section 6 | 2048 now |
 |---|---|---|---|---|
-| Another road within three cells, at a different height | 627 | 1466 | 483 | 1338 |
+| Another road within three cells, at a different height | 627 | 1327 | 483 | 1292 |
 | Another leg of the same road, at a different height | 93 | 72 | 69 | 38 |
 | A change of grade over 1 %/m at the piece's own joint | 57 | 1 | 144 | 0 |
-| The end of a bridge | 22 | 36 | 32 | 43 |
+| The end of a bridge | 22 | 31 | 32 | 41 |
 | A bend | 15 | 10 | 2 | 4 |
 
 Pieces on a side slope above 35 % with fill over 2 m at the downhill edge: 35 % at 1024 and 37 % at 2048, against
 38 % at 35 to 60 % in section 6: a little better at most; the face changes the uphill side, the fill on the
 downhill side is set by the profile.
 
-**`path_too_steep`** rose from 81 to 127 at 1024 (70 to 77 at 2048). With the faces on steep ground off the count at 1024
+**`path_too_steep`** rose from 81 to 130 at 1024 (70 to 75 at 2048). With the faces on steep ground off the count at 1024
 was 89, with the step faces between roads off 124, without the patches 131 (measured on the nearer-edge rule): the
 rise is the faces on steep ground. A footpath beside a road on a hillside now runs along a near-vertical wall; the
 check reports what is there. That is the intended face, not a defect of the shaping; whether paths should be moved
 off a face is open.
 
-**Worse than before 7.2:** `road_misses_terrain` (3599 to 4701 at 1024, 2999 to 3952 at 2048), the misses above 0.5 m
-(817 to 1587, 735 to 1424, against section 6), `path_too_steep` (81 to 127, 70 to 77) and the length that cannot be
-driven at 2048 (5.7 to 5.9 km). **Better:** `road_conflict` (2148 to 739;
-1882 to 1126), `earthworks_capped`, the largest miss at 1024.
+**Worse than before 7.2:** `road_misses_terrain` (3599 to 4561 at 1024, 2999 to 3978 at 2048), the misses above 0.5 m
+(817 to 1443, 735 to 1378, against section 6) and `path_too_steep` (81 to 130, 70 to 75). **Better:** `road_conflict`
+(2148 to 742; 1882 to 1130), `road_not_drivable` and the length that cannot be driven, `earthworks_capped`, the
+largest miss at 1024.
