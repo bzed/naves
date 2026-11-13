@@ -274,9 +274,9 @@ fn cross_fall_over_the_limit_is_not_drivable() {
 fn gravel_and_tracks_have_their_own_lower_limits() {
     for (family, grade, state) in [
         (Family::Grav, 0.20, DriveState::Steep),
-        (Family::Grav, 0.32, DriveState::NotDrivable),
+        (Family::Grav, 0.42, DriveState::NotDrivable),
         (Family::Mud, 0.26, DriveState::Steep),
-        (Family::Mud, 0.30, DriveState::NotDrivable),
+        (Family::Mud, 0.52, DriveState::NotDrivable),
         (Family::Asf3, 0.27, DriveState::Steep),
         (Family::Asf3, 0.33, DriveState::NotDrivable),
     ] {

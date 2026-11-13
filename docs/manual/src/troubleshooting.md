@@ -106,7 +106,8 @@ updated; the message names the model.
 **`not_drivable`, `road_misses_terrain`, `road_grade` ... in the warnings**
 Every line names the rule and a position in map metres. The same findings, with the numbers of the network, are in
 `build/report.json`. A road is **not drivable** when it is steeper than a vehicle manages on its surface (30 % on
-asphalt and streets; gravel and dirt tracks keep 30 % and 28 %, since some are used by a tractor or a tougher vehicle)
+asphalt and streets; 40 % on gravel tracks, a car at the top of its range; 50 % on dirt tracks, a 4WD; estimates, not
+driven in the game)
 or more than 20 % tilted across. Between the family's aim and that limit it is amber: steep or tilted, but still
 drivable. A road gives way to a steeper grade where holding its aim would put it more than 4 m above or below the
 ground; that is why a road on a steep hillside can be amber for a long stretch. A road can be too steep because the real road is

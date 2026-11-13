@@ -54,6 +54,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The drivable limits of tracks follow a car at its best and a 4WD: a gravel track is not drivable above 40 % and a dirt track above 50 % (before 30 % and 28 %); asphalt and streets keep 30 %. Tracks in the mountains are not expected to be drivable by an ordinary car. Estimates, not driven in the game.
 - Road alignment after the fixes, on the Berchtesgaden example: the road that cannot be driven falls from 27.5 to 5.7 km at 1024 (21.4 to 4.8 km at 2048), road conflicts from 2412 to 1979 (2166 to 1729), and earthworks that stop at the 60 m cap from 1904 to 728 vertices (3459 to 1322). The numbers and what is left are in `docs/research/2026-11-10-road-alignment.md`, section 5.
 - Earthworks follow the hillside: a cutting is 45° and an embankment 34° on gentle ground and both get steeper with the natural slope, up to 63° and 45°. A cutting in a steep hillside can be too steep to walk up; the downhill side can always be left on foot. On the Berchtesgaden example the earthworks that stop at the 60 m cap fall from 1904 vertices to 728.
 - A road gives up its grade aim before it leaves the ground: where holding the aim would put it more than 4 m above or below the terrain, it is solved again with a steeper grade, up to nine tenths of what vehicles manage. Such pieces are amber (**Steep**), not not drivable.

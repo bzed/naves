@@ -174,6 +174,11 @@ way, up to 0.9 of the hard limit, where holding it puts the road far from the gr
 proposal above is what a car manages, and not every gravel or dirt road in such an area can be driven by car: some
 need chains or a tractor. The proposed limits and aims are used for asphalt and streets only.
 
+**Decided by the maintainer (2026-11-13):** tracks in the mountains are not expected to be drivable by car; a
+passenger car manages 30 to 40 %, a 4WD 45 to 60 %. Gravel tracks therefore get a hard limit of 40 % and dirt
+tracks 50 % (ceilings 36 % and 45 %), replacing the 0.30 and 0.28 of the paragraph above; the aims stay 0.18 and
+0.25. Estimates, not driven in the game.
+
 **Across.** Roads are built with 2.5 % across on a straight and up to 7 or 8 % in a bend. A car slides sideways at a
 fall of `μ` and tips at half its track width over `h` (above 1.0 for a car, 0.6 to 0.8 for a loaded truck). Proposed:
 aim 0.08, hard limit 0.20.

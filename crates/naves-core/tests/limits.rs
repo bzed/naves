@@ -37,10 +37,24 @@ fn the_limits_are_the_documented_ones() {
             drive_grade(Family::Mud)
         ]
         .map(|v| (v * 100.0).round()),
-        [30.0, 30.0, 28.0]
+        [30.0, 40.0, 50.0]
     );
     assert_eq!(
         [grade_aim(Family::Grav), grade_aim(Family::Mud)].map(|v| (v * 100.0).round()),
         [18.0, 25.0]
     );
+}
+
+#[test]
+fn tracks_have_the_limits_of_a_car_at_its_best_and_of_a_4wd() {
+    assert!((drive_grade(Family::Grav) - 0.40).abs() < 1e-12);
+    assert!((drive_grade(Family::Mud) - 0.50).abs() < 1e-12);
+    assert!((grade_ceiling(Family::Grav) - 0.36).abs() < 1e-12);
+    assert!((grade_ceiling(Family::Mud) - 0.45).abs() < 1e-12);
+    for family in [Family::Asf1, Family::Asf2, Family::Asf3, Family::City] {
+        assert!((drive_grade(family) - 0.30).abs() < 1e-12);
+    }
+    for family in Family::ALL {
+        assert!(grade_aim(family) < grade_ceiling(family));
+    }
 }

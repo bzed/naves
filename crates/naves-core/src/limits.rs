@@ -14,8 +14,12 @@ use crate::catalog::Family;
 /// The grade a road of this family is aimed at (rise over run).
 ///
 /// Forest roads are built at 8 to 12 %, 15 to 18 % over short lengths. Gravel and dirt tracks keep their
-/// steeper aims: some of them are used by a tractor or a tougher vehicle, not by a car. This is an estimate
-/// from real vehicles, not measured in the game: `docs/research/2026-11-10-road-alignment.md`, section 3.
+/// steeper aims, and they stay below the ceilings of the tracks.
+///
+/// **Decided by the maintainer (2026-11-13):** tracks in the mountains are not expected to be drivable by car;
+/// a passenger car manages 30 to 40 %, a 4WD 45 to 60 %. Gravel tracks are therefore held to a car at the top
+/// of its range, dirt tracks to a 4WD (see [`drive_grade`]). These are estimates from real vehicles, not
+/// driven in the game: `docs/research/2026-11-10-road-alignment.md`, section 3.
 #[must_use]
 pub fn grade_aim(family: Family) -> f64 {
     match family {
@@ -30,14 +34,19 @@ pub fn grade_aim(family: Family) -> f64 {
 
 /// The steepest grade a vehicle climbs on this surface (rise over run).
 ///
-/// Asphalt and streets are held to what a car manages. Gravel and dirt tracks may be used by a tractor or a
-/// tougher vehicle, so they keep the steeper limit. This is an estimate from real vehicles, not measured in
-/// the game: `docs/research/2026-11-10-road-alignment.md`, section 3.
+/// Asphalt and streets are held to what a car manages, 30 %.
+///
+/// **Decided by the maintainer (2026-11-13):** tracks in the mountains are not expected to be drivable by car;
+/// a passenger car manages 30 to 40 %, a 4WD 45 to 60 %; gravel tracks therefore get a hard limit of 40 % and
+/// dirt tracks 50 % (ceilings 36 % and 45 %), replacing the 30 % and 28 % of the earlier decision (gravel and
+/// dirt kept the limits of tractors). These are estimates from real vehicles, not driven in the game:
+/// `docs/research/2026-11-10-road-alignment.md`, section 3.
 #[must_use]
 pub fn drive_grade(family: Family) -> f64 {
     match family {
-        Family::Asf1 | Family::Asf2 | Family::Asf3 | Family::City | Family::Grav => 0.30,
-        Family::Mud => 0.28,
+        Family::Asf1 | Family::Asf2 | Family::Asf3 | Family::City => 0.30,
+        Family::Grav => 0.40,
+        Family::Mud => 0.50,
     }
 }
 
