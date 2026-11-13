@@ -44,8 +44,8 @@ use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_
 use naves_core::osm::read_ways;
 use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::build_graph;
-use naves_core::roadplace::{PlacedKind, place_network};
+use naves_core::roadnet::{build_graph, widen_bridges};
+use naves_core::roadplace::{PlacedKind, bridge_for, place_network};
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, check_roads};
 use naves_export::catalog_read::road_catalog;
@@ -158,7 +158,64 @@ fn main() {
     let features = road_features(&ways, &frame, project.map_size_m());
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
-    let graph = build_graph(&features);
+    let built = build_graph(&features);
+    let graph = widen_bridges(&built, &|s| {
+        bridge_for(&catalog, s.family).map_or(0.0, |(m, scale, _)| m.length * scale)
+    });
+    {
+        // OSM bridge stretches: before (built as a bridge only from 10 m chord) and after widening
+        let chord = |s: &naves_core::roadnet::Stretch| match (s.points.first(), s.points.last()) {
+            (Some(a), Some(b)) => (b.0 - a.0).hypot(b.1 - a.1),
+            _ => 0.0,
+        };
+        let osm: Vec<_> = built
+            .stretches
+            .iter()
+            .zip(&graph.stretches)
+            .filter(|(b, _)| b.bridge && !b.tunnel)
+            .collect();
+        let before = osm.iter().filter(|(b, _)| chord(b) >= 10.0).count();
+        let after = osm.iter().filter(|(_, a)| a.bridge).count();
+        let plen = |s: &naves_core::roadnet::Stretch| -> f64 {
+            s.points
+                .windows(2)
+                .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+                .sum()
+        };
+        let mut grown: Vec<f64> = osm
+            .iter()
+            .filter(|(b, a)| a.bridge && plen(a) - plen(b) > 1e-6)
+            .map(|(b, a)| plen(a) - plen(b))
+            .collect();
+        println!(
+            "OSMBRIDGE stretches {} built as bridge before {before} after {after} widened {}",
+            osm.len(),
+            grown.len()
+        );
+        if !grown.is_empty() {
+            println!(
+                "OSMBRIDGE widened by p10/p50/p90/max {:.1} {:.1} {:.1} {:.1} m",
+                pct(&mut grown, 0.1),
+                pct(&mut grown, 0.5),
+                pct(&mut grown, 0.9),
+                pct(&mut grown, 1.0)
+            );
+        }
+        for (b, _) in osm.iter().filter(|(b, a)| b.bridge && !a.bridge) {
+            let m = b
+                .points
+                .get(b.points.len() / 2)
+                .copied()
+                .unwrap_or_default();
+            println!(
+                "OSMBRIDGE no room {} length {:.1} m at ({:.0}, {:.0})",
+                b.id,
+                plen(b),
+                m.0,
+                m.1
+            );
+        }
+    }
     let net = place_network(&graph, &catalog).expect("place");
     let t_place = t0.elapsed();
     let junctions = find_junctions(&net, &graph, &base);

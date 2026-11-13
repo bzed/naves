@@ -707,3 +707,79 @@ changes where the run ends); no count moved by more than 4 (`road_misses_terrain
 real catalog is little affected because only 24 objects are bridges. What the step does not show is how a scaled
 bridge behaves in the game: it is untested, and the fallback of spec 6.1 (the widest model at scale 1 with a warning) is
 a one-line change in `choose_bridge`.
+
+### 7.6 Every OSM bridge is a bridge (2026-11-13)
+
+A bridge in OpenStreetMap that is shorter than one (scaled) bridge model used to be laid as ordinary road (below a
+chord of 10 m it was never a bridge). Now `widen_bridges` grows it evenly into the stretches on both sides until one
+model fits; each neighbour keeps at least 1 m, and a bridge that still does not fit stays an ordinary road with the
+warning `bridge on <id>: no room for a bridge model between the junctions`. Measured with `road-analysis 1024` and
+`2048` (the example now widens as the build does and prints the `OSMBRIDGE` lines). Both sizes give the same
+bridges. **Scaled bridges have not been tested in the game.**
+
+**OSM bridge stretches:** 66 (without tunnels). Built as a bridge before (chord of 10 m or more): 24. After: 47.
+
+**Widened:** 46 stretches. By how much, in metres: p10 9.2, median 17.4, p90 30.9, largest 34.3. (Some of them were
+longer than 10 m and were built before; they too grew to one model.)
+
+**No room (19):** these stay ordinary road. Id, length, position in map metres.
+
+| Stretch | length | at |
+|---|---|---|
+| `1093361022:510121087-10013276225` | 3.7 m | 5642, 2886 |
+| `123928797:1380536726-2611738645` | 9.8 m | 548, 4488 |
+| `130047131:1433545748-2612901794` | 9.9 m | 838, 4487 |
+| `136213585:282908976-1494536585` | 7.3 m | 4583, 5445 |
+| `150368334:282908960-282908962` | 8.6 m | 4557, 5423 |
+| `172178577:475565028-1831110958` | 6.8 m | 3649, 3483 |
+| `23449348:253952136-1046300707` | 13.8 m | 1697, 4200 |
+| `240795460:253896556-2484891251` | 8.4 m | 4092, 5483 |
+| `296178597:2611738595-2999699414` | 6.4 m | 635, 4508 |
+| `39537999:282908976-1494536570` | 8.4 m | 4581, 5443 |
+| `39782354:476903462-476903465` | 11.5 m | 5260, 6289 |
+| `48391149:282908967-1494536518` | 13.0 m | 4587, 5409 |
+| `48391150:282908960-1494536543` | 3.6 m | 4559, 5431 |
+| `48391152:282908976-2041562015` | 8.0 m | 4590, 5437 |
+| `48450084:21628088-615524621` | 17.2 m | 4447, 4880 |
+| `598164112:5693507720-5693511921` | 2.8 m | 3332, 3371 |
+| `74208396:877758539-877758550` | 3.7 m | 5118, 5781 |
+| `74208422:877758668-877758670` | 5.3 m | 5130, 5763 |
+| `953825999:8828196890-8828196891` | 3.3 m | 643, 4433 |
+
+Five of them lie within 40 m of each other near 4580, 5440 (a multi-ramp junction); two near 640, 4490.
+
+**Bridge objects by model** (the same at both sizes): 47 in all, before 24.
+
+| Model | objects | scaled |
+|---|---|---|
+| `bridge_metal_25` | 27 | 0 |
+| `bridge_stone_25` | 12 | 0 |
+| `bridge_wood_25` | 8 | 7 (all 1.18) |
+
+By road family (wooden / paved): `Asf1` 0 / 9, `Asf2` 0 / 6, `Asf3` 0 / 6, `City` 0 / 18, `Grav` 7 / 0, `Mud` 1 / 0. Width
+warnings: 0.
+
+**All violations against the final figures of 7.5** (1024 before / after, 2048 before / after):
+
+| Rule | 1024 before | 1024 after | 2048 before | 2048 after |
+|---|---|---|---|---|
+| `road_not_drivable` | 240 | 242 | 236 | 235 |
+| not drivable | 5.6 km | 5.7 km | 5.3 km | 5.2 km |
+| `road_grade` | 1583 | 1617 | 1352 | 1405 |
+| `road_misses_terrain` | 4589 | 4598 | 4001 | 4010 |
+| of these above 0.5 m | 1455 | 1465 | 1373 | 1366 |
+| above 2 m | 123 | 140 | 131 | 135 |
+| `road_conflict` | 743 | 746 | 1132 | 1125 |
+| `path_too_steep` | 130 | 133 | 77 | 79 |
+| `earthworks_capped` | 101 | 102 | 87 | 85 |
+| `junction_too_steep` | 1 | 1 | 1 | 1 |
+| `road_far_from_ground` | 0 | 0 | 0 | 0 |
+
+**What got worse:** `road_grade` by 34 at 1024 (1583 to 1617) and by 53 at 2048 (1352 to 1405); the misses above 2 m by
+17 at 1024 (123 to 140) and by 4 at 2048; `road_misses_terrain` by 9 at both sizes; `road_not_drivable` by 2 at 1024;
+`path_too_steep` by 3 and 2; `road_conflict` by 3 at 1024. A bridge deck is level between its ends, and a bridge that
+is now 25 m or more long (it was a road piece of a few metres) holds two joints further apart, so the roads beside it
+carry the grade; the `road_grade` rise is the largest effect of this step. Better: `road_conflict` at 2048 by 7,
+`earthworks_capped` at 2048 by 2, not drivable at 2048 by 0.1 km. The bridges are 23 more objects of 47 in a 200 km
+network. Nothing was done about the 19 bridges without room; they show again as ordinary road, and the build's warning
+names each.
