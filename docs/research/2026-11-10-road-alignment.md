@@ -351,8 +351,8 @@ the same counts (3569, 2001, 972, 254 at 1024 and 3353, 1743, 972, 243 at 2048).
 **The Klingerweg** (`158289388:259090646-278531300`, strip 1027 at 2048): the largest planned grade is 45 %, the
 ceiling of a dirt track; the joint grades along its 225 m are up to 45 %, and 41 to 45 % on seven of its 23 joints.
 
-**Worse:** `road_misses_terrain` grows by 366 at 1024 and 187 at 2048, and `road_grade` and `road_conflict` at 1024
-by 63 and 6. The cause was not examined: a track that may be steeper gets a different profile, so its pieces meet
+**Worse:** `road_misses_terrain` grows by 366 at 1024 and 187 at 2048, and `road_grade`, `road_conflict` and
+`path_too_steep` at 1024 by 63, 6 and 3. The cause was not examined: a track that may be steeper gets a different profile, so its pieces meet
 the ground and other roads differently.
 
 Not measured: the share of `mud` length cut deeper than 10 m. The tool does not print it and this task does not
