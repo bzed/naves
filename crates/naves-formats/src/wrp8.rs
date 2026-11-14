@@ -50,7 +50,8 @@ pub struct EditableWorld {
 /// One placed object.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldObject {
-    /// 3×3 rotation row by row, then position x, height, y.
+    /// 3×3 rotation column by column (the images of the model's x, y and z axes),
+    /// then position x, height, y.
     pub transform: [f32; 12],
     /// Object id.
     pub id: i32,

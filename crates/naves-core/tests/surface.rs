@@ -386,3 +386,74 @@ fn surfaces_are_deterministic() {
     let b = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&land))).unwrap();
     assert_eq!(a.grid, b.grid);
 }
+
+// --- strokes ------------------------------------------------------------------------------------------------------
+
+mod stroke {
+    use naves_core::surface::{SurfaceClass, SurfaceGrid};
+
+    fn grass(size: u32, cell: f64) -> SurfaceGrid {
+        SurfaceGrid::from_fn(size, cell, |_, _| SurfaceClass::Grass)
+    }
+
+    #[test]
+    fn a_stroke_paints_its_width() {
+        let mut g = grass(100, 10.0);
+        g.stroke(&[(500.0, 100.0), (500.0, 900.0)], 30.0, SurfaceClass::Soil);
+        // cell centres at 495 and 485 (15 m from the line) are inside, 475 (25 m) is not
+        assert_eq!(g.at(495.0, 500.0), SurfaceClass::Soil);
+        assert_eq!(g.at(505.0, 500.0), SurfaceClass::Soil);
+        assert_eq!(g.at(484.0, 500.0), SurfaceClass::Soil);
+        assert_eq!(g.at(474.0, 500.0), SurfaceClass::Grass);
+        assert_eq!(g.at(530.0, 500.0), SurfaceClass::Grass);
+        // not beyond its ends
+        assert_eq!(g.at(500.0, 60.0), SurfaceClass::Grass);
+    }
+
+    #[test]
+    fn a_stroke_paints_at_a_diagonal() {
+        let mut g = grass(100, 10.0);
+        g.stroke(&[(100.0, 100.0), (900.0, 900.0)], 30.0, SurfaceClass::Rock);
+        assert_eq!(g.at(505.0, 495.0), SurfaceClass::Rock);
+        assert_eq!(g.at(555.0, 445.0), SurfaceClass::Grass);
+    }
+
+    #[test]
+    fn a_line_thinner_than_a_cell_still_leaves_a_trace() {
+        let mut g = grass(100, 10.0);
+        g.stroke(&[(500.0, 100.0), (500.0, 900.0)], 1.6, SurfaceClass::Soil);
+        let painted = (0..100)
+            .filter(|&row| {
+                g.at(495.0, f64::from(row) * 10.0 + 5.0) == SurfaceClass::Soil
+                    || g.at(505.0, f64::from(row) * 10.0 + 5.0) == SurfaceClass::Soil
+            })
+            .count();
+        assert!(painted >= 75, "{painted}");
+    }
+
+    #[test]
+    fn a_stroke_outside_the_map_is_clipped() {
+        let mut g = grass(50, 10.0);
+        g.stroke(&[(-300.0, 250.0), (900.0, 250.0)], 20.0, SurfaceClass::Soil);
+        assert_eq!(g.at(5.0, 250.0), SurfaceClass::Soil);
+        assert_eq!(g.at(495.0, 250.0), SurfaceClass::Soil);
+        g.stroke(
+            &[(-300.0, -300.0), (-100.0, -100.0)],
+            20.0,
+            SurfaceClass::Rock,
+        );
+        g.stroke(&[(1.0e9, 1.0e9), (2.0e9, 2.0e9)], 20.0, SurfaceClass::Rock);
+        assert_eq!(g.at(5.0, 5.0), SurfaceClass::Grass);
+    }
+
+    #[test]
+    fn an_empty_or_odd_line_does_nothing() {
+        let mut g = grass(20, 10.0);
+        let before = g.clone();
+        g.stroke(&[], 10.0, SurfaceClass::Soil);
+        g.stroke(&[(50.0, 50.0)], 10.0, SurfaceClass::Soil);
+        g.stroke(&[(f64::NAN, 1.0), (5.0, 5.0)], 10.0, SurfaceClass::Soil);
+        g.stroke(&[(0.0, 0.0), (100.0, 100.0)], f64::NAN, SurfaceClass::Soil);
+        assert_eq!(g, before);
+    }
+}

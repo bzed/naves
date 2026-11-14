@@ -218,6 +218,11 @@ fn layer_state_does_not_touch_the_project_file() {
 #[test]
 fn the_tooltip_has_the_number_of_the_constant() {
     let def = BUILT.iter().find(|d| d.level == Level::Terrain).unwrap();
-    let tip = (def.layers[0].tooltip)();
+    let steep = def
+        .layers
+        .iter()
+        .find(|l| l.layer == MapLayer::TooSteepToWalk)
+        .unwrap();
+    let tip = (steep.tooltip)();
     assert!(tip.contains(&format!("{WALK_LIMIT_DEG:.0}°")), "{tip}");
 }

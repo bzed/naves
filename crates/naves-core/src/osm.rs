@@ -489,7 +489,7 @@ fn read_sources<R: Read + Send>(
 }
 
 /// Runs `read` and turns a panic inside the PBF decoder into [`OsmError::Malformed`].
-fn guarded(read: impl FnOnce() -> Result<OsmLand, OsmError>) -> Result<OsmLand, OsmError> {
+fn guarded<T>(read: impl FnOnce() -> Result<T, OsmError>) -> Result<T, OsmError> {
     catch_unwind(AssertUnwindSafe(read)).unwrap_or_else(|_| {
         Err(OsmError::Malformed(
             "the decoder failed on this data".to_string(),
@@ -537,6 +537,229 @@ pub fn read_land_from_bytes(bytes: &[u8], window: GeoWindow) -> Result<OsmLand, 
     })
 }
 
+// --- highway ways -------------------------------------------------------------------------------------------------
+
+/// The tags of a highway way that are kept: the ones the road classification reads.
+const WAY_TAGS: [&str; 11] = [
+    "highway",
+    "tracktype",
+    "surface",
+    "smoothness",
+    "service",
+    "sac_scale",
+    "trail_visibility",
+    "bridge",
+    "tunnel",
+    "area",
+    "waterway",
+];
+
+/// The `waterway` values that are kept: the water lines that are wide or steady enough to be a dip in a road.
+const WATERWAYS: [&str; 3] = ["stream", "river", "canal"];
+
+/// A way with a `highway` tag, or a stream, river or canal, and the positions of its nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OsmWay {
+    /// The OSM way id.
+    pub id: i64,
+    /// The tags that the classification reads (`highway`, `tracktype`, `surface`, `smoothness`, `service`, `sac_scale`, `trail_visibility`, `bridge`, `tunnel`, `area`, `waterway`).
+    pub tags: BTreeMap<String, String>,
+    /// Node ids in order.
+    pub nodes: Vec<i64>,
+    /// (latitude, longitude) of each node, in the order of `nodes`.
+    pub points: Vec<(f64, f64)>,
+}
+
+/// The highway ways and the streams, rivers and canals that touch a window.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OsmWays {
+    /// The highway ways and the water ways (streams, rivers, canals), each once, in id order.
+    pub ways: Vec<OsmWay>,
+    /// Highway or water ways that touch the window but miss nodes in all sources (an extract that cut
+    /// them), and so were left out.
+    pub skipped: usize,
+}
+
+/// A highway way as read from a file, before its nodes are resolved.
+struct HighwayRecord {
+    id: i64,
+    tags: Vec<(String, String)>,
+    nodes: Vec<i64>,
+}
+
+fn window_nodes_of<R: Read + Send>(
+    reader: ElementReader<R>,
+    window: GeoWindow,
+) -> Result<Vec<i64>, OsmError> {
+    let inside = |lat: f64, lon: f64| {
+        lat >= window.south && lat <= window.north && lon >= window.west && lon <= window.east
+    };
+    let found = reader.par_map_reduce(
+        |element| match element {
+            Element::Node(n) if inside(n.lat(), n.lon()) => vec![n.id()],
+            Element::DenseNode(n) if inside(n.lat(), n.lon()) => vec![n.id()],
+            _ => Vec::new(),
+        },
+        Vec::new,
+        |mut a, mut b| {
+            a.append(&mut b);
+            a
+        },
+    )?;
+    Ok(found)
+}
+
+fn highways_of<R: Read + Send>(
+    reader: ElementReader<R>,
+    inside: &[i64],
+) -> Result<Vec<HighwayRecord>, OsmError> {
+    let found = reader.par_map_reduce(
+        |element| match element {
+            Element::Way(way)
+                if way.tags().any(|(key, value)| {
+                    key == "highway" || (key == "waterway" && WATERWAYS.contains(&value))
+                }) =>
+            {
+                if way.refs().any(|id| inside.binary_search(&id).is_ok()) {
+                    vec![HighwayRecord {
+                        id: way.id(),
+                        tags: way
+                            .tags()
+                            .filter(|(key, _)| WAY_TAGS.contains(key))
+                            .map(|(key, value)| (key.to_string(), value.to_string()))
+                            .collect(),
+                        nodes: way.refs().collect(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        },
+        Vec::new,
+        |mut a, mut b| {
+            a.append(&mut b);
+            a
+        },
+    )?;
+    Ok(found)
+}
+
+/// Three passes over every source: the nodes inside the window, the highway ways that use one of them,
+/// then the positions of all nodes of those ways. Only the window's nodes and the ways that touch it are
+/// held, whatever the size of the extract.
+fn read_way_sources<R: Read + Send>(
+    count: usize,
+    open: impl Fn(usize) -> osmpbf::Result<ElementReader<R>>,
+    name: impl Fn(usize) -> Option<PathBuf>,
+    window: GeoWindow,
+) -> Result<OsmWays, OsmError> {
+    let at = |index: usize, error: OsmError| match name(index) {
+        Some(path) => OsmError::File {
+            path,
+            source: Box::new(error),
+        },
+        None => error,
+    };
+    let mut inside = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        inside.extend(window_nodes_of(reader, window).map_err(|e| at(index, e))?);
+    }
+    inside.sort_unstable();
+    inside.dedup();
+    let mut records = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        records.extend(highways_of(reader, &inside).map_err(|e| at(index, e))?);
+    }
+    drop(inside);
+    // the same id in several sources: keep one, the same one whatever the order of the sources
+    records.sort_by(|a, b| {
+        a.id.cmp(&b.id)
+            .then_with(|| a.nodes.cmp(&b.nodes))
+            .then_with(|| a.tags.cmp(&b.tags))
+    });
+    records.dedup_by_key(|r| r.id);
+    let mut wanted: Vec<i64> = records
+        .iter()
+        .flat_map(|w| w.nodes.iter().copied())
+        .collect();
+    wanted.sort_unstable();
+    wanted.dedup();
+    let mut found = Vec::new();
+    for index in 0..count {
+        let reader = open(index).map_err(|e| at(index, e.into()))?;
+        found.extend(nodes_of(reader, &wanted).map_err(|e| at(index, e))?);
+    }
+    drop(wanted);
+    found.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.0.total_cmp(&b.1.0))
+            .then_with(|| a.1.1.total_cmp(&b.1.1))
+    });
+    found.dedup_by_key(|n| n.0);
+    let nodes: BTreeMap<i64, Point> = found.into_iter().collect();
+
+    let mut result = OsmWays::default();
+    for record in records {
+        let points: Option<Vec<Point>> = record
+            .nodes
+            .iter()
+            .map(|id| nodes.get(id).copied())
+            .collect();
+        match points {
+            Some(points) if points.len() >= 2 => result.ways.push(OsmWay {
+                id: record.id,
+                tags: record.tags.into_iter().collect(),
+                nodes: record.nodes,
+                points,
+            }),
+            _ => result.skipped += 1,
+        }
+    }
+    Ok(result)
+}
+
+/// Reads the highway ways that touch `window` from `.osm.pbf` files, with the positions of their nodes.
+///
+/// A way is kept if one of its nodes lies in the window; its other nodes may lie outside, so that a road
+/// can be clipped at the map's edge afterwards. The ways of all files are merged and come in id order, whatever
+/// the order of the files. Ways that miss nodes in every file are counted in [`OsmWays::skipped`].
+///
+/// # Errors
+///
+/// [`OsmError::File`], naming the first file that cannot be read or is damaged.
+pub fn read_ways(paths: &[PathBuf], window: GeoWindow) -> Result<OsmWays, OsmError> {
+    guarded(|| {
+        read_way_sources(
+            paths.len(),
+            |i| match paths.get(i) {
+                Some(path) => ElementReader::from_path(path),
+                None => Err(osmpbf::Error::from(std::io::Error::other("no such source"))),
+            },
+            |i| paths.get(i).cloned(),
+            window,
+        )
+    })
+}
+
+/// Like [`read_ways`] for data that is already in memory (the entry point of the fuzz target).
+///
+/// # Errors
+///
+/// [`OsmError::Pbf`] or [`OsmError::Malformed`] for damaged data.
+pub fn read_ways_from_bytes(bytes: &[u8], window: GeoWindow) -> Result<OsmWays, OsmError> {
+    guarded(|| {
+        read_way_sources(
+            1,
+            |_| Ok(ElementReader::new(Cursor::new(bytes))),
+            |_| None,
+            window,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,7 +767,8 @@ mod tests {
     #[test]
     fn a_panic_in_the_decoder_becomes_an_error() {
         // resume_unwind raises a panic without running the panic hook, like a panic inside a dependency
-        let result = guarded(|| std::panic::resume_unwind(Box::new("decoder failure")));
+        let result: Result<OsmLand, _> =
+            guarded(|| std::panic::resume_unwind(Box::new("decoder failure")));
         assert!(matches!(result, Err(OsmError::Malformed(_))), "{result:?}");
     }
 

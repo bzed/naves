@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use naves_formats::odol::read_odol;
 use naves_formats::paa::{ColourTags, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::EditableWorld;
 
@@ -53,4 +54,13 @@ fn paa_tags_seeds() {
         // ok or an error, never a panic
         drop(without_stray_lzo_bytes(&data));
     }
+}
+
+#[test]
+fn odol_read_seeds() {
+    let ok = seeds("odol_read")
+        .iter()
+        .filter(|data| read_odol(data).is_ok())
+        .count();
+    assert_eq!(ok, 1, "only the valid seed is a readable file");
 }

@@ -1,0 +1,18 @@
+[[edits]]
+id = "road/123:1-5/4"
+generated_model = "dz\\structures\\roads\\parts\\asf3_25.p3d"
+generated_at = [10.5, 20.25]
+
+[edits.edit]
+kind = "moved"
+x = 12.0
+y = 21.0
+yaw = 0.5
+
+[[edits]]
+id = "road/5:2-3|7:3-9/0"
+generated_model = "dz\\structures\\roads\\parts\\kr_t_asf3_asf3.p3d"
+generated_at = [100.0, 200.0]
+
+[edits.edit]
+kind = "deleted"

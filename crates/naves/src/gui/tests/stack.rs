@@ -67,7 +67,7 @@ fn an_added_level_takes_its_place_without_changing_the_digits() {
     h.run_steps(3);
     assert!(y_of(&h, "6 Buildings") < y_of(&h, "2 Ground"));
     assert!(y_of(&h, "2 Ground") < y_of(&h, "1 Terrain"));
-    assert!(h.query_by_label("4 Roads and paths").is_none());
+    assert!(h.query_by_label("3 Water").is_none());
 }
 
 #[test]

@@ -251,15 +251,7 @@ impl MapViewport {
             .layer_textures
             .get(&visible.layer)
             .is_none_or(|(r, g, _)| r != request || *g != frame.generation);
-        if stale
-            && let Ok(image) = render_layer(
-                visible.layer,
-                &LayerData {
-                    heightmap: &frame.data.heightmap,
-                },
-                request,
-            )
-        {
+        if stale && let Ok(image) = render_layer(visible.layer, &layer_data(frame), request) {
             let size = [image.width() as usize, image.height() as usize];
             let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
             let handle = ui.ctx().load_texture(
@@ -280,5 +272,18 @@ impl MapViewport {
                 Color32::WHITE.gamma_multiply(visible.opacity),
             );
         }
+    }
+}
+
+/// What the layers are drawn from: with roads, the terrain as they shaped it and as it was.
+fn layer_data<'a>(frame: &'a ViewFrame<'_>) -> LayerData<'a> {
+    match frame.roads {
+        Some(roads) => LayerData {
+            heightmap: &roads.heightmap,
+            base: Some(&roads.base),
+            features: &roads.features,
+            pieces: &roads.pieces,
+        },
+        None => LayerData::new(&frame.data.heightmap),
     }
 }

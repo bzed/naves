@@ -15,6 +15,11 @@ What Náves does for you: the generated world config has a `Navmesh` class that 
 size and jump and climb link types from Livonia and sets the file name and the seed position (the middle of the
 map). **If `<project>/navmesh/<world>.nm` exists, `naves build` packs it into the mod.**
 
+**Make the mesh after the last build that changed the terrain.** Roads reshape the terrain around them (see
+[Roads](getting-started.md#roads)), and a mesh made for the terrain from before no longer fits it: infected and animals
+would stand in cuttings or walk through embankments. `naves build` warns when the project has a mesh and the world has
+roads. Regenerate it after adding or changing a road source.
+
 ## Steps
 
 1. Build the project once: `naves build <project>`. The mod has to be built with the navmesh class, but no mesh yet.

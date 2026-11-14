@@ -33,6 +33,50 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 
+# Fuzz seeds that are copies, truncated copies or damaged copies of the licensed test fixtures carry the licence
+# of the fixture (see tests/fixtures/README.md). They come after the generic entry above, and the last matching
+# annotation of the same precedence wins. All other seeds stay the project's own.
+
+# Copies of tests/fixtures/dem/*.tif.
+[[annotations]]
+path = [
+  "fuzz/corpus/dem_tile/*.tif",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
+SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
+
+# Copy, truncated and damaged copies of tests/fixtures/imagery/sentinel2_crop.tif.
+[[annotations]]
+path = [
+  "fuzz/corpus/imagery_tile/*",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Contains modified Copernicus Sentinel data 2025"
+SPDX-License-Identifier = "LicenseRef-Copernicus-Sentinel"
+
+# Copy, truncated and damaged copies of tests/fixtures/landcover/koenigssee.tif.
+[[annotations]]
+path = [
+  "fuzz/corpus/landcover_tile/*",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021) processed by ESA WorldCover consortium"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# Copies of tests/fixtures/osm/koenigssee.osm.pbf and schoenau_cut.osm.pbf, and truncated and damaged copies of koenigssee.osm.pbf.
+# osm_ways/valid_waterways is a copy of the synthetic waterways.osm.pbf and stays the project's own.
+[[annotations]]
+path = [
+  "fuzz/corpus/osm_read/*",
+  "fuzz/corpus/osm_ways/valid",
+  "fuzz/corpus/osm_ways/damaged",
+  "fuzz/corpus/osm_ways/truncated",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "© OpenStreetMap contributors"
+SPDX-License-Identifier = "ODbL-1.0"
+
 [[annotations]]
 path = "tests/fixtures/dem/*.tif"
 precedence = "aggregate"
@@ -61,10 +105,17 @@ SPDX-FileCopyrightText = "© ESA WorldCover project 2021 / Contains modified Cop
 SPDX-License-Identifier = "CC-BY-4.0"
 
 [[annotations]]
-path = "tests/fixtures/osm/*.osm.pbf"
+path = ["tests/fixtures/osm/koenigssee*.osm.pbf", "tests/fixtures/osm/schoenau*.osm.pbf"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "© OpenStreetMap contributors"
 SPDX-License-Identifier = "ODbL-1.0"
+
+# Synthetic: written by the tests' own generator, not OpenStreetMap data.
+[[annotations]]
+path = "tests/fixtures/osm/waterways.osm.pbf"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
 
 [[annotations]]
 path = "tests/fixtures/imagery/*.tif"

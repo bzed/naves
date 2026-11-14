@@ -49,6 +49,18 @@ pub fn prefix(world: &str) -> String {
 /// The `config.cpp` text of the project's world; `hm` supplies the highest point for `centerPosition`.
 #[must_use]
 pub fn world_config(project: &Project, hm: &Heightmap) -> String {
+    world_config_with(project, hm, false)
+}
+
+/// Like [`world_config`]. With `road_objects` the world lists the addon of the road pieces among the ones it
+/// requires, so that the game loads their models.
+#[must_use]
+pub fn world_config_with(project: &Project, hm: &Heightmap, road_objects: bool) -> String {
+    let addons = if road_objects {
+        r#""DZ_Data", "DZ_Surfaces_Bliss", "DZ_Worlds_Enoch", "DZ_Structures_Roads""#
+    } else {
+        r#""DZ_Data", "DZ_Surfaces_Bliss", "DZ_Worlds_Enoch""#
+    };
     let world = &project.world;
     let map = project.map_size_m();
     let half = map / 2.0;
@@ -68,7 +80,7 @@ pub fn world_config(project: &Project, hm: &Heightmap) -> String {
         units[] = {{}};
         weapons[] = {{}};
         requiredVersion = 1.14;
-        requiredAddons[] = {{"DZ_Data", "DZ_Surfaces_Bliss", "DZ_Worlds_Enoch"}};
+        requiredAddons[] = {{{addons}}};
     }};
 }};
 class CfgWorldList {{

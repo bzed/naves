@@ -20,9 +20,13 @@ use naves_core::imagery::catalog::{
 };
 use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
 use naves_core::project::Project;
-use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_core::render::{
+    LayerData, MapLayer, Overlay, RenderRequest, composite, render_layer, render_topdown,
+};
 use naves_core::surface::{SurfaceGrid, project_surfaces};
+use naves_core::validate::Rule;
 use naves_export::build::build;
+use naves_export::generate::{Generated, generate};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -91,6 +95,16 @@ pub struct RenderParams {
     px: u32,
     /// What to draw.
     overlay: OverlayArg,
+    /// Layers to draw over it, by id: `terrain_changes`, `too_steep_to_walk`, `roads`, `paths`, `drivable`. The road
+    /// layers generate the roads, which needs armake2 and the DayZ Server install. Drawn in a fixed order.
+    layers: Option<Vec<String>>,
+}
+
+/// Arguments of `validation_list`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ValidationParams {
+    /// Only the violations of this rule, for example `road_not_drivable`.
+    rule: Option<String>,
 }
 
 /// Arguments of `imagery_fetch`.
@@ -113,6 +127,9 @@ struct Cached {
     /// Whether the imagery was looked for; `imagery` stays empty when the project lists none.
     imagery_loaded: bool,
     imagery: Option<Arc<LoadedImagery>>,
+    /// Whether the roads were generated; `roads` stays empty when the project lists no OpenStreetMap file.
+    roads_loaded: bool,
+    roads: Option<Arc<Generated>>,
 }
 
 /// What `NavesMcp::map` hands out.
@@ -121,6 +138,7 @@ struct MapData {
     heightmap: Arc<Heightmap>,
     surfaces: Option<Arc<SurfaceGrid>>,
     imagery: Option<Arc<LoadedImagery>>,
+    roads: Option<Arc<Generated>>,
 }
 
 type CachedHeightmap = Option<Cached>;
@@ -157,6 +175,35 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("internal error: {e}"))
 }
 
+/// The layers named in a request, in the order they are drawn.
+fn parse_layers(ids: Option<&[String]>) -> Result<Vec<MapLayer>, String> {
+    let Some(ids) = ids else {
+        return Ok(Vec::new());
+    };
+    for id in ids {
+        if !MapLayer::ALL.iter().any(|l| l.id() == id) {
+            let known: Vec<&str> = MapLayer::ALL.iter().map(|l| l.id()).collect();
+            return Err(format!(
+                "unknown layer {id:?}; the layers are: {}",
+                known.join(", ")
+            ));
+        }
+    }
+    Ok(MapLayer::ALL
+        .iter()
+        .filter(|l| ids.iter().any(|id| id == l.id()))
+        .copied()
+        .collect())
+}
+
+/// Whether a layer is drawn from the generated roads.
+fn needs_roads(layer: MapLayer) -> bool {
+    matches!(
+        layer,
+        MapLayer::Roads | MapLayer::Paths | MapLayer::Drivable | MapLayer::TerrainChanges
+    )
+}
+
 fn compute_heightmap(dir: &Path, project: &Project) -> Result<Heightmap, String> {
     if project.sources.dem.is_empty() {
         return Err("the project has no elevation data: add DEM files to sources.dem".to_string());
@@ -181,13 +228,18 @@ impl NavesMcp {
 
     /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
-        Ok(self.map(false, false).await?.heightmap)
+        Ok(self.map(false, false, false).await?.heightmap)
     }
 
     /// The heightmap and, when asked for, the ground surfaces and the imagery of the saved project. All are
     /// computed again only when the project file has changed; surfaces and imagery are only made when asked
     /// for.
-    async fn map(&self, with_surfaces: bool, with_imagery: bool) -> Result<MapData, String> {
+    async fn map(
+        &self,
+        with_surfaces: bool,
+        with_imagery: bool,
+        with_roads: bool,
+    ) -> Result<MapData, String> {
         let mut cache = self.heightmap.lock().await;
         let dir = self.dir.clone();
         let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
@@ -201,6 +253,8 @@ impl NavesMcp {
                 surfaces: None,
                 imagery_loaded: false,
                 imagery: None,
+                roads_loaded: false,
+                roads: None,
             });
         }
         let Some(cached) = cache.as_mut() else {
@@ -224,11 +278,26 @@ impl NavesMcp {
             cached.imagery = loaded.map(Arc::new);
             cached.imagery_loaded = true;
         }
+        if with_roads && !cached.roads_loaded {
+            if !project.sources.osm.is_empty() {
+                let tools =
+                    (self.locate_tools)().map_err(|e| format!("Roads need armake2: {e}"))?;
+                let dir = self.dir.clone();
+                let input = project.clone();
+                let generated = blocking(move || {
+                    generate(&dir, &input, &tools, &|_| {}).map_err(|e| e.to_string())
+                })
+                .await??;
+                cached.roads = Some(Arc::new(generated));
+            }
+            cached.roads_loaded = true;
+        }
         Ok(MapData {
             project,
             heightmap: Arc::clone(&cached.heightmap),
             surfaces: cached.surfaces.clone(),
             imagery: cached.imagery.clone(),
+            roads: cached.roads.clone(),
         })
     }
 
@@ -300,14 +369,20 @@ impl NavesMcp {
         &self,
         Parameters(params): Parameters<RenderParams>,
     ) -> Result<CallToolResult, McpError> {
+        let layers = match parse_layers(params.layers.as_deref()) {
+            Ok(layers) => layers,
+            Err(e) => return Ok(failure(e)),
+        };
         let wants_surfaces = matches!(params.overlay, OverlayArg::Surface);
         let wants_imagery = matches!(params.overlay, OverlayArg::Imagery);
+        let wants_roads = layers.iter().any(|l| needs_roads(*l));
         let MapData {
             project,
             heightmap: hm,
             surfaces,
             imagery,
-        } = match self.map(wants_surfaces, wants_imagery).await {
+            roads,
+        } = match self.map(wants_surfaces, wants_imagery, wants_roads).await {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -324,8 +399,22 @@ impl NavesMcp {
                 composite: &loaded.composite,
                 project: &project,
             });
-            let image = render_topdown(&hm, &request, surfaces.as_deref(), tile_imagery.as_ref())
-                .map_err(|e| e.to_string())?;
+            let mut image =
+                render_topdown(&hm, &request, surfaces.as_deref(), tile_imagery.as_ref())
+                    .map_err(|e| e.to_string())?;
+            let data = match roads.as_deref() {
+                Some(roads) => LayerData {
+                    heightmap: &roads.heightmap,
+                    base: Some(&roads.base),
+                    features: &roads.features,
+                    pieces: &roads.pieces,
+                },
+                None => LayerData::new(&hm),
+            };
+            for layer in &layers {
+                let over = render_layer(*layer, &data, &request).map_err(|e| e.to_string())?;
+                image = composite(&image, &over);
+            }
             let mut bytes = Cursor::new(Vec::new());
             image
                 .write_to(&mut bytes, image::ImageFormat::Png)
@@ -340,6 +429,62 @@ impl NavesMcp {
             )]),
             Err(e) => failure(e),
         })
+    }
+
+    #[tool(
+        description = "The numbers of the generated road network: kilometres per surface, pieces, stretches and how many are not closed, the median distance of the pieces from the OpenStreetMap line, the steepest grade, the deepest cut and highest fill, the length that vehicles cannot drive, the largest distance of a piece from the ground and the length of paths that are too steep to walk. Generates the roads (armake2 and the DayZ Server install are needed). A project without OpenStreetMap files has empty numbers."
+    )]
+    async fn roads_stats(&self) -> Result<CallToolResult, McpError> {
+        let map = match self.map(false, false, true).await {
+            Ok(map) => map,
+            Err(e) => return Ok(failure(e)),
+        };
+        let stats = map
+            .roads
+            .as_deref()
+            .map(|r| r.stats.clone())
+            .unwrap_or_default();
+        Ok(match serde_json::to_value(&stats) {
+            Ok(value) => json_text(&value),
+            Err(e) => failure(e.to_string()),
+        })
+    }
+
+    #[tool(
+        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water) keeps only that rule. Generates the roads."
+    )]
+    async fn validation_list(
+        &self,
+        Parameters(params): Parameters<ValidationParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(rule) = &params.rule
+            && !Rule::ALL.iter().any(|r| r.id() == rule)
+        {
+            let known: Vec<&str> = Rule::ALL.iter().map(|r| r.id()).collect();
+            return Ok(failure(format!(
+                "unknown rule {rule:?}; the rules are: {}",
+                known.join(", ")
+            )));
+        }
+        let map = match self.map(false, false, true).await {
+            Ok(map) => map,
+            Err(e) => return Ok(failure(e)),
+        };
+        let violations: Vec<serde_json::Value> = map
+            .roads
+            .as_deref()
+            .map(|r| r.violations.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .filter(|v| {
+                params
+                    .rule
+                    .as_deref()
+                    .is_none_or(|rule| v.rule.id() == rule)
+            })
+            .map(|v| json!({ "rule": v.rule.id(), "x": v.at.0, "y": v.at.1, "message": v.message }))
+            .collect();
+        Ok(json_text(&json!({ "violations": violations })))
     }
 
     #[tool(

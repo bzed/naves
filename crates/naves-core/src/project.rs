@@ -206,8 +206,8 @@ impl Project {
                 height: 0.5,
             },
             grid: Grid {
-                terrain_size: 1024,
-                land_size: 1024 / LAND_RATIO,
+                terrain_size: 2048,
+                land_size: 2048 / LAND_RATIO,
             },
             sources: Sources {
                 dem: Vec::new(),

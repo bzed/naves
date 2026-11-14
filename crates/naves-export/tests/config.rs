@@ -140,3 +140,16 @@ fn navmesh_class_inherits_livonia_and_points_at_our_file() {
     assert!(c.contains("seedPosition[] = {500, 0, 500};"), "{c}");
     assert!(!c.contains("class Navmesh {};"), "{c}");
 }
+
+#[test]
+fn required_addons_follow_the_objects() {
+    use naves_export::config::world_config_with;
+    let without = world_config_with(&project(), &heightmap(300.0), false);
+    assert_eq!(without, world_config(&project(), &heightmap(300.0)));
+    assert!(!without.contains("DZ_Structures_Roads"));
+    let with = world_config_with(&project(), &heightmap(300.0), true);
+    assert!(
+        with.contains(r#"requiredAddons[] = {"DZ_Data", "DZ_Surfaces_Bliss", "DZ_Worlds_Enoch", "DZ_Structures_Roads"};"#),
+        "{with}"
+    );
+}

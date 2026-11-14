@@ -96,3 +96,24 @@ path = "fuzz_targets/prefs_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "odol_read"
+path = "fuzz_targets/odol_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osm_ways"
+path = "fuzz_targets/osm_ways.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "overrides_parse"
+path = "fuzz_targets/overrides_parse.rs"
+test = false
+doc = false
+bench = false

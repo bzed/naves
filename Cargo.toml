@@ -16,6 +16,10 @@ repository = "https://github.com/bzed/naves"
 [profile.release]
 overflow-checks = true
 
+# The road fitting searches thousands of states per stretch; unoptimised it makes the tests take minutes.
+[profile.dev.package.naves-core]
+opt-level = 2
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

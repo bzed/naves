@@ -140,6 +140,65 @@ impl SurfaceGrid {
     }
 }
 
+impl SurfaceGrid {
+    /// Paints `class` on every cell whose centre lies within half of `width_m` of the polyline `line`
+    /// (map metres). A line thinner than a cell paints a trace one cell wide. Parts outside the map are
+    /// clipped; a line with fewer than two points, or a number that is not finite, paints nothing.
+    pub fn stroke(&mut self, line: &[(f64, f64)], width_m: f64, class: SurfaceClass) {
+        if line.len() < 2
+            || !width_m.is_finite()
+            || line.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+        {
+            return;
+        }
+        let side = usize::try_from(self.size).unwrap_or(0);
+        let reach = (width_m / 2.0).max(self.cell_m / 2.0);
+        let last = side.saturating_sub(1);
+        let index = |metres: f64| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a cell index from a position clamped to the grid"
+            )]
+            let cell = (metres / self.cell_m)
+                .floor()
+                .clamp(0.0, f64::from(MAX_GRID_SIZE)) as usize;
+            cell.min(last)
+        };
+        let centre = |cell: usize| {
+            let cell = u32::try_from(cell).map_or(f64::MAX, f64::from);
+            (cell + 0.5) * self.cell_m
+        };
+        for pair in line.windows(2) {
+            let [from, to] = pair else { continue };
+            let (lo_x, hi_x) = (from.0.min(to.0) - reach, from.0.max(to.0) + reach);
+            let (lo_y, hi_y) = (from.1.min(to.1) - reach, from.1.max(to.1) + reach);
+            let map_end = self.cell_m * f64::from(self.size);
+            if hi_x < 0.0 || hi_y < 0.0 || lo_x > map_end || lo_y > map_end {
+                continue;
+            }
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length2 = dx * dx + dy * dy;
+            for row in index(lo_y)..=index(hi_y) {
+                for col in index(lo_x)..=index(hi_x) {
+                    let (px, py) = (centre(col), centre(row));
+                    let along = if length2 > 0.0 {
+                        (((px - from.0) * dx + (py - from.1) * dy) / length2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let distance = (px - from.0 - along * dx).hypot(py - from.1 - along * dy);
+                    if distance <= reach
+                        && let Some(cell) = self.cells.get_mut(row * side + col)
+                    {
+                        *cell = class;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Cells per side of the [`SurfaceGrid`] of a map with `terrain_size` heightmap vertices:
 /// `min(terrain_size * 4, 8192)`.
 #[must_use]

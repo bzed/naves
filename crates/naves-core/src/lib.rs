@@ -3,14 +3,28 @@
 
 //! Náves core: project, DEM, projection, heightmap and generation.
 
+pub mod catalog;
+pub mod checks;
+pub mod conform;
 pub mod dem;
+pub mod dips;
+pub mod features;
 pub mod heightmap;
 pub mod ident;
 pub mod imagery;
+pub mod junctions;
 pub mod landcover;
+pub mod limits;
+pub mod objects;
 pub mod osm;
 pub mod prefs;
+pub mod profile;
 pub mod project;
 pub mod projection;
 pub mod render;
+pub mod roadfit;
+pub mod roadnet;
+pub mod roadplace;
+pub mod sideslope;
 pub mod surface;
+pub mod validate;

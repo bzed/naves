@@ -13,6 +13,7 @@ use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::{BuildOutput, build};
+use naves_export::generate::{Generated, generate};
 use naves_export::tools::Tools;
 
 /// What a build reports back.
@@ -166,6 +167,62 @@ impl HeightmapJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<Result<MapData, String>> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// The state of the roads behind the road layers.
+pub enum RoadsState {
+    /// The project lists no OpenStreetMap file.
+    NoOsm,
+    /// Waiting for the map, or being generated.
+    Generating,
+    /// Ready to draw.
+    Ready(std::sync::Arc<Generated>),
+    /// The tools that the road pieces are read with cannot be found; the text says which.
+    ToolsMissing(String),
+    /// The roads could not be generated; the text says why.
+    Failed(String),
+}
+
+/// What a road job reports.
+pub enum RoadsMsg {
+    /// The roads.
+    Ready(Box<Generated>),
+    /// The tools are missing.
+    ToolsMissing(String),
+    /// The generation failed.
+    Failed(String),
+}
+
+/// The generation of the roads on its own thread.
+pub struct RoadJob {
+    rx: Receiver<RoadsMsg>,
+}
+
+impl RoadJob {
+    /// Generates the roads of the project in `dir` as saved on disk. `tools` is the result of locating them.
+    pub fn start(dir: &Path, tools: Result<Tools, String>) -> Self {
+        let (tx, rx) = channel();
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || {
+            let msg = match tools {
+                Err(error) => RoadsMsg::ToolsMissing(error),
+                Ok(tools) => match Project::load(&dir) {
+                    Err(error) => RoadsMsg::Failed(error.to_string()),
+                    Ok(project) => match generate(&dir, &project, &tools, &|_| {}) {
+                        Ok(generated) => RoadsMsg::Ready(Box::new(generated)),
+                        Err(error) => RoadsMsg::Failed(error.to_string()),
+                    },
+                },
+            };
+            tx.send(msg).ok(); // the window may be gone already
+        });
+        Self { rx }
+    }
+
+    /// The result, once it is there.
+    pub fn poll(&self) -> Option<RoadsMsg> {
         self.rx.try_recv().ok()
     }
 }

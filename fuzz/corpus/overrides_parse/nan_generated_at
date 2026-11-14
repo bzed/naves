@@ -1,0 +1,7 @@
+[[edits]]
+id = "road/123:1-5/4"
+generated_model = "m"
+generated_at = [nan, 2.0]
+
+[edits.edit]
+kind = "deleted"
