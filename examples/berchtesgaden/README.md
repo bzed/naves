@@ -6,13 +6,17 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Berchtesgaden test map
 
-The reference project of milestone 1: a 12.8 km square of the Berchtesgaden Alps at half scale (a 6.4 km map).
+The reference project of milestone 1: a 16.4 km square of the Berchtesgaden Alps at half scale (an 8.2 km map,
+`terrain_size = 2048`, terrain cells of 4 m). Half scale keeps the slopes steep, which is what the road placement
+has to cope with. Until 2026-11-14 it was a 12.8 km square (a 6.4 km map); the 2048 grid on it had cells of 3.1 m,
+which crash the game client, so the area grew, about a tenth towards north and east and the rest towards south and
+west.
 
 | | |
 |---|---|
-| Centre | 47.585 °N, 12.965 °E |
-| Area | about 47.527–47.643 °N and 12.880–13.050 °E |
-| In it | the Königssee, the Watzmann massif (west of the lake), the Hochkalter group, Berchtesgaden town |
+| Centre | 47.571769 °N, 12.946451 °E |
+| Area | about 47.496–47.647 °N and 12.835–13.058 °E |
+| In it | the Königssee, the Watzmann massif (west of the lake), the Hochkalter group, the Hintersee, Berchtesgaden town |
 | Elevation data | Copernicus GLO-30, two tiles that meet at 13.0 °E, so it also tests the tile seam |
 | Ground | ESA WorldCover (one tile) and OpenStreetMap (Oberbayern and Austria: the south and east of the map are Austrian) |
 | Satellite image | Sentinel-2, one clear scene of 2025-09-19 (10 m), which covers the whole map |
@@ -56,8 +60,8 @@ resolution of the map; the south and east of the map are Austrian, where the ser
 image shows). Both are free to use, commercial use included. Náves fetches them into `imagery/`:
 
 ```sh
-naves imagery fetch sentinel2-scenes examples/berchtesgaden   # 100 s, a 4 MB crop of a 340 MB scene
-naves imagery fetch bayern-dop40 examples/berchtesgaden       # 5 min, 20 requests, a 160 MB file
+naves imagery fetch sentinel2-scenes examples/berchtesgaden   # 2 min, a 7 MB crop of a 340 MB scene
+naves imagery fetch bayern-dop40 examples/berchtesgaden       # 14 min, a 575 MB file
 ```
 
 You can also choose and fetch the sources in the GUI (`naves gui examples/berchtesgaden`, the project panel).
@@ -73,19 +77,20 @@ mosaic; the map then says that it is non-commercial.
 Cost of the satellite image (release binary, `naves build`, **without roads**; same map without imagery in brackets)
 and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` included):
 
-| `terrain_size` | Build time | Peak memory | PBO | With roads: time | memory | PBO |
-|---|---|---|---|---|---|---|
-| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
-| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
+| Map | `terrain_size` | Build time | Peak memory | PBO | With roads: time | memory | PBO |
+|---|---|---|---|---|---|---|---|
+| 6.4 km | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
+| 6.4 km | 2048 (crashes the client) | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
+| 8.2 km | 2048 | | | | 396 s | 3.5 GiB | 233 MB |
 
-The figures with roads are from 2026-11-14 (commit `2e2a3e1`, AMD Ryzen 9 9900X, 24 threads; 2048: 346 s and 356 s
-in two runs) on the 6.4 km map. On a 6 400 m map 2048 gives terrain cells of 3.1 m, and the DayZ client crashes on
-cells under 4 m (see the grid in `docs/manual/src/project-file.md`). Placing the roads takes most of the time, and
-they are placed twice when a dip gets a bridge: at 2048 the two rounds took 152 s and 148 s, `binarize` 31 s,
-everything else about 15 s.
+The figures with roads are from 2026-11-14 and 2026-11-15 (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
+gives terrain cells of 3.1 m, and the DayZ client crashes on cells under 4 m (see the grid in
+`docs/manual/src/project-file.md`); the 8.2 km map has cells of 4 m. Placing the roads takes most of the time, and
+they are placed twice when a dip gets a bridge: on the 6.4 km map at 2048 the two rounds took 152 s and 148 s,
+`binarize` 31 s, everything else about 15 s.
 
-The finer grid does not remove the road findings: `road_misses_terrain` is 4604 at 1024 and 4015 at 2048,
-`road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
+The finer grid does not remove the road findings: on the 6.4 km map `road_misses_terrain` was 4604 at 1024 and 4015
+at 2048, `road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
 
 ## Build
 
@@ -98,7 +103,18 @@ naves build examples/berchtesgaden
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
 
-## Results with roads at 2048 (2026-11-14)
+## Results with roads on the 8.2 km map at 2048 (2026-11-15)
+
+- `naves build`: exit 0, 396 s, 3.5 GiB, signed PBO 233 MB. 24 815 road pieces in 2984 stretches (asf1 12.6 km,
+  asf2 11.1 km, asf3 32.6 km, city 75.9 km, grav 66.9 km, mud 59.3 km); 388 open ends.
+- Findings: 4806 `road_misses_terrain` (1345 above 0.5 m, 145 above 2 m, largest 8.5 m), 1729 `road_grade`,
+  1089 `road_conflict`, 877 `join_without_junction`, 388 `road_gap`, 250 `road_not_drivable` (5.43 km), 171
+  `path_too_steep`, 93 `earthworks_capped`, 25 `road_in_water`, 21 `tunnel_omitted`, 3 `road_over_water`, 2
+  `junction_too_steep`. Largest cut 49.2 m, highest fill 54.6 m.
+- `binarize` still reports "Cannot open object" for the road models (104 times), so no road piece is drawn in the
+  game; see below.
+
+## Results with roads on the 6.4 km map at 2048 (2026-11-14)
 
 - `naves build` (commit `2e2a3e1`): exit 0, 350 s, 1.8 GiB, signed PBO 223 MB. 20 946 road pieces in 2569 stretches
   (asf1 10.5 km, asf2 8.4 km, asf3 26.7 km, city 69.9 km, grav 54.7 km, mud 45.3 km); 76 bridge objects
@@ -109,7 +125,8 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
   `road_over_water`, 1 `junction_too_steep`. Largest cut 40.9 m, highest fill 68.9 m.
 - **In the game (DayZ 1.30.164289, headless client):**
   - The 2048 build **crashes the client while the world loads** (an access violation about a second after the player
-    connects). It does so without roads too, and without imagery; the 1024 builds load. The cause is not known yet.
+    connects). It does so without roads too, and without imagery; the 1024 builds load. The cause, found later: the
+    client cannot show terrain cells under 4 m. Náves now refuses such grids, and the map grew to 8.2 km.
   - **No road piece is drawn.** `binarize` reports "Cannot open object" for the road models (104 times; they are not on
     `P:`) and writes no road objects (`Road N dirs: 0`); only the bridges, the terrain benches and the painted ground
     are there. With the game's road models made readable to `binarize` (a test outside Náves) the pieces are drawn.
