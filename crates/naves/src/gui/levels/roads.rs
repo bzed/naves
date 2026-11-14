@@ -15,7 +15,7 @@ use crate::gui::layers::LayerDef;
 use crate::gui::prefs_window::{PrefsTab, PrefsWindow};
 use crate::gui::problems::Problem;
 use crate::gui::selection::Selection;
-use crate::gui::theme::{ERROR, INK};
+use crate::gui::theme::ERROR;
 use crate::gui::viewport::WorldPoint;
 use crate::gui::worker::RoadsState;
 
@@ -98,7 +98,7 @@ fn roads_key(ui: &mut egui::Ui) {
         );
         painter.line_segment(
             [rect.left_center(), rect.right_center()],
-            egui::Stroke::new(6.0, INK),
+            egui::Stroke::new(6.0, Color32::BLACK),
         );
         ui.label("Road, at its width");
     });
