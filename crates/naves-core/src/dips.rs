@@ -302,8 +302,8 @@ fn off_chord(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 /// What to do about `dip`; `model_length` is the scaled length of the bridge model the road would get, if
 /// any.
 ///
-/// A bridge when the dip is at least [`BRIDGE_DIP_M`] deep, a model exists, the run is at least half a model long, the span (the run grown to a whole
-/// number of models, evenly at both ends) stays within the room [`bridge_room`] gives and, over every model
+/// A bridge when the dip is at least [`BRIDGE_DIP_M`] deep, a model exists, the run is at least half a
+/// model long, the span (the run grown to a whole number of models, evenly at both ends) stays within the room [`bridge_room`] gives and, over every model
 /// length of it, the stretch's points are within [`BRIDGE_STRAIGHT_M`] of the chord; the span is then the
 /// second value. Otherwise a fill when no water lies under the run, else a report.
 #[must_use]
@@ -318,7 +318,7 @@ pub fn decide(
         DipAction::Fill
     };
     let span = (|| {
-        if dip.depth_m.is_nan() || dip.depth_m < BRIDGE_DIP_M {
+        if !dip.depth_m.is_finite() || dip.depth_m < BRIDGE_DIP_M {
             return None;
         }
         let length =

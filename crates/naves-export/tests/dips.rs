@@ -16,6 +16,7 @@
 use std::io::Cursor;
 use std::path::Path;
 
+use naves_core::dips::BRIDGE_DIP_M;
 use naves_core::project::Project;
 use naves_core::validate::Rule;
 use naves_export::generate::{Generated, generate};
@@ -264,12 +265,14 @@ fn building_twice_gives_the_same_objects_and_heights() {
 #[test]
 fn a_short_dry_dip_is_filled_up_to_the_road() {
     let dir = tempfile::tempdir().unwrap();
-    // 8 m deep but only about 10 m of it more than 3 m below the road: less than half a 25 m model
-    let p = project(dir.path(), 16.0, 8.0, &[]);
+    // 40 m deep, so deeper than a bridge needs, but only 8 m wide: less than half a 25 m model, and the
+    // length is the only reason for no bridge (the road stands about as far above the ground as the hollow is
+    // deep, as the stream test below reads from its message)
+    let p = project(dir.path(), 8.0, 40.0, &[]);
     let generated = build(dir.path(), &p);
     assert!(bridge_indices(&generated).is_empty());
     let (shaped, original) = ground_at_hollow(&generated);
-    assert!(original < f64::from(FLAT_M) - 5.0, "{original}");
+    assert!(original < f64::from(FLAT_M) - BRIDGE_DIP_M, "{original}");
     // the ground under the road is at the road's height, flat at 500 m here
     assert!((shaped - f64::from(FLAT_M)).abs() < 1.0, "{shaped}");
     assert!(
@@ -284,7 +287,7 @@ fn a_short_dry_dip_is_filled_up_to_the_road() {
 #[test]
 fn a_short_dip_over_a_stream_is_reported_and_left_as_the_build_leaves_it() {
     let dir = tempfile::tempdir().unwrap();
-    let p = project(dir.path(), 16.0, 8.0, &[HOLLOW_LON]);
+    let p = project(dir.path(), 8.0, 40.0, &[HOLLOW_LON]);
     let generated = build(dir.path(), &p);
     assert!(bridge_indices(&generated).is_empty());
     let wet: Vec<_> = generated
@@ -294,7 +297,15 @@ fn a_short_dip_over_a_stream_is_reported_and_left_as_the_build_leaves_it() {
         .collect();
     assert_eq!(wet.len(), 1, "{:?}", generated.violations);
     assert!((wet[0].at.0 - 500.0).abs() < 10.0, "{:?}", wet[0]);
-    assert!(wet[0].message.starts_with("Road crosses water "));
+    // the road stands 8 m or more above the ground (the dip is deep enough for a bridge) and the hollow is
+    // 8 m wide, less than half a 25 m model: the length is the only reason for no bridge
+    let depth: f64 = wet[0]
+        .message
+        .strip_prefix("Road crosses water ")
+        .and_then(|m| m.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap();
+    assert!(depth >= BRIDGE_DIP_M, "{}", wet[0].message);
 }
 
 #[test]

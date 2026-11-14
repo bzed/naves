@@ -730,9 +730,7 @@ fn a_road_width_that_is_not_a_number_gives_an_unscaled_bridge() {
             }
         }
     }
-    let Ok(catalog) = PieceCatalog::from_models(&models) else {
-        return; // the catalog refuses the model already: nothing reaches the placement
-    };
+    let catalog = PieceCatalog::from_models(&models).unwrap();
     let (model, scale, _) = bridge_for(&catalog, Family::Asf3).unwrap();
     assert!(scale.is_finite() && (scale - 1.0).abs() < 1e-12, "{scale}");
     assert!(model.width.is_finite());

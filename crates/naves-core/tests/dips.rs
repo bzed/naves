@@ -348,10 +348,13 @@ fn a_dip_is_bridged_only_from_the_bridge_depth() {
         assert_eq!((action, span.is_some()), (DipAction::Bridge, true), "{wet}");
     }
     // a depth that is not a number gets none
-    assert_eq!(
-        decide(&deep(f64::NAN, false), &graph, model),
-        (DipAction::Fill, None)
-    );
+    for depth in [f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            decide(&deep(depth, false), &graph, model),
+            (DipAction::Fill, None),
+            "{depth}"
+        );
+    }
     assert!((BRIDGE_DIP_M - 8.0).abs() < 1e-12 && DIP_M < BRIDGE_DIP_M);
 }
 
