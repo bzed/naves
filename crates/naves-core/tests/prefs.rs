@@ -143,6 +143,7 @@ fn saving_is_atomic() {
     assert_eq!(Preferences::load(&path).unwrap().map.fade_percent, 10);
 }
 
+#[cfg(unix)]
 #[test]
 fn an_unwritable_folder_is_an_error_and_keeps_the_file() {
     use std::os::unix::fs::PermissionsExt;
@@ -163,6 +164,7 @@ fn an_unwritable_folder_is_an_error_and_keeps_the_file() {
     assert_eq!(Preferences::load(&path).unwrap().map.fade_percent, 20);
 }
 
+#[cfg(unix)]
 fn nix_is_root() -> bool {
     std::fs::read_to_string("/proc/self/status")
         .is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:\t0\t")))
