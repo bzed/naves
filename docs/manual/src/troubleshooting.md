@@ -120,7 +120,7 @@ the limit of 12 %" (a stretch that is steeper than its limit, usually between tw
 sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
-is 4750 at `terrain_size = 1024` and 4192 at 2048, `road_conflict` 758 and 1125. The finer grid costs build time and PBO
+is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
 size: with the roads the build takes 315 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 185 s, 1.7 GiB and 78 MB at
 1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
 names `terrain_size = 1024` keeps it.
@@ -139,7 +139,7 @@ of the piece, which is measured at its middle against the ground before any road
 measured. It usually means a road held to a height far from its ground, for instance by a junction on a
 different slope, or a wrong node of the OSM data. Move the junction or fix the data, or accept the finding.
 
-**`road_over_water`: "Road crosses water 8 m below it without a bridge; look at it"**
+**`road_over_water`: "Road crosses water 6 m below it without a bridge; look at it"**
 The road stands more than 3 m above the original ground over a run where a stream, a river, a canal or a lake lies
 under it, and it gets no bridge: the dip is less than 8 m deep (a bridge is built from 8 m), the run is shorter than
 half a bridge model, a model would reach a junction or the end of the road, or the road bends more than 2 m off the

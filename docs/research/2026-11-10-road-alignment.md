@@ -915,10 +915,10 @@ inside a headless sway, under `systemd-run --scope -p MemoryMax=32G`. No game wa
 
 ### 7.9 Bridges over dips only from 8 m (2026-11-14)
 
-The maintainer set the depth from which a dip gets a bridge to 8 m (`BRIDGE_DIP_M`). A run still counts as a dip from
-3 m (`DIP_M`): below 8 m it is filled when dry and reported as `road_over_water` when a water line crosses it. The reason:
-nine tenths of the dips bridged at 3 m in 7.7 were shallower than 7.8 m (median 4.7 m), and a road crosses such a
-hollow on an embankment. Measured as in 7.7 with `road-analysis 1024` and `2048`, release build, one machine, after the
+The maintainer first named 20 m and then left the value to the controller, who set the depth from which a dip gets a
+bridge to 8 m on 2026-11-14 (`BRIDGE_DIP_M`). A run still counts as a dip from
+3 m (`DIP_M`): below 8 m it is filled when dry and reported as `road_over_water` when a water line crosses it. The reason: at 3 m in 7.7 the bridged dips were 3.2 / 4.7 / 7.8 / 17.0 m deep (minimum / median / 90th percentile /
+maximum), and a road crosses such a hollow on an embankment. Measured as in 7.7 with `road-analysis 1024` and `2048`, release build, one machine, after the
 change. Nothing else changed in the code. **Bridges over dips have not been tested in the game.**
 
 **Dips found, first placement:** 480 at 1024, 468 at 2048 (as in 7.7: the same roads are found; only the decision

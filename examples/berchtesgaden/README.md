@@ -78,10 +78,10 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 185 s | 1.7 GiB | 78 MB |
 | 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 315 s | 1.8 GiB | 223 MB |
 
-The project is at 2048 now. The roads are placed twice when a dip gets a bridge, which is most of the extra time.
+The project is at 2048 now. The roads are placed twice when a dip gets a bridge, which is about half of the extra time.
 
-The finer grid does not remove the road findings: `road_misses_terrain` is 4750 at 1024 and 4192 at 2048,
-`road_conflict` 758 and 1125 (`docs/research/2026-11-10-road-alignment.md`, section 7.7).
+The finer grid does not remove the road findings: `road_misses_terrain` is 4604 at 1024 and 4015 at 2048,
+`road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
 
 ## Build
 

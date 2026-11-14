@@ -182,7 +182,8 @@ conflict and is reported as today. This is where the finer grid of section 7 mat
 
 **As built (2026-11-14).** A vertex that two roads contest goes to the road whose edge is nearer, and a tie to the
 higher-ranked road; a road's own width always beats a level patch of another road. Measured: fewer conflicts, more
-small misses (`road_misses_terrain` 4750 at 1024 and 4192 at 2048, `road_conflict` 758 and 1125; research note 7.7).
+small misses (`road_misses_terrain` 4750 at 1024 and 4192 at 2048, `road_conflict` 758 and 1125; research note 7.7;
+with bridges over dips only from 8 m: 4604 and 4015, 749 and 1130; note 7.9).
 
 ## 6. Dips and bridges
 
@@ -246,9 +247,10 @@ object identity comes from the placing, which does not depend on the grid or the
 with a bridge; the dips that are left are not bridged again. A dip over water that gets no bridge is filled like a dry
 one, not left in the air, and is reported as `road_over_water`. The dip threshold of 3 m gave 93 to 95 bridged dips on
 the example, median 4.7 m deep, 245 and 229 bridge objects (research note 7.7). The dip threshold for a bridge is 8 m
-(`BRIDGE_DIP_M`; `DIP_M` of 3 m stays the start of a dip, for the fill and the report over water): the controller set it on
-2026-11-14 after the measurement with 3 m, because nine tenths of the dips bridged at 3 m were shallower than 7.8 m (median
-4.7 m) and a road crosses such a hollow on an embankment; 8 m keeps the bridges for the deepest tenth.
+(`BRIDGE_DIP_M`; `DIP_M` of 3 m stays the start of a dip, for the fill and the report over water): the maintainer
+first named 20 m and then left the value to the controller, who set 8 m on 2026-11-14 after the measurement with 3 m: at
+3 m the bridged dips were 3.2 / 4.7 / 7.8 / 17.0 m deep (minimum / median / 90th percentile / maximum), a road crosses
+such a hollow on an embankment, and 8 m keeps the bridges for the deepest tenth.
 
 ### 6.4 Water
 
