@@ -78,9 +78,11 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
 | 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
 
-The project is at 2048 now. The figures with roads are from 2026-11-14 (commit `2e2a3e1`, AMD Ryzen 9 9900X, 24
-threads; 2048: 346 s and 356 s in two runs). Placing the roads takes most of the time, and they are placed twice
-when a dip gets a bridge: at 2048 the two rounds take 152 s and 148 s, `binarize` 31 s, everything else about 15 s.
+The figures with roads are from 2026-11-14 (commit `2e2a3e1`, AMD Ryzen 9 9900X, 24 threads; 2048: 346 s and 356 s
+in two runs) on the 6.4 km map. On a 6 400 m map 2048 gives terrain cells of 3.1 m, and the DayZ client crashes on
+cells under 4 m (see the grid in `docs/manual/src/project-file.md`). Placing the roads takes most of the time, and
+they are placed twice when a dip gets a bridge: at 2048 the two rounds took 152 s and 148 s, `binarize` 31 s,
+everything else about 15 s.
 
 The finer grid does not remove the road findings: `road_misses_terrain` is 4604 at 1024 and 4015 at 2048,
 `road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
@@ -131,7 +133,7 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 ## Results of the first version, procedural ground only (2026-11-06)
 
 - `naves build`: no error. Mod `build/@naves_berchtesgaden`, mission `build/missions/dayzOffline.berchtesgaden`.
-- Grids (at the time; the project is at 2048 now): 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
+- Grids (as again now, after a time at 2048): 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
 - Local DayZ Server 1.30 (own tree, non-default ports, `verifySignatures = 2`, key from `keys/`): loads the mod and
   the mission, `Player connect enabled`, no `Unable to load navmesh`.
 - Navigation mesh: `dznav generate`, 16 383 tiles in 749 s, 93 377 reachable polygons.

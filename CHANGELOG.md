@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The DayZ client no longer crashes a few seconds after it enters a world with a fine grid. The client takes a surface tile as its unit of terrain detail only when the tile is 256 to 1024 m long; with shorter tiles (terrain cells under 4 m, such as the 6.4 km map at 2048 that was the default) it asks for a terrain texture that is never made. `naves build` (CLI, GUI and MCP) now refuses grids whose terrain cells are not 4 to 16 m long and names a `terrain_size` that fits, a new project gets the finest grid with cells of 4 m or more (1024 on a 6.4 km map), and the Berchtesgaden example is back at 1024.
 - The MCP server uses rmcp 3.9.0, which fixes RUSTSEC-2026-0462; the dependency requirement now enforces it.
 - Starting an external tool that was written or replaced moments earlier no longer fails with "text file busy": the kernel releases a closed file's write permission a moment after close, and the spawn now waits that moment out (up to one second).
 

@@ -66,16 +66,33 @@ The map is `real_extent_m × horizontal` metres wide. With the defaults, a 12 80
 
 | Field | Default | Valid values |
 |---|---|---|
-| `terrain_size` | 2048 | power of two from 256 to 8192; heightmap vertices per side |
-| `land_size` | 256 | exactly `terrain_size / 8`; surface material cells per side |
+| `terrain_size` | see below | power of two from 256 to 8192; heightmap vertices per side |
+| `land_size` | `terrain_size / 8` | exactly `terrain_size / 8`; surface material cells per side |
 
-The distance between heightmap vertices is the map width divided by `terrain_size`.
+The distance between heightmap vertices (the terrain cell) is the map width divided by `terrain_size`.
 
-A new project has a grid of 2048 (3.1 m on a 6.4 km map); the finer grid follows roads and their cuttings better.
-A project file that names a size keeps it: an existing project with `terrain_size = 1024` is built at 1024 as before,
-and changing the grid is a choice, not an update. `land_size` has no default in the file: a file that names
-only `terrain_size` is refused with a message that names the missing `land_size`. A grid of 2048 costs build time
-and disk (see the table of costs in `examples/berchtesgaden/README.md`, which has the figures with roads); a coarser grid is still valid.
+**The terrain cell must be 4 to 16 m long**, or the DayZ client crashes a few seconds after the player enters the
+world. `naves build` refuses such a grid before it starts and names a `terrain_size` that fits the map. The limits per
+grid:
+
+| `terrain_size` | Map width |
+|---|---|
+| 512 | 2 048 to 8 192 m |
+| 1024 | 4 096 to 16 384 m |
+| 2048 | 8 192 to 32 768 m |
+| 4096 | 16 384 to 65 536 m |
+
+So a 6 400 m map (the default scale of a 12 800 m area) is built at 1024 (6.25 m cells, as Livonia); 2048 needs a
+map of at least 8 192 m. The reason: the client takes a surface tile (8 × 8 material cells) as its unit of terrain
+detail only when the tile is 256 to 1024 m long; with smaller tiles it picks a larger unit from the view distance,
+asks for a terrain level that the unit cannot have, and reads a texture that was never made. Vanilla and modded
+worlds all have terrain cells of 4 m or more.
+
+A new project gets the finest grid that keeps the cells at 4 m or more (1024 on a 6.4 km map). A project file that
+names a size keeps it, and changing the grid is a choice, not an update. `land_size` has no default in the file: a
+file that names only `terrain_size` is refused with a message that names the missing `land_size`. A finer grid costs
+build time and disk (see the table of costs in `examples/berchtesgaden/README.md`, which has the figures with
+roads).
 
 `land_size` is not a free choice: the game needs 8 heightmap cells per material cell, as on Livonia and
 Chernarus, and the game client crashes on other ratios. Náves rejects any other value and names the right one;

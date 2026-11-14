@@ -122,8 +122,9 @@ allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
 is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
 size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 325 s, 1.7 GiB and 78 MB at
-1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
-names `terrain_size = 1024` keeps it.
+1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). These figures were measured on a 6.4 km map at 2048,
+a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
+[the grid](project-file.md#grid).
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
@@ -166,3 +167,11 @@ from Steam (Tools) or set `DAYZ_SERVER` to its folder.
 **`... already exists`**
 The target mission folder is there already. A build removes its output folders first; if you call the
 mission step yourself, remove the old folder.
+
+## The game
+
+**`a map of 6400 m with grid.terrain_size = 2048 has terrain cells of 3.125 m; the DayZ client crashes unless they are 4 to 16 m long ...`**
+`naves build` refuses a grid whose terrain cells are shorter than 4 m or longer than 16 m: the game client would load
+the world and crash a few seconds after the player enters it (an access violation reading address `0xa0`). Set the
+`terrain_size` the message names, or make the map wider (`area.real_extent_m` or `scale.horizontal`); the limits per
+grid are in [the grid](project-file.md#grid).

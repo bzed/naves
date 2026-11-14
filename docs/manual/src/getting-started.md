@@ -164,7 +164,7 @@ A road keeps to its family's grade where it can. Where holding it would put the 
 the ground**, the road gives way and becomes steeper, up to nine tenths of what vehicles manage; it is then amber in
 the Drivable layer, not red.
 
-The terrain grid is coarse (a cell is 3.1 m on a 6.4 km map at the default `terrain_size = 2048`, 6.25 m at 1024), and every cell under a road takes the road's height
+The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map at `terrain_size = 1024`, and never less than 4 m, see [the grid](project-file.md#grid)), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
 streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
 it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the

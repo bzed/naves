@@ -25,7 +25,6 @@ use naves_core::render::{
 };
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_core::validate::Rule;
-use naves_export::build::build;
 use naves_export::generate::{Generated, generate};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
@@ -590,7 +589,7 @@ impl NavesMcp {
         let result = blocking(move || {
             let tools = locate()?;
             let lines = Mutex::new(Vec::new());
-            let out = build(&dir, &tools, &|line| {
+            let out = crate::cli::build_world(&dir, &tools, &|line| {
                 if let Ok(mut lines) = lines.lock() {
                     lines.push(line.to_string());
                 }

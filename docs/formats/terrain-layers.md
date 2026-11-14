@@ -72,6 +72,13 @@ it enters the world; with 4 terrain cells per land cell the client also renders 
 never created and crashes. Both were found with a debugger on the client, see
 `docs/research/2026-11-05-reference-terrains.md`.
 
+The tile must also be **256 to 1024 m long**. Only then does the client take the tile as its land segment. With a
+shorter tile it picks a segment of several tiles from the view distance (two tiles at a view of 10 km). Such a
+segment has more terrain levels than the land cell can hold, and the client reads the texture of a level that it
+never created (a null read at `+0xa0`) a few seconds after it enters the world. With 8 land cells per tile and 8
+terrain cells per land cell, this means terrain cells of 4 to 16 m. Measured: 3.125, 3.5 and 3.75 m crash, 4 and
+6.25 m load (2026-11-14, research note above).
+
 ## Mask colours
 
 Each mask pixel selects a layer slot of the tile material. Read from Bohemia's Test_Terrain sample, whose material

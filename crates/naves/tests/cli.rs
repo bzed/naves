@@ -67,8 +67,8 @@ fn new_project(home: &Path) -> PathBuf {
     let toml = std::fs::read_to_string(proj.join("naves.toml")).unwrap();
     let toml = toml
         .replace("dem = []", "dem = [\"dem/koenigssee.tif\"]")
-        .replace("terrain_size = 2048", "terrain_size = 256")
-        .replace("land_size = 256", "land_size = 32");
+        // 1500 m on 256 vertices: cells of 5.9 m, which the game client shows
+        .replace("horizontal = 0.5", "horizontal = 1.0");
     std::fs::write(proj.join("naves.toml"), toml).unwrap();
     proj
 }
@@ -263,7 +263,7 @@ fn build_without_dem_explains() {
             "--center",
             "47.55,12.975",
             "--extent",
-            "1500",
+            "2048",
         ])
         .assert()
         .success();
@@ -271,6 +271,30 @@ fn build_without_dem_explains() {
     with_fakes(&mut cmd, &fakes);
     let out = cmd.arg("build").arg(&proj).assert().failure();
     assert!(stderr(&out).contains("sources.dem"), "{}", stderr(&out));
+}
+
+/// A grid whose terrain cells are shorter than 4 m crashes the game client: `naves build` refuses it before
+/// it starts any work, and says which grid works.
+#[test]
+fn build_refuses_a_grid_the_game_cannot_show() {
+    let home = tempfile::tempdir().unwrap();
+    let fakes = FakeEnv::new(&home.path().join("fake")).unwrap();
+    let proj = new_project(home.path());
+    let toml = std::fs::read_to_string(proj.join("naves.toml")).unwrap();
+    let toml = toml
+        .replace("terrain_size = 256", "terrain_size = 512")
+        .replace("land_size = 32", "land_size = 64");
+    std::fs::write(proj.join("naves.toml"), toml).unwrap();
+    let mut cmd = naves(home.path());
+    with_fakes(&mut cmd, &fakes);
+    let out = cmd.arg("build").arg(&proj).assert().failure();
+    let err = stderr(&out);
+    assert!(err.contains("2.930 m"), "{err}");
+    assert!(err.contains("terrain_size = 256"), "{err}");
+    assert!(
+        !proj.join("build").exists(),
+        "the refused build left output"
+    );
 }
 
 #[test]

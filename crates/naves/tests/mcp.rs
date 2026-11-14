@@ -45,6 +45,8 @@ async fn start_with(sources: bool) -> Fixture {
     let mut p = naves_core::project::Project::new("Test", 47.55, 12.975, 1500.0);
     p.grid.terrain_size = 256;
     p.grid.land_size = 32;
+    // 1500 m on 256 vertices: terrain cells the game client shows
+    p.scale.horizontal = 1.0;
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
     if sources {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
@@ -98,6 +100,8 @@ async fn start_roads(tools: bool) -> Fixture {
     let mut p = naves_core::project::Project::new("Test", 47.55, 12.975, 1500.0);
     p.grid.terrain_size = 256;
     p.grid.land_size = 32;
+    // 1500 m on 256 vertices: terrain cells the game client shows
+    p.scale.horizontal = 1.0;
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
     std::fs::create_dir_all(proj.join("osm")).unwrap();
@@ -310,7 +314,7 @@ async fn heightmap_stats_describe_the_map() {
     let stats: Value = serde_json::from_str(&text(&result)).unwrap();
     assert_eq!(stats["size"], 256);
     assert!(stats["min"].as_f64().unwrap() < stats["max"].as_f64().unwrap());
-    assert!((stats["map_size_m"].as_f64().unwrap() - 750.0).abs() < 1e-6);
+    assert!((stats["map_size_m"].as_f64().unwrap() - 1500.0).abs() < 1e-6);
 }
 
 #[tokio::test]

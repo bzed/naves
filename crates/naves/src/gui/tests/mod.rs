@@ -35,6 +35,8 @@ fn project(root: &Path) -> PathBuf {
     let mut p = Project::new("Test", 47.55, 12.975, 1500.0);
     p.grid.terrain_size = 256;
     p.grid.land_size = 32;
+    // 1500 m on 256 vertices: terrain cells the game client can show (`Project::check_game_grid`)
+    p.scale.horizontal = 1.0;
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
     let fixture =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
