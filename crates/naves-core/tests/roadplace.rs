@@ -90,7 +90,7 @@ fn a_t_places_a_junction_and_a_side_road() {
     assert!(dist(centre(j), (500.0, 500.0)) < 3.0, "{:?}", centre(j));
     assert!(of_kind(&net, PlacedKind::Piece).len() > 20);
     assert!(net.gaps.is_empty(), "{:?}", net.gaps);
-    assert!(net.joins_without_junction.is_empty());
+    assert_eq!(net.joins_without_junction.len(), 0);
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn a_crossing_places_an_x() {
 fn a_pair_without_a_model_joins_without_a_junction() {
     // there is no gravel junction
     let net = place(&t_network(Family::Grav));
-    assert!(of_kind(&net, PlacedKind::Junction).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
     assert_eq!(net.joins_without_junction.len(), 1);
     assert!(dist(net.joins_without_junction[0], (500.0, 500.0)) < 1.0);
     // the side road ends on the edge of the through road, overlapping it by up to 2 m
@@ -224,7 +224,7 @@ fn a_clipped_end_has_no_cap_and_stays_inside_the_map() {
         &[-1, 5, -2],
         &[(13.0, 500.0), (300.0, 500.0), (1987.0, 500.0)],
     )]);
-    assert!(of_kind(&net, PlacedKind::EndCap).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::EndCap).len(), 0);
     for r in &net.roads {
         for p in [r.start, r.end] {
             assert!(
@@ -233,7 +233,7 @@ fn a_clipped_end_has_no_cap_and_stays_inside_the_map() {
             );
         }
     }
-    assert!(!net.roads.is_empty());
+    assert_ne!(net.roads.len(), 0);
 }
 
 #[test]
@@ -300,7 +300,7 @@ fn a_ring_closes_on_itself() {
     let mut nodes: Vec<i64> = (1..=60).collect();
     nodes.push(1);
     let net = place(&[feature(1, Family::City, &nodes, &points)]);
-    assert!(of_kind(&net, PlacedKind::EndCap).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::EndCap).len(), 0);
     let first = net.roads.first().unwrap();
     let last = net.roads.last().unwrap();
     let gap = dist((first.start.x, first.start.y), (last.end.x, last.end.y));
@@ -361,7 +361,7 @@ fn a_changed_side_road_does_not_move_the_through_road() {
             })
             .collect()
     };
-    assert!(!through(&a).is_empty());
+    assert_ne!(through(&a).len(), 0);
     assert_eq!(through(&a), through(&b));
 }
 
@@ -376,7 +376,7 @@ fn the_same_input_gives_the_same_network() {
 fn chains_index_the_roads_in_driving_order() {
     let net = place(&t_network(Family::Asf3));
     for chain in &net.chains {
-        assert!(!chain.is_empty());
+        assert_ne!(chain.len(), 0);
         for &i in chain {
             assert!(i < net.roads.len());
         }
@@ -474,7 +474,7 @@ fn a_gravel_road_gets_a_wooden_bridge() {
     }
     let net = place(&features);
     let bridges = of_kind(&net, PlacedKind::Bridge);
-    assert!(!bridges.is_empty());
+    assert_ne!(bridges.len(), 0);
     assert!(
         bridges.iter().all(|b| b.model.contains("bridge_wood")),
         "{}",
@@ -506,7 +506,7 @@ fn a_paved_road_gets_the_narrowest_bridge_that_is_wide_enough() {
     // asf1 is 12 m wide: the 12 m model, not the 9 m one, and not scaled
     let net = place(&bridge_stretch(Family::Asf1));
     let bridges = of_kind(&net, PlacedKind::Bridge);
-    assert!(!bridges.is_empty());
+    assert_ne!(bridges.len(), 0);
     assert!(
         bridges.iter().all(|r| r.model.contains("bridge_stone_12")
             && r.width >= width(Family::Asf1)
@@ -530,7 +530,7 @@ fn a_bridge_that_is_too_narrow_is_scaled_up_and_not_down() {
     // a 12 m road
     let wide = place_with(&only_9m, &bridge_stretch(Family::Asf1));
     let bridges = of_kind(&wide, PlacedKind::Bridge);
-    assert!(!bridges.is_empty());
+    assert_ne!(bridges.len(), 0);
     let scale = width(Family::Asf1) / 9.0;
     assert!(bridges.iter().all(|r| (r.scale - scale).abs() < 1e-9));
     assert!(bridges.iter().all(|r| (r.width - 12.0).abs() < 1e-9));
@@ -538,7 +538,7 @@ fn a_bridge_that_is_too_narrow_is_scaled_up_and_not_down() {
     // a 7 m road is not given a bridge scaled down
     let narrow = place_with(&only_9m, &bridge_stretch(Family::Asf3));
     let bridges = of_kind(&narrow, PlacedKind::Bridge);
-    assert!(!bridges.is_empty());
+    assert_ne!(bridges.len(), 0);
     assert!(bridges.iter().all(|r| (r.scale - 1.0).abs() < 1e-12));
 }
 
@@ -550,7 +550,7 @@ fn the_scale_stops_at_one_and_a_half_and_says_so() {
         &bridge_stretch(Family::Grav),
     );
     let bridges = of_kind(&net, PlacedKind::Bridge);
-    assert!(!bridges.is_empty());
+    assert_ne!(bridges.len(), 0);
     assert!(
         bridges
             .iter()
@@ -627,7 +627,7 @@ fn no_junction_sits_at_the_end_of_a_bridge() {
         &[(400.0, 500.0), (400.0, 800.0)],
     ));
     let net = place(&features);
-    assert!(of_kind(&net, PlacedKind::Junction).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
     assert_eq!(net.joins_without_junction.len(), 1);
 }
 
@@ -689,7 +689,7 @@ fn a_bridge_model_without_a_usable_length_is_never_chosen() {
     }
     // and if no model is usable, the bridge is left out
     let net = place_with(&[("bridge_stone_bad", 0.0, 12.0, 7.9)], &bridged(100.0));
-    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }
 
 fn assert_finite_bridges(net: &PlacedNetwork) {
@@ -713,7 +713,7 @@ fn a_bridge_model_without_a_width_is_not_used() {
     .unwrap();
     assert!(bridge_for(&catalog, Family::Asf3).is_none());
     let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
-    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
     assert_finite_bridges(&net);
 }
 
@@ -747,5 +747,5 @@ fn a_bridge_model_shorter_than_a_metre_is_not_used() {
     .unwrap();
     assert!(bridge_for(&catalog, Family::Asf3).is_none());
     let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
-    assert!(of_kind(&net, PlacedKind::Bridge).is_empty());
+    assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }

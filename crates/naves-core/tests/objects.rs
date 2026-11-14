@@ -109,7 +109,7 @@ fn objects_without_edits_are_placed_as_generated() {
     ];
     let (placed, orphans) = apply_overrides(&g, &Overrides::default());
     assert_eq!(placed.len(), 2);
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
     assert_eq!(placed[1].id, Some(id("a", 1)));
     assert_eq!((placed[1].x, placed[1].y), (3.0, 4.0));
 }
@@ -131,7 +131,7 @@ fn moved_edit_is_kept() {
         )],
     };
     let (placed, orphans) = apply_overrides(&g, &o);
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
     assert_eq!(placed.len(), 1);
     assert_eq!((placed[0].x, placed[0].y, placed[0].yaw), (12.0, 21.0, 1.5));
     assert_eq!(placed[0].id, Some(id("a", 0)));
@@ -149,7 +149,7 @@ fn deleted_edit_is_kept() {
     let (placed, orphans) = apply_overrides(&g, &o);
     assert_eq!(placed.len(), 1);
     assert_eq!(placed[0].id, Some(id("a", 1)));
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn replaced_edit_is_kept() {
         )],
     };
     let (placed, orphans) = apply_overrides(&g, &o);
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
     assert_eq!(placed[0].model, "other");
     assert_eq!((placed[0].x, placed[0].y, placed[0].yaw), (10.0, 20.0, 0.5));
 }
@@ -275,7 +275,7 @@ fn moved_far_makes_an_orphan() {
     // within 25 m is still the same object
     let g = vec![generated("a", 0, "m1", 30.0, 20.0)];
     let (_, orphans) = apply_overrides(&g, &o);
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
 }
 
 #[test]
@@ -305,8 +305,8 @@ fn a_deleted_edit_with_no_object_is_dropped_silently() {
         edits: vec![edit("gone", 3, "m1", (1.0, 2.0), Override::Deleted)],
     };
     let (placed, orphans) = apply_overrides(&[], &o);
-    assert!(placed.is_empty());
-    assert!(orphans.is_empty());
+    assert_eq!(placed.len(), 0);
+    assert_eq!(orphans.len(), 0);
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn damaged_overrides_are_errors() {
     ] {
         assert!(Overrides::parse(text).is_err(), "{text}");
     }
-    assert!(Overrides::parse("").unwrap().edits.is_empty());
+    assert_eq!(Overrides::parse("").unwrap().edits.len(), 0);
 }
 
 fn bridge_road(index: u32) -> PlacedRoad {
@@ -553,7 +553,7 @@ fn a_moved_bridge_keeps_its_scale_and_a_replaced_or_orphaned_one_loses_it() {
         )],
     };
     let (placed, orphans) = apply_overrides(std::slice::from_ref(&bridge), &moved);
-    assert!(orphans.is_empty());
+    assert_eq!(orphans.len(), 0);
     assert!((placed[0].scale - 1.3).abs() < 1e-12);
     assert!((placed[0].x - 12.0).abs() < 1e-12);
 

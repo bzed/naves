@@ -115,7 +115,7 @@ fn a_circle_uses_the_matching_radius() {
     let fit = fit_line(&path, at(0.0, 0.0, 0.0), EndGoal::Free, &pieces()).unwrap();
     assert_joined(&fit, at(0.0, 0.0, 0.0));
     let arcs: Vec<&FitPiece> = fit.pieces.iter().filter(|p| is_arc(p)).collect();
-    assert!(!arcs.is_empty());
+    assert_ne!(arcs.len(), 0);
     for arc in arcs {
         assert!(radius(arc) >= 49.9, "an arc of radius {:.1}", radius(arc));
     }

@@ -330,7 +330,7 @@ fn expand(
             let weight = ((s - (total - GOAL_PULL_M)) / GOAL_PULL_M).clamp(0.0, 1.0);
             weight * 100.0 * wrap(end.heading - g.heading).powi(2)
         });
-        let lateral = 0.5 * (mid.distance.powi(2) + near.distance.powi(2));
+        let lateral = f64::midpoint(mid.distance.powi(2), near.distance.powi(2));
         let cost =
             state.cost + v.chord * (pull + lateral + 100.0 * dh * dh) + 5.0 + 20.0 * v.turn.abs();
         let Ok(variant) = u16::try_from(index) else {

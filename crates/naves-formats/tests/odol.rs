@@ -8,10 +8,6 @@
     clippy::unwrap_used,
     reason = "test helper code; failing loudly is the point"
 )]
-#![expect(
-    clippy::float_cmp,
-    reason = "the values are written by the builder and read back unchanged"
-)]
 
 use naves_formats::odol::{OdolError, read_odol};
 
@@ -213,7 +209,7 @@ fn memory_points_are_read() {
     assert_eq!(m.memory["lb"], vec![[7.0, 8.0, 9.0]]);
     // indices out of order keep the order of the selection
     assert_eq!(m.memory["le"], vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
-    assert!(m.memory["pb"].is_empty());
+    assert_eq!(m.memory["pb"], [] as [[f32; 3]; 0]);
     assert!(!m.memory.contains_key("LB"), "names are lower-cased");
 }
 

@@ -454,11 +454,17 @@ fn a_bridge_that_was_not_placed_is_a_road_with_dips() {
     for road in &mut placed.roads {
         road.kind = PlacedKind::Bridge;
     }
-    assert!(find_dips(&graph, &placed, &profiles, &base, &[], &[], &frame()).is_empty());
+    assert_eq!(
+        find_dips(&graph, &placed, &profiles, &base, &[], &[], &frame()).len(),
+        0
+    );
     // a tunnel never has dips
     graph.stretches[0].bridge = false;
     graph.stretches[0].tunnel = true;
-    assert!(find_dips(&graph, &net, &profiles, &base, &[], &[], &frame()).is_empty());
+    assert_eq!(
+        find_dips(&graph, &net, &profiles, &base, &[], &[], &frame()).len(),
+        0
+    );
 }
 
 #[test]

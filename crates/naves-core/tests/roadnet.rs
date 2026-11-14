@@ -168,7 +168,7 @@ fn a_tunnel_splits() {
 fn paths_are_not_in_the_graph() {
     let mut p = road(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)]);
     p.kind = FeatureKind::Path { width_m: 1.6 };
-    assert!(build_graph(&[p]).stretches.is_empty());
+    assert_eq!(build_graph(&[p]).stretches.len(), 0);
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn a_ring_with_a_tail_terminates() {
     ]);
     assert_eq!(g.stretches.len(), 2);
     let c = chains(&g);
-    assert!(!c.is_empty());
+    assert_ne!(c.len(), 0);
     let total: usize = c.iter().map(|c| c.links.len()).sum();
     assert_eq!(total, 2);
 }
@@ -683,5 +683,5 @@ fn a_bridge_that_a_dip_bridge_covers_is_not_lost() {
         assert!(lost_bridges(&osm, &out).is_empty(), "{from_m}");
     }
     // and one that stays a bridge is kept
-    assert!(lost_bridges(&osm, &osm).is_empty());
+    assert_eq!(lost_bridges(&osm, &osm).len(), 0);
 }

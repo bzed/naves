@@ -358,7 +358,7 @@ fn the_village_has_a_main_road() {
         .iter()
         .filter(|w| w.tags.get("highway").map(String::as_str) == Some("secondary"))
         .collect();
-    assert!(!secondary.is_empty());
+    assert_ne!(secondary.len(), 0);
     for w in &found.ways {
         assert_eq!(w.nodes.len(), w.points.len(), "way {}", w.id);
         assert!(w.nodes.len() >= 2, "way {}", w.id);
@@ -390,7 +390,7 @@ fn ways_with_missing_nodes_are_counted_and_left_out() {
     // the cut keeps the ways but only the nodes inside the box
     let found = ways_of(schoenau_cut(), village_window());
     assert!(found.skipped > 0, "{found:?}");
-    assert!(!found.ways.is_empty());
+    assert_ne!(found.ways.len(), 0);
     // 22 highway ways, a river and a stream
     assert_eq!(found.ways.len() + found.skipped, 24);
 }
@@ -404,7 +404,7 @@ fn ways_far_from_the_window_are_not_read() {
         east: 10.1,
     };
     let found = ways_of(schoenau(), far);
-    assert!(found.ways.is_empty());
+    assert_eq!(found.ways.len(), 0);
     assert_eq!(found.skipped, 0);
 }
 

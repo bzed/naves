@@ -167,7 +167,7 @@ fn a_cross_fall_between_the_aim_and_the_limit_is_not_reported() {
         &[],
         &[],
     );
-    assert!(only(Rule::RoadNotDrivable, &v).is_empty());
+    assert_eq!(only(Rule::RoadNotDrivable, &v).len(), 0);
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn a_piece_that_misses_the_terrain_is_reported() {
         &[],
         &[],
     );
-    assert!(only(Rule::RoadMissesTerrain, &ok).is_empty());
+    assert_eq!(only(Rule::RoadMissesTerrain, &ok).len(), 0);
 }
 
 #[test]
@@ -382,12 +382,12 @@ fn road_in_water_ignores_bridges() {
         &[],
         &[lake()],
     );
-    assert!(only(Rule::RoadInWater, &v).is_empty());
+    assert_eq!(only(Rule::RoadInWater, &v).len(), 0);
     // and only water counts (priority 3), not built-up ground
     let mut town = lake();
     town.priority = 1;
     let n = net(vec![road(0, PlacedKind::Piece, (250.0, 250.0))]);
-    assert!(
+    assert_eq!(
         only(
             Rule::RoadInWater,
             &run(
@@ -400,7 +400,8 @@ fn road_in_water_ignores_bridges() {
                 &[town]
             )
         )
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -415,7 +416,7 @@ fn a_hole_in_a_lake_is_not_water() {
         (47.5495, 12.974),
     ]);
     let n = net(vec![road(0, PlacedKind::Piece, (250.0, 250.0))]);
-    assert!(
+    assert_eq!(
         only(
             Rule::RoadInWater,
             &run(
@@ -428,7 +429,8 @@ fn a_hole_in_a_lake_is_not_water() {
                 &[with_island]
             )
         )
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -521,7 +523,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         "Junctions too close for their heights: 12.0 m over 50 m"
     );
     // a repaired junction set makes none
-    assert!(
+    assert_eq!(
         only(
             Rule::JunctionTooSteep,
             &run(
@@ -534,7 +536,8 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
                 &[]
             )
         )
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -590,7 +593,7 @@ fn an_embankment_over_the_allowance_is_reported_and_nan_or_a_small_height_is_not
     let far = far_from_ground(&[far_check(0, -30.4, 0.0)]);
     assert_eq!(far[0].message, "Cut 30.4 m deep; 30 m fit this ground");
     // the cut at the allowance is within it
-    assert!(far_from_ground(&[far_check(0, -30.0, 0.0)]).is_empty());
+    assert_eq!(far_from_ground(&[far_check(0, -30.0, 0.0)]).len(), 0);
 }
 
 fn wet_dip(depth_m: f64, at: (f64, f64)) -> Dip {

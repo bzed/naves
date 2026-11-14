@@ -437,7 +437,7 @@ fn a_bridge_is_not_checked() {
     for r in &mut net.roads {
         r.kind = PlacedKind::Bridge;
     }
-    assert!(measure_on(&net, &ramp(0.5)).is_empty());
+    assert_eq!(measure_on(&net, &ramp(0.5)).len(), 0);
 }
 
 fn path(id: &str, points: &[(f64, f64)]) -> Feature {
@@ -480,7 +480,10 @@ fn a_short_scramble_is_not_reported() {
     let hm = terrain(100, 1.0, move |_, y| {
         100.0 + steep * ((y - 100.0).clamp(0.0, 3.0))
     });
-    assert!(check_walkable(&[path("p", &[(50.0, 40.0), (50.0, 160.0)])], &hm).is_empty());
+    assert_eq!(
+        check_walkable(&[path("p", &[(50.0, 40.0), (50.0, 160.0)])], &hm).len(),
+        0
+    );
 }
 
 #[test]
@@ -498,7 +501,10 @@ fn close_sections_merge() {
 
 #[test]
 fn a_gentle_path_reports_nothing() {
-    assert!(check_walkable(&[path("p", &[(100.0, 40.0), (100.0, 400.0)])], &ramp(0.3)).is_empty());
+    assert_eq!(
+        check_walkable(&[path("p", &[(100.0, 40.0), (100.0, 400.0)])], &ramp(0.3)).len(),
+        0
+    );
 }
 
 #[test]
@@ -511,12 +517,12 @@ fn a_track_that_is_not_drivable_is_checked_like_a_path() {
         bridge: false,
         tunnel: false,
     };
-    assert!(!check_walkable(&[track.clone()], &ramp(steep)).is_empty());
+    assert_ne!(check_walkable(&[track.clone()], &ramp(steep)).len(), 0);
     // a drivable road is not a path
     if let FeatureKind::Road { drivable, .. } = &mut track.kind {
         *drivable = true;
     }
-    assert!(check_walkable(&[track], &ramp(steep)).is_empty());
+    assert_eq!(check_walkable(&[track], &ramp(steep)).len(), 0);
 }
 
 #[test]
@@ -539,7 +545,7 @@ fn off_ground_is_the_planned_height_less_the_original_ground() {
     let net = chain(Family::Asf3, true, (300.0, 100.0), (300.0, 400.0));
     let side = side_slopes(&net, &base);
     let checks = check_roads_on_terrain(&net, &planned, &base, &side);
-    assert!(!checks.is_empty());
+    assert_ne!(checks.len(), 0);
     for c in &checks {
         assert!((c.off_ground_m + 5.0).abs() < 0.1, "{}", c.off_ground_m);
         assert!(c.side_slope.abs() < 1e-9, "{}", c.side_slope);
@@ -578,7 +584,7 @@ fn a_side_slice_shorter_than_the_roads_leaves_a_nan_slope_and_the_allowance_is_3
     let checks = check_roads_on_terrain(&net, &base, &base, &[0.7, 0.7]);
     let (known, missing): (Vec<_>, Vec<_>) = checks.iter().partition(|c| c.slot < 2);
     assert!(known.iter().all(|c| (c.side_slope - 0.7).abs() < 1e-9));
-    assert!(!missing.is_empty());
+    assert_ne!(missing.len(), 0);
     for c in missing {
         assert!(c.side_slope.is_nan());
         assert!((naves_core::limits::earthwork_allowance_m(c.side_slope) - 30.0).abs() < 1e-9);

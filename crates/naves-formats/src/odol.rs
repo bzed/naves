@@ -383,7 +383,9 @@ fn read_points(c: &mut Cursor<'_>) -> Result<Vec<[f32; 3]>, OdolError> {
     }
     let raw = c.compressed(12, "the vertices")?;
     let points: Vec<[f32; 3]> = raw
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .map(|p| {
             let f = |i: usize| {
                 p.get(i * 4..i * 4 + 4)
@@ -514,8 +516,10 @@ impl<'a> Cursor<'a> {
     fn compressed_u16(&mut self, elem: usize, what: &'static str) -> Result<Vec<u16>, OdolError> {
         Ok(self
             .compressed(elem, what)?
-            .chunks_exact(2)
-            .filter_map(|b| <[u8; 2]>::try_from(b).ok().map(u16::from_le_bytes))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| u16::from_le_bytes(*b))
             .collect())
     }
 

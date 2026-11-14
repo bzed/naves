@@ -653,7 +653,7 @@ async fn validation_list_filters_by_rule() {
     let all: Value =
         serde_json::from_str(&text(&call(&f, "validation_list", json!({})).await)).unwrap();
     let all = all["violations"].as_array().unwrap();
-    assert!(!all.is_empty());
+    assert_ne!(all.len(), 0);
     for v in all {
         assert!(
             v["rule"].is_string()
@@ -687,7 +687,7 @@ async fn a_project_without_osm_has_empty_stats() {
     assert_eq!(stats["stretches"], 0);
     let list: Value =
         serde_json::from_str(&text(&call(&f, "validation_list", json!({})).await)).unwrap();
-    assert!(list["violations"].as_array().unwrap().is_empty());
+    assert_eq!(list["violations"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

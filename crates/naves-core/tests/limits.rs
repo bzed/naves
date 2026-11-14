@@ -3,8 +3,6 @@
 
 //! The vehicle limits of the road families.
 
-#![expect(clippy::float_cmp, reason = "the documented limits are exact values")]
-
 use naves_core::catalog::Family;
 use naves_core::limits::{
     CROSS_FALL_AIM, CROSS_FALL_LIMIT, drive_grade, earthwork_allowance_m, grade_aim, grade_ceiling,

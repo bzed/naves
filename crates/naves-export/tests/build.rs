@@ -1005,7 +1005,7 @@ fn a_project_without_osm_builds_as_before() {
     // without the PBO of the road pieces a build that asked for them would fail
     std::fs::remove_file(env.server.join("addons/structures_roads.pbo")).unwrap();
     build(&proj, &env.tools(), &quiet).unwrap();
-    assert!(staged_world(&proj).objects.is_empty());
+    assert_eq!(staged_world(&proj).objects.len(), 0);
     // and the same for an OSM source that has no highways
     with_sources(&proj, &[], &["koenigssee.osm.pbf"]);
     build(&proj, &env.tools(), &quiet).unwrap();
@@ -1017,7 +1017,7 @@ fn osm_without_roads_builds_with_no_objects() {
     project(&proj, INSIDE);
     with_sources(&proj, &[], &["koenigssee.osm.pbf"]);
     build(&proj, &env.tools(), &quiet).unwrap();
-    assert!(staged_world(&proj).objects.is_empty());
+    assert_eq!(staged_world(&proj).objects.len(), 0);
 }
 
 #[test]

@@ -204,7 +204,7 @@ fn extraction_happens_outside_the_project() {
     assert!(!dest.starts_with(&f.cache), "{}", dest.display());
     assert!(!dest.exists(), "the extraction folder must be removed");
     // the project folder is untouched, and the cache holds nothing but the parsed result
-    assert!(walk(&f.project).is_empty());
+    assert_eq!(walk(&f.project).len(), 0);
     for file in walk(&f.cache) {
         assert!(
             file.extension().is_some_and(|e| e == "json"),
@@ -244,5 +244,5 @@ fn catalog_of_the_installed_game() {
         })
         .sum::<usize>();
     assert!(junctions >= 15, "{junctions} junctions");
-    assert!(!catalog.bridges().is_empty());
+    assert_ne!(catalog.bridges().len(), 0);
 }

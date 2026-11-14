@@ -250,5 +250,5 @@ fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warnin
         "no bridge model is laid"
     );
     // the stretch is ordinary road now: the roads and junctions around it are built and none of it is a bridge
-    assert!(!generated.objects.is_empty());
+    assert_ne!(generated.objects.len(), 0);
 }

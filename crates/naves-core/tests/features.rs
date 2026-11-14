@@ -477,7 +477,7 @@ fn a_way_whose_cut_ids_would_overflow_is_left_out() {
 fn ways_that_are_not_roads_or_paths_are_left_out() {
     let mut w = way_on_map(1, &[1, 2], &[(500.0, 500.0), (900.0, 900.0)]);
     w.tags = tags(&[("highway", "construction")]);
-    assert!(features_of(vec![w]).is_empty());
+    assert_eq!(features_of(vec![w]).len(), 0);
 }
 
 // --- the village -------------------------------------------------------------------------------------------------
@@ -623,13 +623,13 @@ fn a_water_way_off_the_map_or_without_room_gives_no_line() {
         &[(-900.0, 100.0), (-100.0, 100.0)],
         &[("waterway", "stream")],
     );
-    assert!(water_of(vec![off]).is_empty());
+    assert_eq!(water_of(vec![off]).len(), 0);
     // a way of one node has no line
     let mut one = water_way(2, &[1], &[(500.0, 500.0)], &[("waterway", "stream")]);
-    assert!(water_of(vec![one.clone()]).is_empty());
+    assert_eq!(water_of(vec![one.clone()]).len(), 0);
     one.nodes.clear();
     one.points.clear();
-    assert!(water_of(vec![one]).is_empty());
+    assert_eq!(water_of(vec![one]).len(), 0);
     // nothing of a map smaller than the inset
     let frame = MapGeo::new(&project(MAP, 1.0)).unwrap();
     let ok = water_way(
@@ -638,7 +638,7 @@ fn a_water_way_off_the_map_or_without_room_gives_no_line() {
         &[(5.0, 5.0), (20.0, 20.0)],
         &[("waterway", "stream")],
     );
-    assert!(
+    assert_eq!(
         water_lines(
             &OsmWays {
                 ways: vec![ok],
@@ -647,7 +647,8 @@ fn a_water_way_off_the_map_or_without_room_gives_no_line() {
             &frame,
             20.0
         )
-        .is_empty()
+        .len(),
+        0
     );
 }
 

@@ -275,7 +275,7 @@ fn every_junction_starts_on_its_ground() {
     let j = find_junctions(&net, &graph, &hm);
     assert_eq!(j.points.len(), 1);
     assert!((j.points[0].height - j.points[0].ground).abs() < 1e-9);
-    assert!(j.unresolved.is_empty());
+    assert_eq!(j.unresolved.len(), 0);
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn two_junctions_too_close_for_their_ground_move_toward_each_other() {
     repair(&mut j);
     let rise = (j.points[1].height - j.points[0].height).abs();
     assert!(rise <= 0.27 * 10.0 + 0.01);
-    assert!(j.unresolved.is_empty());
+    assert_eq!(j.unresolved.len(), 0);
     // equal rank: both moved by the same amount
     assert!(((j.points[0].height - 100.0) - (108.0 - j.points[1].height)).abs() < 0.01);
 }
@@ -614,7 +614,7 @@ fn a_junction_never_moves_more_than_three_metres_from_its_ground() {
 fn a_link_that_needs_less_than_the_cap_is_still_repaired() {
     let mut j = two_junctions(10.0, 0.27, 100.0, 106.0, 4, 4);
     repair(&mut j);
-    assert!(j.unresolved.is_empty());
+    assert_eq!(j.unresolved.len(), 0);
     assert!(
         j.points
             .iter()

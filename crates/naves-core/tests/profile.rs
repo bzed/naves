@@ -209,7 +209,7 @@ fn a_flat_road_stays_on_the_terrain() {
         &hm,
     );
     assert_eq!(p.strips.len(), 1);
-    assert!(p.excesses.is_empty());
+    assert_eq!(p.excesses.len(), 0);
     for j in &p.strips[0].joints {
         assert!((j.2 - 100.0).abs() < 1e-6, "{j:?}");
     }
@@ -460,7 +460,7 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
     let through = straight("t", Family::Asf3, (100.0, 100.0), (100.0, 250.0));
     let net = network(vec![through]);
     let p = solve(&net, &hm);
-    assert!(p.excesses.is_empty());
+    assert_eq!(p.excesses.len(), 0);
     // a chain whose two ends both lie on placed roads at very different heights
     let hm = terrain(100, 6.25, |_, y| if y < 300.0 { 100.0 } else { 160.0 });
     let low = straight("l", Family::Asf3, (100.0, 100.0), (100.0, 280.0));
@@ -918,7 +918,7 @@ fn the_road_meets_the_bridge_at_deck_height() {
     }
     // and the road on both sides meets it, with the grade limit kept
     assert!((height_at(175.0) - height_at(200.0)).abs() < grade_aim(Family::Asf3) * 25.0 + 1e-6);
-    assert!(p.strips[0].bridge.iter().filter(|b| **b).count() == 4);
+    assert_eq!(p.strips[0].bridge.iter().filter(|b| **b).count(), 4);
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
 

@@ -290,7 +290,7 @@ fn a_road_through_a_ridge_gets_a_cutting() {
     let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
     assert!(out.max_cut_m > 25.0);
     assert!((at(&out.heightmap, 60, 60) - 100.0).abs() < 1e-3);
-    assert!(out.capped.is_empty());
+    assert_eq!(out.capped.len(), 0);
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn a_wall_next_to_the_road_stops_at_the_cap_and_is_reported() {
     });
     let r = road((400.0, 100.0), (400.0, 900.0), 100.0, 100.0, 3.5, 3);
     let out = conform(&base, std::slice::from_ref(&r), &[]).unwrap();
-    assert!(!out.capped.is_empty());
+    assert_ne!(out.capped.len(), 0);
     for row in 0..160 {
         for col in 0..160 {
             if f64::from(col) * 6.25 > 400.0 + MAX_EARTHWORK_M + 3.5 + 1.5 * 6.25 + 12.5 {
@@ -370,7 +370,7 @@ fn parallel_roads_at_different_heights_report_a_conflict() {
     // the widths overlap: 2 m apart, 7 m wide (roads whose widths do not overlap each keep their ground)
     let b = road((302.0, 100.0), (302.0, 650.0), 110.0, 110.0, 3.5, 2);
     let out = conform(&base, &[a, b], &[]).unwrap();
-    assert!(!out.conflicts.is_empty());
+    assert_ne!(out.conflicts.len(), 0);
     assert!(out.conflicts.iter().any(|c| c.height_difference_m > 5.0));
     let (lo, hi) = out.heightmap.min_max();
     assert!(lo >= 100.0 - 1e-3 && hi <= 110.0 + 1e-3, "{lo} {hi}");
@@ -597,7 +597,7 @@ fn roads_that_overlap_at_different_heights_are_still_a_conflict() {
         straight_strip(200.0, 100.0, 3.0, 3, 0.0),
         straight_strip(202.0, 105.0, 3.0, 6, 0.0),
     ];
-    assert!(!conform(&base, &strips, &[]).unwrap().conflicts.is_empty());
+    assert_ne!(conform(&base, &strips, &[]).unwrap().conflicts.len(), 0);
 }
 
 #[test]
@@ -788,7 +788,7 @@ fn an_empty_map_with_a_patch_is_left_alone() {
         rank: 3,
     };
     let out = conform(&base, &[], &[patch]).unwrap();
-    assert!(out.heightmap.h.is_empty());
+    assert_eq!(out.heightmap.h.len(), 0);
 }
 
 #[test]

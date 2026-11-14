@@ -256,7 +256,7 @@ fn building_twice_gives_the_same_objects_and_heights() {
     let b = tempfile::tempdir().unwrap();
     let first = build(a.path(), &project(a.path(), 40.0, 12.0, &[]));
     let second = build(b.path(), &project(b.path(), 40.0, 12.0, &[]));
-    assert!(!bridge_indices(&first).is_empty());
+    assert_ne!(bridge_indices(&first).len(), 0);
     assert_eq!(first.objects, second.objects);
     assert_eq!(first.heights, second.heights);
     assert_eq!(first.heightmap, second.heightmap);
@@ -270,7 +270,7 @@ fn a_short_dry_dip_is_filled_up_to_the_road() {
     // deep, as the stream test below reads from its message)
     let p = project(dir.path(), 8.0, 40.0, &[]);
     let generated = build(dir.path(), &p);
-    assert!(bridge_indices(&generated).is_empty());
+    assert_eq!(bridge_indices(&generated).len(), 0);
     let (shaped, original) = ground_at_hollow(&generated);
     assert!(original < f64::from(FLAT_M) - BRIDGE_DIP_M, "{original}");
     // the ground under the road is at the road's height, flat at 500 m here
@@ -289,7 +289,7 @@ fn a_short_dip_over_a_stream_is_reported_and_left_as_the_build_leaves_it() {
     let dir = tempfile::tempdir().unwrap();
     let p = project(dir.path(), 8.0, 40.0, &[HOLLOW_LON]);
     let generated = build(dir.path(), &p);
-    assert!(bridge_indices(&generated).is_empty());
+    assert_eq!(bridge_indices(&generated).len(), 0);
     let wet: Vec<_> = generated
         .violations
         .iter()
@@ -335,14 +335,14 @@ fn a_dip_under_the_bridge_depth_is_filled_or_reported_and_never_bridged() {
     // 40 m wide and 7 m deep: room for a model, but a road crosses such a hollow on an embankment
     let dry = tempfile::tempdir().unwrap();
     let generated = build(dry.path(), &project(dry.path(), 40.0, 7.0, &[]));
-    assert!(bridge_indices(&generated).is_empty());
+    assert_eq!(bridge_indices(&generated).len(), 0);
     let (shaped, original) = ground_at_hollow(&generated);
     // the hollow is filled under the road, not spanned
     assert!(shaped - original > 3.0, "{shaped} {original}");
     // the same hollow with a stream is reported
     let wet = tempfile::tempdir().unwrap();
     let generated = build(wet.path(), &project(wet.path(), 40.0, 7.0, &[HOLLOW_LON]));
-    assert!(bridge_indices(&generated).is_empty());
+    assert_eq!(bridge_indices(&generated).len(), 0);
     assert!(
         generated
             .violations
