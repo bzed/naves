@@ -125,7 +125,8 @@ this quickly: label every satellite tile and set a marker colour in `AVGC`.
 
 armake2 appends one byte to every LZO-compressed mipmap (512 and 256 px), after the stream's end marker `11 00 00`.
 The game cannot read such a mipmap, and neither can armake2's own `paa2img`; the raw smaller mipmaps still work, so
-only far tiles show their image. Náves removes the byte after the conversion.
+only far tiles show their image. Náves removes the byte after the conversion. dayzmake 2.0.0's `img2paa`
+(checked 2026-11-15) no longer writes it, and still writes only `OFFS`; the removal then finds nothing to do.
 
 ## Tile material (`.rvmat`)
 

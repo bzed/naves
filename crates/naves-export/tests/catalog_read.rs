@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Reading the road catalog from the game's `structures_roads.pbo`, against a fake `armake2` that
+//! Reading the road catalog from the game's `structures_roads.pbo`, against a fake `dayzmake` that
 //! "unpacks" a tree of synthetic models.
 
 #![cfg(unix)]
@@ -75,10 +75,10 @@ fn fixture() -> Fixture {
     let dests = root.join("dests.log");
     let project = root.join("project");
     std::fs::create_dir_all(&project).unwrap();
-    env.replace_armake2(&format!(
+    env.replace_dayzmake(&format!(
         r#"case "$1" in
   unpack) echo run >> "{calls}"; echo "$3" >> "{dests}"; cp -r "{tree}"/. "$3"/ ;;
-  *) echo "unexpected armake2 call: $*" >&2; exit 2 ;;
+  *) echo "unexpected dayzmake call: $*" >&2; exit 2 ;;
 esac"#,
         calls = calls.display(),
         dests = dests.display(),
@@ -118,7 +118,7 @@ fn the_catalog_is_cached() {
     let first = road_catalog(&f.env.tools(), &f.cache).unwrap();
     let second = road_catalog(&f.env.tools(), &f.cache).unwrap();
     assert_eq!(first, second);
-    assert_eq!(runs(&f), 1, "the second call must not run armake2");
+    assert_eq!(runs(&f), 1, "the second call must not run dayzmake");
 }
 
 #[test]
@@ -184,13 +184,13 @@ fn a_damaged_model_names_the_model() {
 }
 
 #[test]
-fn a_failing_armake2_is_an_error_with_its_output() {
+fn a_failing_dayzmake_is_an_error_with_its_output() {
     let f = fixture();
     f.env
-        .replace_armake2("echo 'cannot read the pbo' >&2; exit 3")
+        .replace_dayzmake("echo 'cannot read the pbo' >&2; exit 3")
         .unwrap();
     let e = road_catalog(&f.env.tools(), &f.cache).unwrap_err();
-    assert!(matches!(e, CatalogReadError::Armake2 { .. }), "{e}");
+    assert!(matches!(e, CatalogReadError::Dayzmake { .. }), "{e}");
     assert!(e.to_string().contains("cannot read the pbo"), "{e}");
 }
 

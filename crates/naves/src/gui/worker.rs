@@ -289,13 +289,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut worker = BuildWorker::start(
             root.path(),
-            Err("armake2 not found; set ARMAKE2".to_string()),
+            Err("dayzmake not found; set DAYZMAKE".to_string()),
         );
         let msgs = worker.wait(Duration::from_secs(10));
         assert_eq!(
             msgs,
             vec![BuildMsg::Failed(
-                "armake2 not found; set ARMAKE2".to_string()
+                "dayzmake not found; set DAYZMAKE".to_string()
             )]
         );
     }

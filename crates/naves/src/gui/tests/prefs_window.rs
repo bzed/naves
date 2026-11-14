@@ -712,7 +712,7 @@ fn fake_origins(_: &ToolPaths) -> Vec<ToolOrigin> {
         from,
     };
     vec![
-        row("armake2", Some("/opt/armake2"), Origin::Settings),
+        row("dayzmake", Some("/opt/dayzmake"), Origin::Settings),
         row("Steam", Some("/home/x/.steam/steam"), Origin::Found),
         row("DayZ Tools", Some("/steam/DayZ Tools"), Origin::Environment),
         row("DayZ", None, Origin::Missing),
@@ -732,7 +732,7 @@ fn external_tools_show_the_origin() {
     h.run_steps(3);
     open_window(&mut h);
     tab(&mut h, "External tools");
-    assert!(h.query_by_label_contains("/opt/armake2").is_some());
+    assert!(h.query_by_label_contains("/opt/dayzmake").is_some());
     assert_eq!(h.query_all_by_label("From the settings").count(), 1);
     assert_eq!(
         h.query_all_by_label("From an environment variable").count(),
@@ -773,16 +773,16 @@ fn changing_a_path_is_used_by_the_next_build() {
     h.run_steps(3);
     open_window(&mut h);
     tab(&mut h, "External tools");
-    // without armake2 a build cannot start
-    // the path of armake2 is the first of the six fields of the tab, the last in the tree are the tab's
+    // without dayzmake a build cannot start
+    // the path of dayzmake is the first of the six fields of the tab, the last in the tree are the tab's
     let fields: Vec<_> = h.get_all_by_role(Role::TextInput).collect();
     let field = &fields[fields.len() - 6];
     field.focus();
-    field.type_text(fakes.armake2.to_str().unwrap());
+    field.type_text(fakes.dayzmake.to_str().unwrap());
     h.run_steps(4);
     assert_eq!(
-        saved(&path).tools.armake2.as_deref(),
-        Some(fakes.armake2.as_path())
+        saved(&path).tools.dayzmake.as_deref(),
+        Some(fakes.dayzmake.as_path())
     );
     h.key_press(Key::Escape);
     h.run_steps(3);

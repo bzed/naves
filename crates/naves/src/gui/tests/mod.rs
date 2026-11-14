@@ -128,7 +128,7 @@ fn a_failed_build_is_shown_in_the_log() {
     let dir = project(root.path());
     let mut app = NavesApp::open(
         &dir,
-        Box::new(|| Err("armake2 not found; set ARMAKE2".to_string())),
+        Box::new(|| Err("dayzmake not found; set DAYZMAKE".to_string())),
     )
     .unwrap();
     let mut harness = gui_harness(&mut app);
@@ -137,7 +137,7 @@ fn a_failed_build_is_shown_in_the_log() {
         .get_by_role_and_label(egui::accesskit::Role::Button, "Build")
         .click();
     step_until(&mut harness, |h| {
-        h.query_by_label_contains("armake2 not found").is_some()
+        h.query_by_label_contains("dayzmake not found").is_some()
     });
 }
 

@@ -16,4 +16,4 @@ Description: terrain generator and map editor for DayZ
  the heightmap and surface layers and packs a signed mod that a DayZ server
  can load.
  .
- Building terrains needs bzed's armake2 fork and DayZ Tools under Proton.
+ Building terrains needs dayzmake 2.0.0 or newer and DayZ Tools under Proton.

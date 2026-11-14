@@ -10,7 +10,7 @@ Result of the gate experiment of milestone 1, step 1 (`tools/bridge-experiment.s
 BI's `binarize.exe` turns our editable world (8WVR, see `naves-formats`) into an `OPRW` world (version 32) when
 run under Proton on Linux, and a local DayZ 1.30 server loads the result.
 
-Tested 2026-11-04: DayZ Tools from Steam, Proton Hotfix, bzed's armake2 fork, DayZ server 1.30 (build 127733 data),
+Tested 2026-11-04: DayZ Tools from Steam, Proton Hotfix, bzed's armake2 fork (now replaced by dayzmake 2.0.0), DayZ server 1.30 (build 127733 data),
 flat test world (terrain 256 × 256, land 64 × 64 cells of 25 m, height 100 m, one tile material).
 
 ## Result
@@ -76,7 +76,7 @@ The 8WVR material list holds the in-game path of every tile material, here
 
 ## Packing
 
-`armake2 build -k <key>` on a folder whose `$PBOPREFIX$` is `naves\worlds\<world>` gives the PBO. It contains the
+`dayzmake build -k <key>` (armake2 before dayzmake 2.0.0, same arguments and result) on a folder whose `$PBOPREFIX$` is `naves\worlds\<world>` gives the PBO. It contains the
 **binarized** `<world>.wrp` (not the 8WVR), the config (rapified to `config.bin`) and `data\layers\...`.
 
 ## Server side

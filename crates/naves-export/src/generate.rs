@@ -6,7 +6,7 @@
 //! DEM, base heightmap, the OSM ways, features, the road graph, the catalog of the game's road pieces,
 //! the placement, height profiles, the terrain shaped to fit them, the objects and the user's edits, the
 //! ground on the shaped terrain, the paths and the road bed painted on it, the checks and the violations.
-//! Nothing here touches the project folder or runs a tool other than armake2 for the catalog, so the editor
+//! Nothing here touches the project folder or runs a tool other than dayzmake for the catalog, so the editor
 //! can run it too.
 
 use std::collections::{BTreeMap, BTreeSet};

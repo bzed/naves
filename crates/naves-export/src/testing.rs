@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Fake external tools for tests (feature `test-util`, Unix only): an `armake2` that lists what it
+//! Fake external tools for tests (feature `test-util`, Unix only): an `dayzmake` that lists what it
 //! packs, a `proton` that "binarizes" by writing an `OPRW` file, a DayZ Server with a tiny
 //! `dayzOffline.enoch` and a Steam folder around them.
 //!
@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use crate::tools::{BinarizeBridge, Tools};
 
-const ARMAKE2: &str = r#"case "$1" in
-  -h) echo "armake2 build [--proton-binarize] <source>" ;;
+const DAYZMAKE: &str = r#"case "$1" in
+  --version) echo "v2.0.0" ;;
   img2paa)
     shift; [ "$1" = "-f" ] && shift
     # a PAA like the real tool writes (type, an OFFS tag pointing at the first mipmap, no palette, an LZO
@@ -35,7 +35,7 @@ const ARMAKE2: &str = r#"case "$1" in
     while [ $# -gt 2 ]; do case "$1" in -k) key="$2"; shift 2;; *) shift;; esac; done
     { echo "key=$key"; (cd "$1" && find . -type f | sort); } > "$2"
     : > "$2.$(basename "$key" .biprivatekey).bisign" ;;
-  *) echo "unexpected armake2 call: $*" >&2; exit 2 ;;
+  *) echo "unexpected dayzmake call: $*" >&2; exit 2 ;;
 esac"#;
 
 /// The fake `proton`: creates the prefix, then writes an `OPRW` world for every world below `P:`.
@@ -75,8 +75,8 @@ const SPAWNS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
 pub struct FakeEnv {
     /// The folder everything lives in.
     pub root: PathBuf,
-    /// The fake `armake2` script.
-    pub armake2: PathBuf,
+    /// The fake `dayzmake` script.
+    pub dayzmake: PathBuf,
     /// The fake Steam root.
     pub steam: PathBuf,
     /// The fake DayZ Server install.
@@ -108,8 +108,8 @@ impl FakeEnv {
         let steam = root.join("steam");
         let common = steam.join("steamapps/common");
         let server = common.join("DayZServer");
-        let armake2 = root.join("bin/armake2");
-        write_script(&armake2, ARMAKE2)?;
+        let dayzmake = root.join("bin/dayzmake");
+        write_script(&dayzmake, DAYZMAKE)?;
         std::fs::create_dir_all(common.join("DayZ Tools/Bin/Binarize"))?;
         std::fs::write(common.join("DayZ Tools/Bin/Binarize/binarize.exe"), "MZ")?;
         std::fs::create_dir_all(common.join("DayZ"))?;
@@ -140,7 +140,7 @@ impl FakeEnv {
         write_road_tree(&root.join("roads-tree"))?;
         Ok(FakeEnv {
             root: root.to_path_buf(),
-            armake2,
+            dayzmake,
             steam,
             server,
         })
@@ -151,7 +151,7 @@ impl FakeEnv {
     pub fn tools(&self) -> Tools {
         let common = self.steam.join("steamapps/common");
         Tools {
-            armake2: self.armake2.clone(),
+            dayzmake: self.dayzmake.clone(),
             dayz_server: self.server.clone(),
             cache_dir: self.root.join("cache"),
             binarize: BinarizeBridge {
@@ -169,19 +169,19 @@ impl FakeEnv {
     #[must_use]
     pub fn env(&self) -> Vec<(&'static str, PathBuf)> {
         vec![
-            ("ARMAKE2", self.armake2.clone()),
+            ("DAYZMAKE", self.dayzmake.clone()),
             ("STEAM_ROOT", self.steam.clone()),
             ("DAYZ_SERVER", self.server.clone()),
         ]
     }
 
-    /// Replaces the fake `armake2` by a script with the given body (for failure tests).
+    /// Replaces the fake `dayzmake` by a script with the given body (for failure tests).
     ///
     /// # Errors
     ///
     /// Any I/O error while writing the script.
-    pub fn replace_armake2(&self, body: &str) -> std::io::Result<()> {
-        write_script(&self.armake2, body)
+    pub fn replace_dayzmake(&self, body: &str) -> std::io::Result<()> {
+        write_script(&self.dayzmake, body)
     }
 }
 

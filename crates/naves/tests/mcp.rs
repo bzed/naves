@@ -700,7 +700,7 @@ async fn roads_without_the_tools_say_which_are_missing() {
     let result = call(&f, "roads_stats", json!({})).await;
     assert_eq!(result.is_error, Some(true));
     assert!(
-        text(&result).contains("Roads need armake2"),
+        text(&result).contains("Roads need dayzmake"),
         "{}",
         text(&result)
     );

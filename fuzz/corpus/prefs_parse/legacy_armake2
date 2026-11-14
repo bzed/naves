@@ -1,0 +1,3 @@
+[tools]
+armake2 = "/opt/armake2"
+proton = "/p"

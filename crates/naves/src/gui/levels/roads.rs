@@ -150,7 +150,7 @@ fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
             });
         }
         RoadsState::ToolsMissing(error) => {
-            ui.colored_label(ERROR, format!("Roads need armake2: {error}"));
+            ui.colored_label(ERROR, format!("Roads need dayzmake: {error}"));
             if ui.button("Open settings").clicked() {
                 open_external_tools(app);
             }

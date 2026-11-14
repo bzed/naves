@@ -10,7 +10,7 @@ start_base = "slope"
 start_layers = ["too_steep_to_walk"]
 
 [tools]
-armake2 = "/opt/armake2"
+dayzmake = "/opt/dayzmake"
 steam_root = "/home/x/.steam/steam"
 dayz_tools = "/x"
 dayz = "/y"

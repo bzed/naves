@@ -57,7 +57,7 @@ builds with `--locked`.
 - Tests write only under a `tempfile::TempDir`. They never touch `$HOME`, the user's config, a Steam
   directory or a running server. CLI tests (`assert_cmd`) set `HOME`, `XDG_CONFIG_HOME`,
   `XDG_CACHE_HOME` and `XDG_DATA_HOME` to temp dirs.
-- Code that calls external tools (armake2, Proton, `binarize.exe`, DayZ) is tested in CI against fakes
+- Code that calls external tools (dayzmake, Proton, `binarize.exe`, DayZ) is tested in CI against fakes
   (a stub script on `PATH`, a trait seam). Tests that need the real tools or a DayZ install are
   `#[ignore = "needs <tool>"]` and run explicitly; they are not a substitute for the faked tests.
 - Parsers for untrusted input (every file format, OSM, DEM, project files, MCP requests) get a fuzz

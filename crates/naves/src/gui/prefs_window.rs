@@ -23,7 +23,7 @@ pub enum PrefsTab {
     Keyboard,
     /// The wheel, the fade, the scale and what a project opens with.
     Map,
-    /// The paths of armake2, Steam, DayZ Tools, DayZ, DayZ Server and Proton.
+    /// The paths of dayzmake, Steam, DayZ Tools, DayZ, DayZ Server and Proton.
     ExternalTools,
 }
 
@@ -512,7 +512,7 @@ fn tools_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
 fn tool_slot<'a>(app: &'a mut NavesApp, tool: &str) -> Option<&'a mut Option<PathBuf>> {
     let t = &mut app.prefs.tools;
     match tool {
-        "armake2" => Some(&mut t.armake2),
+        "dayzmake" => Some(&mut t.dayzmake),
         "Steam" => Some(&mut t.steam_root),
         "DayZ Tools" => Some(&mut t.dayz_tools),
         "DayZ" => Some(&mut t.dayz),

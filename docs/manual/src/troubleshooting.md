@@ -8,11 +8,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 ## Missing tools
 
-**`armake2 not found; set ARMAKE2 (hint: ...)`**
-Install bzed's armake2 fork and put it on `PATH`, or set `ARMAKE2` to the program.
+**`dayzmake not found; set DAYZMAKE (hint: ...)`**
+Install dayzmake 2.0.0 or newer (<https://github.com/bzed/dayzmake>) and put it on `PATH`, or set `DAYZMAKE` to the program.
 
-**`armake2 is not bzed's fork (no --proton-binarize); install https://github.com/bzed/armake2`**
-The `armake2` that was found is the upstream program. Install the fork and point `ARMAKE2` at it.
+**`dayzmake v1.x.y is too old; Náves needs dayzmake v2.0.0 or newer, get it at ...`**
+The `dayzmake` that was found is older than 2.0.0. Install a newer one and point `DAYZMAKE` at it.
+
+**`cannot tell the version of dayzmake ...`**
+`dayzmake --version` printed nothing that looks like a version, so the program is probably not dayzmake. Check
+the path in `DAYZMAKE`, in the settings or on `PATH`.
 
 **`Steam not found; set STEAM_ROOT`**
 Náves did not find a Steam folder. Set `STEAM_ROOT` to the folder that contains `steamapps/`.
@@ -24,7 +28,7 @@ Install *DayZ Tools* from the Tools section of your Steam library, or set `DAYZ_
 **`Proton not found; set PROTON`**
 Install *Proton Hotfix* (or Proton Experimental) from Steam, or set `PROTON` to a `proton` script.
 
-**`armake2: the path in the settings does not exist: ...`**
+**`dayzmake: the path in the settings does not exist: ...`**
 A path in the `[tools]` table of your `settings.toml` (see [Installation](installation.md#external-tools)) leads
 nowhere. Correct it, or remove the line; an environment variable overrides the settings.
 
@@ -95,8 +99,8 @@ The roads are built from the game's own pieces, which `naves build` reads from t
 (`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
 External tools.
 
-**`armake2 unpack failed`**
-armake2 could not open the PBO; its output is in the message. The result of a successful read is cached in
+**`dayzmake unpack failed`**
+dayzmake could not open the PBO; its output is in the message. The result of a successful read is cached in
 `$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
 
 **`the model ... cannot be read`**

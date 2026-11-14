@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The external tools Náves drives: bzed's armake2 fork and DayZ Tools' `binarize.exe` under Proton.
+//! The external tools Náves drives: dayzmake and DayZ Tools' `binarize.exe` under Proton.
 //!
 //! All tools are located up front, so that a missing one is reported by name, with the environment
 //! variable that fixes it, before any long work starts.
@@ -12,6 +12,12 @@ use std::process::Command;
 use std::time::Duration;
 
 use naves_core::prefs::ToolPaths;
+
+/// The oldest dayzmake Náves works with.
+pub const MIN_DAYZMAKE: &str = "v2.0.0";
+const MIN_DAYZMAKE_VERSION: [u64; 3] = [2, 0, 0];
+/// Where to get dayzmake.
+pub const DAYZMAKE_URL: &str = "https://github.com/bzed/dayzmake";
 
 /// How long `binarize.exe` may run before it is stopped.
 const DEFAULT_BINARIZE_TIMEOUT: Duration = Duration::from_mins(30);
@@ -42,11 +48,25 @@ pub enum ToolError {
         /// The path that was set.
         path: PathBuf,
     },
-    /// The `armake2` found is the upstream one.
+    /// The `dayzmake` found is older than the minimum.
     #[error(
-        "armake2 is not bzed's fork (no --proton-binarize); install https://github.com/bzed/armake2"
+        "dayzmake {found} is too old; Náves needs dayzmake v2.0.0 or newer, get it at https://github.com/bzed/dayzmake"
     )]
-    WrongArmake2,
+    DayzmakeTooOld {
+        /// The version the tool reported.
+        found: String,
+    },
+    /// `dayzmake --version` did not print a version.
+    #[error(
+        "cannot tell the version of dayzmake ({}): `--version` printed {output:?}; Náves needs dayzmake v2.0.0 or newer, get it at https://github.com/bzed/dayzmake",
+        path.display()
+    )]
+    DayzmakeVersion {
+        /// The program that was run.
+        path: PathBuf,
+        /// What it printed (shortened).
+        output: String,
+    },
     /// `binarize.exe` exited with an error.
     #[error("binarize failed (exit {code}); log: {}; sandbox kept at {}", log.display(), sandbox.display())]
     Binarize {
@@ -102,8 +122,8 @@ impl ToolError {
 /// The installed tools.
 #[derive(Debug, Clone)]
 pub struct Tools {
-    /// bzed's armake2 fork.
-    pub armake2: PathBuf,
+    /// dayzmake (version 2.0.0 or newer).
+    pub dayzmake: PathBuf,
     /// `binarize.exe` through Proton.
     pub binarize: BinarizeBridge,
     /// The DayZ Server install (read-only); the mission is built from its `mpmissions`.
@@ -130,18 +150,26 @@ pub struct BinarizeBridge {
     pub timeout: Duration,
 }
 
+/// `env` that also answers `DAYZMAKE` from the old variable `ARMAKE2` (deprecated since dayzmake replaced
+/// armake2; the new name wins). Náves has no log output to warn through, so the manual and the changelog say so.
+fn with_legacy_env(
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> impl Fn(&str) -> Option<OsString> + '_ {
+    move |key| env(key).or_else(|| (key == "DAYZMAKE").then(|| env("ARMAKE2")).flatten())
+}
+
 fn missing(tool: &'static str, env: &'static str, hint: &'static str) -> ToolError {
     ToolError::Missing { tool, env, hint }
 }
 
 impl Tools {
-    /// Locates the tools from the process environment (`ARMAKE2`, `STEAM_ROOT`, `DAYZ_TOOLS`, `DAYZ`,
+    /// Locates the tools from the process environment (`DAYZMAKE`, `STEAM_ROOT`, `DAYZ_TOOLS`, `DAYZ`,
     /// `PROTON`, `NAVES_BINARIZE_TIMEOUT`), `PATH` and the Steam folders under `$HOME`.
     ///
     /// # Errors
     ///
     /// [`ToolError::Missing`] naming the first missing tool and the variable to set, or
-    /// [`ToolError::WrongArmake2`].
+    /// [`ToolError::DayzmakeTooOld`] or [`ToolError::DayzmakeVersion`].
     pub fn locate() -> Result<Tools, ToolError> {
         Self::locate_with(
             &|key| std::env::var_os(key),
@@ -160,7 +188,8 @@ impl Tools {
         path: Option<OsString>,
         home: Option<PathBuf>,
     ) -> Result<Tools, ToolError> {
-        let armake2 = locate_armake2(env, path)?;
+        let env = &with_legacy_env(env);
+        let dayzmake = locate_dayzmake(env, path)?;
         let cache_dir = cache_dir(env, home.as_deref());
         let steam_root = locate_steam(env, home)?;
         let common = steam_root.join("steamapps/common");
@@ -194,7 +223,7 @@ impl Tools {
             .map_or(DEFAULT_BINARIZE_TIMEOUT, Duration::from_secs);
         // The tools run in other working directories, so relative paths have to be resolved here.
         Ok(Tools {
-            armake2: absolute(armake2),
+            dayzmake: absolute(dayzmake),
             dayz_server: absolute(dayz_server),
             cache_dir: absolute(cache_dir),
             binarize: BinarizeBridge {
@@ -235,7 +264,7 @@ pub struct ToolOrigin {
 
 /// The environment variable of each tool, its name in the settings and the name of the tool.
 const TOOL_KEYS: [(&str, &str, &str); 6] = [
-    ("ARMAKE2", "armake2", "armake2"),
+    ("DAYZMAKE", "dayzmake", "dayzmake"),
     ("STEAM_ROOT", "steam_root", "Steam"),
     ("DAYZ_TOOLS", "dayz_tools", "DayZ Tools"),
     ("DAYZ", "dayz", "DayZ"),
@@ -245,7 +274,7 @@ const TOOL_KEYS: [(&str, &str, &str); 6] = [
 
 fn setting<'a>(paths: &'a ToolPaths, var: &str) -> Option<&'a PathBuf> {
     match var {
-        "ARMAKE2" => paths.armake2.as_ref(),
+        "DAYZMAKE" => paths.dayzmake.as_ref(),
         "STEAM_ROOT" => paths.steam_root.as_ref(),
         "DAYZ_TOOLS" => paths.dayz_tools.as_ref(),
         "DAYZ" => paths.dayz.as_ref(),
@@ -289,6 +318,7 @@ pub fn locate_preferring_with(
     path: Option<OsString>,
     home: Option<PathBuf>,
 ) -> Result<Tools, ToolError> {
+    let env = &with_legacy_env(env);
     // a Steam folder from the settings is not checked by the lookup itself, so a bad one would show up as a
     // missing DayZ Tools; say what is wrong instead
     if env("STEAM_ROOT").is_none()
@@ -335,8 +365,9 @@ pub fn tool_origins_with(
     path: Option<OsString>,
     home: Option<PathBuf>,
 ) -> Vec<ToolOrigin> {
+    let env = &with_legacy_env(env);
     let all = layered(paths, env);
-    let armake2 = locate_armake2(&all, path).ok();
+    let dayzmake = locate_dayzmake(&all, path).ok();
     let steam = locate_steam(&all, home).ok();
     let common = steam.as_ref().map(|s| s.join("steamapps/common"));
     // an explicit path, else the usual place below the Steam folder
@@ -364,7 +395,7 @@ pub fn tool_origins_with(
     let dayz = chosen("DAYZ", "DayZ");
     let server = chosen("DAYZ_SERVER", "DayZServer");
     vec![
-        found("armake2", "ARMAKE2", armake2.clone(), armake2.is_some()),
+        found("dayzmake", "DAYZMAKE", dayzmake.clone(), dayzmake.is_some()),
         found("Steam", "STEAM_ROOT", steam.clone(), steam.is_some()),
         found(
             "DayZ Tools",
@@ -417,37 +448,58 @@ fn default_sandbox_base() -> PathBuf {
     }
 }
 
-fn locate_armake2(
+fn locate_dayzmake(
     env: &dyn Fn(&str) -> Option<OsString>,
     path: Option<OsString>,
 ) -> Result<PathBuf, ToolError> {
-    const HINT: &str = "install bzed's fork, https://github.com/bzed/armake2";
-    let found = if let Some(explicit) = env("ARMAKE2") {
+    const HINT: &str = "install dayzmake 2.0.0 or newer, https://github.com/bzed/dayzmake";
+    let found = if let Some(explicit) = env("DAYZMAKE") {
         let p = PathBuf::from(explicit);
         p.is_file().then_some(p)
     } else {
         let cwd = std::env::current_dir().unwrap_or_default();
-        which::which_in("armake2", path, cwd).ok()
+        which::which_in("dayzmake", path, cwd).ok()
     };
-    let armake2 = found.ok_or_else(|| missing("armake2", "ARMAKE2", HINT))?;
-    if is_fork(&armake2)? {
-        Ok(armake2)
-    } else {
-        Err(ToolError::WrongArmake2)
-    }
+    let dayzmake = found.ok_or_else(|| missing("dayzmake", "DAYZMAKE", HINT))?;
+    check_version(&dayzmake)?;
+    Ok(dayzmake)
 }
 
-/// bzed's fork is recognised by `--proton-binarize` in its help text.
-fn is_fork(armake2: &Path) -> Result<bool, ToolError> {
-    let mut cmd = Command::new(armake2);
-    cmd.arg("-h")
+/// Runs `dayzmake --version` and refuses a version below [`MIN_DAYZMAKE`].
+fn check_version(dayzmake: &Path) -> Result<(), ToolError> {
+    let mut cmd = Command::new(dayzmake);
+    cmd.arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let child = crate::bridge::spawn_retrying_busy(&mut cmd).map_err(ToolError::io(armake2))?;
-    let output = child.wait_with_output().map_err(ToolError::io(armake2))?;
-    let text = [output.stdout, output.stderr].concat();
-    Ok(String::from_utf8_lossy(&text).contains("--proton-binarize"))
+    let child = crate::bridge::spawn_retrying_busy(&mut cmd).map_err(ToolError::io(dayzmake))?;
+    let output = child.wait_with_output().map_err(ToolError::io(dayzmake))?;
+    let text = String::from_utf8_lossy(&[output.stdout, output.stderr].concat()).into_owned();
+    match parse_version(&text) {
+        Some(v) if v >= MIN_DAYZMAKE_VERSION => Ok(()),
+        Some(v) => Err(ToolError::DayzmakeTooOld {
+            found: format!("v{}.{}.{}", v[0], v[1], v[2]),
+        }),
+        None => Err(ToolError::DayzmakeVersion {
+            path: dayzmake.to_path_buf(),
+            output: text.trim().chars().take(80).collect(),
+        }),
+    }
+}
+
+/// The first `major.minor.patch` in `text`, with or without a leading `v` and with anything around it.
+fn parse_version(text: &str) -> Option<[u64; 3]> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find_map(|word| {
+            let mut parts = word.split('.');
+            let v = [
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+                parts.next()?.parse().ok()?,
+            ];
+            // a fourth number or an empty part (`1.2.3.`) is not a version of this shape
+            (parts.next().is_none()).then_some(v)
+        })
 }
 
 fn locate_steam(

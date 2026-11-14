@@ -19,7 +19,7 @@ stops with the name of the tool and the environment variable to set if one is mi
 
 | Tool | Used for | Where Náves looks | Variable |
 |---|---|---|---|
-| bzed's `armake2` fork | packing, signing, image conversion | `PATH` | `ARMAKE2` |
+| `dayzmake` 2.0.0 or newer | packing, signing, image conversion | `PATH` | `DAYZMAKE` |
 | DayZ Tools (Steam, *Tools*) | `binarize.exe`, which turns the world into the game's format | `<Steam>/steamapps/common/DayZ Tools` | `DAYZ_TOOLS` |
 | Proton (Steam) | runs `binarize.exe` on Linux | `<Steam>/steamapps/common/Proton Hotfix/proton` | `PROTON` |
 
@@ -35,19 +35,24 @@ Other variables:
 **Where a path comes from.** An environment variable wins. Without one, the path in your per-user settings is
 used, and without that Náves searches (`PATH`, the Steam folders). The settings are the file `settings.toml` in
 Náves' configuration folder (`$XDG_CONFIG_HOME/naves`, normally `~/.config/naves`); the `[tools]` table has the keys
-`armake2`, `steam_root`, `dayz_tools`, `dayz`, `dayz_server` and `proton`:
+`dayzmake`, `steam_root`, `dayz_tools`, `dayz`, `dayz_server` and `proton`:
 
 ```toml
 [tools]
-armake2 = "/home/me/bin/armake2"
+dayzmake = "/home/me/bin/dayzmake"
 steam_root = "/mnt/games/Steam"
 ```
 
 The settings apply to `naves build`, `naves mcp` and the GUI, and never to a project's `naves.toml`. A path that does
 not exist is reported by name. A damaged file is reported as a warning, left as it is, and ignored.
 
-**armake2.** Use the fork at <https://github.com/bzed/armake2>. Náves tells it apart from the upstream
-program by `--proton-binarize` in `armake2 -h`; the upstream version signs some files wrongly and is refused.
+**dayzmake.** Get version 2.0.0 or newer from <https://github.com/bzed/dayzmake>; it replaces armake2.
+Náves runs `dayzmake --version` once when it looks for the tool and refuses an older version, naming the version
+it found and the minimum.
+
+**Coming from armake2.** The old `armake2` key in the `[tools]` table of `settings.toml` is still read when
+there is no `dayzmake` key, and is not written back; the environment variable `ARMAKE2` is still read when
+`DAYZMAKE` is not set, but it is deprecated, so use `DAYZMAKE`. The cache of the road pieces stays valid.
 
 **Proton and temporary files.** `binarize.exe` runs in a throw-away sandbox with its own Wine prefix under
 `/var/tmp`. The first run in a sandbox takes about half a minute. Náves never writes into the Steam

@@ -135,9 +135,10 @@ impl MapPrefs {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolPaths {
-    /// bzed's armake2 fork.
+    /// dayzmake, version 2.0.0 or newer. Files written before dayzmake replaced armake2 have this as
+    /// `armake2`; that key is read as a fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub armake2: Option<PathBuf>,
+    pub dayzmake: Option<PathBuf>,
     /// The Steam folder (the one with `steamapps/`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub steam_root: Option<PathBuf>,
@@ -222,8 +223,21 @@ impl Preferences {
     /// The TOML error for a damaged file or a value of the wrong type.
     pub fn parse(text: &str) -> Result<Preferences, toml::de::Error> {
         let mut prefs: Preferences = toml::from_str(text)?;
+        prefs.migrate_armake2();
         prefs.clamp();
         Ok(prefs)
+    }
+
+    /// The old `tools.armake2` becomes `tools.dayzmake` unless that is set; the old key is not written back.
+    fn migrate_armake2(&mut self) {
+        let Some(old) = self.tools.other.remove("armake2") else {
+            return;
+        };
+        if self.tools.dayzmake.is_none()
+            && let toml::Value::String(path) = old
+        {
+            self.tools.dayzmake = Some(PathBuf::from(path));
+        }
     }
 
     fn clamp(&mut self) {

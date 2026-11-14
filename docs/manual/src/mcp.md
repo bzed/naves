@@ -30,7 +30,7 @@ Most clients take a command and its arguments. For a client that reads a JSON co
 ```
 
 Give the full path of the project folder. The environment variables from [Installation](installation.md)
-(`ARMAKE2`, `STEAM_ROOT`, …) must be visible to the client's process for the `build` tool to find its tools.
+(`DAYZMAKE`, `STEAM_ROOT`, …) must be visible to the client's process for the `build` tool to find its tools.
 
 ## Tools
 
@@ -62,14 +62,14 @@ errors. The map's size is in `heightmap_stats` as `map_size_m`.
 `render_topdown` also takes `layers`, a list of ids drawn over the overlay in a fixed order (the order of the list
 does not matter): `terrain_changes`, `too_steep_to_walk`, `roads`, `paths` and `drivable`. An unknown id is an
 error that lists the known ones. The layers that show the roads generate them (the first time; the result is cached
-until the project changes), which needs `armake2` and the DayZ Server install; a render without those layers never
+until the project changes), which needs `dayzmake` and the DayZ Server install; a render without those layers never
 does.
 
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,
 `road_misses_terrain`, `path_too_steep`, `road_grade`, `road_gap`, `road_in_water`, `road_conflict`,
 `earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`, `road_over_water`) and then lists only that rule. If
-the tools are missing, the error starts with "Roads need armake2" and says what is missing.
+the tools are missing, the error starts with "Roads need dayzmake" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the
 progress lines the build printed. If a tool is missing, the error names it and the variable to set.

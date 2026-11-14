@@ -307,7 +307,10 @@ fn build_names_missing_tools_before_doing_anything() {
         .assert()
         .failure();
     let err = stderr(&out);
-    assert!(err.contains("armake2") && err.contains("ARMAKE2"), "{err}");
+    assert!(
+        err.contains("dayzmake") && err.contains("DAYZMAKE"),
+        "{err}"
+    );
     assert!(!proj.join("build").exists(), "no work was started");
 }
 
@@ -354,7 +357,7 @@ fn rebuild_removes_stale_files() {
 }
 
 #[test]
-#[ignore = "needs Steam, DayZ Tools, Proton, armake2"]
+#[ignore = "needs Steam, DayZ Tools, Proton, dayzmake"]
 fn builds_koenigssee_fixture() {
     let home = tempfile::tempdir().unwrap();
     let proj = new_project(home.path());
@@ -366,7 +369,7 @@ fn builds_koenigssee_fixture() {
     cmd.arg("build").arg(&proj).assert().success();
     let pbo = proj.join("build/@naves_test/addons/naves_test.pbo");
     assert!(pbo.is_file());
-    let verify = std::process::Command::new("armake2")
+    let verify = std::process::Command::new("dayzmake")
         .arg("inspect")
         .arg(&pbo)
         .output()
@@ -418,8 +421,8 @@ fn naves_build_uses_the_settings() {
     write_settings(
         home.path(),
         &format!(
-            "[tools]\narmake2 = {:?}\nsteam_root = {:?}\ndayz_server = {:?}\n",
-            fakes.armake2, fakes.steam, fakes.server
+            "[tools]\ndayzmake = {:?}\nsteam_root = {:?}\ndayz_server = {:?}\n",
+            fakes.dayzmake, fakes.steam, fakes.server
         ),
     );
     let out = naves(home.path())
@@ -439,7 +442,10 @@ fn naves_build_uses_the_settings() {
 fn a_settings_path_that_does_not_exist_is_named() {
     let home = tempfile::tempdir().unwrap();
     let proj = new_project(home.path());
-    write_settings(home.path(), "[tools]\narmake2 = \"/nonexistent/armake2\"\n");
+    write_settings(
+        home.path(),
+        "[tools]\ndayzmake = \"/nonexistent/dayzmake\"\n",
+    );
     let out = naves(home.path())
         .arg("build")
         .arg(&proj)
@@ -447,7 +453,7 @@ fn a_settings_path_that_does_not_exist_is_named() {
         .failure();
     let err = stderr(&out);
     assert!(
-        err.contains("/nonexistent/armake2") && err.contains("settings"),
+        err.contains("/nonexistent/dayzmake") && err.contains("settings"),
         "{err}"
     );
 }

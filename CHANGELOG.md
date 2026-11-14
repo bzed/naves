@@ -19,6 +19,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- dayzmake 2.0.0 or newer replaces armake2 as the packing, signing and image tool (<https://github.com/bzed/dayzmake>); Náves runs `dayzmake --version` once and refuses an older version. The setting is `tools.dayzmake` and the variable `DAYZMAKE`; an old `tools.armake2` key and the `ARMAKE2` variable are still read as fallbacks (the setting is saved under the new key only; the variable is deprecated). The road catalog cache stays valid. Packaging: `debian/control` now names dayzmake, for the next `debian/changelog` entry.
 - The built-in CA bundle (webpki-roots) is updated from 1.0.11 to 1.0.12.
 - The GUI now uses Rerun's design system (the Inter font, light and dark themes that follow the system, modern widgets) — the look and feel of the whole editor changed.
 - The palette renders its rows with the design system's list items (hover, selection and focus come with them).

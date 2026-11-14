@@ -109,7 +109,7 @@ file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only th
 List OpenStreetMap extracts in `sources.osm` and `naves build` also builds the **roads**: the `highway` ways of the
 map become the game's own road pieces (asphalt, streets, gravel and dirt tracks, with junctions, end caps and
 bridges), laid along the OSM line, and the terrain is shaped to fit them. The pieces are read from the game: the
-DayZ Server install needs its `addons/structures_roads.pbo`, and `armake2` unpacks it once (the result is cached
+DayZ Server install needs its `addons/structures_roads.pbo`, and `dayzmake` unpacks it once (the result is cached
 per user and rebuilt when the game is updated). No model of the game is ever copied into your mod.
 
 What is built, from the `highway` tag:

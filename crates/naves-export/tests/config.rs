@@ -84,12 +84,12 @@ fn config_is_deterministic() {
 }
 
 #[test]
-#[ignore = "needs armake2"]
+#[ignore = "needs dayzmake"]
 fn config_rapifies() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("config.cpp");
     std::fs::write(&src, world_config(&project(), &heightmap(300.0))).unwrap();
-    let status = std::process::Command::new("armake2")
+    let status = std::process::Command::new("dayzmake")
         .arg("rapify")
         .arg(&src)
         .arg(dir.path().join("config.bin"))

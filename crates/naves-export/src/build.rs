@@ -41,8 +41,8 @@ use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
 
-/// How long one `armake2` call may take.
-const ARMAKE2_TIMEOUT: Duration = Duration::from_mins(30);
+/// How long one `dayzmake` call may take.
+const DAYZMAKE_TIMEOUT: Duration = Duration::from_mins(30);
 /// How much of a failed tool's output goes into the error message.
 const ERROR_OUTPUT_CHARS: usize = 2000;
 
@@ -99,9 +99,9 @@ pub enum BuildError {
     /// The editable world could not be written.
     #[error("cannot write the editable world: {0}")]
     World(std::io::Error),
-    /// `armake2` failed.
-    #[error("armake2 {args} failed ({status}):\n{output}")]
-    Armake2 {
+    /// `dayzmake` failed.
+    #[error("dayzmake {args} failed ({status}):\n{output}")]
+    Dayzmake {
         /// The command line without the program.
         args: String,
         /// Exit status or "timed out".
@@ -162,16 +162,16 @@ fn remove_dir(path: &Path) -> Result<(), BuildError> {
     }
 }
 
-/// Runs `armake2` with `args` (never through a shell); its output goes to `log`.
-fn armake2(tools: &Tools, args: &[&OsStr], cwd: &Path, log: &Path) -> Result<(), BuildError> {
-    let mut cmd = std::process::Command::new(&tools.armake2);
+/// Runs `dayzmake` with `args` (never through a shell); its output goes to `log`.
+fn dayzmake(tools: &Tools, args: &[&OsStr], cwd: &Path, log: &Path) -> Result<(), BuildError> {
+    let mut cmd = std::process::Command::new(&tools.dayzmake);
     cmd.args(args).current_dir(cwd);
     let shown = args
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(" ");
-    let status = match run_supervised(&mut cmd, log, ARMAKE2_TIMEOUT)? {
+    let status = match run_supervised(&mut cmd, log, DAYZMAKE_TIMEOUT)? {
         Finished::Exited(status) if status.success() => return Ok(()),
         Finished::Exited(status) => status
             .code()
@@ -180,7 +180,7 @@ fn armake2(tools: &Tools, args: &[&OsStr], cwd: &Path, log: &Path) -> Result<(),
     };
     let text = std::fs::read_to_string(log).unwrap_or_default();
     let skip = text.chars().count().saturating_sub(ERROR_OUTPUT_CHARS);
-    Err(BuildError::Armake2 {
+    Err(BuildError::Dayzmake {
         args: shown,
         status,
         output: text.chars().skip(skip).collect(),
@@ -224,7 +224,7 @@ fn ensure_keys(
     let private = secrets.join(format!("{name}.biprivatekey"));
     let public = secrets.join(format!("{name}.bikey"));
     if !private.is_file() {
-        armake2(
+        dayzmake(
             tools,
             &[OsStr::new("keygen"), OsStr::new("-f"), OsStr::new(&name)],
             &secrets,
@@ -358,7 +358,7 @@ fn stage_world(
                 source.as_os_str(),
                 target.as_os_str(),
             ];
-            armake2(tools, &args, &layout.staging, &log)?;
+            dayzmake(tools, &args, &layout.staging, &log)?;
             let png = layers
                 .files
                 .iter()
@@ -449,11 +449,11 @@ fn pack_mod(
         pack_dir.as_os_str(),
         pbo.as_os_str(),
     ];
-    armake2(
+    dayzmake(
         tools,
         &args,
         &layout.staging,
-        &layout.logs.join("armake2-build.log"),
+        &layout.logs.join("dayzmake-build.log"),
     )?;
     let bikey = keys.join(format!("naves_{}.bikey", layout.world));
     std::fs::copy(&public, &bikey).map_err(io_err(&bikey))?;

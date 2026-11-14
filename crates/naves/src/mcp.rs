@@ -95,7 +95,7 @@ pub struct RenderParams {
     /// What to draw.
     overlay: OverlayArg,
     /// Layers to draw over it, by id: `terrain_changes`, `too_steep_to_walk`, `roads`, `paths`, `drivable`. The road
-    /// layers generate the roads, which needs armake2 and the DayZ Server install. Drawn in a fixed order.
+    /// layers generate the roads, which needs dayzmake and the DayZ Server install. Drawn in a fixed order.
     layers: Option<Vec<String>>,
 }
 
@@ -280,7 +280,7 @@ impl NavesMcp {
         if with_roads && !cached.roads_loaded {
             if !project.sources.osm.is_empty() {
                 let tools =
-                    (self.locate_tools)().map_err(|e| format!("Roads need armake2: {e}"))?;
+                    (self.locate_tools)().map_err(|e| format!("Roads need dayzmake: {e}"))?;
                 let dir = self.dir.clone();
                 let input = project.clone();
                 let generated = blocking(move || {
@@ -431,7 +431,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "The numbers of the generated road network: kilometres per surface, pieces, stretches and how many are not closed, the median distance of the pieces from the OpenStreetMap line, the steepest grade, the deepest cut and highest fill, the length that vehicles cannot drive, the largest distance of a piece from the ground and the length of paths that are too steep to walk. Generates the roads (armake2 and the DayZ Server install are needed). A project without OpenStreetMap files has empty numbers."
+        description = "The numbers of the generated road network: kilometres per surface, pieces, stretches and how many are not closed, the median distance of the pieces from the OpenStreetMap line, the steepest grade, the deepest cut and highest fill, the length that vehicles cannot drive, the largest distance of a piece from the ground and the length of paths that are too steep to walk. Generates the roads (dayzmake and the DayZ Server install are needed). A project without OpenStreetMap files has empty numbers."
     )]
     async fn roads_stats(&self) -> Result<CallToolResult, McpError> {
         let map = match self.map(false, false, true).await {
@@ -580,7 +580,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "Build the mod and the server mission of the project (takes a while). Returns the mod and mission folders, warnings and the progress lines. Needs armake2, DayZ Tools and Proton, see the manual."
+        description = "Build the mod and the server mission of the project (takes a while). Returns the mod and mission folders, warnings and the progress lines. Needs dayzmake, DayZ Tools and Proton, see the manual."
     )]
     async fn build(&self) -> Result<CallToolResult, McpError> {
         let _writing = self.writes.lock().await;

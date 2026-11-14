@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The Proton binarize bridge, tested against fake `armake2` and `proton` scripts.
+//! The Proton binarize bridge, tested against fake `dayzmake` and `proton` scripts.
 
 #![cfg(unix)]
 #![expect(
@@ -44,9 +44,9 @@ fn fake_steam(root: &Path, proton_body: &str) -> PathBuf {
     steam
 }
 
-fn fork_armake2(root: &Path) -> PathBuf {
-    let p = root.join("bin/armake2");
-    script(&p, "echo 'armake2 build [--proton-binarize] <source>'");
+fn fake_dayzmake(root: &Path) -> PathBuf {
+    let p = root.join("bin/dayzmake");
+    script(&p, "echo v2.0.0");
     p
 }
 
@@ -103,13 +103,13 @@ fn locates_everything_from_the_environment() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let steam = fake_steam(dir.path(), "exit 0");
-    let armake2 = fork_armake2(dir.path());
+    let dayzmake = fake_dayzmake(dir.path());
     let env = env_of(vec![
-        ("ARMAKE2", armake2.clone()),
+        ("DAYZMAKE", dayzmake.clone()),
         ("STEAM_ROOT", steam.clone()),
     ]);
     let tools = Tools::locate_with(&env, None, None).unwrap();
-    assert_eq!(tools.armake2, armake2);
+    assert_eq!(tools.dayzmake, dayzmake);
     assert_eq!(
         tools.binarize.dayz_tools,
         steam.join("steamapps/common/DayZ Tools")
@@ -126,11 +126,11 @@ fn dayz_server_variable_wins_and_missing_server_is_named() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let steam = fake_steam(dir.path(), "exit 0");
-    let armake2 = fork_armake2(dir.path());
+    let dayzmake = fake_dayzmake(dir.path());
     let server = dir.path().join("my server");
     std::fs::create_dir_all(server.join("mpmissions")).unwrap();
     let env = env_of(vec![
-        ("ARMAKE2", armake2.clone()),
+        ("DAYZMAKE", dayzmake.clone()),
         ("STEAM_ROOT", steam.clone()),
         ("DAYZ_SERVER", server.clone()),
     ]);
@@ -139,7 +139,7 @@ fn dayz_server_variable_wins_and_missing_server_is_named() {
         server
     );
     std::fs::remove_dir_all(steam.join("steamapps/common/DayZServer")).unwrap();
-    let env = env_of(vec![("ARMAKE2", armake2), ("STEAM_ROOT", steam)]);
+    let env = env_of(vec![("DAYZMAKE", dayzmake), ("STEAM_ROOT", steam)]);
     match Tools::locate_with(&env, None, None) {
         Err(ToolError::Missing { tool, env, .. }) => {
             assert_eq!((tool, env), ("DayZ Server", "DAYZ_SERVER"));
@@ -156,7 +156,7 @@ fn explicit_variables_win() {
     let other_tools = dir.path().join("my tools");
     std::fs::create_dir_all(other_tools.join("Bin/Binarize")).unwrap();
     let env = env_of(vec![
-        ("ARMAKE2", fork_armake2(dir.path())),
+        ("DAYZMAKE", fake_dayzmake(dir.path())),
         ("STEAM_ROOT", steam),
         ("DAYZ_TOOLS", other_tools.clone()),
     ]);
@@ -170,7 +170,7 @@ fn explicit_variables_win() {
 }
 
 #[test]
-fn missing_armake2_is_named() {
+fn missing_dayzmake_is_named() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let empty = dir.path().join("empty");
@@ -178,36 +178,104 @@ fn missing_armake2_is_named() {
     let env = env_of(vec![]);
     match Tools::locate_with(&env, Some(empty.into_os_string()), None) {
         Err(ToolError::Missing { tool, env, .. }) => {
-            assert_eq!((tool, env), ("armake2", "ARMAKE2"));
+            assert_eq!((tool, env), ("dayzmake", "DAYZMAKE"));
         }
-        other => panic!("expected Missing armake2, got {other:?}"),
+        other => panic!("expected Missing dayzmake, got {other:?}"),
     }
 }
 
 #[test]
-fn armake2_is_found_on_the_path() {
+fn dayzmake_is_found_on_the_path() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let steam = fake_steam(dir.path(), "exit 0");
-    let armake2 = fork_armake2(dir.path());
+    let dayzmake = fake_dayzmake(dir.path());
     let env = env_of(vec![("STEAM_ROOT", steam)]);
-    let path = armake2.parent().unwrap().as_os_str().to_os_string();
+    let path = dayzmake.parent().unwrap().as_os_str().to_os_string();
     assert_eq!(
-        Tools::locate_with(&env, Some(path), None).unwrap().armake2,
-        armake2
+        Tools::locate_with(&env, Some(path), None).unwrap().dayzmake,
+        dayzmake
     );
 }
 
+/// Locates with a `dayzmake` whose `--version` runs `body`.
+fn locate_with_version_script(body: &str) -> Result<Tools, ToolError> {
+    let dir = tempfile::tempdir().unwrap();
+    let steam = fake_steam(dir.path(), "exit 0");
+    let tool = dir.path().join("bin/dayzmake");
+    script(&tool, body);
+    let env = env_of(vec![("DAYZMAKE", tool), ("STEAM_ROOT", steam)]);
+    Tools::locate_with(&env, None, None)
+}
+
 #[test]
-fn upstream_armake2_rejected() {
+fn an_old_dayzmake_is_rejected_with_version_minimum_and_url() {
+    let _serial = serial();
+    for body in ["echo v1.9.9", "echo 'dayzmake 1.0.0'", "echo v0.3.7 >&2"] {
+        let err = locate_with_version_script(body).unwrap_err();
+        assert!(matches!(err, ToolError::DayzmakeTooOld { .. }), "{err}");
+        let text = err.to_string();
+        assert!(
+            text.contains("v2.0.0") && text.contains("github.com/bzed/dayzmake"),
+            "{text}"
+        );
+    }
+    let err = locate_with_version_script("echo v1.9.9").unwrap_err();
+    assert!(err.to_string().contains("v1.9.9"), "{err}");
+}
+
+#[test]
+fn newer_or_decorated_versions_are_accepted() {
+    let _serial = serial();
+    for body in [
+        "echo v2.0.0",
+        "echo 2.0.0",
+        "echo v2.1.0-rc1",
+        "echo 'dayzmake version v10.0.1 (abc)'",
+        "echo v3.0.0 >&2",
+    ] {
+        assert!(locate_with_version_script(body).is_ok(), "{body}");
+    }
+}
+
+#[test]
+fn unparseable_version_output_is_an_error_not_a_panic() {
+    let _serial = serial();
+    for body in [
+        "echo",
+        "echo hello",
+        "echo v2.0",
+        "echo 'v2..0.1'",
+        "exit 3",
+    ] {
+        let err = locate_with_version_script(body).unwrap_err();
+        assert!(
+            matches!(err, ToolError::DayzmakeVersion { .. }),
+            "{body}: {err}"
+        );
+        assert!(err.to_string().contains("v2.0.0"), "{err}");
+    }
+}
+
+#[test]
+fn the_old_armake2_variable_still_finds_the_tool_and_the_new_one_wins() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let upstream = dir.path().join("bin/armake2");
-    script(&upstream, "echo 'armake2 build [-v] <source>'");
-    let env = env_of(vec![("ARMAKE2", upstream)]);
-    let err = Tools::locate_with(&env, None, None).unwrap_err();
-    assert!(matches!(err, ToolError::WrongArmake2), "{err}");
-    assert!(err.to_string().contains("github.com/bzed/armake2"));
+    let steam = fake_steam(dir.path(), "exit 0");
+    let tool = fake_dayzmake(dir.path());
+    let old = dir.path().join("old/dayzmake");
+    script(&old, "echo v1.0.0");
+    let env = env_of(vec![
+        ("ARMAKE2", tool.clone()),
+        ("STEAM_ROOT", steam.clone()),
+    ]);
+    assert_eq!(Tools::locate_with(&env, None, None).unwrap().dayzmake, tool);
+    let env = env_of(vec![
+        ("ARMAKE2", old),
+        ("DAYZMAKE", tool.clone()),
+        ("STEAM_ROOT", steam),
+    ]);
+    assert_eq!(Tools::locate_with(&env, None, None).unwrap().dayzmake, tool);
 }
 
 #[test]
@@ -217,7 +285,7 @@ fn missing_dayz_tools_is_named() {
     let empty_steam = dir.path().join("empty-steam");
     std::fs::create_dir_all(&empty_steam).unwrap();
     let env = env_of(vec![
-        ("ARMAKE2", fork_armake2(dir.path())),
+        ("DAYZMAKE", fake_dayzmake(dir.path())),
         ("STEAM_ROOT", empty_steam),
     ]);
     match Tools::locate_with(&env, None, None) {
@@ -235,7 +303,7 @@ fn missing_proton_is_named() {
     let steam = fake_steam(dir.path(), "exit 0");
     std::fs::remove_dir_all(steam.join("steamapps/common/Proton Hotfix")).unwrap();
     let env = env_of(vec![
-        ("ARMAKE2", fork_armake2(dir.path())),
+        ("DAYZMAKE", fake_dayzmake(dir.path())),
         ("STEAM_ROOT", steam),
     ]);
     match Tools::locate_with(&env, None, None) {
@@ -248,7 +316,7 @@ fn missing_proton_is_named() {
 fn missing_steam_is_named() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
-    let env = env_of(vec![("ARMAKE2", fork_armake2(dir.path()))]);
+    let env = env_of(vec![("DAYZMAKE", fake_dayzmake(dir.path()))]);
     // an empty home folder has no Steam in it
     match Tools::locate_with(&env, None, Some(dir.path().join("home"))) {
         Err(ToolError::Missing { tool, env, .. }) => {
@@ -472,11 +540,11 @@ fn relative_tool_paths_become_absolute() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let steam = fake_steam(&root, "exit 0");
-    let armake2 = fork_armake2(&root);
+    let dayzmake = fake_dayzmake(&root);
     let proton = steam.join("steamapps/common/Proton Hotfix/proton");
     let env = env_of(vec![
         ("STEAM_ROOT", steam.clone()),
-        ("ARMAKE2", relative_to_cwd(&armake2)),
+        ("DAYZMAKE", relative_to_cwd(&dayzmake)),
         ("PROTON", relative_to_cwd(&proton)),
         (
             "DAYZ_TOOLS",
@@ -484,7 +552,7 @@ fn relative_tool_paths_become_absolute() {
         ),
     ]);
     let tools = Tools::locate_with(&env, None, None).unwrap();
-    assert!(tools.armake2.is_absolute(), "{}", tools.armake2.display());
+    assert!(tools.dayzmake.is_absolute(), "{}", tools.dayzmake.display());
     assert!(tools.binarize.proton.is_absolute());
     assert!(tools.binarize.dayz_tools.is_absolute());
     assert!(tools.dayz_server.is_absolute());
@@ -497,10 +565,10 @@ fn steam_is_found_in_the_windows_program_folder() {
     let programs = dir.path().join("Program Files (x86)");
     let steam = programs.join("Steam");
     std::fs::rename(fake_steam(&programs, "exit 0"), &steam).unwrap();
-    let armake2 = fork_armake2(dir.path());
+    let dayzmake = fake_dayzmake(dir.path());
     let env = env_of(vec![
         ("ProgramFiles(x86)", programs.clone()),
-        ("ARMAKE2", armake2),
+        ("DAYZMAKE", dayzmake),
     ]);
     let tools = Tools::locate_with(&env, None, None).unwrap();
     assert_eq!(tools.binarize.steam_root, steam);
