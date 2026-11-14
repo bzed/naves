@@ -25,8 +25,8 @@ horizontal = 0.5
 height = 0.5
 
 [grid]
-terrain_size = 1024
-land_size = 128
+terrain_size = 2048
+land_size = 256
 
 [sources]
 dem = ["dem/Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif"]
@@ -66,10 +66,16 @@ The map is `real_extent_m × horizontal` metres wide. With the defaults, a 12 80
 
 | Field | Default | Valid values |
 |---|---|---|
-| `terrain_size` | 1024 | power of two from 256 to 8192; heightmap vertices per side |
-| `land_size` | 128 | exactly `terrain_size / 8`; surface material cells per side |
+| `terrain_size` | 2048 | power of two from 256 to 8192; heightmap vertices per side |
+| `land_size` | 256 | exactly `terrain_size / 8`; surface material cells per side |
 
 The distance between heightmap vertices is the map width divided by `terrain_size`.
+
+A new project has a grid of 2048 (3.1 m on a 6.4 km map); the finer grid follows roads and their cuttings better.
+A project file that names a size keeps it: an existing project with `terrain_size = 1024` is built at 1024 as before,
+and changing the grid is a choice, not an update. `land_size` has no default in the file: a file that names
+only `terrain_size` is refused with a message that names the missing `land_size`. A grid of 2048 costs build time
+and disk (see the table of costs in `examples/berchtesgaden/README.md`, which has the figures with roads); a coarser grid is still valid.
 
 `land_size` is not a free choice: the game needs 8 heightmap cells per material cell, as on Livonia and
 Chernarus, and the game client crashes on other ratios. Náves rejects any other value and names the right one;
@@ -139,3 +145,42 @@ non_commercial = true
 | `brightness` | 1.3 | 0.25 to 4; factor on the colours of the imagery (Sentinel-2 images are dark for a terrain) |
 
 Both sections are left out of the file while they are empty or default.
+
+## `edits/overrides.toml`
+
+Not part of `naves.toml`: a file of its own in the project folder, for the changes you make by hand to what Náves
+generates. The editor will write it; for now you edit it by hand. A missing file means no edits.
+
+Every object that Náves generates has a name that says where it comes from, such as `road/123:1-5/4` (the fifth
+object along the road stretch `123:1-5`; the numbers are OpenStreetMap way and node ids). An edit is pinned to that
+name, so a build that generates the map again **keeps your edits**.
+
+```toml
+[[edits]]
+id = "road/123:1-5/4"
+generated_model = "dz\\structures\\roads\\parts\\asf3_25.p3d"
+generated_at = [10.5, 20.25]
+generated_yaw = 0.5
+
+[edits.edit]
+kind = "moved"
+x = 12.0
+y = 21.0
+yaw = 0.5
+```
+
+| Field | Valid values |
+|---|---|
+| `id` | the name of the object |
+| `generated_model` | the model the object had when you edited it |
+| `generated_at` | `[east, north]` in map metres where it was |
+| `generated_yaw` | the rotation the object had, in radians clockwise from north; optional (files without it read as 0). It is where a `replaced` edit stands when its object is gone |
+| `edit.kind` | `moved` (with `x`, `y`, `yaw` in map metres and radians clockwise from north), `deleted`, or `replaced` (with `model`) |
+
+Every number must be finite (TOML also allows `nan` and `inf`, which are rejected) and every model name must be
+non-empty and ASCII. A file that breaks this is refused when it is read, with a message that names the object and the
+field.
+
+If the object an edit was made for is gone, has become another model, or is more than 25 m from where it was, the edit
+was made for something else. It is **kept exactly as it is**, as an object of its own, and the build warns about it.
+A deletion with no object left to delete is dropped without a warning.

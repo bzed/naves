@@ -15,3 +15,10 @@ workspace = true
 
 [dependencies]
 thiserror = "2.0.21"
+
+[features]
+# A writer for small synthetic models, for the tests of the crates that read them.
+test-util = []
+
+[dev-dependencies]
+naves-formats = { path = ".", features = ["test-util"] }

@@ -25,9 +25,37 @@ fn invalid_field(toml: &str, field: &str) {
     }
 }
 
+/// A project file with the grid of 1024 (the tests below change single values of it).
 fn base() -> String {
     let p = Project::new("Berchtesgaden", 47.585, 12.965, 12800.0);
-    toml::to_string(&p).unwrap()
+    toml::to_string(&p)
+        .unwrap()
+        .replace("terrain_size = 2048", "terrain_size = 1024")
+        .replace("land_size = 256", "land_size = 128")
+}
+
+#[test]
+fn a_new_project_has_a_grid_of_2048() {
+    let p = Project::new("x", 47.585, 12.965, 12800.0);
+    assert_eq!((p.grid.terrain_size, p.grid.land_size), (2048, 256));
+}
+
+#[test]
+fn a_project_file_that_names_1024_keeps_it() {
+    let p = Project::parse(&base()).unwrap();
+    assert_eq!((p.grid.terrain_size, p.grid.land_size), (1024, 128));
+}
+
+/// `land_size` has no default in a project file: naming only the terrain size is a parse error that names
+/// the missing field, never a pairing of 1024 with a default land size.
+#[test]
+fn a_project_file_that_names_only_the_terrain_size_is_a_clear_error() {
+    let t = base().replace("land_size = 128\n", "");
+    assert!(!t.contains("land_size"));
+    match Project::parse(&t) {
+        Err(e) => assert!(e.to_string().contains("land_size"), "{e}"),
+        Ok(p) => assert_eq!(p.grid.land_size * 8, p.grid.terrain_size),
+    }
 }
 
 #[test]
@@ -79,7 +107,7 @@ fn new_uses_documented_defaults() {
     let p = Project::new("Königssee Test", 1.0, 2.0, 4000.0);
     assert_eq!(p.world, "konigssee_test");
     assert!(close(p.scale.horizontal, 0.5) && close(p.scale.height, 0.5));
-    assert_eq!((p.grid.terrain_size, p.grid.land_size), (1024, 128));
+    assert_eq!((p.grid.terrain_size, p.grid.land_size), (2048, 256));
     assert_eq!(p.sources.dem, [] as [std::path::PathBuf; 0]);
 }
 
@@ -87,7 +115,7 @@ fn new_uses_documented_defaults() {
 fn derived_sizes() {
     let p = Project::new("x", 0.0, 0.0, 12800.0);
     assert!(close(p.map_size_m(), 6400.0));
-    assert!(close(p.terrain_cell_m(), 6.25));
+    assert!(close(p.terrain_cell_m(), 3.125));
 }
 
 #[test]
@@ -264,12 +292,12 @@ fn with_value_rejects_unknown_paths_and_wrong_types() {
 fn setting_the_terrain_grid_sets_the_land_grid() {
     let p = Project::new("x", 0.0, 0.0, 12800.0);
     let q = p
-        .with_value("grid.terrain_size", serde_json::json!(2048))
+        .with_value("grid.terrain_size", serde_json::json!(1024))
         .unwrap();
-    assert_eq!((q.grid.terrain_size, q.grid.land_size), (2048, 256));
+    assert_eq!((q.grid.terrain_size, q.grid.land_size), (1024, 128));
     // the land grid alone can only be set to the one value that fits
     let err = p
-        .with_value("grid.land_size", serde_json::json!(256))
+        .with_value("grid.land_size", serde_json::json!(128))
         .unwrap_err();
     assert!(err.to_string().contains("terrain_size / 8"), "{err}");
 }

@@ -80,6 +80,37 @@ osmium extract -b 12.96,47.54,12.99,47.56 -s smart filtered.osm.pbf -o koenigsse
 its half (`osmium extract -b 12.9,47.548,13.1,47.7 -s simple` and `-b 12.9,47.4,13.1,47.552 -s simple`), so each alone
 cannot close the lake's ring, and the two together can.
 
+## `osm/koenigssee_roads.osm.pbf`: roads and paths at the Königssee
+
+A 9 KB extract of the highway ways that lie in 12.96-12.99 °E, 47.54-47.56 °N, the area of the DEM crop: seven
+`tracktype=grade2` tracks (gravel roads for the build), footpaths, hiking paths (`sac_scale`) and two small bridges. It lets
+the build tests of the roads run on the same ground as the others.
+
+> © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright
+
+```sh
+osmium extract -b 12.96,47.54,12.99,47.56 --strategy=complete_ways oberbayern-latest.osm.pbf -o all.osm.pbf
+osmium tags-filter all.osm.pbf w/highway -o koenigssee_roads.osm.pbf
+```
+
+## `osm/schoenau.osm.pbf` and `osm/schoenau_cut.osm.pbf`: a village with roads
+
+`schoenau.osm.pbf` (138 KB) is every element that touches 12.978–12.992 °E, 47.596–47.606 °N in Schönau am Königssee:
+a secondary road, tertiary, residential and service streets, tracks (`tracktype` grade 1, 2 and 4), footpaths,
+steps, hiking paths (`sac_scale`), a via ferrata, 8 bridges and a tunnel. It tests the road classification and the
+reading of `highway` ways. `schoenau_cut.osm.pbf` (8 KB) is that file cut again with `-s simple`: its 22 highway ways and its 2 streams and rivers
+keep all their node references but only the nodes inside the box, so most of them miss nodes, as in a regional
+extract that cuts a road. It is also the valid seed of the `osm_ways` fuzz target.
+
+> © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright
+
+Created with `osmium` from the Geofabrik extract `oberbayern-latest.osm.pbf` of 2026-11-06:
+
+```sh
+osmium extract -b 12.9780,47.5960,12.9920,47.6060 --strategy=complete_ways oberbayern-latest.osm.pbf -o schoenau.osm.pbf
+osmium extract -b 12.9830,47.5970,12.9870,47.6000 --strategy=simple schoenau.osm.pbf -o schoenau_cut.osm.pbf
+```
+
 ## `imagery/sentinel2_crop.tif`: Sentinel-2 crop
 
 A 67 × 67 px crop (10 m pixels, EPSG:32633, 8 bit RGB, DEFLATE) of the true colour image of the Sentinel-2 L2A scene
@@ -98,3 +129,18 @@ gdal_translate -q -projwin_srs EPSG:4326 -projwin 12.970 47.5600 12.9785 47.5542
 
 Reference values: the pixel centres (347275, 5269395), (347605, 5269065) and (347935, 5268735) in EPSG:32633 are
 (100, 105, 75), (2, 8, 5) and (1, 9, 5) in `gdallocationinfo -wgs84 -valonly`.
+
+## `osm/waterways.osm.pbf`: streams, rivers and roads, synthetic
+
+Made up for the tests, not taken from OpenStreetMap, so it has no attribution. Ten ways of three nodes each,
+from 12.980 to 12.990 °E at 47.5995 to 47.604 °N: a `highway=track`, `waterway=stream`, `ditch` and `drain`, a stream
+with `tunnel=culvert`, a way with `highway=track` and `waterway=stream`, a stream with `intermittent=yes`, a river, a
+canal and a stream with `tunnel=no`. It tests which ways `read_ways` keeps and which `water_lines` returns. It is
+also a valid seed (`valid_waterways`) of the `osm_ways` fuzz target. Made with `osmium cat` from an `.osm` file.
+
+## The fuzz corpus carries these licences
+
+Some seeds in `fuzz/corpus/` are copies, truncated copies or damaged copies of the fixtures above, so they carry the
+fixture's licence and attribution, not the project's (`REUSE.toml`): `dem_tile/` (Copernicus DEM), `imagery_tile/`
+(Copernicus Sentinel), `landcover_tile/` (ESA WorldCover, CC-BY-4.0), `osm_read/` and `osm_ways/` except
+`osm_ways/valid_waterways` (OpenStreetMap, ODbL-1.0; `valid_waterways` is the synthetic `waterways.osm.pbf`).

@@ -293,7 +293,7 @@ fn whole(hm: &Heightmap, px: u32) -> RenderRequest {
 fn each_layer_is_transparent_where_it_draws_nothing() {
     let hm = map(64, |_, _| 100.0);
     for layer in MapLayer::ALL {
-        let img = render_layer(*layer, &LayerData { heightmap: &hm }, &whole(&hm, 128)).unwrap();
+        let img = render_layer(*layer, &LayerData::new(&hm), &whole(&hm, 128)).unwrap();
         assert!(img.pixels().all(|p| p[3] == 0), "{layer:?}");
     }
 }
@@ -304,7 +304,7 @@ fn hatching_marks_only_ground_above_the_limit() {
     // 4 px per 10 m cell; the step is in x 310 m to 320 m
     let img = render_layer(
         MapLayer::TooSteepToWalk,
-        &LayerData { heightmap: &hm },
+        &LayerData::new(&hm),
         &RenderRequest {
             x0: 200.0,
             y0: 200.0,
@@ -331,7 +331,7 @@ fn hatching_stays_at_55_percent() {
     let hm = wall();
     let img = render_layer(
         MapLayer::TooSteepToWalk,
-        &LayerData { heightmap: &hm },
+        &LayerData::new(&hm),
         &whole(&hm, 640),
     )
     .unwrap();
@@ -341,7 +341,16 @@ fn hatching_stays_at_55_percent() {
 
 #[test]
 fn drawing_order_is_stable() {
-    assert_eq!(MapLayer::ALL, &[MapLayer::TooSteepToWalk]);
+    assert_eq!(
+        MapLayer::ALL,
+        &[
+            MapLayer::TerrainChanges,
+            MapLayer::TooSteepToWalk,
+            MapLayer::Roads,
+            MapLayer::Paths,
+            MapLayer::Drivable,
+        ]
+    );
     assert_eq!(MapLayer::TooSteepToWalk.id(), "too_steep_to_walk");
 }
 
@@ -350,7 +359,7 @@ fn the_whole_map_can_be_asked_for() {
     let hm = wall();
     let img = render_layer(
         MapLayer::TooSteepToWalk,
-        &LayerData { heightmap: &hm },
+        &LayerData::new(&hm),
         &whole(&hm, 320),
     )
     .unwrap();
@@ -374,12 +383,261 @@ fn a_bad_request_is_an_error() {
     let mut req = whole(&hm, 64);
     req.x1 = req.x0;
     assert_eq!(
-        render_layer(
-            MapLayer::TooSteepToWalk,
-            &LayerData { heightmap: &hm },
-            &req
-        )
-        .unwrap_err(),
+        render_layer(MapLayer::TooSteepToWalk, &LayerData::new(&hm), &req).unwrap_err(),
         RenderError::Bounds
     );
+}
+
+// ---- the layers of the roads ----
+
+use image::{Rgba, RgbaImage};
+use naves_core::catalog::Family;
+use naves_core::checks::{DriveState, PieceCheck};
+use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::render::{composite, fade};
+
+fn road_feature(family: Family, points: &[(f64, f64)]) -> Feature {
+    Feature {
+        id: "r".to_string(),
+        way_id: 1,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+        },
+        points: points.to_vec(),
+        nodes: (1..=i64::try_from(points.len()).unwrap()).collect(),
+    }
+}
+
+fn path_feature(points: &[(f64, f64)]) -> Feature {
+    Feature {
+        id: "p".to_string(),
+        way_id: 2,
+        source: Source::Osm,
+        kind: FeatureKind::Path { width_m: 1.6 },
+        points: points.to_vec(),
+        nodes: (1..=i64::try_from(points.len()).unwrap()).collect(),
+    }
+}
+
+fn piece(state: DriveState, from: (f64, f64), to: (f64, f64)) -> PieceCheck {
+    PieceCheck {
+        slot: 0,
+        family: Family::Asf3,
+        start: from,
+        end: to,
+        width: 7.0,
+        grade: 0.0,
+        cross_fall: 0.0,
+        grade_change: 0.0,
+        miss_m: 0.0,
+        off_ground_m: 0.0,
+        side_slope: 0.0,
+        state,
+    }
+}
+
+fn layer_of(
+    layer: MapLayer,
+    hm: &Heightmap,
+    features: &[Feature],
+    pieces: &[PieceCheck],
+    px: u32,
+) -> RgbaImage {
+    let data = LayerData {
+        heightmap: hm,
+        base: None,
+        features,
+        pieces,
+    };
+    render_layer(layer, &data, &whole(hm, px)).unwrap()
+}
+
+const INK: [u8; 3] = [0x1d, 0x29, 0x24];
+
+fn rgb(p: Rgba<u8>) -> [u8; 3] {
+    [p[0], p[1], p[2]]
+}
+
+#[test]
+fn a_road_is_drawn_at_its_width() {
+    let hm = map(64, |_, _| 100.0);
+    let road = [road_feature(
+        Family::Asf3,
+        &[(320.0, 100.0), (320.0, 540.0)],
+    )];
+    // 1 px per metre: 7 m is 7 px of ink and a pixel of white casing on each side
+    let img = layer_of(MapLayer::Roads, &hm, &road, &[], 640);
+    let row = 320;
+    assert_eq!(
+        (rgb(*img.get_pixel(320, row)), img.get_pixel(320, row)[3]),
+        (INK, 255)
+    );
+    assert_eq!(rgb(*img.get_pixel(322, row)), INK);
+    assert_eq!(rgb(*img.get_pixel(324, row)), [255, 255, 255], "the casing");
+    assert_eq!(img.get_pixel(329, row)[3], 0, "beyond the casing");
+    assert_eq!(img.get_pixel(320, 30)[3], 0, "beyond the end of the road");
+    // 0.25 px per metre: 7 m is 1.75 px
+    let small = layer_of(MapLayer::Roads, &hm, &road, &[], 160);
+    assert_eq!(rgb(*small.get_pixel(80, 80)), INK);
+    // 0.1 px per metre: the road is a pixel and a half wide at least
+    let tiny = layer_of(MapLayer::Roads, &hm, &road, &[], 64);
+    let ink = (30..34)
+        .filter(|x| rgb(*tiny.get_pixel(*x, 32)) == INK && tiny.get_pixel(*x, 32)[3] == 255)
+        .count();
+    assert!(ink >= 1, "{ink}");
+}
+
+#[test]
+fn paths_are_dashed_and_brown() {
+    let hm = map(64, |_, _| 100.0);
+    let path = [path_feature(&[(100.0, 320.0), (540.0, 320.0)])];
+    let img = layer_of(MapLayer::Paths, &hm, &path, &[], 640);
+    let row = 320;
+    let painted: Vec<bool> = (110..530).map(|x| img.get_pixel(x, row)[3] > 0).collect();
+    assert!(
+        painted.iter().any(|p| *p) && painted.iter().any(|p| !*p),
+        "dashed"
+    );
+    let colour = img.pixels().find(|p| p[3] > 0).map(|p| rgb(*p)).unwrap();
+    assert_eq!(colour, [0x8c, 0x6a, 0x45]);
+}
+
+#[test]
+fn not_drivable_is_wider_than_fine() {
+    let hm = map(64, |_, _| 100.0);
+    let pieces = [
+        piece(DriveState::Fine, (160.0, 100.0), (160.0, 500.0)),
+        piece(DriveState::NotDrivable, (480.0, 100.0), (480.0, 500.0)),
+    ];
+    let img = layer_of(MapLayer::Drivable, &hm, &[], &pieces, 640);
+    let width_at = |x: u32| {
+        (x - 12..x + 12)
+            .filter(|c| img.get_pixel(*c, 340)[3] > 0)
+            .count()
+    };
+    assert!(
+        width_at(480) >= 2 * width_at(160) - 1,
+        "{} {}",
+        width_at(480),
+        width_at(160)
+    );
+    assert_eq!(rgb(*img.get_pixel(160, 340)), [0x2e, 0x6a, 0x4c]);
+    assert_eq!(rgb(*img.get_pixel(480, 340)), [0xb0, 0x3a, 0x2e]);
+}
+
+#[test]
+fn walk_only_is_not_coloured_as_a_problem() {
+    let hm = map(64, |_, _| 100.0);
+    let pieces = [piece(DriveState::WalkOnly, (160.0, 100.0), (160.0, 500.0))];
+    let img = layer_of(MapLayer::Drivable, &hm, &[], &pieces, 640);
+    assert_eq!(rgb(*img.get_pixel(160, 340)), [0x5a, 0x66, 0x60]);
+    let steep = [piece(DriveState::Steep, (160.0, 100.0), (160.0, 500.0))];
+    let amber = layer_of(MapLayer::Drivable, &hm, &[], &steep, 640);
+    assert_eq!(rgb(*amber.get_pixel(160, 340)), [0xd0, 0x8a, 0x1e]);
+}
+
+#[test]
+fn terrain_changes_tint_cut_and_fill_differently() {
+    let base = map(64, |_, _| 100.0);
+    // a cut of 4 m in the west, a fill of 6 m in the east, and ground that did not change
+    let shaped = map(64, |col, _| {
+        if col < 20.0 {
+            96.0
+        } else if col > 44.0 {
+            106.0
+        } else {
+            100.0
+        }
+    });
+    let data = LayerData {
+        heightmap: &shaped,
+        base: Some(&base),
+        features: &[],
+        pieces: &[],
+    };
+    let img = render_layer(MapLayer::TerrainChanges, &data, &whole(&shaped, 640)).unwrap();
+    let cut = img.get_pixel(60, 320);
+    let fill = img.get_pixel(580, 320);
+    assert_eq!(rgb(*cut), [0x8c, 0x6a, 0x45]);
+    assert_eq!(rgb(*fill), [0x3f, 0x6f, 0x9e]);
+    assert_eq!(
+        img.get_pixel(320, 320)[3],
+        0,
+        "unchanged ground draws nothing"
+    );
+    // 4 m of 5 is most of half, 6 m is the full half
+    assert!(
+        fill[3] > cut[3] && fill[3].abs_diff(127) <= 2,
+        "{} {}",
+        fill[3],
+        cut[3]
+    );
+    // a change under a quarter of a metre is not shown
+    let slight = map(64, |_, _| 100.2);
+    let none = render_layer(
+        MapLayer::TerrainChanges,
+        &LayerData {
+            heightmap: &slight,
+            base: Some(&base),
+            features: &[],
+            pieces: &[],
+        },
+        &whole(&slight, 64),
+    )
+    .unwrap();
+    assert!(none.pixels().all(|p| p[3] == 0));
+}
+
+#[test]
+fn layers_of_the_roads_draw_nothing_without_roads() {
+    let hm = map(64, |_, _| 100.0);
+    for layer in [
+        MapLayer::Roads,
+        MapLayer::Paths,
+        MapLayer::Drivable,
+        MapLayer::TerrainChanges,
+    ] {
+        let img = layer_of(layer, &hm, &[], &[], 64);
+        assert!(img.pixels().all(|p| p[3] == 0), "{layer:?}");
+    }
+}
+
+#[test]
+fn the_ids_of_the_new_layers_are_stable() {
+    assert_eq!(MapLayer::Roads.id(), "roads");
+    assert_eq!(MapLayer::Paths.id(), "paths");
+    assert_eq!(MapLayer::Drivable.id(), "drivable");
+    assert_eq!(MapLayer::TerrainChanges.id(), "terrain_changes");
+}
+
+#[test]
+fn composite_keeps_what_is_below_transparent_pixels() {
+    let below = RgbaImage::from_pixel(4, 4, Rgba([10, 20, 30, 255]));
+    let mut above = RgbaImage::new(4, 4);
+    above.put_pixel(1, 1, Rgba([200, 100, 50, 255]));
+    above.put_pixel(2, 2, Rgba([0, 0, 255, 128]));
+    let out = composite(&below, &above);
+    assert_eq!(out.get_pixel(0, 0), &Rgba([10, 20, 30, 255]));
+    assert_eq!(out.get_pixel(1, 1), &Rgba([200, 100, 50, 255]));
+    let mixed = out.get_pixel(2, 2);
+    assert_eq!(mixed[3], 255);
+    assert!(
+        mixed[2] > 100 && mixed[2] < 160 && mixed[0] < 10,
+        "{mixed:?}"
+    );
+}
+
+#[test]
+fn fade_changes_only_alpha() {
+    let mut img = RgbaImage::new(2, 1);
+    img.put_pixel(0, 0, Rgba([10, 20, 30, 200]));
+    img.put_pixel(1, 0, Rgba([1, 2, 3, 0]));
+    let faded = fade(&img, 0.5);
+    assert_eq!(faded.get_pixel(0, 0), &Rgba([10, 20, 30, 100]));
+    assert_eq!(faded.get_pixel(1, 0), &Rgba([1, 2, 3, 0]));
+    assert_eq!(fade(&img, 1.0), img);
 }

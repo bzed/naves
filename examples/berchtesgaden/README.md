@@ -70,12 +70,18 @@ of colour remains at the border to Austria. Without the files, remove the `[[sou
 from a smaller file and has no band. For a non-commercial map, `eox-cloudless-2025` is the newest cloud-free
 mosaic; the map then says that it is non-commercial.
 
-Cost of the satellite image (release binary, `naves build`; same map without imagery in brackets):
+Cost of the satellite image (release binary, `naves build`, **without roads**; same map without imagery in brackets)
+and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` included):
 
-| `terrain_size` | Build time | Peak memory | PBO |
-|---|---|---|---|
-| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) |
-| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) |
+| `terrain_size` | Build time | Peak memory | PBO | With roads: time | memory | PBO |
+|---|---|---|---|---|---|---|
+| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 185 s | 1.7 GiB | 78 MB |
+| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 315 s | 1.8 GiB | 223 MB |
+
+The project is at 2048 now. The roads are placed twice when a dip gets a bridge, which is about half of the extra time.
+
+The finer grid does not remove the road findings: `road_misses_terrain` is 4604 at 1024 and 4015 at 2048,
+`road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
 
 ## Build
 
@@ -87,6 +93,20 @@ naves build examples/berchtesgaden
 
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
+
+## Results with roads at 2048 (2026-11-13)
+
+- `naves build`: exit 0, 315 s, 1.8 GiB, signed PBO 223 MB. `binarize` reports "Cannot open object" for the road
+  models (104 times; they are not on `P:`) and finishes. 21 127 road pieces in 2735 stretches.
+- Findings: 4192 `road_misses_terrain`, 1528 `road_grade`, 1125 `road_conflict`, 741 `join_without_junction`,
+  368 `road_gap`, 272 `road_not_drivable`, 4 `road_over_water`, 1 `junction_too_steep`; one planned grade above 100 %.
+- These build figures (time, memory, PBO size and the rule counts above) are from the build made when a dip got a
+  bridge from 3 m. Since then a dip gets one only from 8 m and the build was not repeated through `binarize`. The
+  measurement of the roads at 8 m and 2048 (`docs/research/2026-11-10-road-alignment.md`, section 7.9) gives
+  `road_misses_terrain` 4015, `road_grade` 1409, `road_conflict` 1130, `road_not_drivable` 235, `road_over_water` 4,
+  `junction_too_steep` 1, `road_far_from_ground` 4 and 76 bridge objects (OSM bridges and bridges over dips).
+- **Roads, bridges over dips and scaled bridges have not been tested in the game.**
+- The navigation mesh below was made for the old terrain; regenerate it (`naves build` warns).
 
 ## Results with land cover and OpenStreetMap (2026-11-06)
 
@@ -101,7 +121,7 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 ## Results of the first version, procedural ground only (2026-11-06)
 
 - `naves build`: no error. Mod `build/@naves_berchtesgaden`, mission `build/missions/dayzOffline.berchtesgaden`.
-- Grids: 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
+- Grids (at the time; the project is at 2048 now): 1024 terrain vertices (6.25 m), 128 land cells (50 m), 16 × 16 surface tiles (400 m).
 - Local DayZ Server 1.30 (own tree, non-default ports, `verifySignatures = 2`, key from `keys/`): loads the mod and
   the mission, `Player connect enabled`, no `Unable to load navmesh`.
 - Navigation mesh: `dznav generate`, 16 383 tiles in 749 s, 93 377 reachable polygons.

@@ -11,8 +11,8 @@ horizontal = 0.5
 height = 0.5
 
 [grid]
-terrain_size = 1024
-land_size = 128
+terrain_size = 2048
+land_size = 256
 
 [sources]
 dem = [

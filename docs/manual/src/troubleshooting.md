@@ -88,6 +88,75 @@ again; otherwise copy the file back or take it off the list.
 A file touches the map but does not overlap any other image, so there is nothing to match its colours to. It is used
 as it is. Add a file that covers both, or accept the step in colour.
 
+## Roads
+
+**`.../structures_roads.pbo not found; the road pieces are read from the DayZ Server install`**
+The roads are built from the game's own pieces, which `naves build` reads from the DayZ Server install
+(`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
+External tools.
+
+**`armake2 unpack failed`**
+armake2 could not open the PBO; its output is in the message. The result of a successful read is cached in
+`$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
+
+**`the model ... cannot be read`**
+A model of the game is not in the layout Náves expects (ODOL version 56, as of DayZ 1.30). The game was probably
+updated; the message names the model.
+
+**`not_drivable`, `road_misses_terrain`, `road_grade` ... in the warnings**
+Every line names the rule and a position in map metres. The same findings, with the numbers of the network, are in
+`build/report.json`. A road is **not drivable** when it is steeper than a vehicle manages on its surface (30 % on
+asphalt and streets; 40 % on gravel tracks, a car at the top of its range; 50 % on dirt tracks, a 4WD; estimates, not
+driven in the game)
+or more than 20 % tilted across. Between the family's aim and that limit it is amber: steep or tilted, but still
+drivable. A road gives way to a steeper grade where holding its aim would put it more than 4 m above or below the
+ground; that is why a road on a steep hillside can be amber for a long stretch. A road can be too steep because the real road is
+steep and the map is small (a horizontal scale below 1 steepens everything): raise `[scale] horizontal`, or accept the
+finding. `road_misses_terrain` and a road
+that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
+(a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
+moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 20 % exceeds
+the limit of 12 %" (a stretch that is steeper than its limit, usually between two fixed ends) or "Crest or dip too
+sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
+allow over a crest or a dip). On steep ground with hairpins a finer grid
+follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
+is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
+size: with the roads the build takes 315 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 185 s, 1.7 GiB and 78 MB at
+1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
+names `terrain_size = 1024` keeps it.
+
+**`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
+Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
+each other (which the build does) was not enough, for instance because a third junction holds one of them. The
+position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
+the finding: the road between them is then steeper than its limit and shows as `road_grade`.
+
+**`road_far_from_ground`: "Cut 40.0 m deep; 30 m fit this ground" or "Embankment 45.0 m high; 30 m fit this ground"**
+A piece of road is planned further from the original ground than fits its terrain. The limit is 30 m on gentle
+ground and grows with the side slope of the ground across the road (0.20 and below: 30 m; 0.40: 65 m; 0.60 and
+above: 100 m), since a road on a steep mountainside is cut into it or built out from it. The position is the middle
+of the piece, which is measured at its middle against the ground before any road shaped it; bridges are not
+measured. It usually means a road held to a height far from its ground, for instance by a junction on a
+different slope, or a wrong node of the OSM data. Move the junction or fix the data, or accept the finding.
+
+**`road_over_water`: "Road crosses water 6 m below it without a bridge; look at it"**
+The road stands more than 3 m above the original ground over a run where a stream, a river, a canal or a lake lies
+under it, and it gets no bridge: the dip is less than 8 m deep (a bridge is built from 8 m), the run is shorter than
+half a bridge model, a model would reach a junction or the end of the road, or the road bends more than 2 m off the
+straight line of a model. The road is left as it was solved, and the
+ground under it as the build leaves it (a fill, as for any road); the position is the middle of the run and the number
+is how far the road stands above the ground. Look at it in the game or the map: replace the pieces by a bridge in
+`edits/overrides.toml`, move the OSM line, or accept it. Dips without water are filled and not reported.
+
+**`bridge on ...: the widest bridge model is ... m, scaled up to ... m; the road is ... m wide`**
+The game has no bridge as wide as the road, not even scaled up by the most the build allows (1.5 times). The widest
+is used at that scale; the road is wider than the deck.
+
+**`bridge on ...: no room for a bridge model between the junctions`**
+An OpenStreetMap bridge is shorter than one bridge model and the roads beside it, junction to junction, are too short
+to give the rest (they keep at least 1 m). It is built as an ordinary road. Move a junction away from the bridge in
+the data, or place a bridge by hand in `edits/overrides.toml`.
+
 ## Server mission
 
 **`source mission not found: .../dayzOffline.enoch`**

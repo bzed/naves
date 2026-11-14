@@ -56,7 +56,7 @@ Mission: berchtesgaden/build/missions/dayzOffline.berchtesgaden
 
 The server log shows `Loading landscape 'berchtesgaden'` when the map loads. New characters spawn in the middle
 of the map. Without land cover or OpenStreetMap data the ground is procedural (grass, and rock on steep slopes and
-above 2100 m real altitude); see [Ground from real data](#ground-from-real-data). There are no roads, houses,
+above 2100 m real altitude); see [Ground from real data](#ground-from-real-data). Roads and paths come from OpenStreetMap, see [Roads](#roads); there are no houses,
 trees or water planes yet (a lake is only soil-coloured ground). Infected and animals only move once the project
 has a [navigation mesh](navmesh.md).
 
@@ -103,3 +103,102 @@ A map made from OpenStreetMap contains OSM-derived data under the ODbL: if you p
 that `naves build` writes to `ATTRIBUTION.txt` in the mod folder, and share the derived database alike. The same
 file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only the sources the build used. See
 [Credits and data licences](credits.md).
+
+## Roads
+
+List OpenStreetMap extracts in `sources.osm` and `naves build` also builds the **roads**: the `highway` ways of the
+map become the game's own road pieces (asphalt, streets, gravel and dirt tracks, with junctions, end caps and
+bridges), laid along the OSM line, and the terrain is shaped to fit them. The pieces are read from the game: the
+DayZ Server install needs its `addons/structures_roads.pbo`, and `armake2` unpacks it once (the result is cached
+per user and rebuilt when the game is updated). No model of the game is ever copied into your mod.
+
+What is built, from the `highway` tag:
+
+| OpenStreetMap | Result |
+|---|---|
+| `motorway`, `trunk`, `primary` | asphalt, 12 m |
+| `secondary` | asphalt, 9 m |
+| `tertiary`, `unclassified` | narrow asphalt, 7 m |
+| `residential`, `living_street`, `service` | street, 10 m |
+| `track` with `tracktype` `grade1` or `grade2`, or a hard `surface` | gravel, 6 m |
+| `track` otherwise | dirt track, 5 m |
+| `track` with `tracktype` `grade4`, `grade5` or a very bad `smoothness` | dirt track that must only be walkable |
+| `path`, `footway`, `cycleway`, `steps`, `sac_scale=hiking` | only painted on the ground, 1.6 m |
+| `sac_scale=alpine_hiking` or harder, `trail_visibility=bad` | nothing |
+
+`access` and `motor_vehicle` tags do not matter: a forestry road in a national park is still physically a road.
+
+The terrain is **held to a slope limit around every road**: a road on a valley side gets a bench, a road across a
+valley an embankment, a road through a ridge a cutting. On gentle ground a cutting is 45° and an embankment 34°; on a
+steeper hillside both get steeper with the natural slope, up to 63° and 45°. A cutting in a steep hillside can
+therefore be too steep to walk up, while the downhill side can always be left on foot. **On steep ground the uphill
+side of a road may be a rock face:** where the original ground rises more than 35 % across the road (measured 10 m to
+each side of the road, as the median over the pieces within 25 m), the cutting is as steep as the terrain grid allows,
+one cell wide, and nobody can walk up it. A player can then no longer always walk off a road on its uphill side. The
+ground under a junction without a junction piece is levelled to the junction's height, in a circle of half the width
+of the widest road plus one cell. **Roads close together keep their own ground:** where two roads, or two legs of one
+road, at different heights come closer than their level strips, each keeps the terrain inside its own width and the
+height difference becomes a face one cell wide between them; the vertices just outside a road's width that both need
+go to the road whose edge is nearer, a tie to the road of the higher rank. The ground under a junction patch never
+takes a road's own width. Where roads at different heights are less than about three cells apart, more pieces miss the
+terrain slightly than before, and both roads can miss; a finer terrain grid lowers this. More footpaths beside such a
+rock face are reported as too steep to walk (`path_too_steep`). Only where the widths of two roads at different
+heights overlap is it a conflict (`road_conflict`). The earthworks reach only as far as they are connected to the road
+(up to 60 m); a cliff beyond stays a cliff. The result is checked on the final terrain: a road that vehicles cannot
+drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every finding
+is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
+
+**Where roads meet, they meet at one height.** Every junction (a junction piece, a crossing without a junction
+piece, a road that ends on another) gets a single height: the median of the original ground within 10 m of it. Every
+road that reaches the junction is held to that height, the through road at the junction piece as much as the side
+road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
+together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
+of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece is level along its length; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. What cannot be repaired within 3 m is the `junction_too_steep` finding.
+
+Between a free end and a junction a road is at most **6 % steep** (asphalt and streets; gravel and dirt tracks keep their
+own limit, so a steep track is not lifted out of the ground, and between two junction heights the road's own grade limits
+apply), and gentler in a tight bend: the inner edge of a bend is
+steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
+
+A road keeps to its family's grade where it can. Where holding it would put the road more than **4 m above or below
+the ground**, the road gives way and becomes steeper, up to nine tenths of what vehicles manage; it is then amber in
+the Drivable layer, not red.
+
+The terrain grid is coarse (a cell is 3.1 m on a 6.4 km map at the default `terrain_size = 2048`, 6.25 m at 1024), and every cell under a road takes the road's height
+for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
+streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
+it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the
+ground between two roads is too steep for that, the terrain under one of them is still wrong; those places are the
+`road_misses_terrain` and `road_not_drivable` findings that remain.
+
+**What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
+says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
+line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
+roads simply meet; the build lists those places.
+
+**Bridges.** On a bridge, the span has a level deck and the ground below keeps
+its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
+paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
+the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
+Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than a bridge model grows evenly into the roads on both sides until a model fits (each neighbouring stretch keeps at least 1 m). Between two junctions that leave no room for a model the bridge stays an ordinary road, and the build says so.
+A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
+least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
+dead ends, and the road is straight within 2 m over each model) it gets a bridge, or a chain of bridges end to end over
+a long dip; the ground below is left alone. Otherwise (a dip less than 8 m deep, or no model fits) a dip without water is
+filled, as before, and one with a stream
+(`waterway=stream`, `river` or `canal` crossing the road), a river or a lake under it is left as it is and reported as
+`road_over_water` for you to look at. Only after the heights are solved is the dips' bridging decided, so **when a dip gets a
+bridge the roads are placed a second time and the road part of the build takes about twice as long** (there are no
+further rounds). The bridges of a dip are objects like any other and can be changed in `edits/overrides.toml`; their
+ids are `road/<stretch>/bridge<n>/<slot>`.
+
+The ground under the pieces that were placed (not under the OSM line, which they may leave by some metres) is painted
+as soil, 2 m wider than the road.
+
+**Roads, bridges over dips and scaled bridges have not been tested in the game.** The build, including `binarize`, finishes without the road models (they are not in the game's `P:` drive, which `binarize` only reports); draping on the terrain, scaled bridges and the vehicle limits are unverified. If a bridge misbehaves, replace it in `edits/overrides.toml`.
+
+Your own changes to what was generated are kept in `edits/overrides.toml`
+([the project file](project-file.md#editsoverridestoml)).
+
+**The terrain changes where there are roads, so a [navigation mesh](navmesh.md) made earlier no longer fits.**
+`naves build` warns about that when the project has one.

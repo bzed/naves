@@ -1,0 +1,10 @@
+[[edits]]
+id = "road/123:1-5/4"
+generated_model = "m"
+generated_at = [1.0, 2.0]
+
+[edits.edit]
+kind = "moved"
+x = 1.0
+y = inf
+yaw = -inf

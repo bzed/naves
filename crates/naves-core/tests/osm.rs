@@ -304,3 +304,159 @@ fn cut_polygons_far_from_the_window_are_not_counted() {
         "the cut lake is on this map"
     );
 }
+
+// --- highway ways -------------------------------------------------------------------------------------------------
+
+use naves_core::osm::{OsmWays, read_ways, read_ways_from_bytes};
+
+fn schoenau() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/osm/schoenau.osm.pbf")
+}
+
+fn schoenau_cut() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/osm/schoenau_cut.osm.pbf")
+}
+
+fn village_window() -> GeoWindow {
+    GeoWindow {
+        south: 47.596,
+        west: 12.978,
+        north: 47.606,
+        east: 12.992,
+    }
+}
+
+/// The tags `read_ways` keeps: the ones the road classification reads.
+const KEPT_TAGS: [&str; 11] = [
+    "highway",
+    "tracktype",
+    "surface",
+    "smoothness",
+    "service",
+    "sac_scale",
+    "trail_visibility",
+    "bridge",
+    "tunnel",
+    "area",
+    "waterway",
+];
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "test helper code; failing loudly is the point"
+)]
+fn ways_of(path: PathBuf, window: GeoWindow) -> OsmWays {
+    read_ways(&[path], window).unwrap()
+}
+
+#[test]
+fn the_village_has_a_main_road() {
+    let found = ways_of(schoenau(), village_window());
+    assert!(found.ways.len() > 100, "{} ways", found.ways.len());
+    let secondary: Vec<_> = found
+        .ways
+        .iter()
+        .filter(|w| w.tags.get("highway").map(String::as_str) == Some("secondary"))
+        .collect();
+    assert_ne!(secondary.len(), 0);
+    for w in &found.ways {
+        assert_eq!(w.nodes.len(), w.points.len(), "way {}", w.id);
+        assert!(w.nodes.len() >= 2, "way {}", w.id);
+        assert!(
+            w.tags.contains_key("highway") || w.tags.contains_key("waterway"),
+            "way {}",
+            w.id
+        );
+    }
+    // in id order, each once
+    assert!(found.ways.windows(2).all(|p| p[0].id < p[1].id));
+}
+
+#[test]
+fn only_the_tags_the_classification_reads_are_kept() {
+    let found = ways_of(schoenau(), village_window());
+    let mut seen = std::collections::BTreeSet::new();
+    for w in &found.ways {
+        for key in w.tags.keys() {
+            assert!(KEPT_TAGS.contains(&key.as_str()), "unexpected tag {key}");
+            seen.insert(key.clone());
+        }
+    }
+    assert!(seen.contains("tracktype") && seen.contains("bridge") && seen.contains("sac_scale"));
+}
+
+#[test]
+fn ways_with_missing_nodes_are_counted_and_left_out() {
+    // the cut keeps the ways but only the nodes inside the box
+    let found = ways_of(schoenau_cut(), village_window());
+    assert!(found.skipped > 0, "{found:?}");
+    assert_ne!(found.ways.len(), 0);
+    // 22 highway ways, a river and a stream
+    assert_eq!(found.ways.len() + found.skipped, 24);
+}
+
+#[test]
+fn ways_far_from_the_window_are_not_read() {
+    let far = GeoWindow {
+        south: 10.0,
+        west: 10.0,
+        north: 10.1,
+        east: 10.1,
+    };
+    let found = ways_of(schoenau(), far);
+    assert_eq!(found.ways.len(), 0);
+    assert_eq!(found.skipped, 0);
+}
+
+#[test]
+fn the_order_and_the_repeats_of_the_files_do_not_matter() {
+    let a = read_ways(&[schoenau(), schoenau_cut()], village_window()).unwrap();
+    let b = read_ways(&[schoenau_cut(), schoenau(), schoenau()], village_window()).unwrap();
+    assert_eq!(a, b);
+    assert_eq!(a.ways, ways_of(schoenau(), village_window()).ways);
+}
+
+#[test]
+fn ways_of_a_damaged_file_are_an_error() {
+    let bytes = std::fs::read(schoenau_cut()).unwrap();
+    assert!(read_ways_from_bytes(&bytes, village_window()).is_ok());
+    assert!(read_ways_from_bytes(&bytes[..bytes.len() / 2], village_window()).is_err());
+    let mut damaged = bytes.clone();
+    for b in damaged.iter_mut().skip(40).step_by(7) {
+        *b ^= 0x5a;
+    }
+    // an error or a (different) result, never a panic
+    drop(read_ways_from_bytes(&damaged, village_window()));
+    assert!(read_ways_from_bytes(b"not a pbf", village_window()).is_err());
+}
+
+#[test]
+fn a_missing_file_names_the_file() {
+    let e = read_ways(&[PathBuf::from("/nonexistent/x.osm.pbf")], village_window()).unwrap_err();
+    assert!(e.to_string().contains("x.osm.pbf"), "{e}");
+}
+
+#[test]
+fn streams_rivers_and_canals_are_read_with_the_roads() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/osm/waterways.osm.pbf");
+    let window = GeoWindow {
+        south: 47.596,
+        west: 12.978,
+        north: 47.606,
+        east: 12.992,
+    };
+    let found = ways_of(path, window);
+    // the track (1), streams (2, 4, 5, 6, 10), river (7) and canal (8); not the ditch (3) or the drain (9)
+    let ids: Vec<i64> = found.ways.iter().map(|w| w.id).collect();
+    assert_eq!(ids, vec![1, 2, 4, 5, 6, 7, 8, 10]);
+    let culvert = &found.ways[2];
+    assert_eq!(
+        culvert.tags.get("tunnel").map(String::as_str),
+        Some("culvert")
+    );
+    assert_eq!(
+        culvert.tags.get("waterway").map(String::as_str),
+        Some("stream")
+    );
+}

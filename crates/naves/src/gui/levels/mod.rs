@@ -173,10 +173,11 @@ pub fn no_items(_: &NavesApp) -> Vec<PaletteItem> {
 }
 
 /// The levels that are built, bottom first. A later plan adds its level here and nowhere else.
-pub const BUILT: &[&LevelDef] = &[&project::DEF, &terrain::DEF, &ground::DEF];
+pub const BUILT: &[&LevelDef] = &[&project::DEF, &terrain::DEF, &ground::DEF, &roads::DEF];
 
 pub mod ground;
 pub mod project;
+pub mod roads;
 pub mod terrain;
 
 /// Right-aligned number next to its label, in a two-column grid.
