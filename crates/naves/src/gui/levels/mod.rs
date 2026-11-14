@@ -10,7 +10,7 @@ use super::layers::LayerDef;
 use super::palette::PaletteItem;
 use super::selection::Selection;
 use super::shortcuts::ToolId;
-use super::theme::{INK, contrast};
+use super::theme::contrast;
 use super::viewport::{ViewEvent, WorldPoint};
 
 /// A level of the stack. The digit is the key and never changes; a level appears in the editor when it is built.
@@ -91,12 +91,8 @@ impl Level {
         }
     }
 
-    /// The stable id, used in the settings file.
+    /// The stable id, used in the settings file and the command palette.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the shortcut table uses it (Task 4)")
-    )]
     pub fn id(self) -> &'static str {
         match self {
             Level::Project => "level.project",
@@ -136,7 +132,7 @@ impl Level {
         if contrast(self.colour(), Color32::WHITE) >= 4.5 {
             Color32::WHITE
         } else {
-            INK
+            Color32::BLACK
         }
     }
 }

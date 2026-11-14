@@ -166,6 +166,7 @@ fn ids_are_unique_and_pinned() {
         "edit.undo",
         "edit.redo",
         "search.items",
+        "command_palette",
         "brush.smaller",
         "brush.larger",
         "brush.weaker",

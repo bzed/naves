@@ -23,7 +23,7 @@ design is in `docs/superpowers/specs/2026-11-04-naves-design.md`, the background
 | `docs/research/` | research notes |
 | `debian/` | Debian packaging (native package, trixie) |
 
-Toolchain: Rust **1.95**, edition 2024, pinned in `rust-toolchain.toml`. `Cargo.lock` is committed and CI
+Toolchain: Rust **1.99**, edition 2024, pinned in `rust-toolchain.toml`. `Cargo.lock` is committed and CI
 builds with `--locked`.
 
 ## Project ground rules
@@ -109,6 +109,9 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
     coverage, but no further.
 - Never lower the threshold, and never exclude code (`--ignore-filename-regex`, `#[coverage(off)]`,
   moving code into untested crates) to reach it.
+- Vendored upstream crates (`crates/naves-ui`) are held to their upstream tests plus tests for our
+  modifications, not to the 85 % floor; `make coverage-check` excludes them. The exclusion is for
+  vendored third-party code only — never for code we wrote.
 
 ## Safe Rust
 
@@ -180,7 +183,7 @@ and each crate has `lints.workspace = true`.
   - *maintenance*: recent releases and commits, issues and pull requests get answered, not deprecated,
     archived or yanked, more than one maintainer or a healthy bus factor, sane release history;
   - *our standards*: has tests (ideally fuzzing for parsers), returns errors instead of panicking, builds
-    on Linux and Windows with Rust 1.95, deterministic output, a licence on the `deny.toml` allow-list,
+    on Linux and Windows with Rust 1.99, deterministic output, a licence on the `deny.toml` allow-list,
     and a dependency tree that is reasonable for what it gives us.
   A crate that fails the review is not used; if it is the only option, ask the maintainer first. The
   review result goes into the commit message that adds the crate.
@@ -248,5 +251,5 @@ Also, when the change touches them:
 
 - `debian/` or packaging: `dpkg-buildpackage -us -uc -b` and `lintian --fail-on error,warning`, as the
   `deb` CI job does. That job runs in `debian:trixie`, installs the pinned toolchain with rustup
-  (trixie's rustc is older than 1.95) and builds offline from vendored crates.
+  (trixie's rustc is older than 1.99) and builds offline from vendored crates.
 - `unsafe` code: `make miri`.

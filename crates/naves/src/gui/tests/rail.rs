@@ -199,6 +199,19 @@ fn tool_events_arrive_in_metres_from_either_view() {
 }
 
 #[test]
+fn hovering_a_row_keeps_it_interactive() {
+    let root = tempfile::tempdir().unwrap();
+    let mut h = started(root.path());
+    h.get_by_label("Small house").hover();
+    h.run_steps(2);
+    assert_eq!(
+        h.state().hovered_row.as_deref(),
+        Some("house.small"),
+        "a palette row must sense hover: the design system's list item is interactive"
+    );
+}
+
+#[test]
 fn the_palette_replaces_the_panel() {
     let root = tempfile::tempdir().unwrap();
     let h = started(root.path());
@@ -267,7 +280,7 @@ fn search_filters_by_name_and_group() {
     assert_eq!(names(""), ["a", "b"]);
     assert_eq!(names("HOUSE"), ["a"]);
     assert_eq!(names("milit"), ["b"]);
-    assert!(names("zzz").is_empty());
+    assert_eq!(names("zzz"), [] as [&str; 0]);
 }
 
 #[test]

@@ -45,10 +45,10 @@ fuzz:
 	fi
 
 cover:
-	$(CARGO) llvm-cov --workspace $(LOCKED) --lcov --output-path lcov.info
+	$(CARGO) llvm-cov --workspace $(LOCKED) --exclude naves-ui --lcov --output-path lcov.info
 
 coverage-check:
-	$(CARGO) llvm-cov --workspace $(LOCKED) --fail-under-lines $(COVERAGE_MIN)
+	$(CARGO) llvm-cov --workspace $(LOCKED) --exclude naves-ui --fail-under-lines $(COVERAGE_MIN)
 
 docs:
 	mdbook build docs/manual

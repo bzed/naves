@@ -14,7 +14,7 @@ use naves_core::render::{MapLayer, Overlay};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
 use super::levels::Level;
-use super::theme::{GREEN, INK};
+use super::theme::GREEN;
 use super::{NavesApp, shortcuts};
 
 /// The base maps, in the order they are listed.
@@ -195,7 +195,7 @@ fn row(ui: &mut egui::Ui, level: Level, active: bool, bindings: &shortcuts::Bind
             Align2::LEFT_CENTER,
             level.name(),
             font,
-            INK,
+            ui.style().visuals.text_color(),
         );
     }
     if response.has_focus() {

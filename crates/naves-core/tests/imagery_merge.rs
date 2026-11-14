@@ -9,7 +9,6 @@
     clippy::cast_sign_loss,
     clippy::cast_precision_loss,
     clippy::indexing_slicing,
-    clippy::float_cmp,
     clippy::many_single_char_names,
     reason = "test helper code; failing loudly is the point"
 )]
@@ -146,8 +145,8 @@ fn one_source_passes_through() {
         for col in 0..16_u32 {
             let (lat, lon) = lat_lon(
                 &p,
-                700.0 + (f64::from(col) + 0.5) * 0.5,
-                900.0 - (f64::from(row) + 0.5) * 0.5,
+                700.0 + f64::midpoint(f64::from(col), 0.5),
+                900.0 - f64::midpoint(f64::from(row), 0.5),
             );
             let want = sampler.rgb_at(lat, lon).map(byte);
             assert_eq!(out[(row * 16 + col) as usize], want, "{row} {col}");

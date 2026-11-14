@@ -23,7 +23,7 @@ use naves_core::imagery::catalog::{
 use naves_core::project::{ImageryFile, Project};
 use naves_export::imagery_fetch::{FetchError, FetchRequest, Http, RealHttp, fetch};
 
-use super::{ERROR, GREEN, HeightmapState, INK, Line, NavesApp};
+use super::{ERROR, GREEN, HeightmapState, Line, NavesApp};
 
 /// A file of your own that is about to be added: all four fields are needed before it is accepted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -463,7 +463,7 @@ impl NavesApp {
             } else {
                 file.licence.clone()
             };
-            ui.label(RichText::new(licence).small().color(INK));
+            ui.label(RichText::new(licence).small());
             ui.horizontal(|ui| {
                 if ui.add_enabled(index > 0, egui::Button::new("Up")).clicked() {
                     action = Some((index, true, false));
@@ -485,7 +485,7 @@ impl NavesApp {
         let relevant = used.as_deref().unwrap_or(&files);
         if relevant.iter().any(|f| f.non_commercial) {
             ui.add_space(4.0);
-            ui.label(RichText::new("Non-commercial map").strong().color(INK));
+            ui.label(RichText::new("Non-commercial map").strong());
         }
         ui.label(
             RichText::new(

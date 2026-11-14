@@ -4,6 +4,7 @@
 //! The settings window, the shortcut bindings and the per-user file behind them.
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use egui::accesskit::Role;
 use egui::{Key, Modifiers};
@@ -17,6 +18,7 @@ use super::*;
 use crate::gui::levels::Level;
 use crate::gui::shortcuts::{Action, Binding, Bindings, SHORTCUTS, ToolId};
 use crate::gui::testing::{FAKE_LEVEL, FakeViewport};
+use crate::gui::viewport::ViewEvent;
 use crate::gui::viewport::Viewport;
 use crate::gui::viewport::map::MapViewport;
 
@@ -56,6 +58,16 @@ fn tab(h: &mut Harness<'_, NavesApp>, name: &str) {
 fn is_open(h: &Harness<'_, NavesApp>) -> bool {
     h.query_by_label_contains("These apply to every project")
         .is_some()
+}
+
+/// Steps the harness until `done` holds or a generous deadline passes.
+fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bool) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while !done(harness.state()) {
+        assert!(Instant::now() < deadline, "timed out waiting for the GUI");
+        harness.step();
+        std::thread::yield_now();
+    }
 }
 
 fn rebind(h: &mut Harness<'_, NavesApp>, row: &str, key: Key, modifiers: Modifiers) {
@@ -110,6 +122,88 @@ fn shortcuts_do_not_fire_while_it_is_open() {
     h.run_steps(3);
     assert_eq!(level(&h), Level::Project);
     assert!(h.state().log.is_empty(), "no build was started");
+}
+
+#[test]
+fn after_esc_the_keyboard_reaches_the_map_again() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path(), None);
+    open_window(&mut h);
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(!is_open(&h));
+    h.key_press(Key::Num2);
+    h.run_steps(3);
+    assert_eq!(level(&h), Level::Ground, "the level keys work again");
+}
+
+#[test]
+fn the_modal_blocks_the_map_behind_it() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path(), None);
+    // the map shows once the heightmap job — a thread — has loaded the data
+    run_until(&mut h, |app| app.seen_rect != egui::Rect::NOTHING);
+    let pos = h.state().seen_rect.center();
+    open_window(&mut h);
+    // drag over the map behind the modal
+    h.hover_at(pos);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.hover_at(pos + egui::vec2(40.0, 0.0));
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: pos + egui::vec2(40.0, 0.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(
+        h.state()
+            .seen_events
+            .iter()
+            .all(|e| matches!(e, ViewEvent::Left)),
+        "the modal must block the map behind it, but the map saw input: {:?}",
+        h.state().seen_events
+    );
+}
+
+#[test]
+fn a_click_on_the_backdrop_while_a_key_is_chosen_does_not_close_it() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path(), None);
+    open_window(&mut h);
+    // start listening for a new key, and press none: the choice is still open
+    h.get_by_label_contains("Build shortcut").click();
+    h.run_steps(2);
+    // a click on the dimmed ground must not throw the window away
+    let corner = egui::pos2(4.0, 4.0);
+    h.hover_at(corner);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: corner,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: corner,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(
+        is_open(&h),
+        "the window must stay open while a key is being chosen"
+    );
 }
 
 #[test]
@@ -415,7 +509,7 @@ fn a_new_default_reaches_a_file_that_does_not_mention_it() {
         ("build".to_string(), "F9".to_string()),
         ("tool.from_the_future".to_string(), "Ctrl+J".to_string()),
     ]));
-    assert!(notes.is_empty());
+    assert_eq!(notes, [] as [String; 0]);
     assert_eq!(
         bindings
             .key_for(Action::Build, Level::Project)

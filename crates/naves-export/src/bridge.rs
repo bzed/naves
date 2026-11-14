@@ -23,7 +23,32 @@ const DAYZ_TOOLS_APP_ID: &str = "830640";
 /// How long the wineserver of a finished run may take to shut down.
 const WINESERVER_WAIT: Duration = Duration::from_mins(1);
 
+/// How long a spawn retries while the program file is open for writing elsewhere.
+const BUSY_DEADLINE: Duration = Duration::from_secs(1);
+
+/// Spawns `cmd`, retrying while the program file is still open for writing.
+///
+/// Linux can refuse to start a program that was written moments earlier with "text file busy": the
+/// kernel releases a closed file's write permission only a moment after `close`. A tool that is
+/// busy for longer than [`BUSY_DEADLINE`] reports the error of its last attempt.
+pub(crate) fn spawn_retrying_busy(cmd: &mut Command) -> std::io::Result<Child> {
+    let start = std::time::Instant::now();
+    loop {
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && start.elapsed() < BUSY_DEADLINE =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The outcome of a supervised process.
+#[derive(Debug)]
 pub(crate) enum Finished {
     Exited(ExitStatus),
     TimedOut,
@@ -37,12 +62,12 @@ pub(crate) fn run_supervised(
 ) -> Result<Finished, ToolError> {
     let out = File::create(log).map_err(ToolError::io(log))?;
     let err = out.try_clone().map_err(ToolError::io(log))?;
-    let mut child: Child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(out))
-        .stderr(Stdio::from(err))
-        .spawn()
-        .map_err(ToolError::io(Path::new(cmd.get_program())))?;
+    let mut child: Child = spawn_retrying_busy(
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::from(out))
+            .stderr(Stdio::from(err)),
+    )
+    .map_err(ToolError::io(Path::new(cmd.get_program())))?;
     let waited = child
         .wait_timeout(timeout)
         .map_err(ToolError::io(Path::new(cmd.get_program())))?;
@@ -330,6 +355,9 @@ fn is_oprw(path: &Path) -> bool {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     /// Under `naves mcp` the stdin of this process is the protocol stream, which tools must not read.
@@ -341,5 +369,50 @@ mod tests {
         cmd.arg("/proc/self/fd/0");
         run_supervised(&mut cmd, &log, Duration::from_mins(1)).unwrap();
         assert_eq!(std::fs::read_to_string(log).unwrap().trim(), "/dev/null");
+    }
+
+    /// A tool whose file was written moments earlier can be refused by the kernel with "text file
+    /// busy": Linux releases a closed file's write permission a moment after `close`. The write
+    /// handle here closes while the spawn is already retrying, which is that moment.
+    #[test]
+    fn a_tool_written_moments_earlier_still_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tool");
+        let mut held = std::fs::File::create(&script).unwrap();
+        held.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // 20 ms stand in for the kernel's deferred release after close.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(held);
+        });
+        let mut cmd = Command::new(&script);
+        let log = dir.path().join("log");
+        let finished = run_supervised(&mut cmd, &log, Duration::from_secs(10)).unwrap();
+        release.join().unwrap();
+        assert!(
+            matches!(&finished, Finished::Exited(status) if status.success()),
+            "{finished:?}"
+        );
+    }
+
+    /// A tool that is still being written when the busy deadline passes is the original error,
+    /// not a hang.
+    #[test]
+    fn a_tool_that_stays_busy_fails_with_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tool");
+        let mut held = std::fs::File::create(&script).unwrap();
+        held.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cmd = Command::new(&script);
+        let log = dir.path().join("log");
+        let result = run_supervised(&mut cmd, &log, Duration::from_secs(10));
+        drop(held);
+        let error = result.expect_err("a busy tool must fail");
+        assert!(
+            error.to_string().contains("Text file busy"),
+            "the original spawn error: {error}"
+        );
     }
 }

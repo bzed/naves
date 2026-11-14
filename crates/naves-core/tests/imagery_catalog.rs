@@ -146,7 +146,10 @@ fn coverage_share_is_right() {
         false,
         Some([100.0, 0.0, 101.0, 1.0]),
     );
-    assert!(options_for(&parse(&far), berchtesgaden()).is_empty());
+    assert_eq!(
+        options_for(&parse(&far), berchtesgaden()),
+        [] as [naves_core::imagery::catalog::ImageryOption; 0]
+    );
 }
 
 #[test]
@@ -213,7 +216,10 @@ fn bad_entries_are_rejected_with_their_id() {
         assert!(err.contains(why), "{why}: {err}");
     }
     assert!(parse_sources("not toml [[").is_err());
-    assert!(parse_sources("").unwrap().is_empty());
+    assert_eq!(
+        parse_sources("").unwrap(),
+        [] as [naves_core::imagery::catalog::CatalogSource; 0]
+    );
 }
 
 proptest! {

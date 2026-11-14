@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The look of the editor: the manual's palette on egui's light theme.
+//! The look of the editor: the Náves design system's theme, with the manual's green accents.
 
 use eframe::egui::{self, Color32};
 
@@ -9,34 +10,12 @@ use eframe::egui::{self, Color32};
 pub const GREEN: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
 /// Errors.
 pub const ERROR: Color32 = Color32::from_rgb(0xb0, 0x3a, 0x2e);
-/// Text.
-pub const INK: Color32 = Color32::from_rgb(0x1d, 0x29, 0x24);
-/// The ground of the window.
-pub const GROUND: Color32 = Color32::from_rgb(0xf2, 0xf5, 0xec);
-/// Side panels and the dock.
-pub const PANEL: Color32 = Color32::from_rgb(0xe7, 0xed, 0xe0);
 
-/// The background of a selected row: a light green that ink reads on.
-pub const SELECTED: Color32 = Color32::from_rgb(0xbd, 0xd6, 0xc2);
-
-/// The outline of boxes, radio buttons and fields.
-pub const EDGE: Color32 = Color32::from_rgb(0x6a, 0x75, 0x6d);
-
-/// Sets the theme: the manual's palette. Keyboard focus is a green ring, which shows on the light panel.
+/// Sets the theme: the design system installs its tokens (fills, text, selection, spacing, the
+/// Inter font); light and dark both work, and egui follows the system theme. What is Náves' own
+/// on top of it are the accents: [`GREEN`] and [`ERROR`], which are tested to read on both themes.
 pub fn apply_theme(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = GROUND;
-    visuals.window_fill = GROUND;
-    visuals.extreme_bg_color = Color32::WHITE;
-    visuals.override_text_color = Some(INK);
-    visuals.selection.bg_fill = SELECTED;
-    visuals.selection.stroke.color = GREEN;
-    visuals.hyperlink_color = GREEN;
-    // an unchecked box, a radio button and a field must show on the panel: 3:1 against it
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, EDGE);
-    visuals.widgets.hovered.bg_stroke.color = GREEN;
-    visuals.widgets.active.bg_fill = GREEN;
-    ctx.set_visuals(visuals);
+    naves_ui::apply_style_and_install_loaders(ctx);
 }
 
 fn linear(c: u8) -> f32 {

@@ -100,8 +100,8 @@ fn empty_material_zero_is_only_a_terminator() {
 fn terminator_object_written_and_dropped() {
     let buf = encode(&sample());
     let tail = &buf[buf.len() - (12 * 4 + 4 + 4)..];
-    for chunk in tail[..48].chunks_exact(4) {
-        assert!(f32::from_le_bytes(chunk.try_into().unwrap()).is_nan());
+    for chunk in tail[..48].as_chunks::<4>().0 {
+        assert!(f32::from_le_bytes(*chunk).is_nan());
     }
     assert_eq!(&tail[48..52], &i32::MAX.to_le_bytes());
     assert_eq!(&tail[52..56], &[0, 0, 0, 0]);

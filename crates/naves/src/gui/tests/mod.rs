@@ -15,6 +15,7 @@ use naves_export::testing::FakeEnv;
 
 use super::*;
 
+mod command_palette;
 mod dock;
 mod layers;
 mod levels;
@@ -24,6 +25,7 @@ mod roads;
 mod selection;
 mod shortcuts;
 mod stack;
+mod theme;
 mod viewport;
 
 /// A project with the Königssee DEM below `root`.
@@ -44,6 +46,7 @@ fn project(root: &Path) -> PathBuf {
 /// The window of a normal session: wide and tall enough that nothing folds.
 fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
     Harness::builder()
+        .with_context_setup(crate::gui::theme::apply_theme)
         .with_size((1180.0, 760.0))
         .build_ui(|ui| app.show(ui))
 }
@@ -51,6 +54,7 @@ fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
 /// The same, with the app inside the harness so that tests can look at it between steps.
 fn state_harness(app: NavesApp) -> Harness<'static, NavesApp> {
     Harness::builder()
+        .with_context_setup(crate::gui::theme::apply_theme)
         .with_size((1180.0, 760.0))
         .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app)
 }
@@ -713,7 +717,10 @@ fn own_file_needs_licence_and_attribution() {
         before,
         "nothing was saved"
     );
-    assert!(app.form.project.sources.imagery.is_empty());
+    assert_eq!(
+        app.form.project.sources.imagery,
+        [] as [naves_core::project::ImageryFile; 0]
+    );
     app.add_own_imagery(&own("imagery/a.tif", "A", "CC BY 4.0", false))
         .unwrap();
     assert_eq!(Project::load(&dir).unwrap().sources.imagery.len(), 1);

@@ -7,6 +7,7 @@
 //! Look: the manual's palette. A pale green ground, ink text, village-green accents, and the map as the
 //! one loud thing on the screen.
 
+mod command_palette;
 mod dock;
 mod imagery;
 mod layers;
@@ -47,7 +48,7 @@ use stack::LayerPanel;
 use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState};
 
-use theme::{ERROR, GREEN, GROUND, INK, PANEL};
+use theme::{ERROR, GREEN};
 const SETTINGS_WIDTH: f32 = 300.0;
 const RIGHT_WIDTH: f32 = 230.0;
 const BAND_HEIGHT: f32 = 3.0;
@@ -102,6 +103,10 @@ pub struct NavesApp {
     prefs_save_error: Option<String>,
     /// The settings window, while it is open.
     prefs_window: Option<prefs_window::PrefsWindow>,
+    /// The settings window's modal, kept while the window lives in `prefs_window`.
+    prefs_modal: naves_ui::modal::ModalHandler,
+    /// The command palette, opened by its shortcut.
+    command_palette: naves_ui::CommandPalette,
     /// Where the tools come from; replaced in tests.
     origins: fn(&ToolPaths) -> Vec<ToolOrigin>,
     /// What is wrong, from all sources.
@@ -127,6 +132,9 @@ pub struct NavesApp {
     /// The rectangle the active view was given (for tests).
     #[cfg(test)]
     seen_rect: egui::Rect,
+    /// The id of the palette row under the pointer, if any (for tests).
+    #[cfg(test)]
+    pub hovered_row: Option<String>,
     worker: Option<BuildWorker>,
     log: Vec<Line>,
     locate_tools: ToolLocator,
@@ -179,6 +187,8 @@ impl NavesApp {
             prefs_error: None,
             prefs_save_error: None,
             prefs_window: None,
+            prefs_modal: naves_ui::modal::ModalHandler::default(),
+            command_palette: naves_ui::CommandPalette::default(),
             origins: tool_origins,
             problems: problems::ProblemList::default(),
             build_problems: Vec::new(),
@@ -194,6 +204,8 @@ impl NavesApp {
             seen_events: Vec::new(),
             #[cfg(test)]
             seen_rect: egui::Rect::NOTHING,
+            #[cfg(test)]
+            hovered_row: None,
             worker: None,
             log: Vec::new(),
             locate_tools,
@@ -404,7 +416,7 @@ impl NavesApp {
         egui::Panel::bottom("build")
             .resizable(!fold.dock)
             .default_size(if fold.dock { 40.0 } else { 150.0 })
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(10.0))
+            .frame(egui::Frame::new().inner_margin(10.0))
             .show(ui, |ui| {
                 dock::tab_row(ui, dock::TABS, self);
                 if !fold.dock {
@@ -418,7 +430,7 @@ impl NavesApp {
             egui::Panel::left("settings-strip")
                 .resizable(false)
                 .exact_size(22.0)
-                .frame(egui::Frame::new().fill(PANEL))
+                .frame(egui::Frame::new())
                 .show(ui, |ui| {
                     if ui
                         .button("›")
@@ -432,7 +444,7 @@ impl NavesApp {
             egui::Panel::left("settings")
                 .resizable(false)
                 .exact_size(SETTINGS_WIDTH)
-                .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
+                .frame(egui::Frame::new().inner_margin(12.0))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -443,13 +455,13 @@ impl NavesApp {
             egui::Panel::left("rail")
                 .resizable(false)
                 .exact_size(rail::RAIL_WIDTH)
-                .frame(egui::Frame::new().fill(PANEL))
+                .frame(egui::Frame::new())
                 .show(ui, |ui| rail::rail_ui(self, ui));
         }
         egui::Panel::right("stack")
             .resizable(false)
             .exact_size(RIGHT_WIDTH)
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(12.0))
+            .frame(egui::Frame::new().inner_margin(12.0))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -459,12 +471,16 @@ impl NavesApp {
                     });
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(GROUND))
+            .frame(egui::Frame::new())
             .show(ui, |ui| self.middle(ui));
         if self.help_open {
             self.help_ui(ui.ctx());
         }
         prefs_window::show(self, ui.ctx());
+        let mut provider = command_palette::Provider::new(self);
+        if let Some(command) = self.command_palette.show(ui.ctx(), &mut provider) {
+            command_palette::run(self, &command);
+        }
     }
 
     /// The interface scale and the animation time of the settings.
@@ -524,6 +540,9 @@ impl NavesApp {
         if self.prefs_window.is_some() {
             return; // the window listens to the keys itself
         }
+        if self.command_palette.is_open() {
+            return; // the palette owns the keyboard while it is open
+        }
         let typing = shortcuts::typing(ctx);
         let level = self.panel.active;
         if let Some(action) = ctx.input(|i| shortcuts::action_for(i, &self.bindings, level, typing))
@@ -550,6 +569,7 @@ impl NavesApp {
             Action::Tool(tool) => self.tool = tool,
             Action::SearchItems => self.palette.focus_search = true,
             Action::Settings => self.open_settings(),
+            Action::CommandPalette => self.command_palette.toggle(),
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;
@@ -621,7 +641,10 @@ impl NavesApp {
             .frame(
                 egui::Frame::window(&ctx.global_style())
                     .shadow(egui::Shadow::NONE)
-                    .stroke(egui::Stroke::new(1.5, INK)),
+                    .stroke(egui::Stroke::new(
+                        1.5,
+                        ctx.global_style().visuals.text_color(),
+                    )),
             )
             .collapsible(false)
             .resizable(false)
@@ -757,13 +780,10 @@ impl NavesApp {
             });
         ui.add_space(8.0);
         let map = p.map_size_m();
-        ui.label(
-            RichText::new(format!(
-                "Map: {map:.0} m, vertex every {:.2} m",
-                p.terrain_cell_m()
-            ))
-            .color(INK),
-        );
+        ui.label(format!(
+            "Map: {map:.0} m, vertex every {:.2} m",
+            p.terrain_cell_m()
+        ));
         ui.add_space(8.0);
         elevation_and_ground_files_ui(ui, p);
         if changed {
@@ -798,7 +818,7 @@ impl NavesApp {
                     match line {
                         Line::Info(text) => ui.label(RichText::new(text).monospace()),
                         Line::Warning(text) => ui.colored_label(
-                            INK,
+                            ui.style().visuals.warn_fg_color,
                             RichText::new(format!("Warning: {text}")).monospace(),
                         ),
                         Line::Error(text) => ui.colored_label(
@@ -964,7 +984,7 @@ impl NavesApp {
         if let Some(pos) = self.views.active().project(selection.at, rect) {
             let painter = ui.painter().with_clip_rect(rect);
             painter.circle_stroke(pos, 9.0, egui::Stroke::new(5.0, egui::Color32::WHITE));
-            painter.circle_stroke(pos, 9.0, egui::Stroke::new(2.5, INK));
+            painter.circle_stroke(pos, 9.0, egui::Stroke::new(2.5, egui::Color32::BLACK));
         }
     }
 

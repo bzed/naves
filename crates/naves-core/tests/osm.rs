@@ -61,7 +61,7 @@ fn way_rings_close() {
     let (outer, holes) = &rings.polygons[0];
     assert_eq!(outer.len(), 5);
     assert_eq!(outer.first(), outer.last());
-    assert!(holes.is_empty());
+    assert_eq!(holes.len(), 0);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn an_inner_ring_outside_every_outer_ring_is_skipped_and_counted() {
     let ways = [way(&[1, 2, 3, 4, 1]), inner(&[21, 22, 23, 21])];
     let rings = assemble(&ways, &far);
     assert_eq!(rings.polygons.len(), 1);
-    assert!(rings.polygons[0].1.is_empty());
+    assert_eq!(rings.polygons[0].1, [] as [Vec<(f64, f64)>; 0]);
     assert_eq!(rings.skipped, 1);
 }
 
@@ -109,7 +109,10 @@ fn an_inner_ring_outside_every_outer_ring_is_skipped_and_counted() {
 fn unclosed_ring_is_skipped_and_counted() {
     // what an extract that cuts a lake leaves behind: a way that never comes back to its start
     let rings = assemble(&[way(&[1, 2, 3])], &nodes());
-    assert!(rings.polygons.is_empty());
+    assert_eq!(
+        rings.polygons,
+        [] as [(Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>); 0]
+    );
     assert_eq!(rings.skipped, 1);
 }
 
@@ -118,14 +121,20 @@ fn missing_node_is_skipped_and_counted() {
     let mut known = nodes();
     known.remove(&3);
     let rings = assemble(&[way(&[1, 2, 3, 4, 1])], &known);
-    assert!(rings.polygons.is_empty());
+    assert_eq!(
+        rings.polygons,
+        [] as [(Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>); 0]
+    );
     assert_eq!(rings.skipped, 1);
 }
 
 #[test]
 fn a_ring_of_fewer_than_three_corners_is_skipped_and_counted() {
     let rings = assemble(&[way(&[1, 2, 1])], &nodes());
-    assert!(rings.polygons.is_empty());
+    assert_eq!(
+        rings.polygons,
+        [] as [(Vec<(f64, f64)>, Vec<Vec<(f64, f64)>>); 0]
+    );
     assert_eq!(rings.skipped, 1);
 }
 
@@ -166,7 +175,7 @@ fn fixture_has_the_koenigssee() {
 fn irrelevant_tags_are_ignored() {
     // the fixture also holds natural=wood and landuse=forest areas: they are not read
     let land = read_land(&[fixture()], koenigssee_window()).unwrap();
-    assert!(!land.polygons.is_empty());
+    assert_ne!(land.polygons, [] as [naves_core::osm::LandPolygon; 0]);
     assert!(
         land.polygons
             .iter()
@@ -184,7 +193,7 @@ fn elements_outside_the_window_are_dropped() {
         east: 10.1,
     };
     let land = read_land(&[fixture()], far).unwrap();
-    assert!(land.polygons.is_empty());
+    assert_eq!(land.polygons, [] as [naves_core::osm::LandPolygon; 0]);
 }
 
 #[test]

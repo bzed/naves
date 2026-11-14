@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 
 use super::NavesApp;
 use super::levels::Level;
@@ -164,48 +164,66 @@ pub fn palette_ui(app: &mut NavesApp, ui: &mut egui::Ui, items: &[PaletteItem]) 
         ui.label("Nothing matches.");
         return;
     }
+    let picked_id = app.item.clone();
     let mut picked = None;
-    let mut row = |ui: &mut egui::Ui, item: &PaletteItem, selected: bool| {
-        ui.horizontal(|ui| {
-            thumbnail(ui, &item.thumbnail);
-            if ui
-                .selectable_label(selected, &item.name)
-                .on_hover_text(item.source.word())
-                .clicked()
-            {
+    naves_ui::list_item::list_item_scope(ui, "palette", |ui| {
+        let header = |ui: &mut egui::Ui, text: &str| {
+            naves_ui::list_item::ListItem::new()
+                .header()
+                .show_flat(ui, naves_ui::list_item::LabelContent::header(text));
+        };
+        let mut row = |ui: &mut egui::Ui, item: &PaletteItem| {
+            let selected = picked_id.as_deref() == Some(item.id.as_str());
+            let response = naves_ui::list_item::ListItem::new()
+                .selected(selected)
+                .show_flat(
+                    ui,
+                    naves_ui::list_item::PropertyContent::new(item.name.as_str())
+                        .with_icon_fn(|ui, rect, _visuals| {
+                            thumbnail_at(ui, rect, &item.thumbnail);
+                        })
+                        .value_fn(|ui, _visuals| {
+                            ui.weak(item.kind.word());
+                        }),
+                )
+                .on_hover_text(item.source.word());
+            #[cfg(test)]
+            if response.hovered() {
+                app.hovered_row = Some(item.id.clone());
+            }
+            if response.clicked() {
                 picked = Some(item.id.clone());
             }
-            ui.label(RichText::new(item.kind.word()).weak());
-        });
-    };
-    if app.palette.search.trim().is_empty() {
-        let recent: Vec<&PaletteItem> = app
-            .palette
-            .last_used
-            .get(&level)
-            .into_iter()
-            .flatten()
-            .filter_map(|id| items.iter().find(|i| &i.id == id))
-            .collect();
-        if !recent.is_empty() {
-            ui.label(RichText::new("Last used").strong());
-            for item in recent {
-                row(ui, item, app.item.as_deref() == Some(&item.id));
+        };
+        if app.palette.search.trim().is_empty() {
+            let recent: Vec<&PaletteItem> = app
+                .palette
+                .last_used
+                .get(&level)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| items.iter().find(|i| &i.id == id))
+                .collect();
+            if !recent.is_empty() {
+                header(ui, "Last used");
+                for item in recent {
+                    row(ui, item);
+                }
+                ui.add_space(8.0);
+            }
+        }
+        let mut groups: BTreeMap<&str, Vec<&PaletteItem>> = BTreeMap::new();
+        for item in found {
+            groups.entry(item.group.as_str()).or_default().push(item);
+        }
+        for (group, members) in groups {
+            header(ui, group);
+            for item in members {
+                row(ui, item);
             }
             ui.add_space(8.0);
         }
-    }
-    let mut groups: BTreeMap<&str, Vec<&PaletteItem>> = BTreeMap::new();
-    for item in found {
-        groups.entry(item.group.as_str()).or_default().push(item);
-    }
-    for (group, members) in groups {
-        ui.label(RichText::new(group).strong());
-        for item in members {
-            row(ui, item, app.item.as_deref() == Some(&item.id));
-        }
-        ui.add_space(8.0);
-    }
+    });
     if let Some(id) = picked
         && let Some(item) = items.iter().find(|i| i.id == id)
     {
@@ -213,11 +231,10 @@ pub fn palette_ui(app: &mut NavesApp, ui: &mut egui::Ui, items: &[PaletteItem]) 
     }
 }
 
-fn thumbnail(ui: &mut egui::Ui, thumbnail: &Thumbnail) {
-    let size = egui::vec2(24.0, 24.0);
+/// Draws a thumbnail inside `rect`: a colour, a line, or a picture.
+fn thumbnail_at(ui: &mut egui::Ui, rect: egui::Rect, thumbnail: &Thumbnail) {
     match thumbnail {
         Thumbnail::Swatch([r, g, b]) => {
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             ui.painter()
                 .rect_filled(rect, 2.0, Color32::from_rgb(*r, *g, *b));
         }
@@ -225,7 +242,6 @@ fn thumbnail(ui: &mut egui::Ui, thumbnail: &Thumbnail) {
             width_m,
             rgb: [r, g, b],
         } => {
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             #[expect(clippy::cast_possible_truncation, reason = "a few pixels")]
             let width = width_m.clamp(1.0, 10.0) as f32;
             ui.painter().line_segment(
@@ -234,7 +250,11 @@ fn thumbnail(ui: &mut egui::Ui, thumbnail: &Thumbnail) {
             );
         }
         Thumbnail::Image(id) => {
-            ui.image((*id, size));
+            // painted like the design system paints its watermark: a mesh with the texture
+            let mut mesh = egui::Mesh::with_texture(*id);
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            mesh.add_rect_with_uv(rect, uv, egui::Color32::WHITE);
+            ui.painter().add(egui::Shape::mesh(mesh));
         }
     }
 }

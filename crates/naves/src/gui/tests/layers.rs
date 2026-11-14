@@ -107,10 +107,16 @@ fn visible_follows_fade_hide_and_full() {
     assert_eq!(opacity(&panel), [1.0]);
     panel.show_others_in_full = false;
     panel.hidden.insert(Level::Terrain);
-    assert!(visible(&panel, BUILT, 0.4).is_empty());
+    assert_eq!(
+        visible(&panel, BUILT, 0.4),
+        [] as [crate::gui::viewport::VisibleLayer; 0]
+    );
     panel.hidden.clear();
     panel.on.clear();
-    assert!(visible(&panel, BUILT, 0.4).is_empty());
+    assert_eq!(
+        visible(&panel, BUILT, 0.4),
+        [] as [crate::gui::viewport::VisibleLayer; 0]
+    );
 }
 
 #[test]

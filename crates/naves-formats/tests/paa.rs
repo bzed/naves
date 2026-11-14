@@ -65,8 +65,10 @@ fn offsets(d: &[u8]) -> Vec<u32> {
         .find(|(n, _)| n == "OFFS")
         .unwrap()
         .1;
-    offs.chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+    offs.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
         .collect()
 }
 

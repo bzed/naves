@@ -177,7 +177,10 @@ fn merge_warnings_become_problems_and_are_replaced_when_the_map_reloads() {
     h.state_mut().settings_changed();
     run_until(&mut h, ready);
     h.run_steps(3);
-    assert!(h.state().merge_problems.is_empty());
+    assert_eq!(
+        h.state().merge_problems,
+        [] as [crate::gui::problems::Problem; 0]
+    );
     assert!(h.query_by_label_contains("a merge note").is_none());
 }
 

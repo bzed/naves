@@ -524,7 +524,10 @@ fn empty_area_is_an_error() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("nothing for this area"), "{err}");
-    assert!(listed(dir.path()).sources.imagery.is_empty());
+    assert_eq!(
+        listed(dir.path()).sources.imagery,
+        [] as [naves_core::project::ImageryFile; 0]
+    );
     assert!(!dir.path().join("imagery/wms-test.tif").exists());
 }
 
@@ -748,7 +751,7 @@ fn only_cloudy_scenes_names_the_clearest_and_suggests_other_dates() {
         text.contains("--from") && text.contains("--to"),
         "what to do: {text}"
     );
-    assert!(http.urls("GET").is_empty());
+    assert_eq!(http.urls("GET"), [] as [std::string::String; 0]);
 }
 
 #[test]
@@ -797,7 +800,7 @@ fn foreign_asset_host_is_rejected() {
     );
     let http = stac_fake(vec![plain]);
     assert!(fetch(dir.path(), &stac(), &dated(), &http, &quiet).is_err());
-    assert!(http.urls("GET").is_empty());
+    assert_eq!(http.urls("GET"), [] as [std::string::String; 0]);
 }
 
 #[test]
@@ -807,7 +810,7 @@ fn hostile_scene_id_is_rejected() {
     let hostile = good("../../x", 0.1, everything());
     let http = stac_fake(vec![hostile]);
     assert!(fetch(dir.path(), &stac(), &dated(), &http, &quiet).is_err());
-    assert!(http.urls("GET").is_empty());
+    assert_eq!(http.urls("GET"), [] as [std::string::String; 0]);
     assert!(
         !dir.path().join("x.tif").exists() && !dir.path().parent().unwrap().join("x.tif").exists()
     );
@@ -1067,7 +1070,7 @@ fn real_http_refuses_plain_http_by_default() {
     let (url, _) = serve_once(b"x".to_vec());
     let mut out = Vec::new();
     assert!(RealHttp::new().get(&url, 1000, &mut out).is_err());
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u8; 0]);
 }
 
 // ---- the real services (run by hand: cargo test -p naves-export -- --ignored real_) ----

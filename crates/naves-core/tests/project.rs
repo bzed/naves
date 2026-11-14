@@ -108,7 +108,7 @@ fn new_uses_documented_defaults() {
     assert_eq!(p.world, "konigssee_test");
     assert!(close(p.scale.horizontal, 0.5) && close(p.scale.height, 0.5));
     assert_eq!((p.grid.terrain_size, p.grid.land_size), (2048, 256));
-    assert!(p.sources.dem.is_empty());
+    assert_eq!(p.sources.dem, [] as [std::path::PathBuf; 0]);
 }
 
 #[test]
@@ -357,7 +357,10 @@ fn with_imagery(extra: &str) -> String {
 #[test]
 fn old_project_has_no_imagery() {
     let p = Project::parse(&base()).unwrap();
-    assert!(p.sources.imagery.is_empty());
+    assert_eq!(
+        p.sources.imagery,
+        [] as [naves_core::project::ImageryFile; 0]
+    );
     let saved = toml::to_string(&p).unwrap();
     assert!(
         !saved.contains("imagery"),
