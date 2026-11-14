@@ -76,6 +76,10 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
   relative to its install folder and then fails with "Cannot open file ...\addons\<name>", also for a folder under
   `$HOME`. Symlink the build's mod folder into the DayZ install (`<Steam>/steamapps/common/DayZ/@naves_<world>`)
   and start the client with `-mod=@naves_<world>`; **remove that symlink when you are done**.
+- **No `-profiles=` with an absolute path on the client:** given a Linux path, the client hangs on connect and the
+  server drops it with a login timeout, also against a vanilla server. Leave the option out (the profile then goes to
+  the Wine prefix, see below). It probably takes only a folder name or a path inside the install, like `-mod=`
+  (not verified).
 - **One game at a time**, and stop it as soon as you have what you need (`dayz-client-headless.sh stop`).
 - **A control run** (the same client against a vanilla Livonia server, no mod) tells a broken setup from a broken
   map; do it before suspecting the map.
