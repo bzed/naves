@@ -13,11 +13,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The DayZ client no longer crashes a few seconds after it enters a world with a fine grid. The client takes a surface tile as its unit of terrain detail only when the tile is 256 to 1024 m long; with shorter tiles (terrain cells under 4 m, such as the 6.4 km map at 2048 that was the default) it asks for a terrain texture that is never made. `naves build` (CLI, GUI and MCP) now refuses grids whose terrain cells are not 4 to 16 m long and names a `terrain_size` that fits, a new project gets the finest grid with cells of 4 m or more (1024 on a 6.4 km map), and the Berchtesgaden example grew to a 16.4 km area at half scale (an 8.2 km map) so that it stays at 2048 with cells of 4 m (the added area lies mostly to the south and west; the satellite images have to be fetched again).
 - The MCP server uses rmcp 3.9.0, which fixes RUSTSEC-2026-0462; the dependency requirement now enforces it.
 - Starting an external tool that was written or replaced moments earlier no longer fails with "text file busy": the kernel releases a closed file's write permission a moment after close, and the spawn now waits that moment out (up to one second).
 
 ### Changed
 
+- dayzmake 2.0.0 or newer replaces armake2 as the packing, signing and image tool (<https://github.com/bzed/dayzmake>); Náves runs `dayzmake --version` once and refuses an older version. The setting is `tools.dayzmake` and the variable `DAYZMAKE`; an old `tools.armake2` key and the `ARMAKE2` variable are still read as fallbacks (the setting is saved under the new key only; the variable is deprecated). The road catalog cache stays valid. Packaging: `debian/control` now names dayzmake, for the next `debian/changelog` entry.
 - The built-in CA bundle (webpki-roots) is updated from 1.0.11 to 1.0.12.
 - The GUI now uses Rerun's design system (the Inter font, light and dark themes that follow the system, modern widgets) — the look and feel of the whole editor changed.
 - The palette renders its rows with the design system's list items (hover, selection and focus come with them).
@@ -78,7 +80,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- A new project has a terrain grid of 2048 (`land_size = 256`) instead of 1024, and the Berchtesgaden example is at 2048. A project file that names a size keeps it. `land_size` has no default in a project file: a file that names only `terrain_size` is refused with an error that names `land_size` (it was never paired with a default). The example's build through binarize takes about 315 s and gives a 223 MB PBO. **Roads, bridges over dips and scaled bridges have not been tested in the game.**
+- A new project has a terrain grid of 2048 (`land_size = 256`) instead of 1024, and the Berchtesgaden example is at 2048. A project file that names a size keeps it. `land_size` has no default in a project file: a file that names only `terrain_size` is refused with an error that names `land_size` (it was never paired with a default). The example's build through binarize takes about 400 s and gives a 233 MB PBO. **Known problem in the game: no road piece is drawn, because `binarize` cannot open the road models** (see `examples/berchtesgaden/README.md`).
 - The drivable limits of tracks follow a car at its best and a 4WD: a gravel track is not drivable above 40 % and a dirt track above 50 % (before 30 % and 28 %); asphalt and streets keep 30 %. Tracks in the mountains are not expected to be drivable by an ordinary car. Estimates, not driven in the game.
 - Road alignment, measured on the Berchtesgaden example with all of the above: the road that cannot be driven is 5.64 km long at 1024 and 5.05 km at 2048 (27.5 and 21.4 km before the alignment fixes), `road_conflict` 749 and 1130 findings, `road_misses_terrain` 4604 and 4015, `road_grade` 1640 and 1409. More pieces miss the terrain slightly with the final rules than with the earlier ones, while the conflicts fell. The numbers and what is left are in `docs/research/2026-11-10-road-alignment.md`, section 7.9.
 - Earthworks follow the hillside: a cutting is 45° and an embankment 34° on gentle ground and both get steeper with the natural slope, up to 63° and 45°. A cutting in a steep hillside can be too steep to walk up; the downhill side can always be left on foot.

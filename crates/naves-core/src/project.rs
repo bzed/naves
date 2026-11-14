@@ -105,6 +105,16 @@ pub struct Scale {
 /// overflows a fixed 128-height buffer while it builds the land segments and crashes.
 pub const LAND_RATIO: u32 = 8;
 
+/// The shortest terrain cell, in metres, that the game client renders. A surface tile is 8 land cells of
+/// [`LAND_RATIO`] terrain cells; the client takes the tile as its land segment only when the tile is 256 to
+/// 1024 m long, and otherwise picks a segment from the view distance (two tiles at the default view of
+/// 10 km). Such a segment has a terrain level more than the land cell can hold, the client never creates its
+/// texture and crashes a few seconds after it enters the world (measured on 1.30, see
+/// `docs/research/2026-11-05-reference-terrains.md`).
+pub const MIN_TERRAIN_CELL_M: f64 = 4.0;
+/// The longest terrain cell, in metres, for the same reason (tiles of at most 1024 m).
+pub const MAX_TERRAIN_CELL_M: f64 = 16.0;
+
 /// Grid sizes.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -179,6 +189,20 @@ fn keep_file_mode(_tmp: &std::fs::File, _path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The terrain sizes a project may have, smallest first.
+const TERRAIN_SIZES: [u32; 6] = [256, 512, 1024, 2048, 4096, 8192];
+
+/// The largest terrain size whose cells on a map of `map_m` metres are at least [`MIN_TERRAIN_CELL_M`]
+/// long; 256 for maps too small for any.
+#[must_use]
+pub fn finest_game_grid(map_m: f64) -> u32 {
+    TERRAIN_SIZES
+        .into_iter()
+        .rev()
+        .find(|&n| map_m / f64::from(n) >= MIN_TERRAIN_CELL_M)
+        .unwrap_or(256)
+}
+
 fn invalid<T>(msg: impl Into<String>) -> Result<T, ProjectError> {
     Err(ProjectError::Invalid(msg.into()))
 }
@@ -205,9 +229,12 @@ impl Project {
                 horizontal: 0.5,
                 height: 0.5,
             },
-            grid: Grid {
-                terrain_size: 2048,
-                land_size: 2048 / LAND_RATIO,
+            grid: {
+                let terrain_size = finest_game_grid(real_extent_m * 0.5);
+                Grid {
+                    terrain_size,
+                    land_size: terrain_size / LAND_RATIO,
+                }
             },
             sources: Sources {
                 dem: Vec::new(),
@@ -277,6 +304,37 @@ impl Project {
     #[must_use]
     pub fn terrain_cell_m(&self) -> f64 {
         self.map_size_m() / f64::from(self.grid.terrain_size)
+    }
+
+    /// Checks that the game client can show a world of this map size and grid: its terrain cells must be
+    /// [`MIN_TERRAIN_CELL_M`] to [`MAX_TERRAIN_CELL_M`] long. This is not part of [`Project::parse`], so
+    /// that a project can be edited into shape; `naves build` refuses a world that fails it.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectError::Invalid`] with the cell length and a terrain size or map size that works.
+    pub fn check_game_grid(&self) -> Result<(), ProjectError> {
+        let cell = self.terrain_cell_m();
+        if (MIN_TERRAIN_CELL_M..=MAX_TERRAIN_CELL_M).contains(&cell) {
+            return Ok(());
+        }
+        let map = self.map_size_m();
+        let size = self.grid.terrain_size;
+        let fits =
+            |n: u32| (MIN_TERRAIN_CELL_M..=MAX_TERRAIN_CELL_M).contains(&(map / f64::from(n)));
+        let other = TERRAIN_SIZES.into_iter().rev().find(|&n| fits(n));
+        let advice = match other {
+            Some(n) => format!("use grid.terrain_size = {n} for this map, or "),
+            None => String::new(),
+        };
+        let lo = MIN_TERRAIN_CELL_M * f64::from(size);
+        let hi = MAX_TERRAIN_CELL_M * f64::from(size);
+        Err(ProjectError::Invalid(format!(
+            "a map of {map:.0} m with grid.terrain_size = {size} has terrain cells of {cell:.3} m; the DayZ \
+             client crashes unless they are {MIN_TERRAIN_CELL_M} to {MAX_TERRAIN_CELL_M} m long (surface \
+             tiles of 256 to 1024 m): {advice}make the map {lo:.0} to {hi:.0} m wide (area.real_extent_m \
+             times scale.horizontal)"
+        )))
     }
 
     /// A copy of the project with the field at the dotted `path` (for example `scale.height`) set to

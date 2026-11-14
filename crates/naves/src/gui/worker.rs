@@ -12,7 +12,7 @@ use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::surface::{SurfaceGrid, project_surfaces};
-use naves_export::build::{BuildOutput, build};
+use naves_export::build::BuildOutput;
 use naves_export::generate::{Generated, generate};
 use naves_export::tools::Tools;
 
@@ -50,7 +50,7 @@ impl BuildWorker {
                     return;
                 }
             };
-            let result = build(&dir, &tools, &|line| {
+            let result = crate::cli::build_world(&dir, &tools, &|line| {
                 send(BuildMsg::Progress(line.to_string()));
             });
             send(match result {
@@ -240,6 +240,8 @@ mod tests {
         let mut p = Project::new("Test", 47.55, 12.975, 1500.0);
         p.grid.terrain_size = 256;
         p.grid.land_size = 32;
+        // 1500 m on 256 vertices: terrain cells the game client can show (`Project::check_game_grid`)
+        p.scale.horizontal = 1.0;
         p.sources.dem = vec!["dem/koenigssee.tif".into()];
         std::fs::create_dir_all(dir.join("dem")).unwrap();
         let fixture =
@@ -271,7 +273,7 @@ mod tests {
         let fakes = FakeEnv::new(&root.path().join("fake")).unwrap();
         let proj = root.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
-        Project::new("x", 47.55, 12.975, 1500.0)
+        Project::new("x", 47.55, 12.975, 2048.0)
             .save(&proj)
             .unwrap();
         let mut worker = BuildWorker::start(&proj, Ok(fakes.tools()));
@@ -287,13 +289,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut worker = BuildWorker::start(
             root.path(),
-            Err("armake2 not found; set ARMAKE2".to_string()),
+            Err("dayzmake not found; set DAYZMAKE".to_string()),
         );
         let msgs = worker.wait(Duration::from_secs(10));
         assert_eq!(
             msgs,
             vec![BuildMsg::Failed(
-                "armake2 not found; set ARMAKE2".to_string()
+                "dayzmake not found; set DAYZMAKE".to_string()
             )]
         );
     }

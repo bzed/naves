@@ -13,8 +13,9 @@ use naves_core::imagery::catalog::{
 };
 use naves_core::landcover::GeoWindow;
 use naves_core::project::{PROJECT_FILE, Project};
-use naves_export::build::build;
+use naves_export::build::{BuildOutput, build};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, describe_fetch, fetch};
+use naves_export::tools::Tools;
 
 use crate::output;
 
@@ -161,13 +162,25 @@ fn new_project(dir: &Path, name: &str, center: (f64, f64), extent: f64) -> Resul
 fn build_project(dir: &Path) -> Result<()> {
     // Tools first: a missing tool must be reported before any long work starts.
     let tools = crate::user_prefs::locate_tools()?;
-    let out = build(dir, &tools, &|line| output::note(line))?;
+    let out = build_world(dir, &tools, &|line| output::note(line))?;
     for warning in &out.warnings {
         output::note(&format!("warning: {warning}"));
     }
     output::result(&format!("Mod:     {}", out.mod_dir.display()));
     output::result(&format!("Mission: {}", out.mission_dir.display()));
     Ok(())
+}
+
+/// Builds the project like [`build`], but first refuses a grid the game client cannot show
+/// ([`Project::check_game_grid`]): such a world builds, but the client crashes in it. CLI, GUI and MCP build
+/// through here.
+pub(crate) fn build_world(
+    dir: &Path,
+    tools: &Tools,
+    progress: &dyn Fn(&str),
+) -> Result<BuildOutput> {
+    Project::load(dir)?.check_game_grid()?;
+    Ok(build(dir, tools, progress)?)
 }
 
 fn run_mcp(dir: &Path) -> Result<()> {

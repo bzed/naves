@@ -3,7 +3,7 @@
 
 //! Reads the catalog of road pieces from the game's `structures_roads.pbo`.
 //!
-//! The PBO is unpacked with armake2 into a temporary folder, only the models the catalog uses are
+//! The PBO is unpacked with dayzmake into a temporary folder, only the models the catalog uses are
 //! parsed, and the folder is removed again. The parsed result is cached per user as JSON; the
 //! models themselves are game data and are never kept or distributed.
 
@@ -24,7 +24,7 @@ use crate::tools::{ToolError, Tools};
 const CACHE_FORMAT: u32 = 1;
 /// How long unpacking the PBO may take.
 const UNPACK_TIMEOUT: Duration = Duration::from_mins(5);
-/// How much of armake2's output goes into an error message.
+/// How much of dayzmake's output goes into an error message.
 const ERROR_OUTPUT_CHARS: usize = 2000;
 
 /// Errors from reading the catalog.
@@ -36,9 +36,9 @@ pub enum CatalogReadError {
         .0.display()
     )]
     MissingPbo(PathBuf),
-    /// `armake2 unpack` failed.
-    #[error("armake2 unpack failed ({status}):\n{output}")]
-    Armake2 {
+    /// `dayzmake unpack` failed.
+    #[error("dayzmake unpack failed ({status}):\n{output}")]
+    Dayzmake {
         /// Exit status or "timed out".
         status: String,
         /// The end of its output.
@@ -55,7 +55,7 @@ pub enum CatalogReadError {
     /// The models do not make a complete catalog.
     #[error(transparent)]
     Catalog(#[from] CatalogError),
-    /// Starting or supervising armake2 failed.
+    /// Starting or supervising dayzmake failed.
     #[error(transparent)]
     Tool(#[from] ToolError),
     /// A file operation failed.
@@ -118,7 +118,7 @@ fn stamp(pbo: &Path) -> Result<Stamp, CatalogReadError> {
 /// changes (a game update).
 ///
 /// # Errors
-/// [`CatalogReadError::MissingPbo`] naming the file, [`CatalogReadError::Armake2`] with the tool's
+/// [`CatalogReadError::MissingPbo`] naming the file, [`CatalogReadError::Dayzmake`] with the tool's
 /// output, [`CatalogReadError::Model`] naming a model that cannot be read, or a
 /// [`CatalogError`] if the models do not make a catalog.
 pub fn road_catalog(tools: &Tools, cache_dir: &Path) -> Result<PieceCatalog, CatalogReadError> {
@@ -172,8 +172,8 @@ fn read_models(tools: &Tools, pbo: &Path) -> Result<BTreeMap<String, OdolModel>,
         .map_err(io(&std::env::temp_dir()))?;
     let out = work.path().join("content");
     std::fs::create_dir(&out).map_err(io(&out))?;
-    let log = work.path().join("armake2.log");
-    let mut cmd = std::process::Command::new(&tools.armake2);
+    let log = work.path().join("dayzmake.log");
+    let mut cmd = std::process::Command::new(&tools.dayzmake);
     cmd.arg("unpack").arg(pbo).arg(&out);
     let failure = match run_supervised(&mut cmd, &log, UNPACK_TIMEOUT)? {
         Finished::Exited(status) if status.success() => None,
@@ -187,7 +187,7 @@ fn read_models(tools: &Tools, pbo: &Path) -> Result<BTreeMap<String, OdolModel>,
     if let Some(status) = failure {
         let text = std::fs::read_to_string(&log).unwrap_or_default();
         let skip = text.chars().count().saturating_sub(ERROR_OUTPUT_CHARS);
-        return Err(CatalogReadError::Armake2 {
+        return Err(CatalogReadError::Dayzmake {
             status,
             output: text.chars().skip(skip).collect(),
         });

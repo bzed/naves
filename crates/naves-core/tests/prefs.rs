@@ -25,7 +25,7 @@ fn a_missing_file_gives_the_defaults() {
     assert_eq!(prefs.map.fade_percent, 40);
     assert!((prefs.map.interface_scale - 1.0).abs() < f32::EPSILON);
     assert_eq!(prefs.map.start_base, "hillshade");
-    assert!(prefs.tools.armake2.is_none());
+    assert!(prefs.tools.dayzmake.is_none());
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn values_round_trip() {
     prefs.map.no_unfold_animation = true;
     prefs.map.start_base = "slope".into();
     prefs.map.start_layers = vec!["too_steep_to_walk".into()];
-    prefs.tools.armake2 = Some("/opt/armake2".into());
+    prefs.tools.dayzmake = Some("/opt/dayzmake".into());
     prefs.tools.dayz_server = Some("/srv/dayz".into());
     prefs.save(&path).unwrap();
     assert_eq!(Preferences::load(&path).unwrap(), prefs);
@@ -193,4 +193,34 @@ fn the_project_file_format_is_untouched() {
     // the settings never reach naves.toml: a project with none of them still parses, and says nothing of them
     let text = toml::to_string(&Project::new("X", 1.0, 2.0, 1000.0)).unwrap();
     assert!(!text.contains("shortcuts") && !text.contains("invert_zoom"));
+}
+
+#[test]
+fn the_old_armake2_key_is_read_as_dayzmake_and_not_written_back() {
+    let d = dir();
+    let path = default_path(d.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "[tools]\narmake2 = \"/opt/armake2\"\nproton = \"/p\"\n",
+    )
+    .unwrap();
+    let prefs = Preferences::load(&path).unwrap();
+    assert_eq!(
+        prefs.tools.dayzmake.as_deref(),
+        Some("/opt/armake2".as_ref())
+    );
+    prefs.save(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("dayzmake = \"/opt/armake2\"") && !text.contains("armake2 ="),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_new_key_wins_over_the_old_one() {
+    let prefs = Preferences::parse("[tools]\narmake2 = \"/old\"\ndayzmake = \"/new\"\n").unwrap();
+    assert_eq!(prefs.tools.dayzmake.as_deref(), Some("/new".as_ref()));
+    assert!(!prefs.tools.other.contains_key("armake2"));
 }

@@ -28,16 +28,33 @@ fn invalid_field(toml: &str, field: &str) {
 /// A project file with the grid of 1024 (the tests below change single values of it).
 fn base() -> String {
     let p = Project::new("Berchtesgaden", 47.585, 12.965, 12800.0);
-    toml::to_string(&p)
-        .unwrap()
-        .replace("terrain_size = 2048", "terrain_size = 1024")
-        .replace("land_size = 256", "land_size = 128")
+    assert_eq!(p.grid.terrain_size, 1024);
+    toml::to_string(&p).unwrap()
 }
 
+/// A new project gets the finest grid the game client can show on its map: terrain cells of at least 4 m.
 #[test]
-fn a_new_project_has_a_grid_of_2048() {
-    let p = Project::new("x", 47.585, 12.965, 12800.0);
-    assert_eq!((p.grid.terrain_size, p.grid.land_size), (2048, 256));
+fn a_new_project_has_the_finest_grid_the_game_shows() {
+    for (real_m, size) in [
+        (12800.0, 1024),
+        (16384.0, 2048),
+        (25600.0, 2048),
+        (65536.0, 8192),
+        (4000.0, 256),
+        (1000.0, 256),
+    ] {
+        let p = Project::new("x", 47.585, 12.965, real_m);
+        assert_eq!(
+            (p.grid.terrain_size, p.grid.land_size),
+            (size, size / 8),
+            "{real_m} m"
+        );
+    }
+    assert!(
+        Project::new("x", 47.585, 12.965, 12800.0)
+            .check_game_grid()
+            .is_ok()
+    );
 }
 
 #[test]
@@ -107,7 +124,7 @@ fn new_uses_documented_defaults() {
     let p = Project::new("Königssee Test", 1.0, 2.0, 4000.0);
     assert_eq!(p.world, "konigssee_test");
     assert!(close(p.scale.horizontal, 0.5) && close(p.scale.height, 0.5));
-    assert_eq!((p.grid.terrain_size, p.grid.land_size), (2048, 256));
+    assert_eq!((p.grid.terrain_size, p.grid.land_size), (256, 32));
     assert_eq!(p.sources.dem, [] as [std::path::PathBuf; 0]);
 }
 
@@ -115,7 +132,7 @@ fn new_uses_documented_defaults() {
 fn derived_sizes() {
     let p = Project::new("x", 0.0, 0.0, 12800.0);
     assert!(close(p.map_size_m(), 6400.0));
-    assert!(close(p.terrain_cell_m(), 3.125));
+    assert!(close(p.terrain_cell_m(), 6.25));
 }
 
 #[test]
@@ -292,12 +309,12 @@ fn with_value_rejects_unknown_paths_and_wrong_types() {
 fn setting_the_terrain_grid_sets_the_land_grid() {
     let p = Project::new("x", 0.0, 0.0, 12800.0);
     let q = p
-        .with_value("grid.terrain_size", serde_json::json!(1024))
+        .with_value("grid.terrain_size", serde_json::json!(2048))
         .unwrap();
-    assert_eq!((q.grid.terrain_size, q.grid.land_size), (1024, 128));
+    assert_eq!((q.grid.terrain_size, q.grid.land_size), (2048, 256));
     // the land grid alone can only be set to the one value that fits
     let err = p
-        .with_value("grid.land_size", serde_json::json!(128))
+        .with_value("grid.land_size", serde_json::json!(256))
         .unwrap_err();
     assert!(err.to_string().contains("terrain_size / 8"), "{err}");
 }
@@ -532,4 +549,58 @@ fn imagery_can_be_set_over_project_set() {
         .with_value("imagery.brightness", serde_json::json!(1.5))
         .unwrap();
     assert!((q.imagery.brightness - 1.5).abs() < 1e-9);
+}
+
+fn with_grid(map_m: f64, terrain_size: u32) -> Project {
+    let mut p = Project::new("x", 47.0, 12.0, map_m * 2.0);
+    p.grid.terrain_size = terrain_size;
+    p.grid.land_size = terrain_size / 8;
+    p
+}
+
+fn game_grid_error(p: &Project) -> String {
+    match p.check_game_grid() {
+        Err(ProjectError::Invalid(msg)) => msg,
+        other => panic!("expected Invalid, got {other:?}"),
+    }
+}
+
+/// The client crashes in worlds whose surface tiles (8 land cells, 64 terrain cells) are shorter than 256 m:
+/// Livonia's grid (6.25 m terrain cells) and a 4 m grid load, 3.75 m and 3.125 m crash.
+#[test]
+fn the_game_grid_needs_terrain_cells_of_4_to_16_m() {
+    for (map_m, size) in [
+        (12800.0, 2048),
+        (8192.0, 2048),
+        (4096.0, 1024),
+        (6400.0, 1024),
+        (16384.0, 1024),
+    ] {
+        assert!(
+            with_grid(map_m, size).check_game_grid().is_ok(),
+            "{map_m} m at {size}"
+        );
+    }
+    for (map_m, size) in [
+        (6400.0, 2048),
+        (3840.0, 1024),
+        (3200.0, 1024),
+        (16400.0, 1024),
+    ] {
+        game_grid_error(&with_grid(map_m, size));
+    }
+}
+
+#[test]
+fn the_game_grid_error_names_a_grid_that_works() {
+    let msg = game_grid_error(&with_grid(6400.0, 2048));
+    assert!(msg.contains("3.125"), "{msg}");
+    assert!(msg.contains("terrain_size = 1024"), "{msg}");
+    assert!(msg.contains("8192"), "{msg}");
+    // a map too small for even the smallest grid says so
+    let msg = game_grid_error(&with_grid(500.0, 256));
+    assert!(msg.contains("1024"), "{msg}");
+    // a map too large for the largest grid as well
+    let msg = game_grid_error(&with_grid(200_000.0, 8192));
+    assert!(msg.contains("131072"), "{msg}");
 }

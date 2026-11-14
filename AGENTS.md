@@ -57,7 +57,7 @@ builds with `--locked`.
 - Tests write only under a `tempfile::TempDir`. They never touch `$HOME`, the user's config, a Steam
   directory or a running server. CLI tests (`assert_cmd`) set `HOME`, `XDG_CONFIG_HOME`,
   `XDG_CACHE_HOME` and `XDG_DATA_HOME` to temp dirs.
-- Code that calls external tools (armake2, Proton, `binarize.exe`, DayZ) is tested in CI against fakes
+- Code that calls external tools (dayzmake, Proton, `binarize.exe`, DayZ) is tested in CI against fakes
   (a stub script on `PATH`, a trait seam). Tests that need the real tools or a DayZ install are
   `#[ignore = "needs <tool>"]` and run explicitly; they are not a substitute for the faked tests.
 - Parsers for untrusted input (every file format, OSM, DEM, project files, MCP requests) get a fuzz
@@ -76,6 +76,10 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
   relative to its install folder and then fails with "Cannot open file ...\addons\<name>", also for a folder under
   `$HOME`. Symlink the build's mod folder into the DayZ install (`<Steam>/steamapps/common/DayZ/@naves_<world>`)
   and start the client with `-mod=@naves_<world>`; **remove that symlink when you are done**.
+- **No `-profiles=` with an absolute path on the client:** given a Linux path, the client hangs on connect and the
+  server drops it with a login timeout, also against a vanilla server. Leave the option out (the profile then goes to
+  the Wine prefix, see below). It probably takes only a folder name or a path inside the install, like `-mod=`
+  (not verified).
 - **One game at a time**, and stop it as soon as you have what you need (`dayz-client-headless.sh stop`).
 - **A control run** (the same client against a vanilla Livonia server, no mod) tells a broken setup from a broken
   map; do it before suspecting the map.

@@ -154,6 +154,8 @@ disassembly of `DayZ_x64.exe` 1.30.164289.
 2. **Missing terrain level texture.** With 8-cell tiles but still 4 terrain cells per land cell, a terrain render
    job read the texture of a land level that had never been created (null read at `+0xa0`). With 8 terrain cells per
    land cell (`land_size = terrain_size / 8`) it does not happen.
+   *Corrected 2026-11-14:* the ratio was not the cause; the tiles were too short (8 cells of 12.5 m = 100 m). See
+   "Terrain cells under 4 m" below.
 
 With both (Livonia's geometry) the headless client stays in the Berchtesgaden world. The earlier claim in
 `terrain-layers.md` that Livonia has 1024 land cells of 12.5 m and 32-cell tiles was wrong; the binarized
@@ -307,3 +309,35 @@ shading.
   1.76 GiB (1.25 GiB), PBO 220 MB (118 MB). The build is 1.07 and 1.2 times as slow and the PBO 1.5 and 1.9 times as
   large; the plan's limit (twice as slow, or a PBO too large to use) is not reached, but a 2048 map with photographs
   is a 220 MB mod.
+
+## Terrain cells under 4 m crash the client (2026-11-14)
+
+Worlds with Livonia's geometry (8 terrain cells per land cell, 8 land cells per tile) still crashed when the cells
+were small: Berchtesgaden at 2048 on 6 400 m (3.125 m terrain cells) and at 1024 on 3 200 m, 3 584 m and 3 840 m
+crashed; 1024 on 4 096 m (4 m) and 2048 on 12 800 m (6.25 m) loaded. All at the player's settings (view distance
+10 000, terrain grid 12.5). Every vanilla and modded world we have has terrain cells of 4 m or more.
+
+Found with `winedbg` attached to the running client and the disassembly of `DayZ_x64.exe` 1.30.164289 (addresses are
+image-relative, image base 0x140000000):
+
+- The crash (`+0x7143db`, null read at `0xa0`) is in a terrain render job (`+0x6bf4e0`) that uses the texture of
+  level 4 of a land segment. A land segment holds a fixed array of 7 levels; level 4 of this one has no texture.
+- The segment configuration (`+0x69f630`, run when the world loads) takes the surface tile (8 land cells) as the
+  segment only when the tile is **256 to 1024 m** long (two float constants, 256.0 and 1024.0, compared with
+  tile cells × land cell size). Otherwise it picks a segment from the view distance (view × 5/12 in land cells,
+  rounded) and a limit from the land grid (√(32767 / (terrain/land)²) − ½, 22 here), as a multiple of the tile:
+  16 land cells at 25 m. Read in the client: segment 16, tile 8, 5 levels, and the flag "tile divisible by
+  segment" false. On the 4 m world: segment 8, 4 levels, flag true.
+- The number of levels is one more than the largest power of two (up to 2⁶) that divides the segment: 5 for 16,
+  4 for 8. A job picks its level from the distance (log₂ of it plus a per-world bias), clamped to the levels.
+- When the segment data for a level is made (`+0x6a83b0`), a level above log₂(terrain/land) = 3 is only filled when
+  that flag is set; otherwise the function returns early and the level's texture stays null. Breakpoint at that
+  early return: hit with level 4 just before the crash.
+
+So the client needs surface tiles of 256 to 1024 m. With 8 × 8 cells per tile that is a terrain cell of 4 to 16 m;
+other tile sizes do not help, because the segment must also fit the 128-height buffer above ((segment + 4) ×
+terrain cells per land cell ≤ 128), which leaves no power-of-two tile of 256 m or more below 4 m cells. A lower view
+distance makes the bad segment smaller and can hide the crash, but the map has to work at the player's settings.
+Náves now refuses such grids (`Project::check_game_grid`) and a new project gets the finest grid with cells of 4 m or
+more; the Berchtesgaden example at 1024 on 6 400 m (6.25 m cells, 400 m tiles) stays in the world at view distance
+10 000.

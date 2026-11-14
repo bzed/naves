@@ -143,7 +143,7 @@ fn build_warnings_become_problems() {
 fn a_failed_build_is_a_problem_that_goes_when_the_next_build_starts() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
-    let app = NavesApp::open(&dir, Box::new(|| Err("armake2 not found".to_string()))).unwrap();
+    let app = NavesApp::open(&dir, Box::new(|| Err("dayzmake not found".to_string()))).unwrap();
     let mut h = state_harness(app);
     h.run_steps(3);
     h.get_by_role_and_label(Role::Button, "Build").click();
@@ -151,7 +151,7 @@ fn a_failed_build_is_a_problem_that_goes_when_the_next_build_starts() {
     assert!(
         h.state().build_problems[0]
             .message
-            .contains("armake2 not found")
+            .contains("dayzmake not found")
     );
     h.state_mut()
         .build_problems

@@ -190,12 +190,12 @@ fn rebuild_removes_stale_files_but_keeps_secrets() {
 fn a_failing_tool_reports_its_stderr() {
     let (_dir, env, proj) = setup();
     project(&proj, INSIDE);
-    env.replace_armake2("echo 'oops: cannot pack' >&2\nexit 4")
+    env.replace_dayzmake("echo 'oops: cannot pack' >&2\nexit 4")
         .unwrap();
     let err = build(&proj, &env.tools(), &quiet).unwrap_err();
     let text = err.to_string();
     assert!(
-        text.contains("armake2") && text.contains("oops: cannot pack"),
+        text.contains("dayzmake") && text.contains("oops: cannot pack"),
         "{text}"
     );
 }

@@ -372,16 +372,16 @@ fn write_fuzz_seeds() {
 }
 
 /// Reads the pieces of `structures_roads.pbo` from the game install and checks them against the
-/// research note. `NAVES_ROADS_PBO` is the path of the PBO, `NAVES_ARMAKE2` the armake2 binary
-/// (default `armake2` on `PATH`).
+/// research note. `NAVES_ROADS_PBO` is the path of the PBO, `NAVES_DAYZMAKE` the dayzmake binary
+/// (default `dayzmake` on `PATH`).
 #[test]
 #[ignore = "needs DayZ"]
 fn road_pieces_match_the_research_note() {
     let pbo =
         std::env::var("NAVES_ROADS_PBO").expect("set NAVES_ROADS_PBO to structures_roads.pbo");
-    let armake2 = std::env::var("NAVES_ARMAKE2").unwrap_or_else(|_| "armake2".into());
+    let dayzmake = std::env::var("NAVES_DAYZMAKE").unwrap_or_else(|_| "dayzmake".into());
     let out = std::env::temp_dir().join(format!("naves-odol-test-{}", std::process::id()));
-    let status = std::process::Command::new(armake2)
+    let status = std::process::Command::new(dayzmake)
         .arg("unpack")
         .arg(&pbo)
         .arg(&out)

@@ -69,7 +69,7 @@ fn missing_tools_are_named_in_the_row() {
     let dir = with_roads(root.path());
     let mut app = NavesApp::open(
         &dir,
-        Box::new(|| Err("armake2 not found; set ARMAKE2".to_string())),
+        Box::new(|| Err("dayzmake not found; set DAYZMAKE".to_string())),
     )
     .unwrap();
     wait_for_the_roads(&mut app);
@@ -78,7 +78,7 @@ fn missing_tools_are_named_in_the_row() {
     h.run_steps(3);
     go_to_roads(&mut h);
     assert!(
-        h.query_by_label("Roads need armake2: armake2 not found; set ARMAKE2")
+        h.query_by_label("Roads need dayzmake: dayzmake not found; set DAYZMAKE")
             .is_some()
     );
     h.get_by_label("Open settings").click();

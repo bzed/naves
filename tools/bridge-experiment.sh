@@ -11,7 +11,7 @@
 #
 # <dir> must be below /var/tmp or /tmp. Nothing is written into the Steam directories; vanilla files that
 # binarize needs are extracted from the user's install into the sandbox at run time and are not kept in
-# the repository. Needs: bzed's armake2 fork, DayZ Tools, Proton, ImageMagick (convert).
+# the repository. Needs: dayzmake 2.0.0 or newer, DayZ Tools, Proton, ImageMagick (convert).
 set -euo pipefail
 
 STEAM="${STEAM_ROOT:-$HOME/.steam/steam}"
@@ -49,16 +49,16 @@ stage_sandbox() {
 }
 
 stage_addon() {
-  command -v armake2 >/dev/null || die "armake2 not found (set PATH)"
-  armake2 -h 2>&1 | grep -q -- --proton-binarize || die "armake2 is not bzed's fork"
+  command -v dayzmake >/dev/null || die "dayzmake not found (set PATH)"
+  case "$(dayzmake --version 2>&1)" in v2.*|v[3-9].*) ;; *) die "dayzmake 2.0.0 or newer needed";; esac
   local A="$W/P/$PREFIX" L="$W/P/$PREFIX/data/layers"
   mkdir -p "$L"
   (cd "$REPO" && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/var/tmp/naves-target}" \
     cargo run -q -p naves-formats --example flat_world -- "$A/$WORLD.wrp" "$WORLD")
   convert -size 512x512 xc:'#4a7a3a' "$L/s_000_000_lco.png"
   convert -size 512x512 xc:'#ff0000' -alpha off "$L/m_000_000_lca.png"
-  armake2 img2paa -f -t dxt1 "$L/s_000_000_lco.png" "$L/s_000_000_lco.paa"
-  armake2 img2paa -f -t dxt5 "$L/m_000_000_lca.png" "$L/m_000_000_lca.paa"
+  dayzmake img2paa -f -t dxt1 "$L/s_000_000_lco.png" "$L/s_000_000_lco.paa"
+  dayzmake img2paa -f -t dxt5 "$L/m_000_000_lca.png" "$L/m_000_000_lca.paa"
   rm -f "$L"/*.png
   cp "$REPO/tools/bridge-experiment/config.cpp" "$A/config.cpp"
   cp "$REPO/tools/bridge-experiment/p_000-000.rvmat" "$L/p_000-000.rvmat"
@@ -81,8 +81,8 @@ stage_pack() {
   cp "$W/out/$WORLD.wrp" "$W/pack/$PREFIX/$WORLD.wrp"
   printf '%s' "${PREFIX//\//\\}" > "$W/pack/$PREFIX/\$PBOPREFIX\$"
   mkdir -p "$W/key" "$M/keys"
-  [ -f "$W/key/naves_test.biprivatekey" ] || (cd "$W/key" && armake2 keygen naves_test)
-  armake2 build -f -k "$W/key/naves_test.biprivatekey" "$W/pack/$PREFIX" "$M/addons/naves_$WORLD.pbo"
+  [ -f "$W/key/naves_test.biprivatekey" ] || (cd "$W/key" && dayzmake keygen naves_test)
+  dayzmake build -f -k "$W/key/naves_test.biprivatekey" "$W/pack/$PREFIX" "$M/addons/naves_$WORLD.pbo"
   cp "$W/key/naves_test.bikey" "$M/keys/"
   ls -la "$M/addons" "$M/keys"
 }

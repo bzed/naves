@@ -41,7 +41,7 @@ built is listed. The box at the top searches the names.
 
 ## External tools
 
-The paths of armake2, Steam, DayZ Tools, DayZ, DayZ Server and Proton. Each row shows the path in use and where it
+The paths of dayzmake, Steam, DayZ Tools, DayZ, DayZ Server and Proton. Each row shows the path in use and where it
 comes from: **From an environment variable**, **From the settings**, **Found by searching** or **Not found**.
 An environment variable wins over a path you type here, and a path here over the search. The paths are used by the
 next build; see [Installation](installation.md#external-tools).
@@ -64,7 +64,7 @@ start_base = "slope"
 start_layers = ["too_steep_to_walk"]
 
 [tools]
-armake2 = "/home/me/bin/armake2"
+dayzmake = "/home/me/bin/dayzmake"
 ```
 
 Ids and keys that this version does not know are kept when the file is saved, so that a file can be shared between

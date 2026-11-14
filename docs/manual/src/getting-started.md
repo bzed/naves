@@ -109,7 +109,7 @@ file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only th
 List OpenStreetMap extracts in `sources.osm` and `naves build` also builds the **roads**: the `highway` ways of the
 map become the game's own road pieces (asphalt, streets, gravel and dirt tracks, with junctions, end caps and
 bridges), laid along the OSM line, and the terrain is shaped to fit them. The pieces are read from the game: the
-DayZ Server install needs its `addons/structures_roads.pbo`, and `armake2` unpacks it once (the result is cached
+DayZ Server install needs its `addons/structures_roads.pbo`, and `dayzmake` unpacks it once (the result is cached
 per user and rebuilt when the game is updated). No model of the game is ever copied into your mod.
 
 What is built, from the `highway` tag:
@@ -164,7 +164,7 @@ A road keeps to its family's grade where it can. Where holding it would put the 
 the ground**, the road gives way and becomes steeper, up to nine tenths of what vehicles manage; it is then amber in
 the Drivable layer, not red.
 
-The terrain grid is coarse (a cell is 3.1 m on a 6.4 km map at the default `terrain_size = 2048`, 6.25 m at 1024), and every cell under a road takes the road's height
+The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map at `terrain_size = 1024`, and never less than 4 m, see [the grid](project-file.md#grid)), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
 streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
 it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the

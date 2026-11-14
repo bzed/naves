@@ -8,11 +8,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 ## Missing tools
 
-**`armake2 not found; set ARMAKE2 (hint: ...)`**
-Install bzed's armake2 fork and put it on `PATH`, or set `ARMAKE2` to the program.
+**`dayzmake not found; set DAYZMAKE (hint: ...)`**
+Install dayzmake 2.0.0 or newer (<https://github.com/bzed/dayzmake>) and put it on `PATH`, or set `DAYZMAKE` to the program.
 
-**`armake2 is not bzed's fork (no --proton-binarize); install https://github.com/bzed/armake2`**
-The `armake2` that was found is the upstream program. Install the fork and point `ARMAKE2` at it.
+**`dayzmake v1.x.y is too old; Náves needs dayzmake v2.0.0 or newer, get it at ...`**
+The `dayzmake` that was found is older than 2.0.0. Install a newer one and point `DAYZMAKE` at it.
+
+**`cannot tell the version of dayzmake ...`**
+`dayzmake --version` printed nothing that looks like a version, so the program is probably not dayzmake. Check
+the path in `DAYZMAKE`, in the settings or on `PATH`.
 
 **`Steam not found; set STEAM_ROOT`**
 Náves did not find a Steam folder. Set `STEAM_ROOT` to the folder that contains `steamapps/`.
@@ -24,7 +28,7 @@ Install *DayZ Tools* from the Tools section of your Steam library, or set `DAYZ_
 **`Proton not found; set PROTON`**
 Install *Proton Hotfix* (or Proton Experimental) from Steam, or set `PROTON` to a `proton` script.
 
-**`armake2: the path in the settings does not exist: ...`**
+**`dayzmake: the path in the settings does not exist: ...`**
 A path in the `[tools]` table of your `settings.toml` (see [Installation](installation.md#external-tools)) leads
 nowhere. Correct it, or remove the line; an environment variable overrides the settings.
 
@@ -95,8 +99,8 @@ The roads are built from the game's own pieces, which `naves build` reads from t
 (`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
 External tools.
 
-**`armake2 unpack failed`**
-armake2 could not open the PBO; its output is in the message. The result of a successful read is cached in
+**`dayzmake unpack failed`**
+dayzmake could not open the PBO; its output is in the message. The result of a successful read is cached in
 `$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
 
 **`the model ... cannot be read`**
@@ -121,9 +125,10 @@ sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
 is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
-size: with the roads the build takes 315 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 185 s, 1.7 GiB and 78 MB at
-1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
-names `terrain_size = 1024` keeps it.
+size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 325 s, 1.7 GiB and 78 MB at
+1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). These figures were measured on a 6.4 km map at 2048,
+a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
+[the grid](project-file.md#grid).
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
@@ -166,3 +171,11 @@ from Steam (Tools) or set `DAYZ_SERVER` to its folder.
 **`... already exists`**
 The target mission folder is there already. A build removes its output folders first; if you call the
 mission step yourself, remove the old folder.
+
+## The game
+
+**`a map of 6400 m with grid.terrain_size = 2048 has terrain cells of 3.125 m; the DayZ client crashes unless they are 4 to 16 m long ...`**
+`naves build` refuses a grid whose terrain cells are shorter than 4 m or longer than 16 m: the game client would load
+the world and crash a few seconds after the player enters it (an access violation reading address `0xa0`). Set the
+`terrain_size` the message names, or make the map wider (`area.real_extent_m` or `scale.horizontal`); the limits per
+grid are in [the grid](project-file.md#grid).

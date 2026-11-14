@@ -45,7 +45,7 @@ that they read on every base map), **Paths** (dashed, brown) and **Drivable**, d
 for a piece vehicles can drive, amber for one that is steeper or more tilted than its family is aimed at but still drivable, red
 and twice as wide with cross ticks for one that cannot be driven, grey for a track that only has to be walkable.
 The road layers appear when the roads are generated, which takes a moment after the project opens (the panel says
-"Placing roads"); they are not drawn before. The roads need the sources listed in `sources.osm`, `armake2` and
+"Placing roads"); they are not drawn before. The roads need the sources listed in `sources.osm`, `dayzmake` and
 the DayZ Server install: without a tool the panel says which and has a button that opens the settings.
 **Click a road** to read its model, surface, grade, cross fall, distance from the ground and whether it can be
 driven, and where it was generated from. What is wrong with the roads is listed under Problems, each with its
