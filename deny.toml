@@ -6,10 +6,6 @@ all-features = true
 
 [advisories]
 yanked = "warn"
-# RUSTSEC-2026-0192 (ttf-parser unmaintained): arrives with winit 0.30's `sctk-adwaita` (the Wayland
-# window decorations) through eframe; it is unmaintained, not a vulnerability, and nothing we select
-# — the fix belongs to winit. Revisit when eframe moves to a winit without it.
-ignore = ["RUSTSEC-2026-0192"]
 
 [licenses]
 allow = [
