@@ -48,7 +48,9 @@ jobs:
         with:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          # Dependabot runs get no repository secrets, so there is no token and the upload of a
+          # protected branch is refused. The 85 % floor is still enforced by `make coverage-check`.
+          fail_ci_if_error: ${{ github.actor != 'dependabot[bot]' }}
 
   fuzz:
     runs-on: ubuntu-latest
