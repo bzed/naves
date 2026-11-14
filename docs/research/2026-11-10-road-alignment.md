@@ -982,3 +982,153 @@ and 1 more `junction_too_steep` at 1024; the 4 `road_far_from_ground` at 2048 ar
 That supports the guess of 7.7 that the decks of the many shallow bridges cost the neighbouring roads their grade. What
 this step costs: about 460 dips of 3 to 8 m are filled, embankments, where 7.7 bridged 93 and 95 of them; the build time of the
 roads is not lower.
+
+## 8. A neighbourhood solver? (2026-11-14)
+
+The question: would placing the roads of a whole neighbourhood jointly with a solver beat the current approach
+(`roadfit` per line, `roadplace` through roads first, side roads closing on what is fixed), and is **optimizam
+0.2.0** a sensible tool for it? Nothing in the code was changed for good; the measuring code (a reason tag on
+every fit and every join, `BEAM_WIDTH` and `CLOSURE_CANDIDATES` read from the environment, a shift experiment) is
+kept as a patch outside the repository. No game was started.
+
+### 8.1 Baseline and wide beam
+
+Berchtesgaden example, `terrain_size = 2048` (the project's value; 7.9 also measured 1024), release build, one
+machine (24 threads), `road-analysis` as in 7.9. The unmodified tool gives, over the whole run: `road_gap` **343**,
+`join_without_junction` **740**, placement 310.6 s for both rounds, 322 s wall (peak memory 1.3 GiB). The tool
+prints no fit cost; the plan view is measured below by the distance of the pieces from the OSM line instead.
+
+To compare cheaply, the three runs below stop at the second placement (the roads are placed twice, see 7.9); the
+counts are those of the first round and agree with the full run (336 gaps against 343, 738 joins against 740).
+
+| First placement round | `BEAM_WIDTH` 24, 300 candidates (now) | 240, 300 | 240, 3000 |
+|---|---|---|---|
+| Fits (stretch parts, 203.6 km) | 1810 | 1810 | 1810 |
+| Fits that miss their goal by over 0.5 m (`road_gap`) | 336 | 337 | 337 |
+| Sum of the misses | 1639 m | 1638 m | 1641 m |
+| `join_without_junction` | 738 | 739 | 740 |
+| Median over fits of the median distance piece to line | 0.482 m | 0.476 m | 0.482 m |
+| Length-weighted mean of that distance | 0.81 m | 0.81 m | 0.83 m |
+| Largest distance, p90 / p99 over fits | 8.3 / 17.1 m | 8.4 / 17.1 m | 8.4 / 17.9 m |
+| Wall time to the second placement | 165 s | 354 s | 345 s |
+
+**The search is not the weak point.** A ten times wider beam and ten times more closure candidates leave every
+number where it was (one gap more, within noise) and cost twice the time. The misses and the line deviation come
+from the model and the piece set, not from missing a better candidate. Search tuning is not worth doing.
+
+### 8.2 Where the gaps and the missing junctions come from
+
+Gaps by what the fit had to meet (first round, 24 / 300; "fits" are all fits of that kind, "gaps" those over
+0.5 m, "over 5 m" the large part of them):
+
+| Fit ends on | Fits | Gaps | Over 5 m | Median gap |
+|---|---|---|---|---|
+| nothing (free end) | 775 | 0 | | |
+| nothing, but starts at a side road's port | 243 | 0 | | |
+| the junction of a through road (goal on the OSM line) | 446 | 144 | 28 | 2.3 m |
+| the junction of a side road, which starts at a port | 129 | 54 | 19 | 2.8 m |
+| a port of a junction already placed (side road to port) | 123 | 89 | 34 | 4.1 m |
+| a port of a junction, side road starting at a port | 61 | 40 | 14 | 3.5 m |
+| a bridge | 33 | 9 | 0 | 2.5 m |
+
+So 183 of the 336 gaps (54 %) are side roads that have to close against something already fixed, and 129 of them
+(38 % of all) against a port that a through road decided; of the 123 plus 61 such fits, 70 % end in a gap, where
+a free fit never does. 144 gaps (43 %) are through roads that do not hit the junction point on their own line.
+
+`join_without_junction` (738), by the reason `roadplace` gives up on the junction piece:
+
+| Reason | Joins |
+|---|---|
+| no T or X piece for the pair of families (Asf3 with City 117 + 7, Grav with Grav 67, Asf2 with City 63, Grav with Mud 52, City with Mud 45, City with Grav 27, Asf1 with Asf1 26, and the rest) | 454 |
+| the junction piece would sit over 3 m from the crossing (the through road's fit ends too far from it) | 115 |
+| the next junction would be less than 12.5 m from the last one | 79 |
+| a crossing no chain passes through | 59 |
+| an X with sides of different families, on one side, or three sides | 29 |
+| beside a bridge | 2 |
+
+61 % of the missing junctions are the piece set (the vanilla catalogue has no junction for that pair), which no
+solver changes: the choice there is another piece (a T of a nearby family, or a plain butt joint that is
+reported as now) and is a decision for the maintainer. 16 % are the through road missing the crossing, 11 % are
+spacing.
+
+**How much freedom a joint solve would have.** A rough upper bound of the main thing a joint solve adds, the
+junction moving along its through road: each failing side road to port (89) and port to port (40) was refitted
+with the port moved by up to 25 m along the through road (12 offsets, the fit and goal otherwise unchanged; not
+checked against the through road's own fit, the other junctions on it, or the crossing it replaces):
+
+| | Failing | Closed (under 0.5 m) | Gap more than halved | Median gap before / after |
+|---|---|---|---|---|
+| to port | 89 | 42 | 69 | 4.1 m / 0.6 m |
+| port to port | 40 | 18 | 28 | 3.7 m / 0.8 m |
+
+So at most 60 of 129 (47 %), 18 % of all gaps, could close by choosing the junction position better; the other 69
+fail at any position (heading or distance that the arcs and straights cannot meet: piece set, or an OSM line that
+cannot be driven with 10 m arcs). The same test for the 72 through-road approaches that miss by over 3 m (the
+goal moved up to 6 m along the line): 11 come within 3 m, none within 0.5 m. The through road is not helped by a
+joint solve in this sense.
+
+### 8.3 optimizam
+
+Checked on 2026-11-14 on crates.io, the crate file (read, built, not added to the workspace) and its repository
+on GitHub.
+
+| Question | Finding |
+|---|---|
+| What it is | `optimizam` 0.2.0 by Aaron Hillegass: LP, MILP (dual simplex, presolve, cuts, branch and bound), CP (lazy clause generation: `all_different`, `element`, `table`, intervals) and global nonlinear (spatial branch and bound, interior point). Library and CLI. It is what the maintainer described. |
+| Age and use | First release 2026-11-09, 0.2.0 on 2026-11-11; 21 downloads; repository created 2026-11-04, 0 stars, 0 issues, one human author, some commits by Claude. Self-reported benchmarks (Apple M4 Max) put it level with HiGHS on small MILPs and behind on MIPLIB. No history to judge maintenance by. |
+| Can it say this problem | Yes, as a selection problem, not as geometry: a set of candidate fits per road (from the beam search), binaries for the choice, `sum == 1`, pair variables for "this candidate of A meets that candidate of B", cost on the pairs. Continuous run lengths and the sine and cosine of the headings do not need its nonlinear engine: with the arcs fixed the end point is linear in the runs, and the rest are constants computed beforehand. A direct formulation (heading as a variable, `sin` in a constraint) would use the nonlinear engine and is hopeless here. |
+| Determinism | `--threads=1` repeats exactly, by its own documentation; more than one thread (default up to 8) may return different, equally good optima. A time limit is the only limit (no node or work limit), so a run that hits it is not reproducible; the AGENTS.md rule "same input, same output" would need `threads(1)` and models small enough to finish. |
+| Security | No `unsafe` in `src/`; no `build.rs`; dependencies of the library: `serde_json` only (already in our tree: `itoa`, `memchr`, `serde_core`, `zmij`); `clap` and `ctrlc` only with the default `cli` feature (use `--no-default-features`). About 159 `unwrap`/`expect`/`panic!` outside tests (`milp.rs` 30, `result.rs` 19, `nlp/global.rs` 13, `simplex/mod.rs` 12); its release profile sets `panic = "abort"`, which does not apply to a dependency. The models would be ours, not input, but a panic in the solver would still take down a build; it would have to be run behind `catch_unwind` or in a thread. No fuzzing seen. |
+| Licence | MIT OR Apache-2.0: both on the `deny.toml` allow-list. |
+| Build | Rust 1.88, edition 2024; builds with 1.99 on Linux in 15 s (library, no default features), 13 MB rlib. Pure Rust, no platform code in the library: no reason it fails on Windows, not tried. |
+| Fitness for the review in AGENTS.md | Fails "maintenance" for now (a week old, one author, no track record) and cannot be shown to pass "security" without reading 39 000 lines. Not usable today without the maintainer's decision; the alternative that the old note rejected (MILP or CP-SAT as a C++ dependency) is also still out. |
+
+**Does it scale to this problem?** A toy with the same structure and random costs (N junction sites with 10
+candidate positions, one pair table of 30 % density per side road, tree plus extra edges, one thread; not our data):
+
+| Sites | Positions | Side roads | Pair variables | Result | Time |
+|---|---|---|---|---|---|
+| 50 | 10 | 70 | 2 111 | optimal | 0.95 s |
+| 150 | 10 | 210 | 6 357 | optimal | 12.7 s |
+| 500 | 10 | 700 | 21 161 | infeasible (proved) | 53 s |
+| 500 | 20 | 700 | 84 211 | no answer | 120 s limit |
+
+Time grows faster than the size, so the solver has to be given **neighbourhoods**, not the map (the 493 junctions
+of the example are a few tens of connected groups, usually small: not measured). For groups of a few tens of sites
+it is milliseconds to seconds.
+
+**The skill it ships** (`skills/optimizam/SKILL.md` in the repository, 14.9 KB; it is not in the crate, which
+excludes `skills/`, `CLAUDE.md` and `tools/`; its `references/` are symlinks, so a plain copy of the file loses
+them). It tells Claude to check that `optimizam` is on the `PATH`, to formulate a JSON problem file, to run
+`optimizam --time=60 problem.json result.json` and to read the result; it needs only Bash and file writes, asks for
+no network and no secrets, and has no hidden commands. Read in full on 2026-11-14: it is safe to install. It is
+**useful for one-off modelling** (a user describing a scheduling or assignment problem), and not for this
+project: our use would be a library call from Rust with a candidate table, not a JSON file made by an agent.
+Not installed. (The repository also has a 85 KB `CLAUDE.md`, the author's working notes; not read.)
+
+### 8.4 Verdict
+
+- **Not now.** Wider beams do nothing; 61 % of the missing junctions are the piece set; and a joint solve can
+  close at most about 18 % of the gaps (the side roads whose port can be moved), by a selection over candidate
+  fits that a small local repair may already get.
+- **optimizam is not a bad fit for that selection problem** (MILP and CP, pure Rust, one small dependency, a
+  licence we accept), but it is a week old, has a time-limit-only stop and 159 panic sites, and the review of
+  AGENTS.md would have to end in the maintainer's decision. If a solver is wanted later it is a candidate to
+  benchmark on real neighbourhoods, next to a hand-written exact search (the neighbourhoods are small and the
+  junction offsets are a handful of values, so enumeration may be enough and costs no dependency).
+- **Cheapest next steps, in order:**
+  1. The piece set: decide what a crossing with no junction piece gets (454 of 738 joins). This changes the
+     largest number and needs no solver.
+  2. A local repair in `roadplace` for side roads that fail to close: refit with the junction on the through road
+     moved by a few offsets (the experiment above, steps of 6.25 m up to 25 m) and keep the best. It is a handful
+     of extra `fit_line` calls only where `report_gap` fires (129 cases, about 1500 fits), needs no crate, and the
+     experiment says up to 60 gaps. Its price is that the through road has to be refitted from the previous
+     junction (the hierarchy is bent, not broken), and the junction must stay within reach of the OSM crossing.
+  3. Only if gaps remain after 1 and 2: benchmark a neighbourhood selection solve (optimizam or exhaustive
+     search) on the real groups, with `threads(1)` and a work limit.
+- **Not measured:** the real size of the neighbourhoods (connected groups of junctions and side roads); whether a
+  moved junction fits the through road's own fit; the share of the 69 unclosable side roads that is the OSM line
+  itself; Windows builds; the fit cost of the beam search (the tool prints none, and the score is not stored).
+
+Measurement code: `/var/tmp/naves-solver/instrumentation.patch` (not in the repository); run logs in the same
+folder.
