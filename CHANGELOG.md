@@ -76,6 +76,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The fuzz seeds that are copies of the Copernicus, ESA WorldCover and OpenStreetMap test fixtures (`dem_tile`, `imagery_tile`, `landcover_tile`, `osm_read`, `osm_ways`) carry the licences of those fixtures in `REUSE.toml`, not AGPL-3.0-or-later. Only the labels changed.
 - The ground under a bridge keeps its height: the road on either side now ends flat at the abutment and its earthworks no longer spread under the span (a 25 m bridge used to have the whole gap filled to deck level).
 - A bridge deck is held to the ground at its abutments, not to the valley floor under it, so a deck over a gorge stays at bank height instead of pulling the approaches down into cuttings.
 - `edits/overrides.toml` with `nan` or `inf`, or with an empty or non-ASCII model name, is refused when it is read, with a message that names the object and the field (it used to reach the world file as a NaN transform, or fail late in the world writer).

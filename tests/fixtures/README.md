@@ -137,3 +137,10 @@ from 12.980 to 12.990 °E at 47.5995 to 47.604 °N: a `highway=track`, `waterway
 with `tunnel=culvert`, a way with `highway=track` and `waterway=stream`, a stream with `intermittent=yes`, a river, a
 canal and a stream with `tunnel=no`. It tests which ways `read_ways` keeps and which `water_lines` returns. It is
 also a valid seed (`valid_waterways`) of the `osm_ways` fuzz target. Made with `osmium cat` from an `.osm` file.
+
+## The fuzz corpus carries these licences
+
+Some seeds in `fuzz/corpus/` are copies, truncated copies or damaged copies of the fixtures above, so they carry the
+fixture's licence and attribution, not the project's (`REUSE.toml`): `dem_tile/` (Copernicus DEM), `imagery_tile/`
+(Copernicus Sentinel), `landcover_tile/` (ESA WorldCover, CC-BY-4.0), `osm_read/` and `osm_ways/` except
+`osm_ways/valid_waterways` (OpenStreetMap, ODbL-1.0; `valid_waterways` is the synthetic `waterways.osm.pbf`).
