@@ -13,10 +13,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The MCP server uses rmcp 3.9.0, which fixes RUSTSEC-2026-0462; the dependency requirement now enforces it.
 - Starting an external tool that was written or replaced moments earlier no longer fails with "text file busy": the kernel releases a closed file's write permission a moment after close, and the spawn now waits that moment out (up to one second).
 
 ### Changed
 
+- The built-in CA bundle (webpki-roots) is updated from 1.0.11 to 1.0.12.
 - The GUI now uses Rerun's design system (the Inter font, light and dark themes that follow the system, modern widgets) — the look and feel of the whole editor changed.
 - The palette renders its rows with the design system's list items (hover, selection and focus come with them).
 - The settings window is a modal of the design system: a title bar with a close button, and it keeps the keyboard and the pointer away from the map behind it.
