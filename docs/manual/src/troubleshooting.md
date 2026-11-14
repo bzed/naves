@@ -121,7 +121,7 @@ sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
 is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
-size: with the roads the build takes 315 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 185 s, 1.7 GiB and 78 MB at
+size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 325 s, 1.7 GiB and 78 MB at
 1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). 2048 is the default for new projects; a project file that
 names `terrain_size = 1024` keeps it.
 

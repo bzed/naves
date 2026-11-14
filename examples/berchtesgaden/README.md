@@ -75,10 +75,12 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 
 | `terrain_size` | Build time | Peak memory | PBO | With roads: time | memory | PBO |
 |---|---|---|---|---|---|---|
-| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 185 s | 1.7 GiB | 78 MB |
-| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 315 s | 1.8 GiB | 223 MB |
+| 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
+| 2048 | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
 
-The project is at 2048 now. The roads are placed twice when a dip gets a bridge, which is about half of the extra time.
+The project is at 2048 now. The figures with roads are from 2026-11-14 (commit `2e2a3e1`, AMD Ryzen 9 9900X, 24
+threads; 2048: 346 s and 356 s in two runs). Placing the roads takes most of the time, and they are placed twice
+when a dip gets a bridge: at 2048 the two rounds take 152 s and 148 s, `binarize` 31 s, everything else about 15 s.
 
 The finer grid does not remove the road findings: `road_misses_terrain` is 4604 at 1024 and 4015 at 2048,
 `road_conflict` 749 and 1130 (`docs/research/2026-11-10-road-alignment.md`, section 7.9).
@@ -94,18 +96,26 @@ naves build examples/berchtesgaden
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
 
-## Results with roads at 2048 (2026-11-13)
+## Results with roads at 2048 (2026-11-14)
 
-- `naves build`: exit 0, 315 s, 1.8 GiB, signed PBO 223 MB. `binarize` reports "Cannot open object" for the road
-  models (104 times; they are not on `P:`) and finishes. 21 127 road pieces in 2735 stretches.
-- Findings: 4192 `road_misses_terrain`, 1528 `road_grade`, 1125 `road_conflict`, 741 `join_without_junction`,
-  368 `road_gap`, 272 `road_not_drivable`, 4 `road_over_water`, 1 `junction_too_steep`; one planned grade above 100 %.
-- These build figures (time, memory, PBO size and the rule counts above) are from the build made when a dip got a
-  bridge from 3 m. Since then a dip gets one only from 8 m and the build was not repeated through `binarize`. The
-  measurement of the roads at 8 m and 2048 (`docs/research/2026-11-10-road-alignment.md`, section 7.9) gives
-  `road_misses_terrain` 4015, `road_grade` 1409, `road_conflict` 1130, `road_not_drivable` 235, `road_over_water` 4,
-  `junction_too_steep` 1, `road_far_from_ground` 4 and 76 bridge objects (OSM bridges and bridges over dips).
-- **Roads, bridges over dips and scaled bridges have not been tested in the game.**
+- `naves build` (commit `2e2a3e1`): exit 0, 350 s, 1.8 GiB, signed PBO 223 MB. 20 946 road pieces in 2569 stretches
+  (asf1 10.5 km, asf2 8.4 km, asf3 26.7 km, city 69.9 km, grav 54.7 km, mud 45.3 km); 76 bridge objects
+  (`bridge_metal_25` 34, `bridge_stone_25` 30, `bridge_wood_25` 12, 11 of them scaled by 1.18).
+- Findings: 4015 `road_misses_terrain` (1212 above 0.5 m, 129 above 2 m, largest 20.1 m), 1409 `road_grade`,
+  1130 `road_conflict`, 740 `join_without_junction`, 343 `road_gap`, 235 `road_not_drivable` (5.05 km), 93
+  `earthworks_capped`, 78 `path_too_steep`, 24 `road_in_water`, 21 `tunnel_omitted`, 4 `road_far_from_ground`, 4
+  `road_over_water`, 1 `junction_too_steep`. Largest cut 40.9 m, highest fill 68.9 m.
+- **In the game (DayZ 1.30.164289, headless client):**
+  - The 2048 build **crashes the client while the world loads** (an access violation about a second after the player
+    connects). It does so without roads too, and without imagery; the 1024 builds load. The cause is not known yet.
+  - **No road piece is drawn.** `binarize` reports "Cannot open object" for the road models (104 times; they are not on
+    `P:`) and writes no road objects (`Road N dirs: 0`); only the bridges, the terrain benches and the painted ground
+    are there. With the game's road models made readable to `binarize` (a test outside Náves) the pieces are drawn.
+  - With that test build at 1024: bends, tight R10 arcs, a 180° hairpin, junctions, end caps, the deep cutting, the
+    high embankment and a rock face look right. Gaps between pieces show as steps of about 0.5 to 1 m, some bridge
+    decks are not joined to their roads, roads that meet without a junction piece leave corners sticking out, and
+    steep grades show as humps. The two OSM bridges over another road (Kehlsteinstraße, Silbergstraße) have no
+    clearance under them.
 - The navigation mesh below was made for the old terrain; regenerate it (`naves build` warns).
 
 ## Results with land cover and OpenStreetMap (2026-11-06)
