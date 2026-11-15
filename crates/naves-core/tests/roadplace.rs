@@ -1374,3 +1374,54 @@ fn a_shifted_junction_never_reaches_or_passes_its_neighbour() {
     }
     assert!(moved, "no case moved a junction");
 }
+
+/// A road with a bend of 40 m sideways in the 100 m before a bridge over a river, and a bend after it.
+fn bent_river_crossing() -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (300.0, 500.0), (400.0, 540.0)],
+        ),
+        bridge_feature(2, &[3, 4], &[(400.0, 540.0), (500.0, 540.0)]),
+        feature(
+            3,
+            Family::Asf3,
+            &[4, 5, 6],
+            &[(500.0, 540.0), (600.0, 540.0), (700.0, 500.0)],
+        ),
+    ]
+}
+
+/// The pose of the road piece that ends nearest to `at`, or starts nearest to it when `ends` is false.
+fn nearest_piece_pose(net: &PlacedNetwork, at: (f64, f64), ends: bool) -> (f64, f64, f64) {
+    net.roads
+        .iter()
+        .filter(|r| r.kind == PlacedKind::Piece)
+        .map(|r| if ends { r.end } else { r.start })
+        .map(|p| (p.x, p.y, p.heading))
+        .min_by(|a, b| dist((a.0, a.1), at).total_cmp(&dist((b.0, b.1), at)))
+        .unwrap()
+}
+
+#[test]
+fn both_approaches_meet_the_deck_ports() {
+    let net = place(&bent_river_crossing());
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(!bridges.is_empty(), "{:?}", net.warnings);
+    let (first, last) = (bridges[0], bridges[bridges.len() - 1]);
+    let before = nearest_piece_pose(&net, (first.start.x, first.start.y), true);
+    let after = nearest_piece_pose(&net, (last.end.x, last.end.y), false);
+    for (what, piece, deck) in [("before", before, first.start), ("after", after, last.end)] {
+        let gap = dist((piece.0, piece.1), (deck.x, deck.y));
+        let kink = (piece.2 - deck.heading + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        assert!(gap <= 0.10, "{what}: gap {gap}");
+        assert!(kink.to_degrees().abs() <= 1.0, "{what}: kink {kink}");
+    }
+    // and the deck lies on its OSM line: the sideways offset of its ends is small
+    assert!((first.start.y - 540.0).abs() < 0.5, "{}", first.start.y);
+    assert!((last.end.y - 540.0).abs() < 0.5, "{}", last.end.y);
+}

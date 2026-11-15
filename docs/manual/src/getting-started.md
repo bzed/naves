@@ -221,6 +221,11 @@ rule elsewhere. This is the common case on a map at a small scale (a mini rounda
 scale). An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
 roundabout way leaves, and one with several surfaces are not rings; they stay ordinary roads.
 
+**Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
+it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides up to 10 m along its line
+(2.5 m steps) until the road ends within 0.1 m and 1 degree of the deck's port. The road behind the deck starts at the
+deck's end, on the line.
+
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,

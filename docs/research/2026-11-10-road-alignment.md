@@ -1371,3 +1371,59 @@ distance cannot be met by arcs and straights at all (the other 69 of 129 in 8.2)
 but the side road starts at a port too (`fixed_start`; only the end port is repaired), and gaps against bridges.
 The existing height repair in `junctions::repair` (limit `MAX_MOVE_M`, 3 m) is a different thing (it moves heights, not
 positions) and was not touched; it still does not exclude ring junctions, which the review of task 7 noted.
+
+### 9.6 Bridges joined to their road (2026-11-15)
+
+**Cause (written before the change).** `place_bridge` fitted the road before the deck to a fixed goal at the start of
+the bridge link, heading along the chord of the link, and then laid the deck models from the pose where the fit
+*ended*, not from the goal. The fit closes the position (the length of its straight runs is solved for it) but not the
+heading: arcs come in fixed angles, so the heading at the end is off by what the arcs cannot make, up to a degree or
+two. The deck was laid along that heading, so:
+
+- the deck left its OSM line by `length * sin(error)`: on a synthetic river crossing (bend of 40 m sideways in the 100 m
+  before a 100 m bridge, `bent_river_crossing` in `tests/roadplace.rs`) the approach ended at heading 88.0 degrees
+  instead of 90.0, and the deck ended at (499.94, 543.49) for a line at y = 540: **3.5 m sideways** at the far end;
+- the road behind the deck started from that deck end, so it began 3.5 m off its line and had to bend back (the next
+  pieces: heading 98, 97, 89.5 degrees) or, with a junction behind the bridge, missed its fixed goal (a `road_gap`);
+- the deck was never wrong against its own approach (it started at the approach's end pose), so a check of
+  "approach pose equals deck port" passes; what failed was the deck against its line. The visible result is the
+  sideways offset and the kink the spec describes.
+
+Heights are not part of the cause: in the profile a deck is one variable, its two end joints are the end joints of
+the neighbouring pieces, so the approach meets the deck at the deck's height by construction
+(`the_deck_end_heights_equal_the_approach_heights` passes before and after).
+
+**Choice.** Both options were weighed against this cause. Closing on the deck's port as a fixed end alone cannot
+work: the fit already tries and ends 2 degrees off, since the arcs have no such angle. Moving the deck along its line
+changes which port the approach has to reach, and a different position needs different arc/straight combinations, so one
+usually closes. Both are combined, which is the minimal change: the deck is laid on its line (the heading of the
+chord, never the fit's heading), the approach is fitted to the deck's start as a fixed end, and when it does not end
+within `GAP_CLOSED_M` and `KINK_TOLERATED_DEG` the deck slides along its line (`BRIDGE_SLIDE_STEP_M` 2.5 m, four steps each way,
+`+` before `-`, only forward as far as the next junction or the end of the run leaves room) and the fit is tried again.
+The first slide that closes is used; if none does, the best fit is used and the deck starts where the approach ended (as
+before), with the gap reported.
+
+**Result at 2048** (same example, unchanged inputs; the "before" was re-measured on the commit before the change and
+agrees with 9.5):
+
+| | Before | After (slide up to 10 m) | After (slide up to 2.5 m) |
+|---|---|---|---|
+| `join_without_junction` | 65 | 65 | 65 |
+| `road_gap` | 347 | 344 | 348 |
+| `road_conflict` | 1045 | 1046 | 1051 |
+| `road_grade` | 1598 | 1674 | 1691 |
+| `road_misses_terrain` | 4614 | 4615 | 4629 |
+| `road_not_drivable` | 217 | 230 | 236 |
+| terrain misses over 0.5 m at a bridge end | 82 | 106 | 104 |
+| wall (analysis) | 1545 s | 1585 s | 1550 s |
+
+**What the numbers say, honestly.** The geometry is fixed (the synthetic crossing: deck on its line within 0.5 m instead
+of 3.5 m off, both approaches within 0.1 m and 1 degree of the deck's ports), but on the real map the aggregate counts
+do not improve: gaps move by 3, and grade, not-drivable and the misses at bridge ends grow (+76, +13, +24 for the
+10 m slide). A shorter slide is worse, not better, so the growth does not come from sliding. What differs from before
+is that the deck now lies on the OSM line where it used to follow the approach's end heading, and the roads behind a deck
+start on the line; bridge ends over a dip (the second placement) are measured against the terrain there. I did not find
+which of these is the cause of the growth in the time available (each analysis takes 26 minutes); it needs the
+bridge sites looked at in the game or a per-site diff of the two analyses. Left for the review: whether the growth
+is the deck now being where the OSM line is (and the terrain shaping at the abutments following the old position), or noise
+from a changed placement.

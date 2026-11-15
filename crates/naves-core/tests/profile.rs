@@ -1598,3 +1598,67 @@ fn the_lower_road_sits_five_centimetres_below_at_the_cut() {
     );
     assert!((street - j.points[0].height).abs() < 1e-6);
 }
+
+#[test]
+fn the_deck_end_heights_equal_the_approach_heights() {
+    // a road that bends before a bridge over a valley: the joints at the two ends of the deck are the ends of
+    // the pieces next to it, so the approach meets the deck at its height, with no step
+    let road = |way: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool| Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family: Family::Asf3,
+            drivable: true,
+            bridge,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    };
+    let features = vec![
+        road(
+            1,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (300.0, 500.0), (400.0, 540.0)],
+            false,
+        ),
+        road(2, &[3, 4], &[(400.0, 540.0), (500.0, 540.0)], true),
+        road(
+            3,
+            &[4, 5, 6],
+            &[(500.0, 540.0), (600.0, 540.0), (700.0, 500.0)],
+            false,
+        ),
+    ];
+    let net = place_network(&build_graph(&features), &synthetic_catalog()).unwrap();
+    let hm = terrain(200, 6.25, |x, _| {
+        100.0
+            - if (400.0..500.0).contains(&x) {
+                12.0
+            } else {
+                0.0
+            }
+    });
+    let p = solve(&net, &hm);
+    let strip = p
+        .strips
+        .iter()
+        .find(|s| s.bridge.iter().any(|b| *b))
+        .unwrap();
+    let deck: Vec<usize> = (0..strip.bridge.len())
+        .filter(|i| strip.bridge[*i])
+        .collect();
+    let first = strip.joints[*deck.first().unwrap()];
+    let last = strip.joints[*deck.last().unwrap() + 1];
+    // the joint before the deck and the joint after it are those of the approaches
+    let before = strip.joints[*deck.first().unwrap() - 1];
+    let after = strip.joints[*deck.last().unwrap() + 2];
+    let grade =
+        |a: (f64, f64, f64), b: (f64, f64, f64)| (b.2 - a.2).abs() / (b.0 - a.0).hypot(b.1 - a.1);
+    assert!((first.2 - last.2).abs() < 1e-9, "the deck is level");
+    assert!(grade(before, first) <= grade_ceiling(Family::Asf3) + 1e-9);
+    assert!(grade(last, after) <= grade_ceiling(Family::Asf3) + 1e-9);
+}

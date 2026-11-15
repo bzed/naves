@@ -16,7 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
 use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
-use crate::roadfit::{EndGoal, FitError, FitPiece, GAP_TOLERATED_M, Pose, fit_line};
+use crate::roadfit::{
+    EndGoal, FitError, FitPiece, GAP_CLOSED_M, GAP_TOLERATED_M, KINK_TOLERATED_DEG, Pose, fit_line,
+};
 use crate::roadnet::{Chain, Ring, RoadGraph, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
@@ -40,6 +42,10 @@ const CUT_TRIES: [f64; 5] = [1.0, 0.75, 0.5, 0.25, 0.1];
 /// Where roads meet without a junction piece, the surface of the lower road is this far below the surface of
 /// the higher road, so that the two do not flicker where they overlap.
 pub const OVERLAY_DROP_M: f64 = 0.05;
+/// A deck slides this far along its line, at most [`BRIDGE_SLIDE_STEPS`] times each way, to let the road close on it.
+const BRIDGE_SLIDE_STEP_M: f64 = 2.5;
+/// See [`BRIDGE_SLIDE_STEP_M`].
+const BRIDGE_SLIDE_STEPS: u32 = 4;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 /// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
@@ -1097,7 +1103,8 @@ impl<'a> Placer<'a> {
         }
         events.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut dropped: Vec<usize> = Vec::new();
-        for (_, event) in events {
+        let starts: Vec<f64> = events.iter().map(|e| e.0).collect();
+        for (i, (s_event, event)) in events.into_iter().enumerate() {
             let plan_id = match event {
                 Event::Junction(plan_id) => plan_id,
                 Event::Bridge(k) => {
@@ -1109,6 +1116,7 @@ impl<'a> Placer<'a> {
                         drivable,
                         &mut pose,
                         &mut s_cur,
+                        starts.get(i + 1).copied().unwrap_or_else(|| line.total()) - s_event - 1.0,
                     )?;
                     for p in &placed.fit {
                         let s = line.project((
@@ -1356,6 +1364,7 @@ impl<'a> Placer<'a> {
         drivable: bool,
         pose: &mut Pose,
         s_cur: &mut f64,
+        deck_limit: f64,
     ) -> Result<PlacedBridge, PlaceError> {
         let mut out = PlacedBridge {
             fit: Vec::new(),
@@ -1380,16 +1389,21 @@ impl<'a> Placer<'a> {
         let Some((model, scale)) = self.choose_bridge(family, &id) else {
             return Ok(out);
         };
+        let length = model.length * scale;
+        let count = (chord / length).round().max(1.0);
         if s0 - *s_cur > 1.0 {
-            let path = line.slice(*s_cur, s0);
-            let goal = Pose {
-                x: p0.x,
-                y: p0.y,
-                heading,
-            };
-            let (pieces, end) = self.fit_part(&path, *pose, EndGoal::Fixed(goal), family, &id)?;
+            // the deck lies on its line; the approach closes on the deck's port
+            let (pieces, end, port) = self.fit_approach(
+                line,
+                (*s_cur, s0),
+                (p0, heading),
+                (count * length, deck_limit),
+                *pose,
+                family,
+                &id,
+            )?;
             out.fit = pieces;
-            *pose = end;
+            *pose = port.unwrap_or(end);
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
             pose.heading = heading;
         }
@@ -1399,8 +1413,6 @@ impl<'a> Placer<'a> {
             ..*port
         };
         let (model_start, model_end) = (scaled(&model.start), scaled(&model.end));
-        let length = model.length * scale;
-        let count = (chord / length).round().max(1.0);
         let mut laid = 0.0;
         while laid < count {
             let frame = Frame::through(&pose_of(&model_start), *pose);
@@ -1430,6 +1442,86 @@ impl<'a> Placer<'a> {
         }
         *s_cur = s1;
         Ok(out)
+    }
+
+    /// Fits the road from `pose` up to the port of a deck that starts at `deck` (a point on the line of the
+    /// bridge, with the heading of its chord) at `s0`, `from_to` being where on the line the fit runs.
+    /// A fit ends a degree or two off a heading, and a deck laid along that heading leaves its line (3.5 m
+    /// over 100 m in the test of research 9.6): so the deck is laid on its line and slides along it in
+    /// [`BRIDGE_SLIDE_STEP_M`] steps, `+` before `-`, until the approach ends within [`GAP_CLOSED_M`] and
+    /// [`KINK_TOLERATED_DEG`] of the port. `reach` is the length of the deck and the room after its start
+    /// on the line (the deck does not slide into what follows). Returns the pieces, the pose where they end
+    /// and, if they closed on the port, the port, which is where the deck starts then.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the state of one approach, passed on"
+    )]
+    fn fit_approach(
+        &mut self,
+        line: &Polyline,
+        from_to: (f64, f64),
+        deck: (Pose, f64),
+        reach: (f64, f64),
+        pose: Pose,
+        family: Family,
+        stretch: &str,
+    ) -> Result<(Vec<FitPiece>, Pose, Option<Pose>), PlaceError> {
+        let (s_cur, s0) = from_to;
+        let (p0, heading) = (deck.0, deck.1);
+        let mut best: Option<(f64, Vec<FitPiece>, Pose, Pose)> = None;
+        'slides: for step in 0..=BRIDGE_SLIDE_STEPS {
+            for sign in [1.0, -1.0] {
+                if step == 0 && sign < 0.0 {
+                    continue;
+                }
+                let slide = sign * BRIDGE_SLIDE_STEP_M * f64::from(step);
+                let start_s = s0 + slide;
+                if start_s - s_cur <= 1.0 || (slide > 0.0 && slide + reach.0 > reach.1) {
+                    continue;
+                }
+                let goal = Pose {
+                    x: p0.x + slide * heading.sin(),
+                    y: p0.y + slide * heading.cos(),
+                    heading,
+                };
+                let path = line.slice(s_cur, start_s);
+                let fit = fit_line(&path, pose, EndGoal::Fixed(goal), self.pieces(family))
+                    .map_err(|source| PlaceError::Fit {
+                        stretch: stretch.to_string(),
+                        source,
+                    })?;
+                let end = fit.pieces.last().map_or(pose, |p| p.end);
+                let closed =
+                    fit.gap_m <= GAP_CLOSED_M && fit.heading_error_deg <= KINK_TOLERATED_DEG;
+                let score = fit.gap_m + 0.2 * fit.heading_error_deg;
+                if best.as_ref().is_none_or(|(b, ..)| score < *b) {
+                    best = Some((score, fit.pieces, end, goal));
+                }
+                if closed {
+                    break 'slides;
+                }
+            }
+        }
+        let Some((_, pieces, end, goal)) = best else {
+            // no slide leaves room for an approach
+            let goal = Pose {
+                x: p0.x,
+                y: p0.y,
+                heading,
+            };
+            let (pieces, end) = self.fit_part(
+                &line.slice(s_cur, s0),
+                pose,
+                EndGoal::Fixed(goal),
+                family,
+                stretch,
+            )?;
+            return Ok((pieces, end, None));
+        };
+        self.report_gap(stretch, goal, end);
+        let closed = (end.x - goal.x).hypot(end.y - goal.y) <= GAP_CLOSED_M
+            && wrap(end.heading - goal.heading).abs().to_degrees() <= KINK_TOLERATED_DEG;
+        Ok((pieces, end, closed.then_some(goal)))
     }
 
     /// Where a junction goes if its entry is at `at`, trying both ways round; the frame, whether it
