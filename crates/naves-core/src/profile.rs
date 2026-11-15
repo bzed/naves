@@ -1405,8 +1405,13 @@ fn junction_floors(
                 let mut along = 0.0;
                 let mut k = start;
                 while let Some(here) = at(k) {
-                    if let Some((_, Some(hold))) = holds.get(k) {
-                        floors.push((hold.junction, deck.height - limit * along));
+                    if let Some((joint, Some(hold))) = holds.get(k) {
+                        // the junction's height is its height at its centre; the joint lies on its plane
+                        let tilt = junctions
+                            .points
+                            .get(hold.junction)
+                            .map_or(0.0, |j| j.height_at(*joint) - j.height);
+                        floors.push((hold.junction, deck.height - limit * along - tilt));
                     }
                     let onward = if step_back {
                         k.checked_sub(1)

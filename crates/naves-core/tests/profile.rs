@@ -479,6 +479,7 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![junction(280.0, 100.0), junction(320.0, 160.0)],
@@ -797,6 +798,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
         patch_m: 6.25,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![piece_junction],
@@ -1122,7 +1124,6 @@ fn all_roads_at_a_junction_have_its_height() {
     let j = find_junctions(&net, &graph, &hm);
     assert_eq!(j.points.len(), 1);
     let p = solve_profiles(&net, &hm, &j, &[]);
-    let want = j.points[0].height;
     let mut seen = 0;
     for strip in &p.strips {
         for joint in strip
@@ -1131,6 +1132,7 @@ fn all_roads_at_a_junction_have_its_height() {
             .filter(|q| near(&j.points[0], (q.0, q.1)))
         {
             seen += 1;
+            let want = j.points[0].height_at((joint.0, joint.1));
             // the City road lies on top; the Asf3 road under it is five centimetres lower
             let ok = (joint.2 - want).abs() < 0.01
                 || (joint.2 - (want - naves_core::roadplace::OVERLAY_DROP_M)).abs() < 0.01;
@@ -1225,13 +1227,17 @@ fn a_ring_meets_itself_at_one_height_and_a_lone_road_still_solves() {
         .iter()
         .find(|q| (q.0 - 200.0).hypot(q.1 - 200.0) < 1e-6)
         .unwrap();
+    // the junction's plane tilts along its through road: the two joints lie on it
+    let plane = |q: (f64, f64, f64)| j.points[0].height_at((q.0, q.1));
     assert!(
-        (through.2 - last.2).abs() < 0.01,
-        "{} {}",
+        (through.2 - plane(*through)).abs() < 0.01 && (last.2 - plane(last)).abs() < 0.01,
+        "{} {} against {} {}",
         through.2,
-        last.2
+        last.2,
+        plane(*through),
+        plane(last)
     );
-    assert!((last.2 - j.points[0].height).abs() < 0.01);
+    assert!((last.2 - j.points[0].height_at((last.0, last.1))).abs() < 0.01);
     let lone = network(vec![straight(
         "a",
         Family::Asf3,
@@ -1298,8 +1304,10 @@ fn a_through_road_is_fixed_at_the_junction_piece_in_its_middle() {
         .collect();
     assert!(piece_joints.len() >= 2);
     let end = p.strips[1].joints.last().unwrap();
+    // every joint the junction holds lies on its plane (tilted along the through road, as the dip is steep)
     for q in piece_joints.iter().copied().chain([end]) {
-        assert!((q.2 - piece_joints[0].2).abs() < 1e-6, "{q:?}");
+        let plane = j.points[0].height_at((q.0, q.1));
+        assert!((q.2 - plane).abs() < 1e-6, "{q:?} against {plane}");
     }
     // and the patch lookup reaches the side road's port
     assert!(j.near((end.0, end.1), HOLD_M).is_some());
@@ -1326,6 +1334,7 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![
@@ -1402,6 +1411,7 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
         patch_m: 0.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![
@@ -1438,6 +1448,7 @@ fn free_span_then_a_short_piece_then_a_held_joint() -> (PlacedNetwork, Heightmap
         patch_m: 0.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![junction(100.0, 100.0), junction(504.4, 107.0)],
@@ -1494,6 +1505,7 @@ fn tight_bend_chain(family: Family) -> (PlacedNetwork, Heightmap, Junctions) {
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![junction((100.0, 100.0)), junction((560.0, 560.0))],
@@ -1546,6 +1558,7 @@ fn a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
         points: vec![junction(100.0), junction(1000.0)],
@@ -2058,4 +2071,53 @@ fn a_road_that_runs_beside_the_lower_road_does_not_settle_it_up_to_the_lifted_ap
         "{}",
         p.clearances[0].reached
     );
+}
+
+#[test]
+fn two_junctions_14_m_apart_on_a_slope_leave_the_road_drivable() {
+    // a through road up a 10 % slope with two junction pieces whose centres are 14 m apart (the median of
+    // research 9.8): level pieces would need 1.4 m of rise over the 1.5 m between them; tilted along the road,
+    // the pieces and the gap between them climb at the grade of the ground
+    let hm = terrain(200, 6.25, |x, _| 100.0 + 0.10 * x);
+    let mut through = straight("t", Family::Asf3, (100.0, 100.0), (293.75, 100.0));
+    let mut chain_piece = |name: &str, kind, a: f64, b: f64| {
+        through.push(piece(name, 0, kind, Family::Asf3, (a, 100.0), (b, 100.0)));
+    };
+    chain_piece("t|a", PlacedKind::Junction, 293.75, 306.25);
+    chain_piece("t", PlacedKind::Piece, 306.25, 307.75);
+    chain_piece("t|b", PlacedKind::Junction, 307.75, 320.25);
+    through.extend(straight("t", Family::Asf3, (320.25, 100.0), (520.0, 100.0)));
+    let tilted = |x: f64| Junction {
+        at: (x, 100.0),
+        kind: JunctionKind::Piece,
+        ground: 100.0 + 0.10 * x,
+        height: 100.0 + 0.10 * x,
+        rank: 3,
+        patch_m: 6.25,
+        stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
+        gradient: (0.10, 0.0),
+    };
+    let junctions = Junctions {
+        points: vec![tilted(300.0), tilted(314.0)],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&network(vec![through]), &hm, &junctions, &[]);
+    for g in grades(&p, 0) {
+        assert!(g.abs() <= grade_ceiling(Family::Asf3) + 1e-6, "grade {g}");
+    }
+    // the joints of each piece lie on its plane
+    for (x, centre) in [(293.75, 0), (306.25, 0), (307.75, 1), (320.25, 1)] {
+        let joint = p.strips[0]
+            .joints
+            .iter()
+            .find(|j| (j.0 - x).abs() < 1e-6)
+            .unwrap();
+        let plane = junctions.points[centre].height_at((x, 100.0));
+        assert!(
+            (joint.2 - plane).abs() < 0.01,
+            "x {x}: {} vs {plane}",
+            joint.2
+        );
+    }
 }

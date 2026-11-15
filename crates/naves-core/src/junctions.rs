@@ -5,7 +5,8 @@
 //!
 //! A junction is a place where roads meet: a junction piece, a crossing where roads meet without a junction
 //! piece, or a chain end that lies on another road. Each gets one height, the median of the original ground
-//! around it; a link is the road between two neighbouring junctions, from the joint that holds one to the joint
+//! around it, and a plane through that height that tilts along the through road with the slope of the ground
+//! ([`Junction::gradient`]); a link is the road between two neighbouring junctions, from the joint that holds one to the joint
 //! that holds the other. Where the ground of two junctions needs
 //! a steeper grade between them than their road may have, [`repair`] moves both toward each other by just
 //! enough, the one on the more important road less. The design is
@@ -22,6 +23,10 @@ use crate::roadplace::{Overlay, PlacedKind, PlacedNetwork};
 
 /// Radius of the circle the ground is sampled in.
 pub const GROUND_RADIUS_M: f64 = 10.0;
+/// The least distance, in metres, either side of a junction that its tilt is measured over.
+const MIN_TILT_REACH_M: f64 = 6.25;
+/// The share of the grade ceiling of the through road that a junction's tilt may reach.
+pub const JUNCTION_TILT_SHARE: f64 = 0.9;
 /// Junctions this close along a road are one.
 pub const MERGE_M: f64 = 3.0;
 /// Rounds of [`repair`].
@@ -93,6 +98,20 @@ pub struct Junction {
     /// For an overlay, the ids of the stretches of the roads that lie under the top road here: they are held
     /// [`crate::roadplace::OVERLAY_DROP_M`] below the junction's height. Empty for the other kinds.
     pub lower: BTreeSet<String>,
+    /// Rise per metre east and north of the plane the junction's joints are held to: the slope of the ground
+    /// along the road that runs through, `(0, 0)` for a join, a ring and a junction without one. `height` is
+    /// the height at `at`.
+    pub gradient: (f64, f64),
+}
+
+impl Junction {
+    /// The height of the junction's plane at `point`.
+    #[must_use]
+    pub fn height_at(&self, point: (f64, f64)) -> f64 {
+        self.height
+            + self.gradient.0 * (point.0 - self.at.0)
+            + self.gradient.1 * (point.1 - self.at.1)
+    }
 }
 
 /// The road between two neighbouring junctions.
@@ -106,6 +125,10 @@ pub struct Link {
     pub length: f64,
     /// `grade_ceiling` of the road's family.
     pub ceiling: f64,
+    /// Where the joint held to junction `a` lies.
+    pub a_at: (f64, f64),
+    /// Where the joint held to junction `b` lies.
+    pub b_at: (f64, f64),
 }
 
 /// The plane of a roundabout: one tilted surface that follows the slope, which the ring, the ground inside it
@@ -297,7 +320,18 @@ impl Line {
 
     /// The nearest point of the polyline to `p`: its distance and station.
     fn project(&self, p: (f64, f64)) -> (f64, f64) {
-        let mut best = (f64::INFINITY, 0.0);
+        let (distance, station, _) = self.project_segment(p);
+        (distance, station)
+    }
+
+    /// The unit heading of the polyline at the point nearest `p`.
+    fn heading_near(&self, p: (f64, f64)) -> Option<(f64, f64)> {
+        self.project_segment(p).2
+    }
+
+    /// [`Line::project`] and the unit heading of the segment the nearest point lies on.
+    fn project_segment(&self, p: (f64, f64)) -> (f64, f64, Option<(f64, f64)>) {
+        let mut best = (f64::INFINITY, 0.0, None);
         for (pair, stations) in self.strip.joints.windows(2).zip(self.stations.windows(2)) {
             let ([from, to], [s0, s1]) = (pair, stations) else {
                 continue;
@@ -311,10 +345,23 @@ impl Line {
             };
             let distance = (p.0 - from.0 - t * dx).hypot(p.1 - from.1 - t * dy);
             if distance < best.0 {
-                best = (distance, s0 + t * (s1 - s0));
+                best = (distance, s0 + t * (s1 - s0), unit((dx, dy)));
             }
         }
         best
+    }
+
+    /// The unit heading, start to end, of the junction piece that carries `station`.
+    fn piece_axis(&self, station: f64) -> Option<(f64, f64)> {
+        for (k, stations) in self.stations.windows(2).enumerate() {
+            let [s0, s1] = stations else { continue };
+            let piece = self.strip.junction.get(k).copied().unwrap_or(false);
+            if piece && (f64::midpoint(*s0, *s1) - station).abs() < PIECE_STATION_M {
+                let (from, to) = (self.strip.joints.get(k)?, self.strip.joints.get(k + 1)?);
+                return unit((to.0 - from.0, to.1 - from.1));
+            }
+        }
+        None
     }
 
     /// Half the length of the junction piece that carries `station`, or 0.
@@ -431,6 +478,12 @@ fn kind_order(kind: JunctionKind) -> u8 {
 
 fn by_position(a: &(f64, f64), b: &(f64, f64)) -> std::cmp::Ordering {
     a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+}
+
+/// `v` scaled to length 1, or none for a vector too short to have a direction.
+fn unit(v: (f64, f64)) -> Option<(f64, f64)> {
+    let length = v.0.hypot(v.1);
+    (length.is_finite() && length > 1e-9).then(|| (v.0 / length, v.1 / length))
 }
 
 fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
@@ -720,14 +773,22 @@ fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link
             }
             last = Some(*at);
             let Some(hold) = hold else { continue };
-            if let Some((_, junction, station)) = previous
+            if let Some((from, junction, station)) = previous
                 && junction != hold.junction
             {
+                // a is the lower junction index, with the joint that is held to it
+                let (a_at, b_at) = if junction < hold.junction {
+                    (from, *at)
+                } else {
+                    (*at, from)
+                };
                 out.push(Link {
                     a: junction.min(hold.junction),
                     b: junction.max(hold.junction),
                     length: (along - station).max(MIN_LINK_M),
                     ceiling: grade_ceiling(family),
+                    a_at,
+                    b_at,
                 });
             }
             previous = Some((*at, hold.junction, along));
@@ -740,6 +801,65 @@ fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link
             .then(x.ceiling.total_cmp(&y.ceiling))
     });
     out
+}
+
+/// The road that runs through a raw junction, as its unit heading there and its family: a junction piece's own
+/// axis, the top road of an overlay, the road a chain end lies on. A join has none.
+fn through_road(lines: &[Line], raw: &Raw) -> Option<((f64, f64), Family)> {
+    let (line, heading) = match raw.kind {
+        JunctionKind::Piece => {
+            let arm = raw
+                .arms
+                .iter()
+                .filter(|a| a.half > 0.0)
+                .max_by(|a, b| a.half.total_cmp(&b.half))?;
+            let line = lines.get(arm.line)?;
+            (line, line.piece_axis(arm.station)?)
+        }
+        JunctionKind::Overlay => {
+            let line = raw
+                .arms
+                .iter()
+                .filter_map(|a| lines.get(a.line))
+                .find(|l| l.ids.is_disjoint(&raw.lower))?;
+            (line, line.heading_near(raw.at)?)
+        }
+        JunctionKind::EndOnRoad => {
+            let line = lines.get(raw.arms.get(1)?.line)?;
+            (line, line.heading_near(raw.at)?)
+        }
+        JunctionKind::Join => return None,
+    };
+    Some((heading, line.family))
+}
+
+/// The ground at `point` of the original heightmap, if the point is inside the map and the height is a number.
+fn ground_at(base: &Heightmap, point: (f64, f64)) -> Option<f64> {
+    let extent = f64::from(base.size.saturating_sub(1)) * f64::from(base.cell_m);
+    let inside = |v: f64| (0.0..=extent).contains(&v);
+    let height = f64::from(base.sample(point.0, point.1).height);
+    (inside(point.0) && inside(point.1) && height.is_finite()).then_some(height)
+}
+
+/// The tilt of a junction's plane: the slope of the original ground along the through road, `r` metres to
+/// either side of `at`, cut down to [`JUNCTION_TILT_SHARE`] of the grade ceiling of the road's family. The
+/// plane has no fall across the road.
+fn junction_gradient(
+    base: &Heightmap,
+    at: (f64, f64),
+    radius: f64,
+    through: ((f64, f64), Family),
+) -> (f64, f64) {
+    let (t, family) = through;
+    let reach = radius.max(MIN_TILT_REACH_M);
+    let ahead = ground_at(base, (at.0 + reach * t.0, at.1 + reach * t.1));
+    let behind = ground_at(base, (at.0 - reach * t.0, at.1 - reach * t.1));
+    let Some(slope) = ahead.zip(behind).map(|(a, b)| (a - b) / (2.0 * reach)) else {
+        return (0.0, 0.0);
+    };
+    let limit = JUNCTION_TILT_SHARE * grade_ceiling(family);
+    let s = slope.clamp(-limit, limit);
+    (s * t.0, s * t.1)
 }
 
 /// The junction that the raw junctions `members` make: at the mean of their points, the first kind, the
@@ -788,13 +908,27 @@ fn one_junction(
     let n = count(members.len());
     let at = (sx / n, sy / n);
     // a junction on a ring lies on the ring's plane, not on the ground
-    let ground = rings
+    let ring = rings
         .iter()
-        .find(|ring| !ring.stretches.is_disjoint(&stretches))
-        .map_or_else(
-            || ground_median(base, at, GROUND_RADIUS_M),
-            |ring| ring.height_at(at),
-        );
+        .find(|ring| !ring.stretches.is_disjoint(&stretches));
+    let ground = ring.map_or_else(
+        || ground_median(base, at, GROUND_RADIUS_M),
+        |ring| ring.height_at(at),
+    );
+    // the tilt follows the through road of the first member of the merged kind that has one; a junction on a
+    // ring is held by the ring's plane
+    let gradient = if ring.is_some() {
+        (0.0, 0.0)
+    } else {
+        members
+            .iter()
+            .filter_map(|m| raw.get(*m))
+            .filter(|r| r.kind == kind)
+            .find_map(|r| through_road(lines, r))
+            .map_or((0.0, 0.0), |through| {
+                junction_gradient(base, at, patch, through)
+            })
+    };
     Junction {
         at,
         kind,
@@ -808,6 +942,7 @@ fn one_junction(
         } else {
             BTreeSet::new()
         },
+        gradient,
     }
 }
 
@@ -869,11 +1004,14 @@ fn merged(
         .iter()
         .filter_map(|l| {
             let (a, b) = (target(l.a)?, target(l.b)?);
+            let (low, high) = (a.min(b), a.max(b));
             (a != b).then(|| Link {
-                a: a.min(b),
-                b: a.max(b),
+                a: low,
+                b: high,
                 length: l.length,
                 ceiling: l.ceiling,
+                a_at: points.get(low).map_or((0.0, 0.0), |p| p.at),
+                b_at: points.get(high).map_or((0.0, 0.0), |p| p.at),
             })
         })
         .collect();
@@ -911,7 +1049,7 @@ fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
         let rise = points
             .get(link.a)
             .zip(points.get(link.b))
-            .map(|(a, b)| (a.height - b.height).abs());
+            .map(|(a, b)| (a.height_at(link.a_at) - b.height_at(link.b_at)).abs());
         rise.map(|rise| rise - link.ceiling * link.length)
     };
     for _ in 0..REPAIR_ROUNDS {
@@ -933,7 +1071,7 @@ fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
                 .points
                 .get(link.a)
                 .zip(junctions.points.get(link.b))
-                .is_some_and(|(pa, pb)| pa.height > pb.height);
+                .is_some_and(|(pa, pb)| pa.height_at(link.a_at) > pb.height_at(link.b_at));
             // the higher end goes down by its share, the lower goes up by its share
             let sign = if a_is_higher { 1.0 } else { -1.0 };
             for (index, delta) in [(link.a, -sign * share_a), (link.b, sign * share_b)] {

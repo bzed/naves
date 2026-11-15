@@ -290,7 +290,7 @@ fn junction_violations(junctions: &Junctions) -> Vec<Violation> {
                 (f64::midpoint(a.at.0, b.at.0), f64::midpoint(a.at.1, b.at.1)),
                 format!(
                     "Junctions too close for their heights: {:.1} m over {:.0} m",
-                    (a.height - b.height).abs(),
+                    (a.height_at(link.a_at) - b.height_at(link.b_at)).abs(),
                     link.length
                 ),
             ))

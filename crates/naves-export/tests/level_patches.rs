@@ -18,6 +18,7 @@ fn junction(kind: JunctionKind, at: (f64, f64), height: f64) -> Junction {
         patch_m: 5.0,
         stretches: BTreeSet::new(),
         lower: BTreeSet::new(),
+        gradient: (0.0, 0.0),
     }
 }
 
@@ -74,4 +75,52 @@ fn a_ring_gets_one_tilted_patch_and_the_junctions_on_it_none() {
     assert!((patches[1].gradient.0 - 0.04).abs() < 1e-12);
     assert!((patches[1].gradient.1 - 0.02).abs() < 1e-12);
     assert_eq!(patches[1].rank, 3);
+}
+
+#[test]
+fn a_tilted_junction_patch_shapes_a_plane() {
+    use naves_core::conform::conform;
+    use naves_core::heightmap::Heightmap;
+    // a 10 % slope to the east; an end-on-road junction tilted with it
+    let size = 64_u32;
+    let cell = 3.125_f32;
+    let ground = |x: f64| 100.0 + 0.10 * x;
+    let base = Heightmap {
+        size,
+        cell_m: cell,
+        h: (0..size * size)
+            .map(|i| {
+                #[expect(clippy::cast_possible_truncation, reason = "a test height")]
+                let h = ground(f64::from(i % size) * f64::from(cell)) as f32;
+                h
+            })
+            .collect(),
+    };
+    let mut j = junction(JunctionKind::EndOnRoad, (100.0, 100.0), ground(100.0));
+    j.gradient = (0.10, 0.0);
+    let junctions = Junctions {
+        points: vec![j],
+        ..Junctions::default()
+    };
+    let patches = level_patches(&junctions, f64::from(cell));
+    assert_eq!(patches.len(), 1);
+    assert!((patches[0].gradient.0 - 0.10).abs() < 1e-12);
+    let out = conform(&base, &[], &patches).unwrap();
+    let radius = patches[0].radius;
+    let mut checked = 0;
+    for row in 0..size {
+        for col in 0..size {
+            let (x, y) = (
+                f64::from(col) * f64::from(cell),
+                f64::from(row) * f64::from(cell),
+            );
+            if (x - 100.0).hypot(y - 100.0) <= radius {
+                let i = usize::try_from(row * size + col).unwrap();
+                let (got, want) = (f64::from(out.heightmap.h[i]), ground(x));
+                assert!((got - want).abs() < 0.02, "({x}, {y}): {got} vs {want}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 20);
 }

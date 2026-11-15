@@ -1691,3 +1691,28 @@ model above (radius and grade ceiling per family, flat ends where two joints are
 different solve that could have shown a way; the second half of the table (what the joint solve does) is expectation,
 not a run. The classes are exclusive and ordered (deck, then hold, then free); a hump at a deck end next to a junction
 counts as a hold. Site 21 is not explained by the data. Nothing was driven or photographed in the game for this step.
+
+**Result of fix 1 (junctions follow the through road's slope, 2026-11-15).** Implemented as proposed
+(`Junction::gradient`, held joints and terrain patches on the tilted plane, links measured between the held joints; tilt
+share 0.9 of the grade ceiling of the through road over 6.25 m or the patch radius either side). `road-analysis` at
+`terrain_size = 2048` (log `/var/tmp/naves-roadlook/t12/ra.log`), against the state of 9.8 (`78df272`):
+
+| Finding | Before | After |
+|---|---|---|
+| `road_grade` | 1645 (1234 bends, 411 grades) | **1732** (1299 bends, 433 grades) |
+| `road_not_drivable` | 237 | 256 |
+| `road_misses_terrain` | 4621 | 5025 |
+| `road_gap` | 347 | 346 |
+| `road_conflict` | 1072 | 1186 |
+| `join_without_junction` | 65 | 65 |
+| `junction_too_steep` | 6 | 6 |
+
+**The fix did not reduce `road_grade`; it rose by 87 (noise about 30), and `road_misses_terrain` (+404) and
+`road_conflict` (+114) rose too.** The expectation of 9.8 (up to about 650 of the H2 class) did not materialise. The
+classes were not recounted (no instrumented run after the change); the cause is open. What the synthetic tests show
+(two junction pieces 14 m apart on a 10 percent slope are drivable and their joints lie on the planes) holds, so the
+mechanism works where the through road is straight and the junction is isolated; on the real network something else
+dominates, for instance junctions whose through road is not the road the neighbouring junction lies on, an overlapped
+piece between tilted junctions, or the terrain patch tilting against the finished road. To find out, rerun the
+instrumentation of `/var/tmp/naves-roadlook/t11/hump-dump.patch` on this state.
+

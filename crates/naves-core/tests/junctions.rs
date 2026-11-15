@@ -16,8 +16,8 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{
-    Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions, ground_median,
-    raise_floors, repair,
+    JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions,
+    ground_median, raise_floors, repair,
 };
 use naves_core::limits::grade_ceiling;
 use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
@@ -201,6 +201,7 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     }
 }
 
@@ -217,6 +218,8 @@ fn two_junctions(length: f64, ceiling: f64, g0: f64, g1: f64, r0: u8, r1: u8) ->
             b: 1,
             length,
             ceiling,
+            a_at: (0.0, 0.0),
+            b_at: (length, 0.0),
         }],
         unresolved: Vec::new(),
     }
@@ -238,6 +241,8 @@ fn ring_of_three(length: f64, ceiling: f64, grounds: [f64; 3]) -> Junctions {
                 b,
                 length,
                 ceiling,
+                a_at: (0.0, 0.0),
+                b_at: (length, 0.0),
             })
             .collect(),
         unresolved: Vec::new(),
@@ -479,12 +484,16 @@ fn a_link_with_a_negative_ceiling_is_unresolved_and_named() {
                 b: 1,
                 length: 10.0,
                 ceiling: 0.27,
+                a_at: (0.0, 0.0),
+                b_at: (0.0, 0.0),
             },
             Link {
                 a: 2,
                 b: 3,
                 length: 10.0,
                 ceiling: -1.0,
+                a_at: (0.0, 0.0),
+                b_at: (0.0, 0.0),
             },
         ],
         unresolved: Vec::new(),
@@ -681,6 +690,7 @@ fn one_junction_of(at: (f64, f64), patch_m: f64, names: &[&str], kind: JunctionK
             patch_m,
             stretches: names.iter().map(|n| (*n).to_string()).collect(),
             lower: std::collections::BTreeSet::new(),
+            gradient: (0.0, 0.0),
         }],
         ..Junctions::default()
     }
@@ -1043,4 +1053,130 @@ fn a_frozen_junction_gets_no_floor_and_carries_none_on() {
     let mut k = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
     raise_floors(&mut k, &[(1, 110.0)], &[1]);
     assert!((k.points[1].height - 100.0).abs() < 1e-9);
+}
+
+/// A through road of `family` east-west (`vertical` false) or north-south at 200 m, with a side road of the same
+/// family, so that the junction is a piece (an X when `cross`).
+fn crossing_of(family: Family, vertical: bool, cross: bool) -> (PlacedNetwork, RoadGraph) {
+    let at = |along: f64, across: f64| {
+        if vertical {
+            (across, along)
+        } else {
+            (along, across)
+        }
+    };
+    let mut features = vec![
+        feature(
+            1,
+            family,
+            &[1, 2, 3],
+            &[at(50.0, 200.0), at(200.0, 200.0), at(350.0, 200.0)],
+        ),
+        feature(2, family, &[2, 4], &[at(200.0, 200.0), at(200.0, 350.0)]),
+    ];
+    if cross {
+        features.push(feature(
+            3,
+            family,
+            &[2, 5],
+            &[at(200.0, 200.0), at(200.0, 50.0)],
+        ));
+    }
+    placed(&features)
+}
+
+#[test]
+fn a_junction_on_a_slope_tilts_along_its_through_road() {
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.10 * x);
+    for cross in [false, true] {
+        let (net, graph) = crossing_of(Family::City, false, cross);
+        let j = find_junctions(&net, &graph, &plane);
+        let piece = j
+            .points
+            .iter()
+            .find(|p| p.kind == JunctionKind::Piece)
+            .unwrap();
+        assert!(
+            (piece.gradient.0 - 0.10).abs() < 1e-6,
+            "{:?}",
+            piece.gradient
+        );
+        assert!(piece.gradient.1.abs() < 1e-6, "{:?}", piece.gradient);
+        // the height stays the height at the centre
+        assert!((piece.height - piece.height_at(piece.at)).abs() < 1e-12);
+        let (net, graph) = crossing_of(Family::City, true, cross);
+        let j = find_junctions(&net, &graph, &plane);
+        let piece = j
+            .points
+            .iter()
+            .find(|p| p.kind == JunctionKind::Piece)
+            .unwrap();
+        assert!(piece.gradient.0.abs() < 1e-6, "{:?}", piece.gradient);
+        assert!(piece.gradient.1.abs() < 1e-6, "{:?}", piece.gradient);
+    }
+}
+
+#[test]
+fn the_tilt_stops_at_the_share_of_the_grade_ceiling() {
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.40 * x);
+    let (net, graph) = crossing_of(Family::City, false, false);
+    let j = find_junctions(&net, &graph, &plane);
+    let piece = j
+        .points
+        .iter()
+        .find(|p| p.kind == JunctionKind::Piece)
+        .unwrap();
+    let limit = JUNCTION_TILT_SHARE * grade_ceiling(Family::City);
+    assert!(
+        (piece.gradient.0 - limit).abs() < 1e-9,
+        "{:?}",
+        piece.gradient
+    );
+}
+
+#[test]
+fn a_join_of_ending_roads_stays_level() {
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.10 * x);
+    let (net, graph) = placed(&[
+        feature(1, Family::Grav, &[1, 2], &[(100.0, 100.0), (200.0, 200.0)]),
+        feature(2, Family::Grav, &[3, 2], &[(300.0, 100.0), (200.0, 200.0)]),
+        feature(3, Family::Grav, &[4, 2], &[(200.0, 350.0), (200.0, 200.0)]),
+    ]);
+    let j = find_junctions(&net, &graph, &plane);
+    assert_eq!(j.points.len(), 1, "{j:?}");
+    assert_eq!(j.points[0].kind, JunctionKind::Join, "{j:?}");
+    assert_eq!(j.points[0].gradient, (0.0, 0.0));
+}
+
+#[test]
+fn a_link_measures_the_rise_between_its_held_joints() {
+    // both centres are level at 100 m, but the first is tilted 0.2 along x and its joint lies 5 m east of its
+    // centre: the joints are 1 m apart in height over 5 m of road, 0.5 m over a ceiling of 0.1
+    let mut j = two_junctions(5.0, 0.1, 100.0, 100.0, 4, 4);
+    j.points[0].gradient = (0.2, 0.0);
+    j.links[0].a_at = (5.0, 0.0);
+    j.links[0].b_at = (5.0, 0.0);
+    repair(&mut j);
+    assert!(j.unresolved.is_empty(), "{j:?}");
+    let rise = (j.points[0].height_at((5.0, 0.0)) - j.points[1].height_at((5.0, 0.0))).abs();
+    assert!((rise - 0.5).abs() < 2e-3, "rise {rise}");
+    // the tilt did not change: only the height moved
+    assert_eq!(j.points[0].gradient, (0.2, 0.0));
+    assert!(j.points[0].height < 100.0 && j.points[1].height > 100.0 - 1e-9);
+}
+
+#[test]
+fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() {
+    // the Grav road runs east-west and lies on top; the Mud road ends under it
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.10 * x);
+    let (net, graph) = t_of(Family::Grav, Family::Mud);
+    let j = find_junctions(&net, &graph, &plane);
+    let top = &j.points[0];
+    assert_eq!(top.kind, JunctionKind::Overlay);
+    assert!((top.gradient.0 - 0.10).abs() < 1e-6, "{:?}", top.gradient);
+    assert!(top.gradient.1.abs() < 1e-6, "{:?}", top.gradient);
+    // the ground 6.25 m east of the junction is off the map: no slope is known
+    let small = terrain(66, 3.125, |x, _| 100.0 + 0.10 * x);
+    let j = find_junctions(&net, &graph, &small);
+    assert_eq!(j.points[0].gradient, (0.0, 0.0));
 }

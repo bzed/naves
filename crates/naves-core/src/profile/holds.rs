@@ -39,11 +39,13 @@ pub struct Hold {
     pub height: f64,
 }
 
-/// Sets the junction that holds variable `var`. A road of a chain that lies under the top road of an overlay
+/// Sets the junction that holds variable `var`, which lies at `at`: it gets the height of the junction's plane
+/// there. A road of a chain that lies under the top road of an overlay
 /// (`ids` are the stretches of the chain) is held [`OVERLAY_DROP_M`] below the junction's height.
 fn hold(
     held: &mut [Option<Hold>],
     var: usize,
+    at: (f64, f64),
     junction: usize,
     junctions: &Junctions,
     ids: &BTreeSet<String>,
@@ -55,9 +57,9 @@ fn hold(
             rule,
             junction,
             height: if lowered {
-                j.height - OVERLAY_DROP_M
+                j.height_at(at) - OVERLAY_DROP_M
             } else {
-                j.height
+                j.height_at(at)
             },
         });
     }
@@ -189,7 +191,8 @@ fn junction_heights(
             .map(|(i, d, _)| (i, d))
     };
     let give = |held: &mut [Option<Hold>], var: usize, junction: usize, rule: HoldRule| {
-        hold(held, var, junction, junctions, &ids, rule);
+        let at = chain.at.get(var).copied().unwrap_or_default();
+        hold(held, var, at, junction, junctions, &ids, rule);
     };
     let mut held: Vec<Option<Hold>> = vec![None; count];
     for (k, &road) in roads.iter().enumerate() {
@@ -209,14 +212,7 @@ fn junction_heights(
             chain.joints.get(k),
             chain.joints.get(k + 1),
         ) {
-            hold(
-                &mut held,
-                from.2,
-                junction,
-                junctions,
-                &ids,
-                HoldRule::Piece,
-            );
+            give(&mut held, from.2, junction, HoldRule::Piece);
             give(&mut held, to.2, junction, HoldRule::Piece);
         }
     }
@@ -338,7 +334,8 @@ fn hold_beside(
             } else {
                 var + 1
             };
-            hold(held, nearer, junction, junctions, ids, HoldRule::Arm);
+            let at = chain.at.get(nearer).copied().unwrap_or_default();
+            hold(held, nearer, at, junction, junctions, ids, HoldRule::Arm);
         }
     }
 }

@@ -377,9 +377,9 @@ fn place_roads(
     })
 }
 
-/// The level patches of `junctions`: a circle of the junction's `patch_m` plus one cell at its height under
-/// each join and each chain end on a road. A junction piece is already a level segment of its strip and gets
-/// none.
+/// The patches of `junctions`: a circle of the junction's `patch_m` plus one cell on its plane (its height and
+/// gradient) under each join, overlay and chain end on a road. A junction piece is already a segment of its
+/// strip and gets none.
 #[must_use]
 pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
     // a junction on a roundabout lies on the ring's plane and gets no patch of its own
@@ -402,7 +402,7 @@ pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
             at: j.at,
             radius: j.patch_m + cell_m,
             height: j.height,
-            gradient: (0.0, 0.0),
+            gradient: j.gradient,
             inner_radius: 0.0,
             rank: j.rank,
         })
