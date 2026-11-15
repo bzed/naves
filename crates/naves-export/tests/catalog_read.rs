@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
 use naves_export::catalog_read::{CatalogReadError, road_catalog, unpack_roads};
 use naves_export::testing::FakeEnv;
-use naves_formats::odol::synthetic::model_bytes;
+use naves_formats::odol::synthetic::model_bytes_with_geometry;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -64,7 +64,7 @@ fn fixture() -> Fixture {
             .collect();
         let target = tree.join(folder).join(format!("{stem}.p3d"));
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, model_bytes(&points)).unwrap();
+        std::fs::write(target, model_bytes_with_geometry(&points, &model.geometry)).unwrap();
     }
     // things the catalog must not stumble over
     std::fs::write(tree.join("Parts/runway_main.p3d"), b"not a model").unwrap();

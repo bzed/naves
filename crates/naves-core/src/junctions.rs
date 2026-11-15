@@ -26,6 +26,8 @@ pub const GROUND_RADIUS_M: f64 = 10.0;
 pub const MERGE_M: f64 = 3.0;
 /// Rounds of [`repair`].
 pub const REPAIR_ROUNDS: usize = 50;
+/// The most [`raise_floors`] lifts a junction above its ground median, in metres, however high the floor.
+pub const MAX_RAISE_M: f64 = 10.0;
 /// The most [`repair`] moves a junction from its ground median, in metres. A link that is still over its
 /// ceiling then is unresolved.
 pub const MAX_MOVE_M: f64 = 3.0;
@@ -897,6 +899,13 @@ fn merged(
 /// important road moves less. No junction moves more than [`MAX_MOVE_M`] from its ground median. Links still over by more than 1 cm after the last round are listed in
 /// [`Junctions::unresolved`].
 pub fn repair(junctions: &mut Junctions) {
+    repair_above(junctions, &[]);
+}
+
+/// [`repair`] with a lower bound per junction (by index; a missing or `-inf` one is none) that a junction is
+/// never moved below, and that lets it go above its ground by more than [`MAX_MOVE_M`].
+fn repair_above(junctions: &mut Junctions, floors: &[f64]) {
+    let floor = |i: usize| floors.get(i).copied().unwrap_or(f64::NEG_INFINITY);
     let mobility = |j: &Junction| 0.5_f64.powi(i32::from(j.rank));
     let excess = |points: &[Junction], link: &Link| {
         let rise = points
@@ -929,8 +938,9 @@ pub fn repair(junctions: &mut Junctions) {
             let sign = if a_is_higher { 1.0 } else { -1.0 };
             for (index, delta) in [(link.a, -sign * share_a), (link.b, sign * share_b)] {
                 if let Some(p) = junctions.points.get_mut(index) {
-                    p.height =
-                        (p.height + delta).clamp(p.ground - MAX_MOVE_M, p.ground + MAX_MOVE_M);
+                    let low = (p.ground - MAX_MOVE_M).max(floor(index));
+                    let high = (p.ground + MAX_MOVE_M).max(floor(index));
+                    p.height = (p.height + delta).clamp(low, high);
                 }
             }
         }
@@ -942,6 +952,59 @@ pub fn repair(junctions: &mut Junctions) {
         .filter(|(_, link)| excess(&junctions.points, link).is_some_and(|e| e > REPAIR_TOLERANCE_M))
         .map(|(i, _)| i)
         .collect();
+}
+
+/// Lifts junctions to lower bounds: `floors` are indices into [`Junctions::points`] with the least height of
+/// each (an index out of range is ignored). A junction never goes down for a floor.
+///
+/// The floor of a junction goes on along the links as the lower bound of its neighbours, `ceiling * length`
+/// lower per link, so that a junction raised for a bridge pulls the junctions near it up as far as the grade
+/// limits need, beyond [`MAX_MOVE_M`] if it must. Then [`repair`] runs again with the floors as the lower end
+/// of what a junction may be moved to; a floor is the one bound that goes over the [`MAX_MOVE_M`] one, but never
+/// lifts a junction more than [`MAX_RAISE_M`] above its ground.
+pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)]) {
+    let mut bound = vec![f64::NEG_INFINITY; junctions.points.len()];
+    let cap: Vec<f64> = junctions
+        .points
+        .iter()
+        .map(|p| p.ground + MAX_RAISE_M)
+        .collect();
+    for &(index, floor) in floors {
+        let top = cap.get(index).copied().unwrap_or(f64::NEG_INFINITY);
+        if let Some(slot) = bound.get_mut(index) {
+            *slot = slot.max(floor.min(top));
+        }
+    }
+    if bound.iter().all(|b| *b == f64::NEG_INFINITY) {
+        return;
+    }
+    // along the links, each pass goes one link further
+    for _ in 0..junctions.points.len() {
+        let mut changed = false;
+        for link in &junctions.links {
+            let reach = link.ceiling * link.length;
+            for (from, to) in [(link.a, link.b), (link.b, link.a)] {
+                let Some(carried) = bound.get(from).map(|b| b - reach) else {
+                    continue;
+                };
+                let top = cap.get(to).copied().unwrap_or(f64::NEG_INFINITY);
+                let carried = carried.min(top);
+                if let Some(slot) = bound.get_mut(to)
+                    && carried > *slot + 1e-9
+                {
+                    *slot = carried;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for (point, floor) in junctions.points.iter_mut().zip(&bound) {
+        point.height = point.height.max(*floor);
+    }
+    repair_above(junctions, &bound);
 }
 
 impl Junctions {

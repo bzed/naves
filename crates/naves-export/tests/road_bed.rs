@@ -22,6 +22,7 @@ fn stretch(id: &str, a: (f64, f64), b: (f64, f64), bridge: bool, tunnel: bool) -
         bridge,
         tunnel,
         roundabout: false,
+        layer: 0,
         points: vec![a, b],
         start: 1,
         end: 2,

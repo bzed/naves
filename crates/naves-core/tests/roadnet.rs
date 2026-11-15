@@ -14,7 +14,7 @@ use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{
     BridgeSpan, DUPLICATE_MAX_HEADING_DEG, DUPLICATE_MIN_M, RoadGraph, Stretch, build_graph,
-    chains, drop_duplicates, overlay_rank, rings, widen_bridges, with_bridge_spans,
+    chains, drop_duplicates, over_crossings, overlay_rank, rings, widen_bridges, with_bridge_spans,
 };
 use proptest::prelude::*;
 
@@ -1015,4 +1015,68 @@ fn an_open_or_cut_ring_stays_ordinary_roads() {
     assert_eq!(rings(&branch), []);
     // the roads are still there as ordinary stretches
     assert_ne!(cut.stretches.len(), 0);
+}
+
+fn layered(way: i64, bridge: bool, layer: i8, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    let mut f = feature(way, Family::Asf3, bridge, nodes, points);
+    if let FeatureKind::Road { layer: l, .. } = &mut f.kind {
+        *l = layer;
+    }
+    f
+}
+
+#[test]
+fn a_bridge_over_a_road_is_found_without_a_shared_node() {
+    // the road runs east, the bridge north over it, at (100, 0); the bridge is the second way
+    let features = [
+        road(1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+        layered(2, true, 1, &[3, 4], &[(100.0, -60.0), (100.0, 40.0)]),
+    ];
+    let g = build_graph(&features);
+    let found = over_crossings(&g);
+    assert_eq!(found.len(), 1);
+    let c = &found[0];
+    assert!(g.stretches[c.upper].bridge && !g.stretches[c.lower].bridge);
+    assert!((c.at.0 - 100.0).abs() < 1e-6 && c.at.1.abs() < 1e-6);
+    assert!((c.upper_s - 60.0).abs() < 1e-6, "{}", c.upper_s);
+    assert!((c.lower_s - 200.0).abs() < 1e-6, "{}", c.lower_s);
+}
+
+#[test]
+fn roads_crossing_at_a_shared_node_are_not_an_over_crossing() {
+    let features = [
+        road(1, &[1, 2, 3], &[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)]),
+        layered(
+            2,
+            true,
+            1,
+            &[4, 2, 5],
+            &[(0.0, -50.0), (0.0, 0.0), (0.0, 50.0)],
+        ),
+    ];
+    assert_eq!(over_crossings(&build_graph(&features)).len(), 0);
+}
+
+#[test]
+fn an_untagged_crossing_or_a_tunnel_is_not_an_over_crossing() {
+    let a = road(1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]);
+    let b = road(2, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]);
+    assert_eq!(over_crossings(&build_graph(&[a.clone(), b])).len(), 0);
+    let mut t = layered(2, false, -1, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]);
+    if let FeatureKind::Road { tunnel, .. } = &mut t.kind {
+        *tunnel = true;
+    }
+    assert_eq!(over_crossings(&build_graph(&[a, t])).len(), 0);
+}
+
+#[test]
+fn of_two_bridges_the_higher_layer_is_the_upper() {
+    let features = [
+        layered(1, true, 1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+        layered(2, true, 2, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]),
+    ];
+    let g = build_graph(&features);
+    let found = over_crossings(&g);
+    assert_eq!(found.len(), 1);
+    assert_eq!(g.stretches[found[0].upper].layer, 2);
 }

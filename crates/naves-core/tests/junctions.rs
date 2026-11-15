@@ -16,7 +16,8 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{
-    Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions, ground_median, repair,
+    Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions, ground_median,
+    raise_floors, repair,
 };
 use naves_core::limits::grade_ceiling;
 use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
@@ -984,4 +985,45 @@ fn a_large_ring_has_a_plane_over_its_band_only() {
     );
     // fitted over the band only, on ground that is itself a plane
     assert!((plane.gradient.0 - 0.04).abs() < 1e-3 && (plane.gradient.1 - 0.02).abs() < 1e-3);
+}
+
+#[test]
+fn a_floor_lifts_a_junction_past_the_repair_limit_and_its_neighbour_follows() {
+    // 100 m of road at a ceiling of 8 %: a junction raised to 110 m needs its neighbour at 102 m
+    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
+    raise_floors(&mut j, &[(0, 110.0)]);
+    assert!(
+        (j.points[0].height - 110.0).abs() < 1e-9,
+        "{}",
+        j.points[0].height
+    );
+    assert!(j.points[1].height >= 102.0 - 1e-6, "{}", j.points[1].height);
+    assert!(j.points[1].height <= 102.0 + 0.01, "{}", j.points[1].height);
+    assert_eq!(j.unresolved.len(), 0);
+}
+
+#[test]
+fn a_floor_below_the_height_changes_nothing_and_a_neighbour_is_never_lowered() {
+    let mut j = two_junctions(100.0, 0.08, 100.0, 105.0, 4, 4);
+    let before = j.clone();
+    raise_floors(&mut j, &[(0, 90.0)]);
+    assert_eq!(j.points, before.points);
+}
+
+#[test]
+fn a_floor_that_finds_no_junction_is_ignored() {
+    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
+    let before = j.clone();
+    raise_floors(&mut j, &[(7, 200.0)]);
+    assert_eq!(j, before);
+}
+
+#[test]
+fn a_floor_never_lifts_a_junction_more_than_ten_metres_above_its_ground() {
+    use naves_core::junctions::MAX_RAISE_M;
+    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
+    raise_floors(&mut j, &[(0, 150.0)]);
+    assert!((j.points[0].height - (100.0 + MAX_RAISE_M)).abs() < 1e-9);
+    // and its neighbour needs only what the capped height asks of it
+    assert!(j.points[1].height <= 100.0 + MAX_RAISE_M);
 }

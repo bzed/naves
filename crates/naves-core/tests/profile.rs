@@ -19,7 +19,9 @@ use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{HOLD_M, Junction, JunctionKind, Junctions, find_junctions};
 use naves_core::limits::{drive_grade, grade_aim, grade_ceiling, min_vertical_radius};
-use naves_core::profile::{MEETING_GRADE, Profiles, RELAX_OFF_M, solve_profiles};
+use naves_core::profile::{
+    BRIDGE_CLEARANCE_M, MEETING_GRADE, Profiles, RELAX_OFF_M, solve_clearing, solve_profiles,
+};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot, place_network};
@@ -1661,4 +1663,229 @@ fn the_deck_end_heights_equal_the_approach_heights() {
     assert!((first.2 - last.2).abs() < 1e-9, "the deck is level");
     assert!(grade(before, first) <= grade_ceiling(Family::Asf3) + 1e-9);
     assert!(grade(last, after) <= grade_ceiling(Family::Asf3) + 1e-9);
+}
+
+// ---- the clearance under a bridge over a road ----
+
+const DECK: f64 = 1.5;
+
+fn way(id: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool) -> Feature {
+    let mut f = feature(id, Family::Asf3, nodes, points);
+    if let FeatureKind::Road {
+        bridge: b, layer, ..
+    } = &mut f.kind
+    {
+        *b = bridge;
+        *layer = i8::from(bridge);
+    }
+    f
+}
+
+/// A road east-west at y = 500 and a 25 m bridge over it, going north, with approaches. `extra` more ways.
+fn bridge_over_a_road(extra: &[Feature]) -> (PlacedNetwork, RoadGraph) {
+    let mut features = vec![
+        way(1, &[1, 2], &[(50.0, 500.0), (550.0, 500.0)], false),
+        way(3, &[3, 4], &[(300.0, 100.0), (300.0, 487.5)], false),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+        way(5, &[5, 6], &[(300.0, 512.5), (300.0, 900.0)], false),
+    ];
+    features.extend_from_slice(extra);
+    placed(&features)
+}
+
+/// The surface height of the strip of the stretch that starts with `id` at the point of the strip nearest `at`.
+fn height_on(p: &Profiles, net: &PlacedNetwork, id: &str, at: (f64, f64), bridge: bool) -> f64 {
+    let mut best = (f64::INFINITY, 0.0);
+    for strip in &p.strips {
+        for (k, w) in strip.joints.windows(2).enumerate() {
+            let on_it = strip.slots.get(k).is_some_and(|r| {
+                net.roads[*r].slot.stretch.starts_with(id)
+                    && (net.roads[*r].kind == PlacedKind::Bridge) == bridge
+            });
+            if !on_it {
+                continue;
+            }
+            for j in w {
+                let d = (j.0 - at.0).hypot(j.1 - at.1);
+                if d < best.0 {
+                    best = (d, j.2);
+                }
+            }
+        }
+    }
+    assert!(best.0 < 30.0, "no joint of {id} near {at:?}");
+    best.1
+}
+
+fn clear(net: &PlacedNetwork, graph: &RoadGraph, hm: &Heightmap) -> (Profiles, Junctions) {
+    let junctions = find_junctions(net, graph, hm);
+    solve_clearing(net, hm, &junctions, &side_slopes(net, hm), graph, &|_| DECK)
+}
+
+#[test]
+fn the_bridge_rises_to_clear_the_road_below() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph) = bridge_over_a_road(&[]);
+    // without the rule the deck lies on the ground, in the road below
+    let flat = solve(&net, &hm);
+    let at = (300.0, 500.0);
+    let low = height_on(&flat, &net, "1:", at, false);
+    let deck = height_on(&flat, &net, "4:", at, true);
+    assert!(deck - DECK - low < 1.0, "{}", deck - DECK - low);
+    let (p, _) = clear(&net, &graph, &hm);
+    let low = height_on(&p, &net, "1:", at, false);
+    let deck = height_on(&p, &net, "4:", at, true);
+    assert!(
+        deck - DECK - low >= BRIDGE_CLEARANCE_M - 0.06,
+        "clearance {}",
+        deck - DECK - low
+    );
+    assert_eq!(p.clearances.len(), 1);
+    assert!(p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.06);
+    for g in grades(&p, 1) {
+        assert!(g.abs() <= grade_ceiling(Family::Asf3) + 1e-6, "{g}");
+    }
+}
+
+#[test]
+fn the_road_below_keeps_its_height() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph) = bridge_over_a_road(&[]);
+    let junctions = find_junctions(&net, &graph, &hm);
+    let flat = solve_profiles(&net, &hm, &junctions, &side_slopes(&net, &hm));
+    let (p, _) = clear(&net, &graph, &hm);
+    let lower = |p: &Profiles| -> Vec<f64> {
+        p.strips
+            .iter()
+            .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("1:"))
+            .flat_map(|s| s.joints.iter().map(|j| j.2))
+            .collect()
+    };
+    let (before, after) = (lower(&flat), lower(&p));
+    assert!(after.len() > 10);
+    assert_eq!(before.len(), after.len());
+    for (a, b) in before.iter().zip(&after) {
+        assert!((a - b).abs() < 1e-6, "{a} {b}");
+    }
+}
+
+#[test]
+fn a_junction_next_to_the_bridge_rises_with_it() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    // a side road ends on the approach 25 m before the bridge
+    let side = way(6, &[7, 8], &[(400.0, 462.5), (300.0, 462.5)], false);
+    let mut approach = way(
+        3,
+        &[3, 8, 4],
+        &[(300.0, 100.0), (300.0, 462.5), (300.0, 487.5)],
+        false,
+    );
+    approach.id = "osm/way/3/0".to_string();
+    let features = [
+        way(1, &[1, 2], &[(50.0, 500.0), (550.0, 500.0)], false),
+        approach,
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+        way(5, &[5, 6], &[(300.0, 512.5), (300.0, 900.0)], false),
+        side,
+    ];
+    let (net, graph) = placed(&features);
+    let before = find_junctions(&net, &graph, &hm);
+    // a thick deck, so that the bridge end needs 100 + 4.5 + 8, more than the grade limit (27 %) lets the
+    // junction 25 m away keep without rising
+    let (p, raised) = solve_clearing(&net, &hm, &before, &side_slopes(&net, &hm), &graph, &|_| {
+        8.0
+    });
+    let near = |j: &Junctions| j.near((300.0, 462.5), 6.0).unwrap().height;
+    assert!(near(&before) < 101.0);
+    // the bridge end needs 100 + 4.5 + 1.5; the neighbour 25 m away may be that much lower less its grade
+    let wanted = 112.5 - grade_ceiling(Family::Asf3) * 25.0;
+    assert!(
+        near(&raised) >= wanted - 0.5,
+        "{} < {wanted}",
+        near(&raised)
+    );
+    assert!(near(&raised) > 102.0);
+    assert!(p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.06);
+}
+
+#[test]
+fn clearance_out_of_reach_is_a_finding_and_the_solve_ends() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    // approaches of 25 m that end on roads, and a deck so thick that the roads would have to rise more than a
+    // junction may for a bridge (`MAX_RAISE_M`)
+    let mut chains = vec![
+        straight("c1", Family::Asf3, (50.0, 462.5), (550.0, 462.5)),
+        straight("c2", Family::Asf3, (50.0, 537.5), (550.0, 537.5)),
+        straight("1:1-2", Family::Asf3, (50.0, 500.0), (550.0, 500.0)),
+    ];
+    let mut up = straight("up", Family::Asf3, (300.0, 462.5), (300.0, 487.5));
+    up.push(piece(
+        "4:4-5",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 487.5),
+        (300.0, 512.5),
+    ));
+    up.extend(straight("on", Family::Asf3, (300.0, 512.5), (300.0, 537.5)));
+    chains.push(up);
+    let net = network(chains);
+    let graph = build_graph(&[
+        way(1, &[1, 2], &[(50.0, 500.0), (550.0, 500.0)], false),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+    ]);
+    let junctions = find_junctions(&net, &graph, &hm);
+    let (p, _) = solve_clearing(
+        &net,
+        &hm,
+        &junctions,
+        &side_slopes(&net, &hm),
+        &graph,
+        &|_| 30.0,
+    );
+    assert_eq!(p.clearances.len(), 1);
+    let c = p.clearances[0];
+    assert!(c.reached < BRIDGE_CLEARANCE_M - 0.5, "{}", c.reached);
+    assert!((c.wanted - BRIDGE_CLEARANCE_M).abs() < 1e-12);
+}
+
+#[test]
+fn the_road_below_is_the_one_that_crosses_not_the_approach_next_to_the_deck() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    // the lower road crosses 2.5 m behind the deck's start, where the approach (another chain) ends
+    let mut low = straight("low", Family::Asf3, (50.0, 490.0), (550.0, 490.0));
+    for r in &mut low {
+        r.slot.stretch = "1:1-2".to_string();
+    }
+    let approach = straight("up", Family::Asf3, (300.0, 400.0), (300.0, 487.5));
+    let mut deck_chain = vec![piece(
+        "deck",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 487.5),
+        (300.0, 512.5),
+    )];
+    deck_chain[0].slot.stretch = "4:4-5".to_string();
+    deck_chain.extend(straight("on", Family::Asf3, (300.0, 512.5), (300.0, 600.0)));
+    let net = network(vec![low, approach, deck_chain]);
+    let graph = build_graph(&[
+        way(1, &[1, 2], &[(50.0, 490.0), (550.0, 490.0)], false),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+    ]);
+    let junctions = find_junctions(&net, &RoadGraph::default(), &hm);
+    let (p, _) = solve_clearing(
+        &net,
+        &hm,
+        &junctions,
+        &side_slopes(&net, &hm),
+        &graph,
+        &|_| DECK,
+    );
+    assert_eq!(p.clearances.len(), 1);
+    assert!(
+        p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.06,
+        "{}",
+        p.clearances[0].reached
+    );
 }

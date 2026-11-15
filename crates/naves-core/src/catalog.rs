@@ -186,6 +186,11 @@ pub struct BridgeModel {
     pub width: f64,
     /// Height of the deck above the model origin.
     pub deck_height: f64,
+    /// How far the lowest vertex of the model's geometry LOD lies below the deck: the thickness of the
+    /// deck, trusses and beams included, that a road below has to clear. 0 if the model has no geometry
+    /// that could be read (then only the deck surface is known).
+    #[serde(default)]
+    pub deck_thickness: f64,
     /// Where the road enters; the heading says which way the bridge lies.
     pub start: Port,
     /// Where the road leaves.
@@ -367,11 +372,18 @@ fn bridge(m: &OdolModel, model: &str) -> Result<Option<BridgeModel>, CatalogErro
     for name in ["lb", "pb", "le", "pe"] {
         height += f64::from(point(m, model, name)?[1]);
     }
+    let deck_height = height / 4.0;
+    let lowest = m
+        .geometry
+        .iter()
+        .map(|p| f64::from(p[1]))
+        .min_by(f64::total_cmp);
     Ok(Some(BridgeModel {
         model: model.to_string(),
         length: (end.x - start.x).hypot(end.z - start.z),
         width,
-        deck_height: height / 4.0,
+        deck_height,
+        deck_thickness: lowest.map_or(0.0, |low| (deck_height - low).max(0.0)),
         start,
         end,
     }))
@@ -487,6 +499,9 @@ pub mod testing {
 
     use super::{BRIDGES_PREFIX, Family, PARTS_PREFIX, PieceCatalog};
 
+    /// How far below its deck the synthetic bridges' geometry reaches.
+    pub const SYNTHETIC_DECK_THICKNESS: f64 = 1.5;
+
     /// Heading change in degrees and radius in metres of the arcs every family has.
     const ARCS: [(f64, f64); 11] = [
         (0.5, 2000.0),
@@ -564,6 +579,7 @@ pub mod testing {
                 .map(|(k, p)| ((*k).to_string(), vec![*p]))
                 .collect(),
             properties: BTreeMap::new(),
+            geometry: Vec::new(),
         }
     }
 
@@ -605,6 +621,14 @@ pub mod testing {
     /// A bridge `length` long and `width` wide, lying north (`along_x` false) or east, with its
     /// deck `deck` above the origin.
     fn bridge(length: f64, width: f64, deck: f64, along_x: bool) -> OdolModel {
+        let mut m = bridge_ports(length, width, deck, along_x);
+        // the deck's beams hang SYNTHETIC_DECK_THICKNESS below the deck
+        let low = vertex(0.0, deck - SYNTHETIC_DECK_THICKNESS, 0.0);
+        m.geometry = vec![vertex(0.0, deck, 0.0), low];
+        m
+    }
+
+    fn bridge_ports(length: f64, width: f64, deck: f64, along_x: bool) -> OdolModel {
         let h = length / 2.0;
         let w = width / 2.0;
         if along_x {

@@ -469,6 +469,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
+        Rule::BridgeClearance,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -481,6 +482,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(ids.len(), rules.len());
     assert_eq!(Rule::RoadNotDrivable.id(), "road_not_drivable");
     assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
+    assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
 }
 
 #[test]
@@ -752,4 +754,31 @@ fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
     let n = place_network(&graph, &synthetic_catalog()).unwrap();
     assert_eq!(n.joins_without_junction.len(), 1);
     assert_eq!(n.overlays.len(), 0);
+}
+
+#[test]
+fn a_bridge_that_misses_its_clearance_is_a_finding_that_names_what_was_reached() {
+    use naves_core::profile::Clearance;
+    let profiles = Profiles {
+        clearances: vec![
+            Clearance {
+                at: (10.0, 20.0),
+                reached: 3.2,
+                wanted: 4.5,
+            },
+            Clearance {
+                at: (30.0, 40.0),
+                reached: 4.48,
+                wanted: 4.5,
+            },
+        ],
+        ..Profiles::default()
+    };
+    let v = run(&net(vec![]), &profiles, &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::BridgeClearance, &v);
+    // 4.48 m is within the tolerance of 4.5 m
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].at, (10.0, 20.0));
+    assert!(found[0].message.contains("3.2 m"), "{}", found[0].message);
+    assert!(found[0].message.contains("4.5 m"), "{}", found[0].message);
 }

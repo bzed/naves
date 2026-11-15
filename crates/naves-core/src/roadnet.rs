@@ -36,6 +36,9 @@ pub struct Stretch {
     pub tunnel: bool,
     /// Part of a roundabout (`junction=roundabout` or `circular`); see [`rings`].
     pub roundabout: bool,
+    /// The `layer` tag of the way, -5 to 5: of two stretches that cross, the one with the higher layer is
+    /// above (see [`over_crossings`]).
+    pub layer: i8,
     /// Positions in map metres, from `start` to `end`.
     pub points: Vec<(f64, f64)>,
     /// Node id at the first point. Of the two ends, this is the one with the lower id.
@@ -92,6 +95,7 @@ struct Attrs {
     bridge: bool,
     tunnel: bool,
     roundabout: bool,
+    layer: i8,
 }
 
 /// The piece of a way between two consecutive nodes.
@@ -113,6 +117,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             bridge,
             tunnel,
             roundabout,
+            layer,
             ..
         } = feature.kind
         else {
@@ -124,6 +129,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             bridge,
             tunnel,
             roundabout,
+            layer,
         };
         let pairs = feature.nodes.iter().zip(&feature.points);
         for ((&a, &pa), (&b, &pb)) in pairs.clone().zip(pairs.skip(1)) {
@@ -296,6 +302,7 @@ fn walk(
             bridge: false,
             tunnel: false,
             roundabout: false,
+            layer: 0,
         }),
         way,
         ring,
@@ -342,6 +349,7 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         bridge: w.attrs.bridge,
         tunnel: w.attrs.tunnel,
         roundabout: w.attrs.roundabout,
+        layer: w.attrs.layer,
         points: w.points,
         start,
         end,
@@ -371,6 +379,96 @@ fn crossings(stretches: &[Stretch]) -> Vec<Crossing> {
             stretches: set.into_iter().collect(),
         })
         .collect()
+}
+
+/// Two stretches whose lines cross without a shared node, the first on a bridge over the second.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverCrossing {
+    /// The bridge, an index into [`RoadGraph::stretches`].
+    pub upper: usize,
+    /// The road below it.
+    pub lower: usize,
+    /// Where their lines cross, in map metres.
+    pub at: (f64, f64),
+    /// The distance of `at` from the start of the upper stretch along its line.
+    pub upper_s: f64,
+    /// The distance of `at` from the start of the lower stretch along its line.
+    pub lower_s: f64,
+}
+
+/// Stretches that cross without a shared node and are not at one height: `upper` is a bridge and `lower` is no
+/// tunnel and no bridge of a higher or equal layer. Untagged crossings are not here (nothing says which is
+/// above), nor are crossings of stretches that share a node (they join, see [`RoadGraph::crossings`]). Sorted
+/// by the two stretches and the place.
+#[must_use]
+pub fn over_crossings(graph: &RoadGraph) -> Vec<OverCrossing> {
+    let boxes: Vec<((f64, f64), (f64, f64))> =
+        graph.stretches.iter().map(|s| bounds(&s.points)).collect();
+    let mut out = Vec::new();
+    for (i, a) in graph.stretches.iter().enumerate() {
+        for (j, b) in graph.stretches.iter().enumerate().skip(i + 1) {
+            let upper_is_a = match (a.bridge, b.bridge) {
+                (true, false) => true,
+                (false, true) => false,
+                (true, true) if a.layer != b.layer => a.layer > b.layer,
+                _ => continue,
+            };
+            let (upper, lower) = if upper_is_a { (a, b) } else { (b, a) };
+            let shared = [upper.start, upper.end]
+                .iter()
+                .any(|n| *n == lower.start || *n == lower.end);
+            let apart = boxes.get(i).zip(boxes.get(j)).is_some_and(|(p, q)| {
+                p.1.0 < q.0.0 || q.1.0 < p.0.0 || p.1.1 < q.0.1 || q.1.1 < p.0.1
+            });
+            if shared || apart || upper.tunnel || lower.tunnel {
+                continue;
+            }
+            let (u, l) = if upper_is_a { (i, j) } else { (j, i) };
+            out.extend(
+                line_crossings(&upper.points, &lower.points)
+                    .into_iter()
+                    .map(|(at, upper_s, lower_s)| OverCrossing {
+                        upper: u,
+                        lower: l,
+                        at,
+                        upper_s,
+                        lower_s,
+                    }),
+            );
+        }
+    }
+    out
+}
+
+/// Where two polylines cross: the point and the distance along each.
+fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64), f64, f64)> {
+    let mut found = Vec::new();
+    let mut along_first = 0.0;
+    for pair in first.windows(2) {
+        let [from, to] = pair else { continue };
+        let dir = (to.0 - from.0, to.1 - from.1);
+        let mut along_second = 0.0;
+        for other in second.windows(2) {
+            let [o_from, o_to] = other else { continue };
+            let o_dir = (o_to.0 - o_from.0, o_to.1 - o_from.1);
+            let denom = dir.0 * o_dir.1 - dir.1 * o_dir.0;
+            if denom.abs() > 1e-12 {
+                let gap = (o_from.0 - from.0, o_from.1 - from.1);
+                let on_first = (gap.0 * o_dir.1 - gap.1 * o_dir.0) / denom;
+                let on_second = (gap.0 * dir.1 - gap.1 * dir.0) / denom;
+                if (0.0..=1.0).contains(&on_first) && (0.0..=1.0).contains(&on_second) {
+                    found.push((
+                        (from.0 + on_first * dir.0, from.1 + on_first * dir.1),
+                        along_first + on_first * dir.0.hypot(dir.1),
+                        along_second + on_second * o_dir.0.hypot(o_dir.1),
+                    ));
+                }
+            }
+            along_second += o_dir.0.hypot(o_dir.1);
+        }
+        along_first += dir.0.hypot(dir.1);
+    }
+    found
 }
 
 /// A stretch end at a crossing.

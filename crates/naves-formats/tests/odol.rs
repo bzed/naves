@@ -489,3 +489,23 @@ fn the_synthetic_writer_reads_back() {
     assert_eq!(m.memory["lb"], vec![[-1.0, 0.0, -2.0]]);
     assert_eq!(m.memory["pe"], vec![[3.0, 0.5, 4.0]]);
 }
+
+#[test]
+fn the_vertices_of_the_geometry_lod_are_read() {
+    let geometry = lod_bytes(&LodSpec {
+        points: &[[0.0, 7.9, 0.0], [1.0, 6.4, 2.0]],
+        selections: &[],
+        properties: &[("class", "road")],
+        ..LodSpec::default()
+    });
+    let memory = lod_bytes(&LodSpec {
+        points: &[[7.0, 8.0, 9.0]],
+        selections: &[("lb", &[0])],
+        ..LodSpec::default()
+    });
+    let m = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory)])).unwrap();
+    assert_eq!(m.geometry, vec![[0.0, 7.9, 0.0], [1.0, 6.4, 2.0]]);
+    // the properties still come with it, and a model without a geometry LOD has no vertices
+    assert_eq!(m.properties["class"], "road");
+    assert_eq!(read_odol(&sample()).unwrap().geometry, [] as [[f32; 3]; 0]);
+}

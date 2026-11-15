@@ -25,11 +25,11 @@ use naves_core::objects::{
     road_objects,
 };
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
-use naves_core::profile::{Profiles, solve_profiles};
+use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
 use naves_core::roadnet::{
-    DroppedDuplicate, RoadGraph, build_graph, collapse_small_rings, drop_duplicates, lost_bridges,
-    widen_bridges, with_bridge_spans,
+    DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
+    lost_bridges, widen_bridges, with_bridge_spans,
 };
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
@@ -179,7 +179,11 @@ pub fn place_once(
     let net = place_network(graph, catalog)?;
     let junctions = find_junctions(&net, graph, base);
     let side = side_slopes(&net, base);
-    let profiles = solve_profiles(&net, base, &junctions, &side);
+    // a bridge over a road keeps its clearance: the junctions it needs may be higher than the ground's
+    let thickness = |s: &Stretch| {
+        bridge_for(catalog, s.family).map_or(0.0, |(m, scale, _)| m.deck_thickness * scale)
+    };
+    let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness);
     Ok(Placed {
         net,
         junctions,

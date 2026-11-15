@@ -238,7 +238,10 @@ pub fn write_road_tree(dir: &Path) -> std::io::Result<()> {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(target, naves_formats::odol::synthetic::model_bytes(&points))?;
+        std::fs::write(
+            target,
+            naves_formats::odol::synthetic::model_bytes_with_geometry(&points, &model.geometry),
+        )?;
     }
     Ok(())
 }

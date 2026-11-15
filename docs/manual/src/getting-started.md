@@ -228,6 +228,16 @@ behind the deck starts at the deck's end, on the line. Where no such slide exist
 bridge (it arrives more than 2.5 degrees off the line's chord, as on a bridge on a curve), the deck keeps its place and
 follows the road: it starts where the road ends, with the road's heading.
 
+**A bridge over a road keeps its clearance.** Where a road tagged as a bridge crosses another road without a shared
+node, the underside of the deck keeps **4.5 m** from the surface of the road below. The road below keeps its height
+and is never lowered; the terrain under the bridge is shaped for it. The deck's thickness is measured from the bridge
+model's geometry (the lowest vertex below the deck; a model without readable geometry counts as 0 m, so only the deck
+surface is cleared). The bridge, its approaches and the junctions near it rise as far as needed: the bridge's ends and
+the junctions on the road beside it get a lower bound (a junction rises at most 10 m above the ground for it), and the
+profile solve respects the bound within the road's grade limits. Where 4.5 m cannot be reached within the limits, the
+finding is `bridge_clearance`, with the clearance reached. Crossings that are not tagged as a bridge (and tunnels) are
+not treated like this.
+
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,

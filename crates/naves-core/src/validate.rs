@@ -16,7 +16,7 @@ use crate::junctions::Junctions;
 use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
-use crate::profile::{GradeExcessKind, Profiles};
+use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcessKind, Profiles};
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
@@ -59,11 +59,13 @@ pub enum Rule {
     RoadOverWater,
     /// A road that OpenStreetMap draws twice: the lower-ranked copy's overlapping part is not placed.
     RoadDuplicateDropped,
+    /// A bridge over a road that does not clear it by [`crate::profile::BRIDGE_CLEARANCE_M`].
+    BridgeClearance,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 15] = [
+    pub const ALL: [Rule; 16] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -79,6 +81,7 @@ impl Rule {
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
+        Rule::BridgeClearance,
     ];
 
     /// The stable id of the rule.
@@ -100,6 +103,7 @@ impl Rule {
             Rule::RoadFarFromGround => "road_far_from_ground",
             Rule::RoadOverWater => "road_over_water",
             Rule::RoadDuplicateDropped => "road_duplicate_dropped",
+            Rule::BridgeClearance => "bridge_clearance",
         }
     }
 }
@@ -117,6 +121,25 @@ pub struct Violation {
 
 fn violation(rule: Rule, at: (f64, f64), message: String) -> Violation {
     Violation { rule, at, message }
+}
+
+/// A bridge that clears the road below by less than it should.
+fn clearance_violations(profiles: &Profiles) -> Vec<Violation> {
+    profiles
+        .clearances
+        .iter()
+        .filter(|c| c.reached < c.wanted - CLEARANCE_TOLERANCE_M)
+        .map(|c| {
+            violation(
+                Rule::BridgeClearance,
+                c.at,
+                format!(
+                    "A bridge clears the road below by only {:.1} m, the minimum is {:.1} m",
+                    c.reached, c.wanted
+                ),
+            )
+        })
+        .collect()
 }
 
 fn length_of(check: &PieceCheck) -> f64 {
@@ -441,6 +464,7 @@ pub fn check_roads(
             format!("Tunnel {id} has no pieces: real tunnels need terrain holes"),
         )
     }));
+    out.extend(clearance_violations(profiles));
     out.extend(duplicate_violations(&net.duplicates));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));

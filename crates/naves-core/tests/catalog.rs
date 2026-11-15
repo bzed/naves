@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
+use naves_core::catalog::testing::{SYNTHETIC_DECK_THICKNESS, synthetic_catalog, synthetic_models};
 use naves_core::catalog::{CatalogError, Family, PieceCatalog, PieceKind};
 use naves_formats::odol::OdolModel;
 
@@ -32,6 +32,7 @@ fn empty_model(points: &[(&str, [f32; 3])]) -> OdolModel {
             .map(|(k, p)| ((*k).to_string(), vec![*p]))
             .collect(),
         properties: BTreeMap::new(),
+        geometry: Vec::new(),
     }
 }
 
@@ -252,4 +253,27 @@ fn the_tightest_arc_is_the_smallest_radius_of_the_families_arcs() {
         // the synthetic set has a 60 degree arc of 10 m radius
         assert!((radius - 10.0).abs() < 1e-6, "{family:?}: {radius}");
     }
+}
+
+#[test]
+fn a_bridge_deck_thickness_is_measured_from_the_geometry() {
+    let c = synthetic_catalog();
+    for b in c.bridges() {
+        assert!(
+            near(b.deck_thickness, SYNTHETIC_DECK_THICKNESS, 1e-4),
+            "{}",
+            b.model
+        );
+    }
+    // a model without geometry has no thickness to measure
+    let mut models = synthetic_models();
+    for m in models.values_mut() {
+        m.geometry.clear();
+    }
+    let c = PieceCatalog::from_models(&models).unwrap();
+    assert!(
+        c.bridges()
+            .iter()
+            .all(|b| near(b.deck_thickness, 0.0, 1e-12))
+    );
 }

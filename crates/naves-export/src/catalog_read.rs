@@ -21,7 +21,7 @@ use crate::bridge::{Finished, run_supervised};
 use crate::tools::{ToolError, Tools};
 
 /// Bumped when the cached shape changes.
-const CACHE_FORMAT: u32 = 1;
+const CACHE_FORMAT: u32 = 2;
 /// How long unpacking the PBO may take.
 const UNPACK_TIMEOUT: Duration = Duration::from_mins(5);
 /// How much of dayzmake's output goes into an error message.

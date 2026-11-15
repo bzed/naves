@@ -288,6 +288,32 @@ fn main() {
             return;
         }
     }
+    println!(
+        "OVERCROSSINGS {} bridges over roads, {} measured",
+        naves_core::roadnet::over_crossings(&graph).len(),
+        profiles.clearances.len()
+    );
+    {
+        // the same placement with the junctions at the ground, as it was without the clearance
+        let plain = naves_core::junctions::find_junctions(&net, &graph, &base);
+        let before = solve_profiles(&net, &base, &plain, &side);
+        let thickness = |s: &naves_core::roadnet::Stretch| {
+            naves_core::roadplace::bridge_for(&catalog, s.family)
+                .map_or(0.0, |(m, scale, _)| m.deck_thickness * scale)
+        };
+        for c in naves_core::profile::measure_clearances(&net, &before.strips, &graph, &thickness) {
+            println!(
+                "CLEARANCE_BEFORE at ({:.0}, {:.0}) reached {:.2} m",
+                c.at.0, c.at.1, c.reached
+            );
+        }
+    }
+    for c in &profiles.clearances {
+        println!(
+            "CLEARANCE at ({:.0}, {:.0}) reached {:.2} m of {:.1} m",
+            c.at.0, c.at.1, c.reached, c.wanted
+        );
+    }
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
     let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
     let t_conform = t0.elapsed();

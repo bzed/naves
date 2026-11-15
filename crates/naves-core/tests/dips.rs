@@ -118,6 +118,7 @@ fn flat_plan(graph: &RoadGraph, height: f64) -> (PlacedNetwork, Profiles) {
         Profiles {
             strips: vec![strip],
             excesses: Vec::new(),
+            clearances: Vec::new(),
         },
     )
 }

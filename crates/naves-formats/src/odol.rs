@@ -108,6 +108,8 @@ pub struct OdolModel {
     pub memory: BTreeMap<String, Vec<[f32; 3]>>,
     /// Named properties of the geometry-type LODs; the first LOD that sets a key wins.
     pub properties: BTreeMap<String, String>,
+    /// Vertices of the first geometry-type LOD that could be read, in model coordinates; empty if none.
+    pub geometry: Vec<[f32; 3]>,
 }
 
 /// Reads a binarized model.
@@ -138,6 +140,7 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
         bbox_max,
         memory: BTreeMap::new(),
         properties: BTreeMap::new(),
+        geometry: Vec::new(),
     };
     let mut memory_done = false;
     for (index, resolution) in resolutions.iter().enumerate() {
@@ -165,6 +168,8 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
                 if is_memory {
                     memory_done = true;
                     model.memory = lod.memory;
+                } else if model.geometry.is_empty() {
+                    model.geometry = lod.points;
                 }
             }
             Err(e) if is_memory => return Err(e),
@@ -263,12 +268,13 @@ fn read_lod_table(
 }
 
 struct Lod {
+    points: Vec<[f32; 3]>,
     memory: BTreeMap<String, Vec<[f32; 3]>>,
     properties: BTreeMap<String, String>,
 }
 
 /// Reads one LOD up to its named properties, and for the memory LOD on to its vertices.
-fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
+fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
     const W: &str = "a LOD";
     let mut c = Cursor::new(bytes);
     // proxies: model name, 3×4 matrix, sequence, selection, bone, section
@@ -317,13 +323,25 @@ fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
         let value = c.cstr(W)?;
         properties.entry(key).or_insert(value);
     }
-    if !with_points {
+    let points = match read_points(&mut c) {
+        Ok(points) => points,
+        Err(e) if is_memory => return Err(e),
+        // a geometry-type LOD whose vertices cannot be read still gives its properties
+        Err(_) => {
+            return Ok(Lod {
+                points: Vec::new(),
+                memory: BTreeMap::new(),
+                properties,
+            });
+        }
+    };
+    if !is_memory {
         return Ok(Lod {
+            points,
             memory: BTreeMap::new(),
             properties,
         });
     }
-    let points = read_points(&mut c)?;
     let mut memory = BTreeMap::new();
     for (name, vertices) in selections {
         let mut selected = Vec::new();
@@ -339,7 +357,11 @@ fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
         }
         memory.insert(name, selected);
     }
-    Ok(Lod { memory, properties })
+    Ok(Lod {
+        points,
+        memory,
+        properties,
+    })
 }
 
 /// The named selections: a lower-cased name and the vertex indices it holds.
@@ -568,6 +590,8 @@ impl<'a> Cursor<'a> {
 pub mod synthetic {
     /// Resolution of the memory LOD as the game files store it.
     const MEMORY_RESOLUTION: f32 = 999_999_986_991_104.0;
+    /// Resolution of the geometry LOD as the game files store it.
+    const GEOMETRY_RESOLUTION: f32 = 9_999_999_827_968.0;
 
     fn put_u32(out: &mut Vec<u8>, v: usize) {
         out.extend_from_slice(&u32::try_from(v).unwrap_or(u32::MAX).to_le_bytes());
@@ -578,17 +602,16 @@ pub mod synthetic {
         out.push(0);
     }
 
-    /// A version 56 model with one memory LOD. Each entry is a named selection holding one point.
-    #[must_use]
-    pub fn model_bytes(points: &[(&str, [f32; 3])]) -> Vec<u8> {
+    /// One LOD: named selections of one point each (`names` index into `vertices`) and the vertices.
+    fn lod(names: &[&str], vertices: &[[f32; 3]]) -> Vec<u8> {
         let mut lod = Vec::new();
         lod.extend_from_slice(&[0; 12]); // proxies, sub-skeletons, skeleton map
         lod.extend_from_slice(&[0; 56]);
         lod.extend_from_slice(&[0; 4 * 4]); // textures, materials, two maps
         lod.extend_from_slice(&[0; 10]); // faces
         lod.extend_from_slice(&[0; 4]); // sections
-        put_u32(&mut lod, points.len());
-        for (i, (name, _)) in points.iter().enumerate() {
+        put_u32(&mut lod, names.len());
+        for (i, name) in names.iter().enumerate() {
             put_str(&mut lod, name);
             lod.extend_from_slice(&[0; 4 + 5 + 4]);
             put_u32(&mut lod, 1);
@@ -602,27 +625,62 @@ pub mod synthetic {
         lod.extend_from_slice(&[0; 16 + 4]); // UV range and vertex count
         lod.extend_from_slice(&[1, 0, 0, 0, 0]);
         put_u32(&mut lod, 1); // UV sets
-        put_u32(&mut lod, points.len());
-        for (_, p) in points {
+        put_u32(&mut lod, vertices.len());
+        for p in vertices {
             for v in p {
                 lod.extend_from_slice(&v.to_le_bytes());
             }
         }
+        lod
+    }
+
+    /// A version 56 model with one memory LOD. Each entry is a named selection holding one point.
+    #[must_use]
+    pub fn model_bytes(points: &[(&str, [f32; 3])]) -> Vec<u8> {
+        model_bytes_with_geometry(points, &[])
+    }
+
+    /// [`model_bytes`] with a geometry LOD that has the vertices `geometry` (none: no geometry LOD).
+    #[must_use]
+    pub fn model_bytes_with_geometry(
+        points: &[(&str, [f32; 3])],
+        geometry: &[[f32; 3]],
+    ) -> Vec<u8> {
+        let names: Vec<&str> = points.iter().map(|(n, _)| *n).collect();
+        let vertices: Vec<[f32; 3]> = points.iter().map(|(_, p)| *p).collect();
+        let mut lods: Vec<(f32, Vec<u8>)> = Vec::new();
+        if !geometry.is_empty() {
+            lods.push((GEOMETRY_RESOLUTION, lod(&[], geometry)));
+        }
+        lods.push((MEMORY_RESOLUTION, lod(&names, &vertices)));
 
         let mut file = Vec::new();
         file.extend_from_slice(b"ODOL");
         put_u32(&mut file, 56);
-        put_u32(&mut file, 1);
-        file.extend_from_slice(&MEMORY_RESOLUTION.to_le_bytes());
+        put_u32(&mut file, lods.len());
+        for (resolution, _) in &lods {
+            file.extend_from_slice(&resolution.to_le_bytes());
+        }
         file.extend_from_slice(&[0; 48 + 24 + 96 + 5 + 28 + 14 + 1 + 1 + 1 + 4 + 34]);
         put_str(&mut file, "road");
         put_str(&mut file, "");
         file.extend_from_slice(&[0; 6 + 1]);
-        let start = file.len() + 9;
-        put_u32(&mut file, start);
-        put_u32(&mut file, start + lod.len());
-        file.push(1);
-        file.extend_from_slice(&lod);
+        // the table: starts, ends, one "permanent" byte per LOD, then the LODs
+        let table = file.len() + 4 * 2 * lods.len() + lods.len();
+        let mut at = table;
+        let mut ends = Vec::new();
+        for (_, lod) in &lods {
+            put_u32(&mut file, at);
+            at += lod.len();
+            ends.push(at);
+        }
+        for end in ends {
+            put_u32(&mut file, end);
+        }
+        file.extend_from_slice(&vec![1; lods.len()]);
+        for (_, lod) in &lods {
+            file.extend_from_slice(lod);
+        }
         file
     }
 }
