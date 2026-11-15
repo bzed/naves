@@ -1563,3 +1563,131 @@ because it is no gap).
 **Not done.** The terrain under the bridge is shaped for the lower road as before (no new check of the cut); untagged
 crossings and tunnels are out of scope (railroad design); the visual underside of an arch is not read (the Geometry
 LOD is a collision body).
+
+### 9.8 What makes the humps on steep roads (2026-11-15)
+
+**Question.** Spec 2.5: `road_grade` (1729 at the start of the plan) and `road_not_drivable` (250) on steep stretches,
+and the "ski jump" of the sites 21 and 23 of the game check. Does the hump come from vertical bends at fixed junction
+heights, from short pieces between patches, from the terrain shaping, or from something else? This section only
+diagnoses; nothing in the product code changed.
+
+**Method.** `road-analysis` at `terrain_size = 2048` on the state after Task 10 (HEAD `78df272`), with temporary
+instrumentation (kept outside the repository as a patch, `/var/tmp/naves-roadlook/t11/hump-dump.patch`) that dumps, for
+every strip, each joint (planned height, original ground, finished terrain, the junction hold with its rule and
+height), each piece (kind, run between its joints, model, start and end pose, the check's grade, cross fall and state)
+and every `road_grade` excess of the profile and every `road_not_drivable` run. Two runs (the second added the model and
+poses) give the same joints, pieces and findings (same checksum). Counts of that state: `road_grade` **1645** (411
+grade excesses and 1234 vertical-bend excesses, one per joint, so a hump gives several), `road_not_drivable` **237**
+runs of pieces. Each finding was matched to its joint and classified from the dump (script
+`/var/tmp/naves-roadlook/t11/cons.py`). Counts are exact for this run; a different run of the same code moves every
+deck a few centimetres and `road_grade` by about 30, so the classes are what counts, not single numbers. The test for
+"too close for the rise" is a model, not a result of the solve: between two held heights `h1`, `h2` that lie `L`
+metres apart (an end is *flat* when a run of two or more joints is held to one junction: the junction piece and its
+patch), the shortest road with the family's minimum vertical radius `R` and 0.9 of its drive grade `c` is
+`L = sqrt(2 n R dh)` (`n` flat ends, if the peak grade stays under `c`, else `dh / c + n R c / 2`); a span shorter than
+that cannot be driven within the limits whatever the solver does, **with the heights held as they are**.
+
+**Result: the 1645 `road_grade` findings by cause.**
+
+| Class | Bends | Grades | Total | What it is |
+|---|---|---|---|---|
+| H2 held heights too close for the rise | 561 | 164 | **725** | Two junctions (level patches) so close that the road cannot change height between them within the minimum radius. Span between the two held runs: median 14 m, 10 to 90 percent 4 to 44 m; height difference median 2.3 m (0.5 to 7.9 m); 370 of the 561 bends are on `City` roads (R 150 m). The road has about 46 percent of the length it would need (median). |
+| H3 held heights far enough apart | 261 | 77 | **338** | The same places, but the two heights are far enough apart for a curve; the solve does not use the room. Height to move to clear the bend: median 0.20 m, 90 percent 1.4 m (max 4.9 m). |
+| H1 hold on one side only | 31 | 33 | **64** | A junction height on one side and a free chain end (dead end, end cap) on the other; the blend (`bound_spans`) needs two held ends. These include the three worst: 540 percent (2635, 6118), 187 percent (2454, 6431), 95 percent (7736, 8168). |
+| F1 free joints, ground bends or is steeper than the limit | 253 | 68 | **321** | No hold nearby. 206 of the 321 have a piece of under 1 m at the joint (see F2/overlap below); bends clear with a move of median 0 cm, 90 percent 9 cm. The 68 grades are on ground that is itself steeper than the limit (Mud, Grav, City), 38 at a chain end. |
+| F2 free joints, short pieces | 93 | 0 | **93** | No hold, straight ground, a piece under 12.5 m next to the joint; 72 of them under 1 m. Clears with 0 to 8 cm. |
+| F3 free joints, other | 6 | 50 | **56** | Unexplained by these measures (grade excess on free joints with ground within the limit); not looked at one by one. |
+| D bridge deck (and its ends) | 29 | 19 | **48** | At or next to a deck, 12 bends and 6 grades have no joint (the deck's single variable). |
+| | **1234** | **411** | **1645** | |
+
+The 50 worst grade excesses (grades from 30 to 540 percent): H2 15, H1 11, H3 6, F1 7, F3 4, deck 7. The earlier
+finding (section 7.2: 640 of 1180 bends at a held joint, 220 next to one) holds: at HEAD 602 bends are at a held joint
+and 251 next to one, **853 of 1234 (69 percent)**; of the grades 274 of 411. What was missing then is the cause there.
+
+**Overlapped 6 m straights (F1, F2, part of the others).** 604 pieces of the chains have a run between their joints of
+under 1 m (median 0.28 m, 6 of them at the end of a chain). All 604 are the 6.25 m straight of their family (`city_6`
+236, `asf3_6` 118, `mud_6` 89, `asf1_6` 71, `asf2_6` 63, `grav_6` 27) placed over the end of the piece before it: its
+start is a median 6.0 m before the previous piece's end (the "straights that overlap to make a length" of section 1; 1382
+of 21 990 pieces start more than 0.5 m from the previous end). The profile has a joint at the end of each piece, so such
+a piece is a run of 0.2 m between two joints, which the checks measure as it is (`max(0.5 m)`): a 5 cm difference of
+height there is a 10 percent grade and a bend of 0.05 per metre, hundreds of times the limit. 350 of the 1234 bends have
+such a run next to the joint (276 of the 351 free ones), and the move that clears them is under 5 cm in 333 of the 350.
+**This is a hump of centimetres in the planned heights, but two pieces lie over each other there at different
+heights**, which the game shows as a step or z-fighting, not as a ski jump. How the export sets the height and pitch
+of an overlapped piece was not checked here.
+
+**Not drivable (237 runs, 424 pieces).** 207 are cross fall only (grade within its limit, fall across the road over
+20 percent): not humps, the side-slope problem of section 1, terrain shaping. 30 are grade humps: 15 at a held
+joint (13 plus 2 beside a deck; planned grade over the hard limit, e.g. 95 percent over 4.4 m at (7736, 8168), planned 67 percent
+at (5825, 5806), 46 percent at (5204, 5108), planned 535 percent at (2635, 6118)), 14 where the plan is within the
+limit and the finished terrain is steeper in a 12.5 m window (11 plus 3 beside a deck: the earthworks of ground at 50
+percent and more, e.g. Grav at (7316, 6280), base ground 51 percent, plan 18 percent, finished 79 percent) and 1 on
+free joints. So terrain shaping is a small part of the grade humps (14 runs of 237), and not a cause of `road_grade`
+at all, which counts the plan.
+
+**The six sites of the game check** (Checkpoint A numbers; the plan has changed the roads since, so the measures are
+those of HEAD at the same place):
+
+| Site | Where | What the data shows | Class |
+|---|---|---|---|
+| 21 end cap | (7198, 6574) | Asf3 climbing a steady 17 to 18 percent (aim 12) for 65 m to the cap; no bend and no `road_grade` finding within 45 m. The photograph shows the cap detached from the last piece with a dark band between. | Not a profile excess: the end cap at the end of a steep road; look at its placement in the game check |
+| 23 wooden bridge | (6101, 3040) | Mud road at 21 to 23 percent into a flat 37 m deck (562.41 m), whose far end is 3.5 m above the ground, then 15 percent down. The grade jumps from 21 percent to 0 at the deck start and from 0 to -15 percent at its end: the sag and the crest of the ski jump. The excess finder measures the change over the middle of the deck piece (about 25 m), 0.006 to 0.009 per metre, under the 0.0167 of `Mud`. | D |
+| 36 `road_grade` | (2454, 6431) | Chain of two pieces: held at 401.60 m at junction 167, the free end 13 m under the ground (389.88 m) | H1 |
+| 37 `road_grade` | (6743, 7377) | Two junctions 17.4 m apart with 2.1 m between their heights (25 m needed); behind the second, the free end drops 4 m in 6.2 m | H2 (and H1) |
+| 42 `road_not_drivable` | (7736, 8168) | Free joints at the ground (295.18 m), then the hold of junction 1340 at 291.04 m, 3.2 m under the ground: 4.1 m down in 4.4 m (95 percent); 22 m of free road before it would take it at 19 percent | H1 |
+| 43 `road_not_drivable` | (5204, 5108) | Grav planned at 36 to 46 percent on ground of 18 to 39 percent, 1.8 m over the ground at the top and held 3 m under it at the junction arm at the bottom (359.71 m); 64 percent over 13 m | H1 (a hold on one side) with steep ground |
+
+Bridges (not only those two sites): 75 decks, 52 with a grade step of over 1/R across the approach piece alone, 30 with
+an approach grade of 10 percent or more, 21 of 15 percent or more, up to 99 percent at (7682, 6073). The bend of a deck
+is measured over the deck's length, which hides most of this.
+
+**What the joint height solve (the plan that follows) would do with each class, and what needs its own fix now.**
+
+| Class | Joint solve (one QP over all joints) | Own fix now (Task 12)? |
+|---|---|---|
+| H3 (338) | removes it: the room exists, the junction heights and the free joints are variables | no |
+| F1, F2 (414) | removes what is not an artefact of overlapped pieces; the rest are cm | partly: see overlap |
+| H1 (64) | removes it (a hold on one side, free joints to blend over; the QP has no "two held ends" condition) | optional: the three worst (540, 187, 95 percent) make hard-to-drive runs now |
+| H2 (725) | **does not remove it**: the equality of the joints of a junction makes the patch level, and a level patch on a slope with the minimum radius needs `2 sqrt(R dh)` of road: with the junctions 14 m apart and 2.3 m of ground between them, no height assignment on the ground works; the QP trades the radius against the ground distance and leaves the road under or above the ground by metres (`road_misses_terrain`, earthworks) or breaks the bound | **yes** |
+| Overlap (604 pieces, about 380 findings) | does not: the variables are the joints, and 0.2 m runs stay in it | **yes** |
+| D (48, and 75 decks) | partly: a flat deck is one variable; the joint solve can bend the approach but not the deck, and the check must measure the bend at the deck ends | yes, with the check |
+
+**Proposed fixes (Task 12 candidates, by size of effect).**
+
+1. **Junction pieces follow the through road's grade instead of lying level (H2, up to 725 of 1645).** Hold the height
+   of a junction only at its centre (or the crossing point on the through road's axis) and let the held joints of the
+   through road, and the side roads' ports at the edge of the through road, lie on the through road's profile; the
+   level terrain patch becomes a plane that follows the through road (as the ring plane of 9.4 does). If the junction
+   joints were free of the flatness, the span between the two junctions would be a straight line of at most 0.9 times
+   the drive grade in 518 of the 561 bends and 133 of the 164 grades; the rest (43 and 31) have junctions too close
+   for any grade. Risk: a junction model pitched along a slope (the game's junction pieces are placed pitched?
+   untested in the game); the side road's first piece must meet the through surface at its edge; the terrain patch and
+   `junction_too_steep` change; it changes the junction height rules (`Piece`, `Inward`, `Arm`, `End`, `Patch`) and the
+   heights of the level patch used by the earthworks. Needs the game check on the sites 28, 29, 37.
+2. **The overlapped 6.25 m straights (604 pieces, about 380 findings).** Treat joints less than about 1 m apart as one
+   variable (the profile has a `MIN_STENCIL_M` for the smoothing already, not for the limits or the excess finder), and
+   give the overlapped piece the pose and pitch of the surface it overlaps; check how the export sets the height of
+   such a piece. Effect: removes the F2 class and most of F1 (about 280 findings), and the centimetre steps between
+   overlapped pieces. Risk: low for the check, medium for the export (the pose of the overlapped piece).
+3. **A hold on one side only (H1, 64, including the three worst).** Extend `bound_spans` so that a span from a held
+   joint to a free chain end blends away from the hold at the grade limit and the radius (a line of the limit's slope
+   from the held height backwards over the free joints). Effect: the three pieces over 90 percent and most of the 15
+   grade runs of `road_not_drivable` at a held joint. Risk: low; it moves free joints only. The joint solve does this too; do it now
+   only if the joint solve is not near.
+4. **Bridge decks (D, 48; 75 decks).** Measure the bend at the deck ends over the approach piece (not the middle of
+   the deck) and let the approach lead into the deck over its own pieces; where an approach of over 10 percent meets a
+   flat deck, either lengthen the ramp on the approach (the deck's variable is held) or pitch the deck along the road
+   (a pitched bridge model; not tried in the game). Effect: the ski jump of site 23 and 30 decks with an approach of 10
+   percent or more. Risk: medium (decks are held by clearance and junctions; the check changes `road_grade` upwards by
+   the decks that were hidden: expect up to about 50 new findings).
+
+H3 (338), F1 and F2 without the overlap, and the grade humps on steep ground of `road_not_drivable` (14 runs where the
+plan is within the limit and the earthworks make it steeper) are for the joint solve and the terrain shaping of the
+plan after this one; the 207 cross-fall runs are not humps. F3 (56) was not explained: grade excesses on free joints
+whose ground is within the limit, to be looked at when the others are gone.
+
+**Limits of this diagnosis.** The classes use the held heights as the solve left them: that H2 is "infeasible" is the
+model above (radius and grade ceiling per family, flat ends where two joints are held to one junction), not a
+different solve that could have shown a way; the second half of the table (what the joint solve does) is expectation,
+not a run. The classes are exclusive and ordered (deck, then hold, then free); a hump at a deck end next to a junction
+counts as a hold. Site 21 is not explained by the data. Nothing was driven or photographed in the game for this step.
