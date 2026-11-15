@@ -94,7 +94,8 @@ def main():
     sheets(out, shots, rows)
 
 
-def index(out, rows):
+def index_text(rows):
+    """The text of index.md for rows of (site, [shot file names])."""
     lines = [
         "# In-game road check",
         "",
@@ -110,16 +111,24 @@ def index(out, rows):
         note = s["note"].replace("|", "/")
         lines.append(f"| {s['id']} | {s['category']} | {s['x']} | {s['z']} | {s['yaw_deg']} "
                      f"| {numbers} | {note} | {shots} |")
+    return "\n".join(lines) + "\n"
+
+
+def index(out, rows):
     with open(os.path.join(out, "index.md"), "w") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(index_text(rows))
+
+
+def sheet_groups(rows):
+    """The shot file names of each contact sheet: SHEET sites each, in site order."""
+    return [[f for _, fs in rows[n:n + SHEET] for f in fs] for n in range(0, len(rows), SHEET)]
 
 
 def sheets(out, shots, rows):
-    for n in range(0, len(rows), SHEET):
-        files = [os.path.join(shots, f) for _, fs in rows[n:n + SHEET] for f in fs]
-        target = os.path.join(out, f"sheet{n // SHEET + 1}.png")
+    for n, files in enumerate(sheet_groups(rows), start=1):
+        target = os.path.join(out, f"sheet{n}.png")
         subprocess.run(["montage", "-tile", "2x", "-geometry", "640x344+4+4", "-set", "label", "%t",
-                        *files, target], check=True)
+                        *[os.path.join(shots, f) for f in files], target], check=True)
 
 
 if __name__ == "__main__":

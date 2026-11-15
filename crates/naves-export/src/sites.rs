@@ -10,6 +10,8 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 
+use naves_core::conform::FACE_SIDE_SLOPE;
+use naves_core::profile::RoadStrip;
 use naves_core::roadplace::{PlacedKind, PlacedRoad};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,13 +31,47 @@ const MEET_M: f64 = 3.0;
 /// Heading changes (degrees) that the "slight angle" sites aim for: the interior angle is 180 minus this.
 const SLIGHT_TARGETS_DEG: [f64; 5] = [2.0, 5.0, 9.0, 15.0, 25.0];
 
+/// An OSM bridge is this close to a bridge deck (metres): the bridge is not one over a dip.
+const OSM_BRIDGE_NEAR_M: f64 = 20.0;
+
+/// A painted path is at least this long, and this far from roads and from steep findings (metres).
+const PATH_MIN_LENGTH_M: f64 = 150.0;
+const PATH_APART_M: f64 = 60.0;
+const STEEP_APART_M: f64 = 80.0;
+
+/// What the site picking knows about the terrain, the height profiles of the roads and the paths.
+pub struct Terrain<'a> {
+    /// The height profile of each chain (`Profiles::strips` of the placement).
+    pub strips: &'a [RoadStrip],
+    /// The height of the original ground at a map position.
+    pub ground: &'a dyn Fn(f64, f64) -> f64,
+    /// The painted paths, as map positions.
+    pub paths: &'a [Vec<(f64, f64)>],
+    /// The bridges that OpenStreetMap has (the others span dips), as map positions.
+    pub osm_bridges: &'a [Vec<(f64, f64)>],
+}
+
+impl Terrain<'_> {
+    /// No terrain: only the sites that the pieces and the report give.
+    #[must_use]
+    pub fn none() -> Terrain<'static> {
+        Terrain {
+            strips: &[],
+            ground: &|_, _| 0.0,
+            paths: &[],
+            osm_bridges: &[],
+        }
+    }
+}
+
 /// One place to photograph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Site {
     /// Number in the list, from 1; the shots are named after it.
     pub id: u32,
     /// What the site shows: `slight-angle`, `tight-arc`, `hairpin`, `junction`, `end-cap`, `bridge-<material>`,
-    /// `bridge-scaled`, `finding-<rule>`, or the category of a fixed site.
+    /// `bridge-scaled`, `bridge-over-dip`, `high-embankment`, `deep-cutting`, `rock-face`, `painted-path`,
+    /// `steep-path`, `finding-<rule>`, or the category of a fixed site.
     pub category: String,
     /// East, map metres.
     pub x: f64,
@@ -501,18 +537,27 @@ fn finding_sites(report: &Value, objects: &[PlacedRoad], picker: &mut Picker<'_>
 }
 
 /// Picks the sites of the check: slight angles between straight pieces, the tightest arcs and hairpins, a
-/// junction, a dead end and a bridge of each material and a scaled one from `objects`, the worst two
+/// junction, a dead end and a bridge of each material and a scaled one from `objects`, the worst of each
+/// terrain fault (embankment, cutting, rock face, bridge over a dip, steep and gentle painted path) from
+/// `terrain`, the worst two
 /// findings of each rule from `report` (`build/report.json`, untrusted), then `fixed` sites that are always
 /// kept. Picked sites are at least [`MIN_APART_M`] from each other and from the fixed ones. Same input, same
 /// list; the ids run from 1.
 #[must_use]
-pub fn pick_sites(report: &Value, objects: &[PlacedRoad], fixed: &[Site]) -> Vec<Site> {
+pub fn pick_sites(
+    report: &Value,
+    objects: &[PlacedRoad],
+    terrain: &Terrain<'_>,
+    fixed: &[Site],
+) -> Vec<Site> {
     let mut picker = Picker {
         fixed,
         picked: Vec::new(),
     };
     slight_angles(objects, &mut picker);
     arcs(objects, &mut picker);
+    terrain_sites(terrain, &mut picker);
+    path_sites(terrain, report, objects, &mut picker);
     objects_sites(objects, &mut picker);
     finding_sites(report, objects, &mut picker);
     let mut sites = picker.picked;
@@ -521,4 +566,209 @@ pub fn pick_sites(report: &Value, objects: &[PlacedRoad], fixed: &[Site]) -> Vec
         s.id = u32::try_from(i + 1).unwrap_or(u32::MAX);
     }
     sites
+}
+
+/// One segment of a height profile: its middle, its direction and the heights of the road and the ground.
+struct Segment {
+    at: (f64, f64),
+    yaw: f64,
+    road_z: f64,
+    ground_z: f64,
+    bridge: bool,
+    side_slope: f64,
+}
+
+fn segments(terrain: &Terrain<'_>) -> Vec<Segment> {
+    let mut out = Vec::new();
+    for strip in terrain.strips {
+        for (i, w) in strip.joints.windows(2).enumerate() {
+            let [a, b] = w else { continue };
+            let at = (f64::midpoint(a.0, b.0), f64::midpoint(a.1, b.1));
+            let seg = Segment {
+                at,
+                yaw: deg((b.0 - a.0).atan2(b.1 - a.1)),
+                road_z: f64::midpoint(a.2, b.2),
+                ground_z: (terrain.ground)(at.0, at.1),
+                bridge: strip.bridge.get(i).copied().unwrap_or(false),
+                side_slope: strip.side_slope.get(i).copied().unwrap_or(0.0),
+            };
+            if [seg.at.0, seg.at.1, seg.yaw, seg.road_z, seg.ground_z]
+                .iter()
+                .all(|v| v.is_finite())
+            {
+                out.push(seg);
+            }
+        }
+    }
+    out
+}
+
+fn near_line(lines: &[Vec<(f64, f64)>], x: f64, z: f64, within: f64) -> bool {
+    lines
+        .iter()
+        .flatten()
+        .any(|p| (p.0 - x).hypot(p.1 - z) < within)
+}
+
+/// The direction of the path nearest to `(x, z)`, degrees clockwise from north.
+fn path_yaw_near(paths: &[Vec<(f64, f64)>], at_x: f64, at_z: f64) -> f64 {
+    let mut best: Option<(f64, f64)> = None;
+    for line in paths {
+        for (i, p) in line.iter().enumerate() {
+            let d = (p.0 - at_x).hypot(p.1 - at_z);
+            let (from, to) = match (line.get(i.wrapping_sub(1)), line.get(i + 1)) {
+                (Some(before), Some(after)) => (*before, *after),
+                (None, Some(after)) => (*p, *after),
+                (Some(before), None) => (*before, *p),
+                (None, None) => continue,
+            };
+            if best.is_none_or(|(nearest, _)| d < nearest) {
+                best = Some((d, deg((to.0 - from.0).atan2(to.1 - from.1))));
+            }
+        }
+    }
+    best.map_or(0.0, |(_, yaw)| yaw)
+}
+
+fn terrain_sites(terrain: &Terrain<'_>, picker: &mut Picker<'_>) {
+    let segs = segments(terrain);
+    // the first of `order` that is far enough from the sites picked so far
+    let pick = |picker: &mut Picker<'_>,
+                category: &str,
+                mut order: Vec<(&Segment, f64)>,
+                key: &str,
+                note: &str| {
+        order.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then(a.0.at.0.total_cmp(&b.0.at.0))
+                .then(a.0.at.1.total_cmp(&b.0.at.1))
+        });
+        for (s, v) in order {
+            if picker.try_add(category, s.at, s.yaw, &[(key, v)], note) {
+                break;
+            }
+        }
+    };
+    let open: Vec<&Segment> = segs.iter().filter(|s| !s.bridge).collect();
+    pick(
+        picker,
+        "high-embankment",
+        open.iter()
+            .map(|s| (*s, s.road_z - s.ground_z))
+            .filter(|c| c.1 > 0.0)
+            .collect(),
+        "road_above_ground_m",
+        "the road on a fill: the ground beside it is lower",
+    );
+    pick(
+        picker,
+        "deep-cutting",
+        open.iter()
+            .map(|s| (*s, s.ground_z - s.road_z))
+            .filter(|c| c.1 > 0.0)
+            .collect(),
+        "road_below_ground_m",
+        "the road in a cut: the ground beside it is higher",
+    );
+    pick(
+        picker,
+        "rock-face",
+        open.iter()
+            .map(|s| (*s, s.side_slope))
+            .filter(|c| c.1 > FACE_SIDE_SLOPE)
+            .collect(),
+        "side_slope",
+        "a steep side slope beside the road: the earthworks leave a face",
+    );
+    // a bridge that OpenStreetMap does not have spans a dip; with none of those, any bridge will do
+    let decks: Vec<&Segment> = segs.iter().filter(|s| s.bridge).collect();
+    let dips: Vec<&Segment> = decks
+        .iter()
+        .copied()
+        .filter(|s| !near_line(terrain.osm_bridges, s.at.0, s.at.1, OSM_BRIDGE_NEAR_M))
+        .collect();
+    let spans = if dips.is_empty() { decks } else { dips };
+    pick(
+        picker,
+        "bridge-over-dip",
+        spans.iter().map(|s| (*s, s.road_z - s.ground_z)).collect(),
+        "deck_above_ground_m",
+        "a bridge over a dip",
+    );
+}
+
+/// The steepest painted path of the report, and a long gentle one away from roads and from steep findings.
+fn path_sites(
+    terrain: &Terrain<'_>,
+    report: &Value,
+    objects: &[PlacedRoad],
+    picker: &mut Picker<'_>,
+) {
+    let steep: Vec<(f64, f64, f64)> = findings(report)
+        .remove("path_too_steep")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| (f.measure.unwrap_or(0.0), f.x, f.z))
+        .collect();
+    let mut steepest = steep.clone();
+    steepest.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(a.2.total_cmp(&b.2))
+    });
+    for (m, x, z) in steepest {
+        let yaw = path_yaw_near(terrain.paths, x, z);
+        if picker.try_add(
+            "steep-path",
+            (x, z),
+            yaw,
+            &[("slope_deg", m)],
+            "a painted path that is too steep to walk",
+        ) {
+            break;
+        }
+    }
+    let mut long: Vec<(f64, (f64, f64), f64)> = Vec::new();
+    for line in terrain.paths {
+        let length: f64 = line
+            .windows(2)
+            .map(|w| match w {
+                [a, b] => (b.0 - a.0).hypot(b.1 - a.1),
+                _ => 0.0,
+            })
+            .sum();
+        let Some(&mid) = line.get(line.len() / 2) else {
+            continue;
+        };
+        let far_from_roads = objects.iter().all(|o| {
+            let m = middle(o);
+            (m.0 - mid.0).hypot(m.1 - mid.1) >= PATH_APART_M
+        });
+        let far_from_steep = steep
+            .iter()
+            .all(|s| (s.1 - mid.0).hypot(s.2 - mid.1) >= STEEP_APART_M);
+        if length >= PATH_MIN_LENGTH_M && far_from_roads && far_from_steep && length.is_finite() {
+            long.push((
+                length,
+                mid,
+                path_yaw_near(std::slice::from_ref(line), mid.0, mid.1),
+            ));
+        }
+    }
+    long.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(a.1.0.total_cmp(&b.1.0))
+            .then(a.1.1.total_cmp(&b.1.1))
+    });
+    for (length, mid, yaw) in long {
+        if picker.try_add(
+            "painted-path",
+            mid,
+            yaw,
+            &[("length_m", length)],
+            "a painted path on gentle ground",
+        ) {
+            break;
+        }
+    }
 }

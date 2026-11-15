@@ -6,9 +6,10 @@
 use std::collections::BTreeMap;
 
 use naves_core::catalog::Family;
+use naves_core::profile::RoadStrip;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedRoad, Slot};
-use naves_export::sites::{Site, pick_sites, yaw_near};
+use naves_export::sites::{Site, Terrain, pick_sites, yaw_near};
 use serde_json::json;
 
 const MAP_M: f64 = 4096.0;
@@ -156,8 +157,57 @@ fn fixed() -> Vec<Site> {
         .collect()
 }
 
+/// A strip of one 25 m segment at `x`, `y` with the road at height `z`.
+fn strip(x: f64, y: f64, z: f64, bridge: bool, side_slope: f64) -> RoadStrip {
+    RoadStrip {
+        slots: vec![0],
+        joints: vec![(x, y, z), (x + 25.0, y, z)],
+        bridge: vec![bridge],
+        junction: vec![false],
+        side_slope: vec![side_slope],
+        half_width: 3.5,
+        rank: 1,
+    }
+}
+
+/// The original ground is 100 m everywhere.
+fn strips() -> Vec<RoadStrip> {
+    vec![
+        strip(300.0, 2500.0, 110.0, false, 0.1),  // embankment, 10 m
+        strip(700.0, 2500.0, 85.0, false, 0.1),   // cutting, 15 m
+        strip(1100.0, 2500.0, 100.0, false, 0.6), // rock face
+        strip(1500.0, 2500.0, 130.0, true, 0.1),  // a bridge over a dip, 30 m
+        strip(1900.0, 2500.0, 160.0, true, 0.1),  // an OpenStreetMap bridge, 60 m: not a dip
+    ]
+}
+
+fn paths() -> Vec<Vec<(f64, f64)>> {
+    vec![
+        vec![(2600.0, 2500.0), (2750.0, 2500.0), (2900.0, 2500.0)], // long and gentle
+        vec![(3600.0, 2500.0), (3610.0, 2520.0), (3620.0, 2540.0)], // steep
+        vec![(3000.0, 2900.0), (3010.0, 2900.0)],                   // too short
+    ]
+}
+
+fn with_terrain<T>(f: impl FnOnce(&Terrain<'_>) -> T) -> T {
+    let (strips, paths) = (strips(), paths());
+    let osm = vec![vec![(1900.0, 2500.0), (1925.0, 2500.0)]];
+    let ground = |_: f64, _: f64| 100.0;
+    f(&Terrain {
+        strips: &strips,
+        ground: &ground,
+        paths: &paths,
+        osm_bridges: &osm,
+    })
+}
+
 fn sites() -> Vec<Site> {
-    pick_sites(&report(), &fixture(), &fixed())
+    let mut r = report();
+    if let Some(v) = r.get_mut("violations").and_then(|v| v.as_array_mut()) {
+        v.push(json!({"rule": "path_too_steep", "x": 3610.0, "y": 2520.0,
+            "message": "Too steep to walk: 58\u{b0} over 22 m"}));
+    }
+    with_terrain(|t| pick_sites(&r, &fixture(), t, &fixed()))
 }
 
 #[test]
@@ -185,6 +235,12 @@ fn every_category_of_the_spec_is_present_on_the_fixture() {
         "finding-road_gap",
         "finding-road_grade",
         "finding-join_without_junction",
+        "high-embankment",
+        "deep-cutting",
+        "rock-face",
+        "bridge-over-dip",
+        "painted-path",
+        "steep-path",
         "fixed",
     ] {
         assert!(have.contains(&wanted), "missing {wanted} in {have:?}");
@@ -264,7 +320,7 @@ fn a_report_that_is_not_what_it_should_be_gives_no_findings_and_no_panic() {
         json!({"violations": "x"}),
         json!({"violations": [{"rule": 1}, {"rule": "r", "x": "a", "y": 1}, {"rule": "r", "x": 1, "y": null}]}),
     ] {
-        let s = pick_sites(&report, &[], &[]);
+        let s = pick_sites(&report, &[], &Terrain::none(), &[]);
         assert!(s.is_empty(), "{s:?}");
     }
 }
@@ -277,4 +333,51 @@ fn yaw_near_is_the_direction_of_the_nearest_road() {
     )];
     assert!((yaw_near(&o, 120.0, 105.0) - 90.0).abs() < 1e-6);
     assert!(yaw_near(&[], 0.0, 0.0).abs() < 1e-9);
+}
+
+fn site<'a>(sites: &'a [Site], category: &str) -> Option<&'a Site> {
+    sites.iter().find(|s| s.category == category)
+}
+
+#[test]
+fn the_terrain_faults_are_found_where_the_fixture_has_them() {
+    let sites = sites();
+    assert!(
+        (site(&sites, "high-embankment").unwrap().numbers["road_above_ground_m"] - 10.0).abs()
+            < 1e-9
+    );
+    assert!(
+        (site(&sites, "deep-cutting").unwrap().numbers["road_below_ground_m"] - 15.0).abs() < 1e-9
+    );
+    assert!((site(&sites, "rock-face").unwrap().numbers["side_slope"] - 0.6).abs() < 1e-9);
+    // the deeper bridge is an OpenStreetMap bridge and no dip
+    let dip = site(&sites, "bridge-over-dip").unwrap();
+    assert!((dip.x - 1512.5).abs() < 1e-9, "{dip:?}");
+    assert!((dip.numbers["deck_above_ground_m"] - 30.0).abs() < 1e-9);
+    let steep = site(&sites, "steep-path").unwrap();
+    assert!((steep.numbers["slope_deg"] - 58.0).abs() < 1e-9);
+    assert!(
+        (0.0..360.0).contains(&steep.yaw_deg) && steep.yaw_deg > 0.0,
+        "{steep:?}"
+    );
+    // the gentle path is the long one, not the steep or the short one
+    let painted = site(&sites, "painted-path").unwrap();
+    assert!((painted.x - 2750.0).abs() < 1e-9, "{painted:?}");
+}
+
+#[test]
+fn without_a_dip_bridge_any_bridge_serves_and_without_terrain_there_are_no_terrain_sites() {
+    let strips = vec![strip(1900.0, 2500.0, 160.0, true, 0.0)];
+    let osm = vec![vec![(1900.0, 2500.0)]];
+    let ground = |_: f64, _: f64| 100.0;
+    let t = Terrain {
+        strips: &strips,
+        ground: &ground,
+        paths: &[],
+        osm_bridges: &osm,
+    };
+    let s = pick_sites(&json!({}), &[], &t, &[]);
+    assert_eq!(s.len(), 1, "{s:?}");
+    assert_eq!(s[0].category, "bridge-over-dip");
+    assert_eq!(pick_sites(&json!({}), &[], &Terrain::none(), &[]).len(), 0);
 }

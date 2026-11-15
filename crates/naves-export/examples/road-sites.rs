@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use naves_core::dem::Dem;
+use naves_core::features::FeatureKind;
 use naves_core::features::road_features;
 use naves_core::features::water_lines;
 use naves_core::heightmap::{MapGeo, build_heightmap};
@@ -26,7 +27,7 @@ use naves_core::project::Project;
 use naves_core::surface::LoadedSources;
 use naves_export::catalog_read::road_catalog;
 use naves_export::generate::plan_roads;
-use naves_export::sites::{Site, pick_sites, yaw_near};
+use naves_export::sites::{Site, Terrain, pick_sites, yaw_near};
 use naves_export::tools::Tools;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -87,6 +88,24 @@ fn main() -> Result<()> {
         eprintln!("{m}");
     })?;
     let objects = plan.placed.net.roads;
+    let strips = plan.placed.profiles.strips;
+    let paths: Vec<Vec<(f64, f64)>> = features
+        .iter()
+        .filter(|f| matches!(f.kind, FeatureKind::Path { .. }))
+        .map(|f| f.points.clone())
+        .collect();
+    let osm_bridges: Vec<Vec<(f64, f64)>> = features
+        .iter()
+        .filter(|f| matches!(f.kind, FeatureKind::Road { bridge: true, .. }))
+        .map(|f| f.points.clone())
+        .collect();
+    let ground = |x: f64, y: f64| f64::from(base.sample(x, y).height);
+    let terrain = Terrain {
+        strips: &strips,
+        ground: &ground,
+        paths: &paths,
+        osm_bridges: &osm_bridges,
+    };
 
     let size = project.map_size_m();
     let mut fixed = Vec::new();
@@ -106,7 +125,7 @@ fn main() -> Result<()> {
             note: note.to_string(),
         });
     }
-    let sites = pick_sites(&report, &objects, &fixed);
+    let sites = pick_sites(&report, &objects, &terrain, &fixed);
     std::fs::write(&out, serde_json::to_string_pretty(&sites)? + "\n")?;
     println!("{} sites written to {out}", sites.len());
     Ok(())
