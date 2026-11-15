@@ -840,3 +840,496 @@ pub fn widen_bridges(graph: &RoadGraph, needed: &dyn Fn(&Stretch) -> f64) -> Roa
     g.crossings = crossings(&g.stretches);
     g
 }
+
+/// Two roads along each other for at least this long are one road drawn twice.
+pub const DUPLICATE_MIN_M: f64 = 25.0;
+/// Two roads whose headings differ by more than this (in degrees, a road and its reverse count as equal)
+/// are no duplicates.
+pub const DUPLICATE_MAX_HEADING_DEG: f64 = 15.0;
+/// The distance between the points where a stretch is compared with the roads that rank higher.
+const DUPLICATE_STEP_M: f64 = 1.0;
+/// A leaving point closer than this to another on the same stretch is the same node.
+const LEAVE_MERGE_M: f64 = 0.01;
+
+/// A part of a road that is dropped because a higher-ranked road runs along it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DroppedDuplicate {
+    /// The id of the stretch the part was dropped from.
+    pub stretch: String,
+    /// The id of the stretch that stays.
+    pub kept: String,
+    /// Where the dropped part starts, in metres along the original stretch.
+    pub from_m: f64,
+    /// Where it ends.
+    pub to_m: f64,
+    /// The middle of the dropped part, in map metres.
+    pub at: (f64, f64),
+}
+
+/// A part of a stretch that stays, which the lower-ranked stretches are compared with.
+struct KeptPiece {
+    stretch: usize,
+    chain: usize,
+    /// Metres along the original stretch where this piece starts.
+    offset: f64,
+    points: Vec<(f64, f64)>,
+    /// The width of its family.
+    width: f64,
+    min: (f64, f64),
+    max: (f64, f64),
+}
+
+/// Where a point of a lower road lies on a higher one.
+#[derive(Clone, Copy)]
+struct Hit {
+    stretch: usize,
+    /// Metres along the original stretch.
+    along: f64,
+    at: (f64, f64),
+}
+
+/// A part of a stretch to be dropped.
+struct Run {
+    from: f64,
+    to: f64,
+    first: Hit,
+    last: Hit,
+}
+
+/// The node where a lower road leaves a higher one.
+struct Leave {
+    stretch: usize,
+    along: f64,
+    node: i64,
+    at: (f64, f64),
+    /// The higher stretch has to be cut here (not at one of its ends).
+    split: bool,
+}
+
+/// What happens to a stretch when it is rebuilt.
+enum Mark {
+    Split {
+        along: f64,
+        node: i64,
+    },
+    Drop {
+        from: f64,
+        to: f64,
+        before: Option<(i64, (f64, f64))>,
+        after: Option<(i64, (f64, f64))>,
+    },
+}
+
+impl Mark {
+    fn start(&self) -> f64 {
+        match self {
+            Mark::Split { along, .. } => *along,
+            Mark::Drop { from, .. } => *from,
+        }
+    }
+}
+
+fn bounds(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in points {
+        min = (min.0.min(p.0), min.1.min(p.1));
+        max = (max.0.max(p.0), max.1.max(p.1));
+    }
+    (min, max)
+}
+
+/// A point of a stretch that is compared with the higher roads.
+struct Sample {
+    /// Metres along the stretch.
+    along: f64,
+    at: (f64, f64),
+    /// The unit direction of the segment it lies on.
+    dir: (f64, f64),
+}
+
+/// The points at every `DUPLICATE_STEP_M` along `points` and at its end.
+fn samples(points: &[(f64, f64)]) -> Vec<Sample> {
+    let mut out = Vec::new();
+    let total = polyline_length(points);
+    let mut at = 0.0;
+    let mut next = 0.0;
+    for w in points.windows(2) {
+        let &[a, b] = w else { continue };
+        let seg = (b.0 - a.0).hypot(b.1 - a.1);
+        if seg <= 0.0 {
+            continue;
+        }
+        let dir = ((b.0 - a.0) / seg, (b.1 - a.1) / seg);
+        while next < at + seg {
+            let f = (next - at) / seg;
+            out.push(Sample {
+                along: next,
+                at: (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f),
+                dir,
+            });
+            next += DUPLICATE_STEP_M;
+        }
+        at += seg;
+        if (at - total).abs() < EPS_M && out.last().is_some_and(|last| at - last.along > EPS_M) {
+            out.push(Sample {
+                along: at,
+                at: b,
+                dir,
+            });
+        }
+    }
+    out
+}
+
+/// The nearest point of the kept pieces within half the narrower width, on a segment whose direction is
+/// within [`DUPLICATE_MAX_HEADING_DEG`] of `dir`.
+fn nearest_hit(at: (f64, f64), dir: (f64, f64), width: f64, pieces: &[&KeptPiece]) -> Option<Hit> {
+    let cos_limit = DUPLICATE_MAX_HEADING_DEG.to_radians().cos();
+    let mut best: Option<(f64, Hit)> = None;
+    for piece in pieces {
+        let half = width.min(piece.width) / 2.0;
+        if at.0 < piece.min.0 - half
+            || at.0 > piece.max.0 + half
+            || at.1 < piece.min.1 - half
+            || at.1 > piece.max.1 + half
+        {
+            continue;
+        }
+        let mut along = 0.0;
+        for pair in piece.points.windows(2) {
+            let &[from, to] = pair else { continue };
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let len = dx.hypot(dy);
+            if len <= 0.0 {
+                continue;
+            }
+            let frac =
+                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / (len * len)).clamp(0.0, 1.0);
+            let foot = (from.0 + dx * frac, from.1 + dy * frac);
+            let dist = (at.0 - foot.0).hypot(at.1 - foot.1);
+            let aligned = (dir.0 * dx + dir.1 * dy).abs() / len >= cos_limit;
+            if dist < half && aligned && best.is_none_or(|(nearest, _)| dist < nearest) {
+                best = Some((
+                    dist,
+                    Hit {
+                        stretch: piece.stretch,
+                        along: piece.offset + along + len * frac,
+                        at: foot,
+                    },
+                ));
+            }
+            along += len;
+        }
+    }
+    best.map(|(_, hit)| hit)
+}
+
+/// The point `d` metres along `points`.
+fn point_along(points: &[(f64, f64)], d: f64) -> (f64, f64) {
+    slice_points(points, d, d)
+        .first()
+        .copied()
+        .or_else(|| points.first().copied())
+        .unwrap_or_default()
+}
+
+/// The runs of consecutive samples that have a hit and are at least [`DUPLICATE_MIN_M`] long.
+fn duplicate_runs(samples: &[Sample], hits: &[Option<Hit>]) -> Vec<Run> {
+    let mut runs = Vec::new();
+    let mut start: Option<usize> = None;
+    for k in 0..=samples.len() {
+        let hit = hits.get(k).copied().flatten();
+        match (start, hit) {
+            (None, Some(_)) => start = Some(k),
+            (Some(a), None) => {
+                start = None;
+                let b = k - 1;
+                let (Some(first), Some(last)) = (
+                    hits.get(a).copied().flatten(),
+                    hits.get(b).copied().flatten(),
+                ) else {
+                    continue;
+                };
+                let (Some(from), Some(to)) = (samples.get(a), samples.get(b)) else {
+                    continue;
+                };
+                if to.along - from.along >= DUPLICATE_MIN_M {
+                    runs.push(Run {
+                        from: from.along,
+                        to: to.along,
+                        first,
+                        last,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    runs
+}
+
+/// Drops the parts of lower-ranked roads that run along a higher-ranked road: one road drawn twice in the
+/// source. Two stretches of different chains are one road when they run for at least [`DUPLICATE_MIN_M`]
+/// closer than half the narrower road's width and within [`DUPLICATE_MAX_HEADING_DEG`] of each other; the
+/// one that [`overlay_rank`] puts lower loses that part (equal family and length: the higher stretch id). A
+/// part is compared with what stays of the higher roads, in order of rank.
+///
+/// The rest of a road that goes on after the dropped part ends on the kept road: the kept stretch is cut
+/// there and the rest ends at the new crossing, so that the overlay rule of the placement meets them. Cut
+/// pieces are named as in [`with_bridge_spans`] (`<id>`, then `<id>/after<n>`) and the new nodes get ids
+/// above all others. Bridges and tunnels are not compared. The dropped parts come sorted by stretch id and
+/// position.
+#[must_use]
+pub fn drop_duplicates(graph: &RoadGraph) -> (RoadGraph, Vec<DroppedDuplicate>) {
+    let (runs_of, mut dropped) = find_duplicates(graph);
+    if dropped.is_empty() {
+        return (graph.clone(), dropped);
+    }
+    dropped.sort_by(|x, y| {
+        x.stretch
+            .cmp(&y.stretch)
+            .then(x.from_m.total_cmp(&y.from_m))
+    });
+    (cut_runs(graph, &runs_of), dropped)
+}
+
+/// The parts to drop, by stretch, and their report, in order of rank.
+fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<DroppedDuplicate>) {
+    let all = chains(graph);
+    let mut chain_of = vec![0_usize; graph.stretches.len()];
+    for (ci, c) in all.iter().enumerate() {
+        for l in &c.links {
+            if let Some(slot) = chain_of.get_mut(l.stretch) {
+                *slot = ci;
+            }
+        }
+    }
+    let chain_index = |i: usize| chain_of.get(i).copied().unwrap_or(0);
+    let mut order: Vec<usize> = (0..graph.stretches.len())
+        .filter(|&i| {
+            graph
+                .stretches
+                .get(i)
+                .is_some_and(|s| !s.bridge && !s.tunnel && s.points.len() >= 2)
+        })
+        .collect();
+    order.sort_by(|&x, &y| {
+        match (all.get(chain_index(x)), all.get(chain_index(y))) {
+            (Some(cx), Some(cy)) => overlay_rank(cx, cy, graph),
+            _ => std::cmp::Ordering::Equal,
+        }
+        .then(x.cmp(&y))
+    });
+    let mut pieces: Vec<KeptPiece> = Vec::new();
+    let mut runs_of: BTreeMap<usize, Vec<Run>> = BTreeMap::new();
+    let mut dropped: Vec<DroppedDuplicate> = Vec::new();
+    for &i in &order {
+        let Some(s) = graph.stretches.get(i) else {
+            continue;
+        };
+        let width = s.family.width_m();
+        let (min, max) = bounds(&s.points);
+        let here = chain_index(i);
+        let near: Vec<&KeptPiece> = pieces
+            .iter()
+            .filter(|k| {
+                let reach = width.max(k.width) / 2.0;
+                k.chain != here
+                    && k.min.0 <= max.0 + reach
+                    && k.max.0 >= min.0 - reach
+                    && k.min.1 <= max.1 + reach
+                    && k.max.1 >= min.1 - reach
+            })
+            .collect();
+        let sampled = samples(&s.points);
+        let hits: Vec<Option<Hit>> = if near.is_empty() {
+            Vec::new()
+        } else {
+            sampled
+                .iter()
+                .map(|sample| nearest_hit(sample.at, sample.dir, width, &near))
+                .collect()
+        };
+        let runs = duplicate_runs(&sampled, &hits);
+        let total = polyline_length(&s.points);
+        let mut cursor = 0.0;
+        let retain = |from: f64, to: f64, pieces: &mut Vec<KeptPiece>| {
+            if to - from > EPS_M {
+                let points = slice_points(&s.points, from, to);
+                let (min, max) = bounds(&points);
+                pieces.push(KeptPiece {
+                    stretch: i,
+                    chain: here,
+                    offset: from,
+                    points,
+                    width,
+                    min,
+                    max,
+                });
+            }
+        };
+        for run in &runs {
+            retain(cursor, run.from, &mut pieces);
+            cursor = run.to;
+            let mid = f64::midpoint(run.from, run.to);
+            let kept_id = sampled
+                .iter()
+                .position(|sample| sample.along >= mid)
+                .and_then(|k| hits.get(k).copied().flatten())
+                .and_then(|h| graph.stretches.get(h.stretch))
+                .map(|k| k.id.clone())
+                .unwrap_or_default();
+            dropped.push(DroppedDuplicate {
+                stretch: s.id.clone(),
+                kept: kept_id,
+                from_m: run.from,
+                to_m: run.to,
+                at: point_along(&s.points, mid),
+            });
+        }
+        retain(cursor, total, &mut pieces);
+        if !runs.is_empty() {
+            runs_of.insert(i, runs);
+        }
+    }
+    (runs_of, dropped)
+}
+
+/// The graph with the runs cut out of their stretches. The rest of a road ends on the road that stays, which
+/// is cut there.
+fn cut_runs(graph: &RoadGraph, runs_of: &BTreeMap<usize, Vec<Run>>) -> RoadGraph {
+    let mut next_node = first_free_node(graph);
+    // where the rest of a road meets the road that stays
+    let mut leaves: Vec<Leave> = Vec::new();
+    let mut leave_at = |hit: Hit, leaves: &mut Vec<Leave>| -> (i64, (f64, f64)) {
+        if let Some(l) = leaves
+            .iter()
+            .find(|l| l.stretch == hit.stretch && (l.along - hit.along).abs() < LEAVE_MERGE_M)
+        {
+            return (l.node, l.at);
+        }
+        let Some(kept) = graph.stretches.get(hit.stretch) else {
+            return (0, hit.at);
+        };
+        let length = polyline_length(&kept.points);
+        let (node, split) = if hit.along <= EPS_M {
+            (kept.start, false)
+        } else if hit.along >= length - EPS_M {
+            (kept.end, false)
+        } else {
+            let n = next_node;
+            next_node = next_node.saturating_add(1);
+            (n, true)
+        };
+        leaves.push(Leave {
+            stretch: hit.stretch,
+            along: hit.along,
+            node,
+            at: hit.at,
+            split,
+        });
+        (node, hit.at)
+    };
+    let mut marks: BTreeMap<usize, Vec<Mark>> = BTreeMap::new();
+    for (&i, runs) in runs_of {
+        let Some(s) = graph.stretches.get(i) else {
+            continue;
+        };
+        let total = polyline_length(&s.points);
+        for run in runs {
+            let before = (run.from > EPS_M).then(|| leave_at(run.first, &mut leaves));
+            let after = (run.to < total - EPS_M).then(|| leave_at(run.last, &mut leaves));
+            marks.entry(i).or_default().push(Mark::Drop {
+                from: run.from,
+                to: run.to,
+                before,
+                after,
+            });
+        }
+    }
+    for l in leaves.iter().filter(|l| l.split) {
+        marks.entry(l.stretch).or_default().push(Mark::Split {
+            along: l.along,
+            node: l.node,
+        });
+    }
+    let mut stretches: Vec<Stretch> = Vec::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        let Some(mut list) = marks.remove(&i) else {
+            stretches.push(s.clone());
+            continue;
+        };
+        list.sort_by(|x, y| x.start().total_cmp(&y.start()));
+        rebuild_stretch(s, &list, &mut stretches);
+    }
+    stretches.sort_by(|x, y| x.id.cmp(&y.id));
+    let crossings = crossings(&stretches);
+    RoadGraph {
+        stretches,
+        crossings,
+    }
+}
+
+/// A point in map metres.
+type Point = (f64, f64);
+
+/// Pushes the pieces that are left of `s` after the marks (sorted along it) are applied.
+fn rebuild_stretch(s: &Stretch, list: &[Mark], out: &mut Vec<Stretch>) {
+    let total = polyline_length(&s.points);
+    let mut cursor = 0.0;
+    let mut node = s.start;
+    let mut head: Option<Point> = None;
+    let mut part = 0_usize;
+    let mut emit = |from: f64,
+                    to: f64,
+                    ends: (i64, i64),
+                    joins: (Option<Point>, Option<Point>),
+                    part: usize| {
+        if to - from <= EPS_M {
+            return;
+        }
+        let mut points = slice_points(&s.points, from, to);
+        if let Some(first) = joins.0 {
+            points.insert(0, first);
+        }
+        if let Some(last) = joins.1 {
+            points.push(last);
+        }
+        let id = if part == 0 {
+            s.id.clone()
+        } else {
+            format!("{}/after{}", s.id, part - 1)
+        };
+        out.push(Stretch {
+            id,
+            points,
+            start: ends.0,
+            end: ends.1,
+            ..s.clone()
+        });
+    };
+    for mark in list {
+        match *mark {
+            Mark::Split { along, node: n } => {
+                emit(cursor, along, (node, n), (head, None), part);
+                cursor = along;
+                node = n;
+                head = None;
+            }
+            Mark::Drop {
+                from,
+                to,
+                before,
+                after,
+            } => {
+                let (end, tail) = before.map_or((node, None), |(n, at)| (n, Some(at)));
+                emit(cursor, from, (node, end), (head, tail), part);
+                cursor = to;
+                (node, head) = after.map_or((s.end, None), |(n, at)| (n, Some(at)));
+            }
+        }
+        part += 1;
+    }
+    emit(cursor, total, (node, s.end), (head, None), part);
+}

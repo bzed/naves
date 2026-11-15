@@ -159,7 +159,27 @@ fn main() {
     let features = road_features(&ways, &frame, project.map_size_m());
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
-    let (built, widened) = widened_graph(&features, &catalog);
+    let (built, widened, duplicates) = widened_graph(&features, &catalog);
+    {
+        let total: f64 = duplicates.iter().map(|d| d.to_m - d.from_m).sum();
+        println!(
+            "DUPLICATES dropped parts {} total {:.0} m",
+            duplicates.len(),
+            total
+        );
+        let mut by_length: Vec<_> = duplicates.iter().collect();
+        by_length.sort_by(|a, b| (b.to_m - b.from_m).total_cmp(&(a.to_m - a.from_m)));
+        for d in by_length.iter().take(5) {
+            println!(
+                "DUPLICATES {} along {} {:.0} m at ({:.0}, {:.0})",
+                d.stretch,
+                d.kept,
+                d.to_m - d.from_m,
+                d.at.0,
+                d.at.1
+            );
+        }
+    }
     {
         // OSM bridge stretches: before (built as a bridge only from 10 m chord) and after widening
         let chord = |s: &naves_core::roadnet::Stretch| match (s.points.first(), s.points.last()) {

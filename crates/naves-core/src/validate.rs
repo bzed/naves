@@ -17,6 +17,7 @@ use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{GradeExcessKind, Profiles};
+use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// The priority of water among the OSM areas.
@@ -56,11 +57,13 @@ pub enum Rule {
     RoadFarFromGround,
     /// A road standing high over water that got no bridge.
     RoadOverWater,
+    /// A road that OpenStreetMap draws twice: the lower-ranked copy's overlapping part is not placed.
+    RoadDuplicateDropped,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 14] = [
+    pub const ALL: [Rule; 15] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -75,6 +78,7 @@ impl Rule {
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
+        Rule::RoadDuplicateDropped,
     ];
 
     /// The stable id of the rule.
@@ -95,6 +99,7 @@ impl Rule {
             Rule::JunctionTooSteep => "junction_too_steep",
             Rule::RoadFarFromGround => "road_far_from_ground",
             Rule::RoadOverWater => "road_over_water",
+            Rule::RoadDuplicateDropped => "road_duplicate_dropped",
         }
     }
 }
@@ -295,6 +300,25 @@ fn far_from_ground(piece: &PieceCheck) -> Option<Violation> {
     Some(violation(Rule::RoadFarFromGround, at, message))
 }
 
+/// One violation for each part of a road left out because another road runs along it, in the middle of it.
+fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
+    duplicates
+        .iter()
+        .map(|d| {
+            violation(
+                Rule::RoadDuplicateDropped,
+                d.at,
+                format!(
+                    "Road {} runs along {} for {:.0} m: OpenStreetMap draws it twice, this part is not placed",
+                    d.stretch,
+                    d.kept,
+                    d.to_m - d.from_m
+                ),
+            )
+        })
+        .collect()
+}
+
 /// A road left standing over water: one violation for each dip that is reported, where it is.
 fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
     dips.iter()
@@ -417,6 +441,7 @@ pub fn check_roads(
             format!("Tunnel {id} has no pieces: real tunnels need terrain holes"),
         )
     }));
+    out.extend(duplicate_violations(&net.duplicates));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.sort_by(|a, b| {

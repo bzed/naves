@@ -27,7 +27,10 @@ use naves_core::objects::{
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
-use naves_core::roadnet::{RoadGraph, build_graph, lost_bridges, widen_bridges, with_bridge_spans};
+use naves_core::roadnet::{
+    DroppedDuplicate, RoadGraph, build_graph, drop_duplicates, lost_bridges, widen_bridges,
+    with_bridge_spans,
+};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
@@ -185,13 +188,17 @@ pub fn place_once(
     })
 }
 
-/// The graph of `features` and the same with every OpenStreetMap bridge grown to the length of the bridge
-/// model it gets (see [`widen_bridges`]).
+/// The graph of `features` without the parts of roads that OpenStreetMap draws twice (see
+/// [`drop_duplicates`]), the same with every OpenStreetMap bridge grown to the length of the bridge model it
+/// gets (see [`widen_bridges`]), and the parts that were dropped.
 #[must_use]
-pub fn widened_graph(features: &[Feature], catalog: &PieceCatalog) -> (RoadGraph, RoadGraph) {
-    let built = build_graph(features);
+pub fn widened_graph(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+) -> (RoadGraph, RoadGraph, Vec<DroppedDuplicate>) {
+    let (built, dropped) = drop_duplicates(&build_graph(features));
     let widened = widen_bridges(&built, &|s| model_length(catalog, s.family).unwrap_or(0.0));
-    (built, widened)
+    (built, widened, dropped)
 }
 
 /// The scaled length of the bridge model a road of `family` gets.
@@ -231,7 +238,7 @@ pub fn plan_roads(
     frame: &MapGeo,
     progress: &dyn Fn(&str),
 ) -> Result<RoadPlan, BuildError> {
-    let (built, widened) = widened_graph(features, catalog);
+    let (built, widened, duplicates) = widened_graph(features, catalog);
     let first = place_once(&widened, catalog, base)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
         find_dips(
@@ -270,6 +277,7 @@ pub fn plan_roads(
             .collect();
         (graph, placed, left, true)
     };
+    placed.net.duplicates = duplicates;
     // a stretch that was an OpenStreetMap bridge and is none any more, not even by a dip bridge
     for id in lost_bridges(&built, &graph) {
         placed.net.warnings.push(format!(

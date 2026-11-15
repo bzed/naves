@@ -12,8 +12,8 @@
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{
-    BridgeSpan, RoadGraph, Stretch, build_graph, chains, overlay_rank, widen_bridges,
-    with_bridge_spans,
+    BridgeSpan, DUPLICATE_MAX_HEADING_DEG, DUPLICATE_MIN_M, RoadGraph, Stretch, build_graph,
+    chains, drop_duplicates, overlay_rank, widen_bridges, with_bridge_spans,
 };
 use proptest::prelude::*;
 
@@ -741,4 +741,138 @@ fn the_overlay_rank_goes_by_family_then_length_then_id() {
     assert_eq!(overlay_rank(grav3, grav4, &graph), Ordering::Less);
     assert_eq!(overlay_rank(grav4, grav3, &graph), Ordering::Greater);
     assert_eq!(overlay_rank(grav3, grav3, &graph), Ordering::Equal);
+}
+
+// ---- duplicate roads ----
+
+fn way(id: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    feature(id, family, false, nodes, points)
+}
+
+#[test]
+fn the_duplicate_limits_are_the_documented_ones() {
+    assert!((DUPLICATE_MIN_M - 25.0).abs() < 1e-9);
+    assert!((DUPLICATE_MAX_HEADING_DEG - 15.0).abs() < 1e-9);
+}
+
+#[test]
+fn two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked() {
+    let g = build_graph(&[
+        way(1, Family::Grav, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Asf3, &[3, 4], &[(0.0, 1.0), (200.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(ids(&out), vec!["2:3-4"]);
+    assert_eq!(dropped.len(), 1);
+    let d = &dropped[0];
+    assert_eq!((d.stretch.as_str(), d.kept.as_str()), ("1:1-2", "2:3-4"));
+    assert!(
+        d.from_m.abs() < 1e-6 && (d.to_m - 200.0).abs() < 1e-6,
+        "{d:?}"
+    );
+    assert!((d.at.0 - 100.0).abs() < 1.0 && d.at.1.abs() < 1.5, "{d:?}");
+}
+
+#[test]
+fn a_parallel_road_further_than_half_the_width_is_kept() {
+    // two asphalt 3 roads (7 m wide), 5 m apart
+    let g = build_graph(&[
+        way(1, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Asf3, &[3, 4], &[(0.0, 5.0), (200.0, 5.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn an_overlap_shorter_than_25_m_is_kept() {
+    let g = build_graph(&[
+        way(1, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Grav, &[3, 4], &[(0.0, 1.0), (20.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn headings_more_than_15_degrees_apart_are_kept() {
+    // asphalt 1 and 2 cross through the origin: within 4.5 m of each other for more than 25 m
+    let crossing = |deg: f64| {
+        let (s, c) = deg.to_radians().sin_cos();
+        build_graph(&[
+            way(1, Family::Asf1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+            way(
+                2,
+                Family::Asf2,
+                &[3, 4],
+                &[(-100.0 * c, -100.0 * s), (100.0 * c, 100.0 * s)],
+            ),
+        ])
+    };
+    let (_, near) = drop_duplicates(&crossing(10.0));
+    assert_eq!(near.len(), 1, "10 degrees is one road drawn twice");
+    let g = crossing(16.0);
+    let (out, far) = drop_duplicates(&g);
+    assert_eq!(far.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn the_lower_road_goes_on_after_the_overlap() {
+    let g = build_graph(&[
+        way(1, Family::Asf1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(
+            2,
+            Family::Grav,
+            &[3, 5, 4],
+            &[(0.0, 1.0), (100.0, 1.0), (200.0, 100.0)],
+        ),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1);
+    let d = &dropped[0];
+    assert_eq!(d.stretch, "2:3-4");
+    assert!(
+        d.from_m.abs() < 1e-6 && d.to_m > 98.0 && d.to_m < 105.0,
+        "{d:?}"
+    );
+    // the kept road is cut where the other leaves; the rest of the lower road ends there
+    let rest = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("2:3-4"))
+        .unwrap_or_else(|| panic!("the rest of the lower road: {:?}", ids(&out)));
+    assert_eq!(rest.end, 4);
+    let node = rest.start;
+    let crossing = out.crossings.iter().find(|c| c.node == node).unwrap();
+    assert_eq!(crossing.stretches.len(), 3, "{:?}", ids(&out));
+    let kept: Vec<_> = out
+        .stretches
+        .iter()
+        .filter(|s| s.id.starts_with("1:1-2"))
+        .collect();
+    assert_eq!(kept.len(), 2);
+    let on_kept = (crossing.point.0 - 100.0).abs() < 5.0 && crossing.point.1.abs() < 1e-6;
+    assert!(on_kept, "{:?}", crossing.point);
+    assert!(
+        rest.points
+            .first()
+            .is_some_and(|p| (p.0 - crossing.point.0).hypot(p.1 - crossing.point.1) < 1e-6)
+    );
+}
+
+#[test]
+fn equal_family_and_length_drops_the_higher_stretch_id_every_time() {
+    for flip in [false, true] {
+        let a = way(3, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]);
+        let b = way(5, Family::Asf3, &[3, 4], &[(0.0, 0.0), (200.0, 0.0)]);
+        let features = if flip { vec![b, a] } else { vec![a, b] };
+        let (out, dropped) = drop_duplicates(&build_graph(&features));
+        assert_eq!(ids(&out), vec!["3:1-2"], "flip {flip}");
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].stretch, "5:3-4");
+        assert_eq!(dropped[0].kept, "3:1-2");
+    }
 }

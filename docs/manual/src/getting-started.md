@@ -187,6 +187,15 @@ build says so. These overlaps are intended; they are not `road_conflict` finding
 `join_without_junction` is left for crossings where no road runs through (several roads of different surfaces that all
 end at one point).
 
+**A road that OpenStreetMap draws twice** (two ways on top of each other)
+is placed once. Two roads that run along each other for at least 25 m, with their centre lines
+closer than half the width of the narrower road and their directions within 15° of each other, are taken as one road:
+the higher one (the rule above: better surface, then the longer, then the lower way id) stays, and the part of the other
+that runs along it is not placed. Where the lower road goes on after that part, it ends on the kept road under the
+overlay rule above (the kept road is cut there so that the two meet at a crossing). Each dropped part is reported as a
+`road_duplicate_dropped` finding in the middle of the part. Only roads are compared; paths (sidewalks, for instance)
+stay, as do bridges and tunnels.
+
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,

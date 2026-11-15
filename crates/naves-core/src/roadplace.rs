@@ -181,6 +181,8 @@ pub struct PlacedNetwork {
     pub chains: Vec<Vec<usize>>,
     /// Things worth knowing that did not stop the placement.
     pub warnings: Vec<String>,
+    /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
+    pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
 }
 
 /// Why the network could not be placed.

@@ -468,6 +468,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
+        Rule::RoadDuplicateDropped,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -479,6 +480,25 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     ids.dedup();
     assert_eq!(ids.len(), rules.len());
     assert_eq!(Rule::RoadNotDrivable.id(), "road_not_drivable");
+    assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
+}
+
+#[test]
+fn a_dropped_duplicate_is_one_finding_at_its_middle() {
+    let mut n = net(vec![]);
+    n.duplicates.push(naves_core::roadnet::DroppedDuplicate {
+        stretch: "7:1-2".to_string(),
+        kept: "8:3-4".to_string(),
+        from_m: 10.0,
+        to_m: 90.0,
+        at: (45.0, 5.0),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::RoadDuplicateDropped, &v);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].at, (45.0, 5.0));
+    assert!(found[0].message.contains("7:1-2") && found[0].message.contains("8:3-4"));
+    assert!(found[0].message.contains("80 m"), "{}", found[0].message);
 }
 
 #[test]

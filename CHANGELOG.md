@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A road that OpenStreetMap draws twice is placed once. Two roads that run along each other for at least 25 m, closer than half the narrower road's width and within 15° of each other, are one road: the higher one (better surface, then the longer, then the lower way id) stays and the part of the other that runs along it is not placed; where the lower road goes on it ends on the kept road by the overlay rule. Each dropped part is a new finding, `road_duplicate_dropped` (also in the MCP rule list). Paths, bridges and tunnels are not compared.
 - Where the game has no junction piece for a pair of road types, one road now lies on top of the other instead of the two meeting in a heap: the higher road (asphalt 1, asphalt 2, street, asphalt 3, gravel, dirt track; the longer one among equals) runs on, a lower road ends just under its edge (or is interrupted and starts again under the other edge where it crosses), without an end cap, 5 cm below the higher road's surface. A higher road that ends on a lower one lies on top of it. These places are no longer `join_without_junction` findings and their overlap is no `road_conflict`; the finding remains for crossings where all roads end. A piece of road shorter than half its width between two such cuts is left out.
 
 ### Fixed

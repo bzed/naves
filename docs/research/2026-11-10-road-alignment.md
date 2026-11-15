@@ -1200,3 +1200,48 @@ The rule is covered by tests on the synthetic catalog (`a_mud_track_ends_under_t
 `equal_families_put_the_longer_road_on_top`, `the_lower_road_sits_five_centimetres_below_at_the_cut`,
 `a_stub_shorter_than_half_the_width_is_dropped_and_reported`). The game check of the look comes after the last step
 of stage 2.
+
+### 9.3 Duplicate roads (2026-11-15)
+
+Two roads along each other for at least 25 m, centre lines closer than half the narrower road's width and headings
+within 15 degrees (a road and its reverse count as the same heading), are one road drawn twice in OpenStreetMap
+(`roadnet::drop_duplicates`, before bridge widening and placement). Stretches are taken in the order of
+`overlay_rank` and compared with what is left of the higher-ranked ones of other chains, at every metre; the lower road's
+overlapping part is dropped and reported (`road_duplicate_dropped`, at its middle). Where it goes on, the kept stretch
+is cut at the point where the lower road leaves (new node, `<id>` and `<id>/after<n>`) and the rest of the lower road
+ends there, so that the overlay rule of 9.2 is what joins them.
+
+| | Before | After |
+|---|---|---|
+| `road_duplicate_dropped` | - | 9 |
+| `join_without_junction` | 66 | 66 |
+| `road_gap` | 392 | 397 |
+| `road_conflict` (conflicts) | 1077 | 1072 |
+| grade excesses (`road_grade`) | 1677 | 1699 |
+| `road_misses_terrain` | 4698 | 4676 |
+| `road_not_drivable` | 236 | 236 |
+| Wall time (analysis) | 528.9 s | 599.5 s |
+
+The example has 9 dropped parts, 492 m in all. The five largest:
+
+| Dropped (stretch) | Along (kept) | Length | At (map metres) |
+|---|---|---|---|
+| 206825784:428124318-1581812526 | 944576472:8745141196-8745141208 | 104 m | (7077, 7210) |
+| 1458329776:13374507439-13374507449 | 258382705:2637465849-2637505139 | 88 m | (1645, 7140) |
+| 715025603:21623809-6720613450 | 715025602:21623809-6720613451 | 62 m | (2835, 5999) |
+| 275847468:2805118909-2805118944 | 275847447:2805118909-2805118944 | 45 m | (5474, 7396) |
+| 39624158:474968784-474968794 | 39624159:474968784-474968794 | 43 m | (6161, 7055) |
+
+The largest, 104 m at (7077, 7210), lies about 2981 m east and 3114 m north of the map centre; at the example's scale
+of 0.5 (`real_extent_m` 16384 for an 8192 m map) that is roughly 5.96 km east and 6.23 km north of the area centre
+47.5718 N, 12.9465 E, about 47.628 N, 13.026 E (assuming y grows to the north; not checked against the frame). The two
+rows with the same two end nodes (715025603/715025602, 39624158/39624159, 275847468/275847447) are parallel ways
+between the same two junctions, the classic OpenStreetMap duplicate.
+
+The effect on the other counts is small and mixed (the wall times are not comparable, the second run shared the
+machine with `make check`): the 9 dropped parts remove some pieces (`road_misses_terrain` 22 fewer), the cuts add 5
+gaps and the profiles of the cut roads gain 22 grade excesses; none of it is more than 0.5 % of its count. The rule is
+covered by tests (`two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked`,
+`a_parallel_road_further_than_half_the_width_is_kept`, `an_overlap_shorter_than_25_m_is_kept`,
+`headings_more_than_15_degrees_apart_are_kept`, `the_lower_road_goes_on_after_the_overlap`,
+`equal_family_and_length_drops_the_higher_stretch_id_every_time`).
