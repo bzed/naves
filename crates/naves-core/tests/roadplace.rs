@@ -1208,8 +1208,9 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }
 
-/// Two parallel through roads, 40 m apart, with a side road between their junctions; the second junction
-/// is `dx` m east of the first, so that the side road cannot close between the ports where the crossings are.
+/// Two parallel through roads `dy` m apart with a side road between their junctions; the second junction
+/// is `dx` m east of the first, so that the side road cannot always close between the ports where the
+/// crossings are.
 fn offset_ladder(dy: f64, dx: f64) -> Vec<Feature> {
     vec![
         feature(
@@ -1237,34 +1238,55 @@ fn offset_ladder(dy: f64, dx: f64) -> Vec<Feature> {
     ]
 }
 
+/// How far each junction of the ladder sits from its own crossing, which is (500, 300) or (500 + dx, 300 + dy).
+fn ladder_offsets(net: &PlacedNetwork, dy: f64, dx: f64) -> Vec<f64> {
+    let crossings = [(500.0, 300.0), (500.0 + dx, 300.0 + dy)];
+    of_kind(net, PlacedKind::Junction)
+        .iter()
+        .map(|j| {
+            crossings
+                .iter()
+                .map(|c| dist(centre(j), *c))
+                .fold(f64::MAX, f64::min)
+        })
+        .collect()
+}
+
 #[test]
 fn a_side_road_that_cannot_close_closes_after_the_junction_moves() {
     let net = place(&offset_ladder(40.0, 6.0));
     assert!(net.gaps.is_empty(), "{:?}", net.gaps);
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 2);
+    // the second junction moved one step (6.25 m) along its through road; the first stayed
+    let mut offsets = ladder_offsets(&net, 40.0, 6.0);
+    offsets.sort_by(f64::total_cmp);
+    assert!(offsets[0] < 0.5, "{offsets:?}");
+    assert!((offsets[1] - 6.25).abs() < 0.5, "{offsets:?}");
 }
 
 #[test]
 fn the_shift_never_exceeds_25_m() {
-    // a case that does not close at any position still keeps the junctions within 25 m (and the 3 m
-    // tolerance) of their crossings
-    for (dy, dx) in [(30.0, 12.0), (40.0, 6.0), (50.0, 12.0)] {
+    // (30, 12) does not close at any position but moves a junction by 18.75 m
+    let mut moved_far = false;
+    for (dy, dx) in [(30.0, 12.0), (40.0, 6.0), (50.0, 12.0), (30.0, 4.0)] {
         let net = place(&offset_ladder(dy, dx));
-        let crossings = [(500.0, 300.0), (500.0 + dx, 300.0 + dy)];
-        for j in of_kind(&net, PlacedKind::Junction) {
-            let nearest = crossings
-                .iter()
-                .map(|c| dist(centre(j), *c))
-                .fold(f64::MAX, f64::min);
-            assert!(nearest <= 25.0 + 3.0, "dy {dy} dx {dx}: {nearest}");
+        for offset in ladder_offsets(&net, dy, dx) {
+            // 25 m of shift and the 3 m tolerance of the junction
+            assert!(offset <= 25.0 + 3.0, "dy {dy} dx {dx}: {offset}");
+            moved_far |= offset > 15.0;
         }
     }
+    assert!(moved_far, "no case moved a junction far");
 }
 
+/// The shifts are only kept if no through road misses a junction by more than before. This holds for
+/// every ladder here with or without the repair (a through road ends at its goal, a fit to a goal on its own
+/// line), so the test guards the invariant over moved junctions (the cases that move one are
+/// `a_side_road_that_cannot_close_closes_after_the_junction_moves` and `the_shift_never_exceeds_25_m`); the
+/// rule itself is covered by `a_junction_whose_through_gap_grows_loses_its_shift` in `roadplace.rs`.
 #[test]
 fn the_through_road_gaps_do_not_get_worse() {
-    // the through roads close at their junctions without a gap whatever the side road needs
-    for (dy, dx) in [(30.0, 4.0), (40.0, 6.0), (50.0, 8.0), (80.0, 12.0)] {
+    for (dy, dx) in [(30.0, 4.0), (40.0, 6.0), (50.0, 8.0), (30.0, 12.0)] {
         let net = place(&offset_ladder(dy, dx));
         for gap in &net.gaps {
             assert!(gap.stretch.starts_with("3:"), "dy {dy} dx {dx}: {gap:?}");
@@ -1274,7 +1296,81 @@ fn the_through_road_gaps_do_not_get_worse() {
 
 #[test]
 fn the_same_network_gives_the_same_shift() {
-    let a = place(&offset_ladder(30.0, 8.0));
-    let b = place(&offset_ladder(30.0, 8.0));
+    let a = place(&offset_ladder(30.0, 12.0));
+    let b = place(&offset_ladder(30.0, 12.0));
     assert_eq!(a, b);
+    // and the network is one in which a junction moved
+    assert!(
+        ladder_offsets(&a, 30.0, 12.0).iter().any(|o| *o > 15.0),
+        "no junction moved"
+    );
+}
+
+/// Two ladders on the same through roads `gap` m apart: four junctions, two on each through road.
+fn double_ladder(gap: f64, dx: f64) -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 7, 3],
+            &[
+                (100.0, 300.0),
+                (500.0, 300.0),
+                (500.0 + gap, 300.0),
+                (900.0, 300.0),
+            ],
+        ),
+        feature(
+            2,
+            Family::Asf3,
+            &[4, 5, 8, 6],
+            &[
+                (100.0, 340.0),
+                (500.0 + dx, 340.0),
+                (500.0 + gap + dx, 340.0),
+                (900.0, 340.0),
+            ],
+        ),
+        feature(
+            3,
+            Family::Asf3,
+            &[2, 5],
+            &[(500.0, 300.0), (500.0 + dx, 340.0)],
+        ),
+        feature(
+            4,
+            Family::Asf3,
+            &[7, 8],
+            &[(500.0 + gap, 300.0), (500.0 + gap + dx, 340.0)],
+        ),
+    ]
+}
+
+#[test]
+fn a_shifted_junction_never_reaches_or_passes_its_neighbour() {
+    let mut moved = false;
+    for gap in [13.0, 15.0, 20.0, 26.0] {
+        for dx in [6.0, 8.0, 12.0] {
+            let net = place(&double_ladder(gap, dx));
+            for y in [300.0, 340.0] {
+                let mut xs: Vec<f64> = of_kind(&net, PlacedKind::Junction)
+                    .iter()
+                    .map(|j| centre(j))
+                    .filter(|c| (c.1 - y).abs() < 1.0)
+                    .map(|c| c.0)
+                    .collect();
+                xs.sort_by(f64::total_cmp);
+                assert_eq!(xs.len(), 2, "gap {gap} dx {dx} y {y}: {xs:?}");
+                // the junctions stay in the order of their crossings and one junction length apart
+                assert!(xs[1] - xs[0] >= 12.0, "gap {gap} dx {dx} y {y}: {xs:?}");
+                let crossings = if y < 320.0 {
+                    [500.0, 500.0 + gap]
+                } else {
+                    [500.0 + dx, 500.0 + gap + dx]
+                };
+                moved |= (xs[0] - crossings[0]).abs() > 3.5 || (xs[1] - crossings[1]).abs() > 3.5;
+            }
+        }
+    }
+    assert!(moved, "no case moved a junction");
 }

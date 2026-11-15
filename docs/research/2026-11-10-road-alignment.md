@@ -1320,22 +1320,38 @@ with them the ports of their side roads, which are placed afterwards.
 | | Before | After |
 |---|---|---|
 | `join_without_junction` | 65 | 65 |
-| `road_gap` | 396 | 345 |
-| `road_conflict` | 1050 | 1052 |
-| `road_grade` (grade excesses) | 1667 | 1559 |
-| `road_misses_terrain` | 4661 | 4633 |
-| `road_not_drivable` | 227 | 219 |
+| `road_gap` | 396 | 347 |
+| `road_conflict` | 1050 | 1045 |
+| `road_grade` (grade excesses) | 1667 | 1598 |
+| `road_misses_terrain` | 4661 | 4614 |
+| `road_not_drivable` | 227 | 217 |
 | `junction_too_steep` | 3 | 5 |
-| Placement with dips (2 rounds, wall) | 518.3 s | 1018.3 s |
+| Placement with dips (2 rounds, wall) | 518.3 s | 1492.0 s |
 
-The time doubles: the second placement of the network costs as much as the first, and the trials of the side roads' ends
+The time triples (fix round 1: up to two extra placements per call): a second placement of the network costs as much as the first, and the trials of the side roads' ends
 are cheap beside it. Memoising the fits that a shift does not change would cut it only where the through road and its side
 roads upstream of the shifted junction are untouched; a shift changes every later fit on its through road by a fraction of a
 metre, so this was not tried.
 
-In the first placement of the example the repair found a shift for 115 of the 389 gaps' junctions; the second
-placement had 339 gaps instead of 389 (-50). The grade and terrain counts fall as a side effect: a road that closes
-needs no sharp bend to reach its port. `junction_too_steep` rose by two, because a moved junction sits on other ground.
+Where the figures come from: the example is placed twice (two rounds with the dips). In the first round the
+unmoved placement had 389 gaps, the repair found a shift for 115 junctions and the placement with them had 341 (-48);
+in the second round 396, 116 shifts and 347 (all shifts, before the check of the acceptance below). The `road_gap`
+of the table is the analysis at its end (the second round's placement), 396 to 347. The grade and terrain counts fall as a side effect: a road that closes needs no
+sharp bend to reach its port. `junction_too_steep` rose by two, because a moved junction sits on other ground.
+
+**Acceptance (fix round 1).** The first version kept the moved network when it had fewer gaps, which could trade a
+through road's gap, or a junction piece (a through fit missing a shifted junction by over 3 m drops it, and its
+side roads then have no port to miss), for side gaps. Now the second placement is kept only if no junction piece is lost
+and no join without a junction is added as well, and a through road's gap before a *shifted* junction must not grow (beyond
+0.5 m): the shifts where it did are removed and the network is placed once more (two extra placements in all; the
+unmoved network if the last still fails the check). A first version checked every junction and removed the shifts of the
+whole chain; that rejected every move (the unshifted junctions after a move change by fractions of a metre), so it
+is per shifted junction. In the example's first round 20 of the 115 shifts grew the through gap and the network with
+all 115 had 5 junction pieces fewer (539 against 544): the loss the second check rules out. Without those 20 the
+network has 95 shifts, 341 gaps (389 unmoved) and 547 junction pieces. A moved
+junction is also checked against both neighbours at their final places (12.5 m), not only the one before. The
+second placement's error is recorded in the warnings of the network (`naves-core` has no `tracing`
+dependency).
 
 **The through roads that miss their own junction point (43 % of the gaps).** Before building on it, the same shifts
 were tried for the through roads (the fit to the junction goal, with the goal moved 6.25 to 25 m along the line, the
@@ -1350,7 +1366,7 @@ problem with it, its side roads would have to be built from a port that is that 
 junction near the crossing. A real use needs the side roads of that junction in the test, as the repair of the side
 roads has; it is the next step if the through gaps are worth it (about 220 per placement before this task).
 
-**Left over.** Gaps that no shift closes (the remaining 345) are those where the heading or
+**Left over.** Gaps that no shift closes (the remaining 347) are those where the heading or
 distance cannot be met by arcs and straights at all (the other 69 of 129 in 8.2), where the through road was shifted
 but the side road starts at a port too (`fixed_start`; only the end port is repaired), and gaps against bridges.
 The existing height repair in `junctions::repair` (limit `MAX_MOVE_M`, 3 m) is a different thing (it moves heights, not

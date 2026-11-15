@@ -199,9 +199,14 @@ another one for at least 25 m is not placed at all.
 
 **Junctions move to close a road.** A road that cannot reach the port of a junction piece (it would end more than 0.5 m
 from it, a `road_gap` finding) is tried again with that junction moved along its through road, in steps of 6.25 m up to
-25 m to each side, and the build keeps the position with the smallest gap; the through road's own gap at that junction
-never gets larger. A junction on a roundabout ring is never moved. A junction that moved sits up to 25 m from where
-OpenStreetMap has the crossing.
+25 m, first to one side and then to the other. The first position at which the road closes is taken, else the one with
+the smallest gap if that is smaller than before. The network is then placed again with the moved junctions and the
+result is kept only if it has fewer gaps, loses no junction piece and adds no join without a junction. A through road
+never ends further from a junction that was moved than it did before (beyond the 0.5 m): a move after which it does is
+taken back and the network is placed once more, and if that does not hold either, nothing is moved. A moved
+junction keeps a junction length (12.5 m) from its neighbours on the road and stays off bridges; a junction on a
+roundabout ring is never moved. A junction that moved sits up to 25 m from where OpenStreetMap has the crossing. This
+makes the placement take about three times as long.
 
 **Roundabouts.** A closed loop of roads tagged `junction=roundabout` (or `junction=circular`) is built as one ring: a
 closed loop of the game's arcs and straights, with no junction piece on it, lying on top of every road that joins it

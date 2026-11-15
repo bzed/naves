@@ -448,6 +448,8 @@ struct Placer<'a> {
     /// The shifts found for junctions whose side road did not close, by `(chain, link)` of their plan: what
     /// the next placement is asked to do.
     found: Shifts,
+    /// How far the through road's fit ended from the goal before each junction, by `(chain, link)`.
+    through_gaps: Shifts,
 }
 
 fn bits(p: (f64, f64)) -> (u64, u64) {
@@ -516,6 +518,7 @@ impl<'a> Placer<'a> {
             shifts,
             fixed_from: BTreeMap::new(),
             found: BTreeMap::new(),
+            through_gaps: BTreeMap::new(),
         }
     }
 
@@ -1141,6 +1144,11 @@ impl<'a> Placer<'a> {
                 let goal = line.pose_at(s_goal);
                 let (pieces, end) =
                     self.fit_part(&path, pose, EndGoal::Fixed(goal), family, &stretch_id)?;
+                if let Some(plan) = self.plans.get(plan_id) {
+                    let key = (plan.chain, plan.link);
+                    self.through_gaps
+                        .insert(key, (end.x - goal.x).hypot(end.y - goal.y));
+                }
                 for p in &pieces {
                     let s = line.project((
                         f64::midpoint(p.start.x, p.end.x),
@@ -1553,8 +1561,10 @@ impl<'a> Placer<'a> {
     }
 
     /// Where the junctions of the run `first..=last` of chain `c` sit along its line: the crossings
-    /// themselves, moved along the line by the shift asked for, if it keeps the junction on the
-    /// run, one junction length from the previous one and off the bridges, and the chain is no ring.
+    /// themselves, moved along the line by the shift asked for. A shift is dropped (the junction stays at
+    /// its crossing) if the junction would come within a metre of the ends of the run, over a bridge, on a
+    /// ring, or less than one junction length from the junction before or after it, both at their final
+    /// places; so a shifted junction never reaches or passes its neighbour.
     fn crossings(
         &self,
         c: usize,
@@ -1562,8 +1572,6 @@ impl<'a> Placer<'a> {
         last: usize,
         line: &Polyline,
     ) -> BTreeMap<usize, f64> {
-        let mut out = BTreeMap::new();
-        let mut prev: Option<f64> = None;
         let bridges: Vec<(f64, f64)> = (first..=last)
             .filter(|k| self.bridge_chord(c, *k).is_some_and(|chord| chord > 0.0))
             .filter_map(|k| {
@@ -1576,32 +1584,49 @@ impl<'a> Placer<'a> {
                 ))
             })
             .collect();
+        // (plan, crossing, half length, final place, whether it is moved)
+        let mut at: Vec<(usize, f64, f64, f64, bool)> = Vec::new();
         for k in first..last {
-            let Some(plan_id) = self.plan_at(c, k) else {
+            let (Some(plan_id), Some(s_cross)) = (
+                self.plan_at(c, k),
+                line.link_start.get(k + 1 - first).copied(),
+            ) else {
                 continue;
             };
             let Some(plan) = self.plans.get(plan_id) else {
                 continue;
             };
-            let Some(s_cross) = line.link_start.get(k + 1 - first).copied() else {
-                continue;
-            };
             let half = plan.junction.half_length();
             let wanted = self.shifts.get(&(c, k)).copied().unwrap_or(0.0);
             let moved = s_cross + wanted;
-            let fits = wanted.abs() < 1e-9
-                || (!self.is_ring(c)
-                    && moved - half >= 1.0
-                    && moved + half <= line.total() - 1.0
-                    && prev.is_none_or(|p| moved - p >= JUNCTION_SPACING_M)
-                    && bridges
-                        .iter()
-                        .all(|(b0, b1)| moved + half <= *b0 || moved - half >= *b1));
-            let at = if fits { moved } else { s_cross };
-            out.insert(plan_id, at);
-            prev = Some(at);
+            let fits = wanted.abs() > 1e-9
+                && !self.is_ring(c)
+                && moved - half >= 1.0
+                && moved + half <= line.total() - 1.0
+                && bridges
+                    .iter()
+                    .all(|(b0, b1)| moved + half <= *b0 || moved - half >= *b1);
+            at.push((
+                plan_id,
+                s_cross,
+                half,
+                if fits { moved } else { s_cross },
+                fits,
+            ));
         }
-        out
+        let mut spots: Vec<Spot> = at
+            .iter()
+            .map(|&(_, crossing, _, place, moved)| Spot {
+                crossing,
+                place,
+                moved,
+            })
+            .collect();
+        keep_apart(&mut spots);
+        at.iter()
+            .zip(&spots)
+            .map(|(a, spot)| (a.0, spot.place))
+            .collect()
     }
 
     /// The world poses of the side ports of a placed junction, matched with the side arms.
@@ -1754,42 +1779,140 @@ pub fn place_network(
     graph: &RoadGraph,
     catalog: &PieceCatalog,
 ) -> Result<PlacedNetwork, PlaceError> {
-    let (base, found) = place_with_shifts(graph, catalog, BTreeMap::new())?;
-    if found.is_empty() {
-        return Ok(base);
+    let mut base = place_with_shifts(graph, catalog, BTreeMap::new())?;
+    let mut shifts = base.found.clone();
+    // the shifts found while placing the side roads are placed for real; if a through road's gap before
+    // a junction grew, the shifts on that chain are taken back and the network is placed once more
+    for attempt in 0..2 {
+        if shifts.is_empty() {
+            break;
+        }
+        let moved = match place_with_shifts(graph, catalog, shifts.clone()) {
+            Ok(moved) => moved,
+            Err(error) => {
+                base.net
+                    .warnings
+                    .push(format!("junctions not moved to close roads: {error}"));
+                break;
+            }
+        };
+        let grown = through_grown(&base.through_gaps, &moved.through_gaps, &shifts);
+        if grown.is_empty() {
+            return Ok(if improves(&base.net, &moved.net) {
+                moved.net
+            } else {
+                base.net
+            });
+        }
+        if attempt == 1 {
+            break;
+        }
+        shifts.retain(|key, _| !grown.contains(key));
     }
-    // the shifts found while placing the side roads are placed for real; the one that leaves fewer
-    // gaps (the unmoved network, if neither does) is kept
-    let Ok((moved, _)) = place_with_shifts(graph, catalog, found) else {
-        // the unmoved network is placed already
-        return Ok(base);
+    Ok(base.net)
+}
+
+/// A junction on its through road: where its crossing is, where it sits, and whether that is moved.
+struct Spot {
+    crossing: f64,
+    place: f64,
+    moved: bool,
+}
+
+/// Puts a moved junction back at its crossing where it would be less than [`JUNCTION_SPACING_M`] from the junction
+/// before or after it (the spots are in driving order), both at their final places. Putting one back can
+/// free its neighbour, so this goes on until nothing changes.
+fn keep_apart(spots: &mut [Spot]) {
+    loop {
+        let mut changed = false;
+        for n in 0..spots.len() {
+            let Some(spot) = spots.get(n) else { continue };
+            if !spot.moved {
+                continue;
+            }
+            let place = spot.place;
+            let crossing = spot.crossing;
+            let near = |m: Option<usize>| {
+                m.and_then(|m| spots.get(m))
+                    .is_some_and(|other| (other.place - place).abs() < JUNCTION_SPACING_M)
+            };
+            if (near(n.checked_sub(1)) || near(n.checked_add(1)))
+                && let Some(spot) = spots.get_mut(n)
+            {
+                spot.place = crossing;
+                spot.moved = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// The shifted junctions whose through road ends further from the goal of its approach than before, and more
+/// than [`GAP_TOLERATED_M`] from it.
+fn through_grown(base: &Shifts, moved: &Shifts, shifts: &Shifts) -> BTreeSet<(usize, usize)> {
+    shifts
+        .keys()
+        .filter(|key| {
+            let before = base.get(key).copied().unwrap_or(0.0);
+            moved
+                .get(key)
+                .is_some_and(|gap| *gap > before + 1e-9 && *gap > GAP_TOLERATED_M)
+        })
+        .copied()
+        .collect()
+}
+
+/// Whether a placement with moved junctions is better than the one without: fewer gaps (then a smaller sum of
+/// them), and no junction piece lost and no join without a junction added.
+fn improves(base: &PlacedNetwork, moved: &PlacedNetwork) -> bool {
+    let junctions = |net: &PlacedNetwork| {
+        net.roads
+            .iter()
+            .filter(|r| r.kind == PlacedKind::Junction)
+            .count()
     };
-    Ok(if gap_total(&moved) < gap_total(&base) {
-        moved
-    } else {
-        base
-    })
+    let gaps = |net: &PlacedNetwork| {
+        (
+            net.gaps.len(),
+            net.gaps.iter().map(|g| g.gap_m).sum::<f64>(),
+        )
+    };
+    let (before, after) = (gaps(base), gaps(moved));
+    let fewer = after.0 < before.0 || (after.0 == before.0 && after.1 < before.1);
+    fewer
+        && junctions(moved) >= junctions(base)
+        && moved.joins_without_junction.len() <= base.joins_without_junction.len()
 }
 
-/// The number of gaps and their summed size: what a placement is judged by.
-fn gap_total(net: &PlacedNetwork) -> (usize, f64) {
-    (net.gaps.len(), net.gaps.iter().map(|g| g.gap_m).sum())
+/// One placement of the network.
+struct Run {
+    net: PlacedNetwork,
+    /// The shifts that would close the side roads that did not close.
+    found: Shifts,
+    /// The gap of the through road before each junction, see [`Placer::through_gaps`].
+    through_gaps: Shifts,
 }
 
-/// One placement with the junctions at `shifts` along their through roads, and the shifts that would
-/// close the side roads that did not close.
+/// One placement with the junctions at `shifts` along their through roads.
 fn place_with_shifts(
     graph: &RoadGraph,
     catalog: &PieceCatalog,
     shifts: Shifts,
-) -> Result<(PlacedNetwork, Shifts), PlaceError> {
+) -> Result<Run, PlaceError> {
     let mut placer = Placer::new(graph, catalog, shifts);
     placer.analyse();
     let mut state = vec![0u8; placer.chains.len()];
     for c in 0..placer.chains.len() {
         placer.place_chain(c, &mut state)?;
     }
-    Ok((placer.out, placer.found))
+    Ok(Run {
+        net: placer.out,
+        found: placer.found,
+        through_gaps: placer.through_gaps,
+    })
 }
 
 #[cfg(test)]
@@ -1807,6 +1930,105 @@ mod tests {
             cum: vec![0.0, 10.0],
             link_start: vec![0.0],
         }
+    }
+
+    fn spots(list: &[(f64, f64, bool)]) -> Vec<Spot> {
+        list.iter()
+            .map(|&(crossing, place, moved)| Spot {
+                crossing,
+                place,
+                moved,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_junction_moved_up_to_its_neighbour_stays() {
+        // a junction shifted 25 m lands 5 m from the one 30 m on: it stays, the neighbour is untouched
+        let mut list = spots(&[(0.0, 25.0, true), (30.0, 30.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[0].place - 0.0).abs() < 1e-9 && !list[0].moved);
+        assert!((list[1].place - 30.0).abs() < 1e-9);
+        // one that passes its neighbour (shifted past it) stays too, so the order is kept
+        let mut list = spots(&[(0.0, 25.0, true), (20.0, 20.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[0].place - 0.0).abs() < 1e-9);
+        // a shift that keeps a junction length from both neighbours is kept
+        let mut list = spots(&[(0.0, 0.0, false), (30.0, 17.5, true), (60.0, 60.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[1].place - 17.5).abs() < 1e-9 && list[1].moved);
+        // two moved junctions that meet: the first goes back, which frees the second
+        let mut list = spots(&[(0.0, 12.5, true), (25.0, 20.0, true)]);
+        keep_apart(&mut list);
+        assert!(!list[0].moved && list[1].moved);
+    }
+
+    #[test]
+    fn a_junction_whose_through_gap_grows_loses_its_shift() {
+        let base: Shifts = [((0, 1), 0.2), ((0, 2), 2.0), ((1, 1), 0.0), ((2, 1), 0.0)].into();
+        // junction (0, 1) now misses by 1.5 m (grown, over the tolerance), (0, 2) by less than before,
+        // (1, 1) by 0.4 m (grown, within the tolerance), (2, 1) by 3 m but it is not shifted
+        let moved: Shifts = [((0, 1), 1.5), ((0, 2), 1.0), ((1, 1), 0.4), ((2, 1), 3.0)].into();
+        let shifts: Shifts = [((0, 1), 6.25), ((0, 2), -6.25), ((1, 1), 12.5)].into();
+        assert_eq!(
+            through_grown(&base, &moved, &shifts),
+            BTreeSet::from([(0, 1)])
+        );
+        assert!(through_grown(&base, &base, &shifts).is_empty());
+    }
+
+    fn network(gaps: usize, junctions: usize, joins: usize) -> PlacedNetwork {
+        let mut net = PlacedNetwork::default();
+        for _ in 0..gaps {
+            net.gaps.push(RoadGap {
+                stretch: String::new(),
+                at: (0.0, 0.0),
+                gap_m: 1.0,
+                heading_error_deg: 0.0,
+            });
+        }
+        for _ in 0..junctions {
+            net.roads.push(PlacedRoad {
+                slot: Slot {
+                    stretch: String::new(),
+                    index: 0,
+                },
+                kind: PlacedKind::Junction,
+                family: Family::Asf3,
+                drivable: true,
+                model: String::new(),
+                origin: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                start: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                end: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                width: 6.0,
+                scale: 1.0,
+            });
+        }
+        net.joins_without_junction = vec![(0.0, 0.0); joins];
+        net
+    }
+
+    #[test]
+    fn fewer_gaps_do_not_pay_for_a_lost_junction_or_a_new_join() {
+        let base = network(5, 3, 1);
+        assert!(improves(&base, &network(4, 3, 1)));
+        assert!(!improves(&base, &network(5, 3, 1)));
+        // a junction dropped (its side roads then have no port to miss)
+        assert!(!improves(&base, &network(2, 2, 1)));
+        // a join without junction added
+        assert!(!improves(&base, &network(2, 3, 2)));
     }
 
     #[test]
