@@ -94,7 +94,7 @@ pub struct Junction {
     pub height: f64,
     /// Rank of the most important road meeting here.
     pub rank: u8,
-    /// Radius of the level patch: half the length of the junction piece, or half the width of the widest
+    /// Radius of the patch the roads are held to the junction's plane over: half the length of the junction piece, or half the width of the widest
     /// road meeting here.
     pub patch_m: f64,
     /// The ids of the stretches of the roads that belong to this junction (they end here, cross here in the graph,
