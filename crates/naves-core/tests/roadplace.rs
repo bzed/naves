@@ -749,3 +749,81 @@ fn a_bridge_model_shorter_than_a_metre_is_not_used() {
     let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
     assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }
+
+/// The synthetic catalog with only the junction models whose file names are listed.
+fn catalog_with_junctions(keep: &[&str]) -> PieceCatalog {
+    let mut models = synthetic_models_with_bridges(&[("bridge_stone_25", 25.0, 9.0, 7.9)]);
+    models.retain(|path, _| {
+        let stem = path.rsplit('/').next().unwrap_or(path);
+        !(stem.starts_with("kr_t_") || stem.starts_with("kr_x_"))
+            || keep.iter().any(|k| stem == format!("{k}.p3d"))
+    });
+    PieceCatalog::from_models(&models).unwrap()
+}
+
+#[test]
+fn an_x_crossing_uses_the_swapped_piece_when_only_that_exists() {
+    let cat = catalog_with_junctions(&["kr_x_asf1_city"]);
+    // a long City through road at y = 500, crossed by a short Asf1 road at x = 500
+    let features = [
+        feature(
+            1,
+            Family::City,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(
+            2,
+            Family::Asf1,
+            &[4, 2, 5],
+            &[(500.0, 300.0), (500.0, 500.0), (500.0, 700.0)],
+        ),
+    ];
+    let net = place_network(&build_graph(&features), &cat).unwrap();
+    let junctions = of_kind(&net, PlacedKind::Junction);
+    assert_eq!(junctions.len(), 1, "{:?}", net.joins_without_junction);
+    assert!(junctions[0].model.contains("kr_x_asf1_city"));
+    assert_eq!(net.joins_without_junction.len(), 0);
+    assert!(dist(centre(junctions[0]), (500.0, 500.0)) < 3.0);
+    assert!(net.gaps.is_empty(), "{:?}", net.gaps);
+    // both roads continue from the junction: pieces start within a few metres of its ports
+    let at_port = |c: (f64, f64)| {
+        net.roads.iter().any(|r| {
+            r.kind == PlacedKind::Piece
+                && (dist((r.start.x, r.start.y), c) < 1.0 || dist((r.end.x, r.end.y), c) < 1.0)
+        })
+    };
+    for c in [
+        (493.75, 500.0),
+        (506.25, 500.0),
+        (500.0, 493.75),
+        (500.0, 506.25),
+    ] {
+        assert!(at_port(c), "no piece at {c:?}");
+    }
+}
+
+#[test]
+fn a_t_crossing_is_never_swapped() {
+    let cat = catalog_with_junctions(&["kr_t_city_asf3"]);
+    // Asf3 through road, City side road: the T the game has is the other way round
+    let net = place_network(
+        &build_graph(&t_network_of(Family::Asf3, Family::City)),
+        &cat,
+    )
+    .unwrap();
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
+    assert_eq!(net.joins_without_junction.len(), 1);
+}
+
+fn t_network_of(through: Family, side: Family) -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            through,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(2, side, &[2, 4], &[(500.0, 500.0), (500.0, 900.0)]),
+    ]
+}

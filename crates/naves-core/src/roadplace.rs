@@ -10,6 +10,7 @@
 //!
 //! Heading and coordinate conventions are those of [`crate::roadfit`].
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
@@ -181,9 +182,29 @@ struct Plan<'a> {
     /// Between link `link` and link `link + 1`.
     link: usize,
     point: (f64, f64),
-    junction: &'a Junction,
+    junction: Cow<'a, Junction>,
     /// The side arms and whether each leaves to the right of the direction of travel.
     sides: Vec<(Arm, bool)>,
+}
+
+/// An X junction turned by 90 degrees: its side ports become the through ports and the other way round.
+fn swapped(j: &Junction) -> Junction {
+    let turn = |p: &Port| Port {
+        heading: wrap(p.heading + PI),
+        ..*p
+    };
+    let mut ports = j.side_ports.iter();
+    let (Some(a), Some(b)) = (ports.next(), ports.next()) else {
+        return j.clone();
+    };
+    Junction {
+        model: j.model.clone(),
+        through: j.side,
+        side: j.through,
+        start: turn(a),
+        end: *b,
+        side_ports: vec![turn(&j.start), j.end],
+    }
 }
 
 fn wrap(a: f64) -> f64 {
@@ -609,12 +630,18 @@ impl<'a> Placer<'a> {
         let arm_side = |arm: Arm| (self.leaving_heading(arm) - through_heading).sin() > 0.0;
         let family_of = |arm: Arm| self.graph.stretches.get(arm.0).map(|s| s.family);
         let junction = match sides {
-            [one] => self.catalog.t_junction(through, family_of(*one)?)?,
+            [one] => Cow::Borrowed(self.catalog.t_junction(through, family_of(*one)?)?),
             [one, two] => {
                 if family_of(*one)? != family_of(*two)? || arm_side(*one) == arm_side(*two) {
                     return None;
                 }
-                self.catalog.x_junction(through, family_of(*one)?)?
+                let cross = family_of(*one)?;
+                match self.catalog.x_junction(through, cross) {
+                    Some(j) => Cow::Borrowed(j),
+                    // an X looks the same either way round: the piece with the roles swapped,
+                    // turned so that its through ports lie on the crossing arms
+                    None => Cow::Owned(swapped(self.catalog.x_junction(cross, through)?)),
+                }
             }
             _ => return None,
         };
@@ -847,7 +874,11 @@ impl<'a> Placer<'a> {
                     continue;
                 }
             };
-            let Some((k, junction)) = self.plans.get(plan_id).map(|p| (p.link, p.junction)) else {
+            let Some((k, junction)) = self
+                .plans
+                .get(plan_id)
+                .map(|p| (p.link, p.junction.clone()))
+            else {
                 continue;
             };
             let s_cross = line.link_start.get(k + 1 - first).copied().unwrap_or(0.0);
@@ -1092,7 +1123,7 @@ impl<'a> Placer<'a> {
         at: Pose,
         through_heading: f64,
     ) -> Option<(Frame, bool, Pose)> {
-        let j = plan.junction;
+        let j = &*plan.junction;
         let mut best: Option<(Frame, bool, Pose, bool)> = None;
         for flipped in [false, true] {
             let (entry, exit) = if flipped {

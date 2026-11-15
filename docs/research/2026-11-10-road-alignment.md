@@ -1132,3 +1132,31 @@ Not installed. (The repository also has a 85 KB `CLAUDE.md`, the author's workin
 
 Measurement code: `/var/tmp/naves-solver/instrumentation.patch` (not in the repository); run logs in the same
 folder.
+
+## 9. Roads that look right (2026-11-15)
+
+Stage 2 of `docs/superpowers/specs/2026-11-15-road-look-design.md`. Every step is measured with `road-analysis` on
+the Berchtesgaden example at `terrain_size = 2048` (release build, whole run), before and after.
+
+### 9.1 Swapped X pieces
+
+An X crossing whose through road and crossing road have no piece for that order of families takes the piece with
+the roles swapped, turned by 90 degrees so that its through ports lie on the crossing arms (`roadplace::swapped`).
+In the vanilla set this is `kr_x_asf1_city` for a street as through road crossed by an Asf1 road. T crossings are
+never swapped.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 877 | 878 |
+| `road_gap` | 388 | 388 |
+| grade excesses | 1729 | 1729 |
+| `road_conflict` (conflicts) | 1089 | 1091 |
+| Wall time (analysis) | 367.6 s | 359.6 s |
+
+No gain on this map. The one crossing that qualifies (street through, Asf1 across, at (4835, 7760)) is planned
+with `kr_x_asf1_city`, with the model's ports lying symmetrically on the crossing arms, but the street's fit ends
+3.28 m from the crossing, over the 3 m a junction piece may sit from it (`JUNCTION_TOLERANCE_M`, the 115 joins
+"over 3 m" of 8.2), so it is dropped and stays a join, as before. The extra join and conflicts are knock-on
+effects of the dropped plan (it takes part in the spacing and chain-order decisions). The rule is covered by
+tests on the synthetic catalog (`an_x_crossing_uses_the_swapped_piece_when_only_that_exists`,
+`a_t_crossing_is_never_swapped`).
