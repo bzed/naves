@@ -32,6 +32,8 @@ fn feature(
             drivable: true,
             bridge,
             tunnel: false,
+            roundabout: false,
+            layer: 0,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

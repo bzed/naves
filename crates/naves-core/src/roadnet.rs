@@ -101,6 +101,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             drivable,
             bridge,
             tunnel,
+            ..
         } = feature.kind
         else {
             continue;

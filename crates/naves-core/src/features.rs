@@ -48,6 +48,12 @@ pub enum FeatureKind {
         bridge: bool,
         /// A tunnel (`tunnel=*` other than `no`).
         tunnel: bool,
+        /// Part of a roundabout (`junction=roundabout` or `junction=circular`).
+        #[serde(default)]
+        roundabout: bool,
+        /// The `layer` tag, clamped to -5 to 5; 0 when absent or not a number.
+        #[serde(default)]
+        layer: i8,
     },
     /// A footpath, painted on the ground and never given road pieces.
     Path {
@@ -124,6 +130,10 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
             drivable,
             bridge: flagged(tags, "bridge"),
             tunnel: flagged(tags, "tunnel"),
+            roundabout: matches!(get("junction"), Some("roundabout" | "circular")),
+            layer: get("layer")
+                .and_then(|v| v.trim().parse::<i8>().ok())
+                .map_or(0, |v| v.clamp(-5, 5)),
         })
     };
     match highway {

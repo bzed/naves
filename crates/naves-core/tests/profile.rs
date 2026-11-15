@@ -1018,6 +1018,8 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             drivable: true,
             bridge: false,
             tunnel: false,
+            roundabout: false,
+            layer: 0,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
