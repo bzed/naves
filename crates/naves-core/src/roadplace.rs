@@ -361,6 +361,15 @@ impl Polyline {
     }
 }
 
+/// How far the end of a fit that arrives under another road misses the window under that road's edge: 0 when
+/// the end lies between [`MIN_UNDER_M`] and `edge` short of the crossing at the end of `line`, measured along
+/// the road. Not the Euclidean distance: a fit can overshoot its path, and an end past the crossing projects
+/// onto the end of the line, which is a miss.
+fn end_violation(line: &Polyline, end: Pose, edge: f64) -> f64 {
+    let d = line.total() - line.project((end.x, end.y));
+    (d - edge).max(MIN_UNDER_M - d).max(0.0)
+}
+
 /// A forced element of a run.
 enum Event {
     /// A junction piece, by index into the plans.
@@ -1145,10 +1154,7 @@ impl<'a> Placer<'a> {
                 }
                 let (pieces, end) =
                     self.fit_part(&trial, pose, EndGoal::Free, family, &stretch_id)?;
-                // the arclength along the road to the crossing, not the distance: a fit can overshoot the end
-                // of its path, and an end beyond the crossing projects onto the end of the line
-                let d = total - line.project((end.x, end.y));
-                let violation = (d - edge).max(MIN_UNDER_M - d).max(0.0);
+                let violation = end_violation(&line, end, edge);
                 let better = best.as_ref().is_none_or(|(v, _, _)| violation < *v);
                 if better {
                     best = Some((violation, pieces, end));
@@ -1513,4 +1519,41 @@ pub fn place_network(
         placer.place_chain(c, &mut state)?;
     }
     Ok(placer.out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pose(x: f64, y: f64) -> Pose {
+        Pose { x, y, heading: 0.0 }
+    }
+
+    /// A road going north for 10 m that ends at the crossing (0, 10).
+    fn line() -> Polyline {
+        Polyline {
+            points: vec![(0.0, 0.0), (0.0, 10.0)],
+            cum: vec![0.0, 10.0],
+            link_start: vec![0.0],
+        }
+    }
+
+    #[test]
+    fn an_end_inside_the_window_is_no_miss() {
+        assert!(end_violation(&line(), pose(0.0, 8.0), 3.0) <= 0.0);
+    }
+
+    #[test]
+    fn an_end_short_of_the_edge_is_a_miss() {
+        assert!((end_violation(&line(), pose(0.0, 5.0), 3.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_end_past_the_centre_line_is_a_miss_whatever_its_distance() {
+        // 0.5 m beyond the crossing: its Euclidean distance (0.5) lies inside the window, but it is past
+        // the centre line
+        assert!(end_violation(&line(), pose(0.0, 10.5), 3.0) > 0.0);
+        // and one that overshoots sideways as well
+        assert!(end_violation(&line(), pose(1.0, 11.0), 3.0) > 0.0);
+    }
 }
