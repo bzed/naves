@@ -1209,7 +1209,9 @@ within 15 degrees (a road and its reverse count as the same heading), are one ro
 `overlay_rank` and compared with what is left of the higher-ranked ones of other chains, at every metre; the lower road's
 overlapping part is dropped and reported (`road_duplicate_dropped`, at its middle). Where it goes on, the kept stretch
 is cut at the point where the lower road leaves (new node, `<id>` and `<id>/after<n>`) and the rest of the lower road
-ends there, so that the overlay rule of 9.2 is what joins them.
+ends there, so that the overlay rule of 9.2 is what joins them. The cut pieces are named `<id>` and `<id>/rest<n>` (not
+`/after<n>`, which the bridge cuts of the dips use). A bridge is compared only with bridges and a tunnel only with
+tunnels, and is never cut: a bridge that runs along a kept one for 25 m is dropped whole.
 
 | | Before | After |
 |---|---|---|
@@ -1238,7 +1240,7 @@ of 0.5 (`real_extent_m` 16384 for an 8192 m map) that is roughly 5.96 km east an
 rows with the same two end nodes (715025603/715025602, 39624158/39624159, 275847468/275847447) are parallel ways
 between the same two junctions, the classic OpenStreetMap duplicate.
 
-The effect on the other counts is small and mixed (the wall times are not comparable, the second run shared the
+A re-run after the bridge rule gives the same counts (the example has no duplicated bridge). The effect on the other counts is small and mixed (the wall times are not comparable, the second run shared the
 machine with `make check`): the 9 dropped parts remove some pieces (`road_misses_terrain` 22 fewer), the cuts add 5
 gaps and the profiles of the cut roads gain 22 grade excesses; none of it is more than 0.5 % of its count. The rule is
 covered by tests (`two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked`,

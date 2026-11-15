@@ -875,6 +875,8 @@ struct KeptPiece {
     points: Vec<(f64, f64)>,
     /// The width of its family.
     width: f64,
+    /// Bridge and tunnel: only like is compared with like.
+    class: (bool, bool),
     min: (f64, f64),
     max: (f64, f64),
 }
@@ -1077,8 +1079,10 @@ fn duplicate_runs(samples: &[Sample], hits: &[Option<Hit>]) -> Vec<Run> {
 ///
 /// The rest of a road that goes on after the dropped part ends on the kept road: the kept stretch is cut
 /// there and the rest ends at the new crossing, so that the overlay rule of the placement meets them. Cut
-/// pieces are named as in [`with_bridge_spans`] (`<id>`, then `<id>/after<n>`) and the new nodes get ids
-/// above all others. Bridges and tunnels are not compared. The dropped parts come sorted by stretch id and
+/// pieces are named (`<id>`, then `<id>/rest<n>`, so they cannot collide with the
+/// `/after<n>` pieces of [`with_bridge_spans`]) and the new nodes get ids above all others. Bridges are compared
+/// only with bridges and tunnels only with tunnels; such a stretch is never cut: where it runs along a kept one
+/// for [`DUPLICATE_MIN_M`] it is dropped whole. The dropped parts come sorted by stretch id and
 /// position.
 #[must_use]
 pub fn drop_duplicates(graph: &RoadGraph) -> (RoadGraph, Vec<DroppedDuplicate>) {
@@ -1094,6 +1098,19 @@ pub fn drop_duplicates(graph: &RoadGraph) -> (RoadGraph, Vec<DroppedDuplicate>) 
     (cut_runs(graph, &runs_of), dropped)
 }
 
+/// A bridge or tunnel is never cut: if any part of it is to be dropped, all of it is.
+fn whole(runs: &[Run], total: f64) -> Vec<Run> {
+    match (runs.first(), runs.last()) {
+        (Some(first), Some(last)) => vec![Run {
+            from: 0.0,
+            to: total,
+            first: first.first,
+            last: last.last,
+        }],
+        _ => Vec::new(),
+    }
+}
+
 /// The parts to drop, by stretch, and their report, in order of rank.
 fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<DroppedDuplicate>) {
     let all = chains(graph);
@@ -1107,12 +1124,7 @@ fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<Dropped
     }
     let chain_index = |i: usize| chain_of.get(i).copied().unwrap_or(0);
     let mut order: Vec<usize> = (0..graph.stretches.len())
-        .filter(|&i| {
-            graph
-                .stretches
-                .get(i)
-                .is_some_and(|s| !s.bridge && !s.tunnel && s.points.len() >= 2)
-        })
+        .filter(|&i| graph.stretches.get(i).is_some_and(|s| s.points.len() >= 2))
         .collect();
     order.sort_by(|&x, &y| {
         match (all.get(chain_index(x)), all.get(chain_index(y))) {
@@ -1131,11 +1143,13 @@ fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<Dropped
         let width = s.family.width_m();
         let (min, max) = bounds(&s.points);
         let here = chain_index(i);
+        let class = (s.bridge, s.tunnel);
         let near: Vec<&KeptPiece> = pieces
             .iter()
             .filter(|k| {
                 let reach = width.max(k.width) / 2.0;
                 k.chain != here
+                    && k.class == class
                     && k.min.0 <= max.0 + reach
                     && k.max.0 >= min.0 - reach
                     && k.min.1 <= max.1 + reach
@@ -1151,8 +1165,11 @@ fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<Dropped
                 .map(|sample| nearest_hit(sample.at, sample.dir, width, &near))
                 .collect()
         };
-        let runs = duplicate_runs(&sampled, &hits);
+        let mut runs = duplicate_runs(&sampled, &hits);
         let total = polyline_length(&s.points);
+        if class != (false, false) {
+            runs = whole(&runs, total);
+        }
         let mut cursor = 0.0;
         let retain = |from: f64, to: f64, pieces: &mut Vec<KeptPiece>| {
             if to - from > EPS_M {
@@ -1164,6 +1181,7 @@ fn find_duplicates(graph: &RoadGraph) -> (BTreeMap<usize, Vec<Run>>, Vec<Dropped
                     offset: from,
                     points,
                     width,
+                    class,
                     min,
                     max,
                 });
@@ -1299,7 +1317,7 @@ fn rebuild_stretch(s: &Stretch, list: &[Mark], out: &mut Vec<Stretch>) {
         let id = if part == 0 {
             s.id.clone()
         } else {
-            format!("{}/after{}", s.id, part - 1)
+            format!("{}/rest{}", s.id, part - 1)
         };
         out.push(Stretch {
             id,

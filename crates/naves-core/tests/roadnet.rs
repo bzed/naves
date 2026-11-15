@@ -876,3 +876,60 @@ fn equal_family_and_length_drops_the_higher_stretch_id_every_time() {
         assert_eq!(dropped[0].kept, "3:1-2");
     }
 }
+
+#[test]
+fn duplicated_bridges_are_placed_once() {
+    let g = build_graph(&[
+        feature(1, Family::Grav, true, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(2, Family::Asf3, true, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(ids(&out), vec!["2:3-4"]);
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].stretch, "1:1-2");
+    assert!(dropped[0].from_m.abs() < 1e-6 && (dropped[0].to_m - 100.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_bridge_is_not_compared_with_a_road() {
+    let g = build_graph(&[
+        feature(1, Family::Asf3, false, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(2, Family::Grav, true, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn cut_pieces_and_bridge_cuts_have_unique_ids() {
+    let g = build_graph(&[
+        way(1, Family::Asf1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(
+            2,
+            Family::Grav,
+            &[3, 5, 4],
+            &[(0.0, 1.0), (100.0, 1.0), (200.0, 100.0)],
+        ),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1);
+    let spans: Vec<BridgeSpan> = (0..out.stretches.len())
+        .map(|stretch| BridgeSpan {
+            stretch,
+            from_m: 20.0,
+            to_m: 40.0,
+        })
+        .collect();
+    let cut = with_bridge_spans(&out, &spans);
+    let all = ids(&cut);
+    let mut unique = all.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), all.len(), "{all:?}");
+    assert!(
+        ids(&out).iter().any(|i| i.contains("/rest")),
+        "{:?}",
+        ids(&out)
+    );
+}

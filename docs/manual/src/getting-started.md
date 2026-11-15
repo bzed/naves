@@ -194,7 +194,8 @@ the higher one (the rule above: better surface, then the longer, then the lower 
 that runs along it is not placed. Where the lower road goes on after that part, it ends on the kept road under the
 overlay rule above (the kept road is cut there so that the two meet at a crossing). Each dropped part is reported as a
 `road_duplicate_dropped` finding in the middle of the part. Only roads are compared; paths (sidewalks, for instance)
-stay, as do bridges and tunnels.
+stay. A bridge is compared only with bridges and a tunnel only with tunnels, and is never cut: a bridge that runs along
+another one for at least 25 m is not placed at all.
 
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
