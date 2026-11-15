@@ -1425,3 +1425,97 @@ fn both_approaches_meet_the_deck_ports() {
     assert!((first.start.y - 540.0).abs() < 0.5, "{}", first.start.y);
     assert!((last.end.y - 540.0).abs() < 0.5, "{}", last.end.y);
 }
+
+/// A road that bends `dy` metres sideways in the 100 m before a 100 m bridge, and back after it.
+fn river_crossing_with_bend(dy: f64) -> Vec<Feature> {
+    let y = 500.0 + dy;
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (300.0, 500.0), (400.0, y)],
+        ),
+        bridge_feature(2, &[3, 4], &[(400.0, y), (500.0, y)]),
+        feature(
+            3,
+            Family::Asf3,
+            &[4, 5, 6],
+            &[(500.0, y), (600.0, y), (700.0, 500.0)],
+        ),
+    ]
+}
+
+/// The line of a bridge puts its ends on the banks: a deck that slides along it to let the approach close
+/// moves one end towards the gap and the other onto the ground beyond (research 9.6). It may slide by a
+/// fraction of a model's length, not by metres; the approach still meets it.
+#[test]
+fn a_deck_stays_where_its_line_puts_it() {
+    for dy in [4.0, 8.0, 16.0, 32.0, 40.0, 60.0] {
+        let net = place(&river_crossing_with_bend(dy));
+        let bridges = of_kind(&net, PlacedKind::Bridge);
+        assert!(!bridges.is_empty(), "dy {dy}: {:?}", net.warnings);
+        let first = bridges[0];
+        assert!(
+            (first.start.x - 400.0).abs() <= 2.5 + 1e-6,
+            "dy {dy}: the deck starts at x {:.2}, its line at 400",
+            first.start.x
+        );
+        let before = nearest_piece_pose(&net, (first.start.x, first.start.y), true);
+        let gap = dist((before.0, before.1), (first.start.x, first.start.y));
+        let kink = (before.2 - first.start.heading + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        assert!(gap <= 0.10, "dy {dy}: gap {gap}");
+        assert!(kink.to_degrees().abs() <= 1.0, "dy {dy}: kink {kink}");
+    }
+}
+
+/// A road that arrives from the west along the tangent of a 100 m bridge on an arc of `arc_deg` degrees to the
+/// north, and leaves along its tangent: the chord of the bridge is `arc_deg / 2` off the road on both ends.
+fn bridge_on_a_curve(arc_deg: f64) -> (Vec<Feature>, (f64, f64)) {
+    let a = arc_deg.to_radians();
+    let r = 100.0 / a;
+    let pt = |phi: f64| (400.0 + r * phi.sin(), 500.0 + r * (1.0 - phi.cos()));
+    let bridge: Vec<(f64, f64)> = (0..=8).map(|k| pt(a * f64::from(k) / 8.0)).collect();
+    let end = pt(a);
+    let ids: Vec<i64> = (3..=11).collect();
+    let on = |d: f64| (end.0 + d * a.cos(), end.1 + d * a.sin());
+    let features = vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (250.0, 500.0), (400.0, 500.0)],
+        ),
+        bridge_feature(2, &ids, &bridge),
+        feature(3, Family::Asf3, &[11, 12, 13], &[end, on(100.0), on(200.0)]),
+    ];
+    (features, (400.0, 500.0))
+}
+
+/// A road that turns into a bridge on a curve arrives a few degrees off the bridge's chord. Turning it onto the
+/// chord takes a tight turn right before the deck and a slide of the deck (research 9.6): the deck keeps its
+/// place and follows the road instead, and the road still meets it.
+#[test]
+fn a_deck_on_a_curve_keeps_its_place_and_follows_its_road() {
+    let (features, start) = bridge_on_a_curve(20.0);
+    let net = place(&features);
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert!(!bridges.is_empty(), "{:?}", net.warnings);
+    let first = bridges[0];
+    let moved = dist((first.start.x, first.start.y), start);
+    assert!(
+        moved <= 0.10,
+        "the deck starts {moved:.2} m from its line's start ({:.2}, {:.2})",
+        first.start.x,
+        first.start.y
+    );
+    let before = nearest_piece_pose(&net, (first.start.x, first.start.y), true);
+    let gap = dist((before.0, before.1), (first.start.x, first.start.y));
+    let kink = (before.2 - first.start.heading + std::f64::consts::PI)
+        .rem_euclid(std::f64::consts::TAU)
+        - std::f64::consts::PI;
+    assert!(gap <= 0.10, "gap {gap}");
+    assert!(kink.to_degrees().abs() <= 1.0, "kink {kink}");
+}

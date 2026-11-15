@@ -43,9 +43,14 @@ const CUT_TRIES: [f64; 5] = [1.0, 0.75, 0.5, 0.25, 0.1];
 /// the higher road, so that the two do not flicker where they overlap.
 pub const OVERLAY_DROP_M: f64 = 0.05;
 /// A deck slides this far along its line, at most [`BRIDGE_SLIDE_STEPS`] times each way, to let the road close on it.
-const BRIDGE_SLIDE_STEP_M: f64 = 2.5;
-/// See [`BRIDGE_SLIDE_STEP_M`].
-const BRIDGE_SLIDE_STEPS: u32 = 4;
+const BRIDGE_SLIDE_STEP_M: f64 = 0.25;
+/// See [`BRIDGE_SLIDE_STEP_M`]: 2.5 m each way at most, a tenth of a bridge model. The line puts the deck's ends on
+/// the banks; a deck slid by metres has one end over the gap and the other on the ground beyond (research 9.6).
+const BRIDGE_SLIDE_STEPS: u32 = 10;
+/// A deck is laid on its chord only if the road, fitted to the deck's own place, arrives within this of the
+/// chord's heading: the arcs leave a degree or two, a larger error is a road that turns into the bridge (a span
+/// on a curve), and forcing it onto the chord puts a tight turn right before the deck (research 9.6).
+const BRIDGE_TURN_MAX_DEG: f64 = 2.5;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 /// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
@@ -1448,10 +1453,13 @@ impl<'a> Placer<'a> {
     /// bridge, with the heading of its chord) at `s0`, `from_to` being where on the line the fit runs.
     /// A fit ends a degree or two off a heading, and a deck laid along that heading leaves its line (3.5 m
     /// over 100 m in the test of research 9.6): so the deck is laid on its line and slides along it in
-    /// [`BRIDGE_SLIDE_STEP_M`] steps, `+` before `-`, until the approach ends within [`GAP_CLOSED_M`] and
-    /// [`KINK_TOLERATED_DEG`] of the port. `reach` is the length of the deck and the room after its start
-    /// on the line (the deck does not slide into what follows). Returns the pieces, the pose where they end
-    /// and, if they closed on the port, the port, which is where the deck starts then.
+    /// [`BRIDGE_SLIDE_STEP_M`] steps, the shorter slide first and `+` before `-`, until the approach ends
+    /// within [`GAP_CLOSED_M`] and [`KINK_TOLERATED_DEG`] of the port. `reach` is the length of the deck and
+    /// the room after its start on the line (the deck does not slide into what follows). Returns the pieces,
+    /// the pose where they end and, if they closed on the port, the port, which is where the deck starts then.
+    /// If no slide closes, or the fit to the deck's own place arrives more than [`BRIDGE_TURN_MAX_DEG`] off the
+    /// chord (the road turns into the bridge), that fit is returned and the deck starts where it ends, as
+    /// before: a deck moved further would stand on other ground.
     #[expect(
         clippy::too_many_arguments,
         reason = "the state of one approach, passed on"
@@ -1468,7 +1476,11 @@ impl<'a> Placer<'a> {
     ) -> Result<(Vec<FitPiece>, Pose, Option<Pose>), PlaceError> {
         let (s_cur, s0) = from_to;
         let (p0, heading) = (deck.0, deck.1);
-        let mut best: Option<(f64, Vec<FitPiece>, Pose, Pose)> = None;
+        let at = |slide: f64| Pose {
+            x: p0.x + slide * heading.sin(),
+            y: p0.y + slide * heading.cos(),
+            heading,
+        };
         'slides: for step in 0..=BRIDGE_SLIDE_STEPS {
             for sign in [1.0, -1.0] {
                 if step == 0 && sign < 0.0 {
@@ -1479,49 +1491,32 @@ impl<'a> Placer<'a> {
                 if start_s - s_cur <= 1.0 || (slide > 0.0 && slide + reach.0 > reach.1) {
                     continue;
                 }
-                let goal = Pose {
-                    x: p0.x + slide * heading.sin(),
-                    y: p0.y + slide * heading.cos(),
-                    heading,
-                };
+                let goal = at(slide);
                 let path = line.slice(s_cur, start_s);
                 let fit = fit_line(&path, pose, EndGoal::Fixed(goal), self.pieces(family))
                     .map_err(|source| PlaceError::Fit {
                         stretch: stretch.to_string(),
                         source,
                     })?;
-                let end = fit.pieces.last().map_or(pose, |p| p.end);
-                let closed =
-                    fit.gap_m <= GAP_CLOSED_M && fit.heading_error_deg <= KINK_TOLERATED_DEG;
-                let score = fit.gap_m + 0.2 * fit.heading_error_deg;
-                if best.as_ref().is_none_or(|(b, ..)| score < *b) {
-                    best = Some((score, fit.pieces, end, goal));
+                if fit.gap_m <= GAP_CLOSED_M && fit.heading_error_deg <= KINK_TOLERATED_DEG {
+                    let end = fit.pieces.last().map_or(pose, |p| p.end);
+                    return Ok((fit.pieces, end, Some(goal)));
                 }
-                if closed {
+                if step == 0 && fit.heading_error_deg > BRIDGE_TURN_MAX_DEG {
+                    // the road arrives turned against the chord: the deck follows the road
                     break 'slides;
                 }
             }
         }
-        let Some((_, pieces, end, goal)) = best else {
-            // no slide leaves room for an approach
-            let goal = Pose {
-                x: p0.x,
-                y: p0.y,
-                heading,
-            };
-            let (pieces, end) = self.fit_part(
-                &line.slice(s_cur, s0),
-                pose,
-                EndGoal::Fixed(goal),
-                family,
-                stretch,
-            )?;
-            return Ok((pieces, end, None));
-        };
-        self.report_gap(stretch, goal, end);
-        let closed = (end.x - goal.x).hypot(end.y - goal.y) <= GAP_CLOSED_M
-            && wrap(end.heading - goal.heading).abs().to_degrees() <= KINK_TOLERATED_DEG;
-        Ok((pieces, end, closed.then_some(goal)))
+        // no slide closes: the deck stays at its place and starts where the approach ends
+        let (pieces, end) = self.fit_part(
+            &line.slice(s_cur, s0),
+            pose,
+            EndGoal::Fixed(at(0.0)),
+            family,
+            stretch,
+        )?;
+        Ok((pieces, end, None))
     }
 
     /// Where a junction goes if its entry is at `at`, trying both ways round; the frame, whether it

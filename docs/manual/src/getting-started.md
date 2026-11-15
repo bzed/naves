@@ -222,9 +222,11 @@ scale). An open arc of roundabout ways, a loop with a way in it that is not tagg
 roundabout way leaves, and one with several surfaces are not rings; they stay ordinary roads.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
-it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides up to 10 m along its line
-(2.5 m steps) until the road ends within 0.1 m and 1 degree of the deck's port. The road behind the deck starts at the
-deck's end, on the line.
+it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its
+line (0.25 m steps, the shortest slide first) until the road ends within 0.1 m and 1 degree of the deck's port. The road
+behind the deck starts at the deck's end, on the line. Where no such slide exists, or where the road turns into the
+bridge (it arrives more than 2.5 degrees off the line's chord, as on a bridge on a curve), the deck keeps its place and
+follows the road: it starts where the road ends, with the road's heading.
 
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the

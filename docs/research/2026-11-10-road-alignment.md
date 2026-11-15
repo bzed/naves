@@ -1427,3 +1427,54 @@ which of these is the cause of the growth in the time available (each analysis t
 bridge sites looked at in the game or a per-site diff of the two analyses. Left for the review: whether the growth
 is the deck now being where the OSM line is (and the terrain shaping at the abutments following the old position), or noise
 from a changed placement.
+
+**The cause of the growth (round 2, measured per bridge).** Each run of the analysis was repeated with a dump of every
+violation (rule, position) and of every placed deck (stretch, ends, heading); a violation counts for a bridge when it lies
+within 60 m of one of its deck ends, in either run. Findings:
+
+- **The slide moved most decks by metres.** With 2.5 m steps the fit rarely closes at the deck's own place, so 28 of the
+  65 OpenStreetMap decks moved: 10 by about 2.5 m, 18 by 5 to 10 m. When no slide closed, the best of the nine fits was
+  kept, which is a slid one too. A bridge line is grown to the model length so that its ends sit on the banks; a deck
+  slid by 10 m has one end over the gap and the other 10 m onto the ground beyond (deck ends up to 10 m past the end of
+  their line in the dump; e.g. `23458920` start ground 290.8 → 287.4 m, `1467990031` 325.2 → 322.2 m, ground grade of
+  the approach 30 → 44 %).
+- **The road after a moved deck is a new fit, and that alone changes the counts.** Within 60 m of the decks the counts
+  changed by grade +27, not drivable +10; the other +49 grade came from roads further along the chains (and from the
+  second placement deciding a different dip bridge: `90238829…/bridge0` only before, `169999496…/bridge0` only after).
+  Single sites went both ways: `299428041` +11, `130657211` +9, `419057266` +8, `495868617` +7; `830320923` −8,
+  `23631314` −7, `23458060` −5, `39605281` −5.
+- **The counts are below their own noise here.** A null run, the code before Task 9 with every deck moved 5 cm along its
+  heading (nothing a player could see), gives road_grade 1628 (+30), road_not_drivable 227 (+10),
+  road_misses_terrain 4657 (+43), road_conflict 1053 (+8), road_gap 348, join_without_junction 65. A 9 cm change of
+  two decks at (2339, 6541), heading unchanged, re-fits the road behind them and adds 5 grade findings 40 m further on;
+  a 0.27 m slide at `1299522645` adds 5. A difference of ±3 cannot be told from a re-rolled placement.
+- **One systematic case: a road that turns into the bridge.** At the dip bridge `343477741…/bridge0` (four decks on a
+  curve) the deck used to follow the road's heading, 18 degrees off the chord; on the chord the approach has to turn
+  those 18 degrees right before the deck (grade 5 → 16 there). The synthetic `bridge_on_a_curve` shows the same: on a
+  20 degree arc the fit to the deck's place arrives 3.5 degrees off the chord and is closed only by a tight last piece
+  and a 1.5 m slide.
+
+**Change.** Slides of 0.25 m, at most 2.5 m each way, the shortest first (`BRIDGE_SLIDE_STEP_M`, `BRIDGE_SLIDE_STEPS`):
+on the synthetic crossing of 9.6 a 0.5 m slide closes where 2.5 m steps needed 2.5 m. When no slide closes, the deck stays
+at its place and starts where the fit to that place ends, as before Task 9 (no "best slid" fit). When that fit arrives
+more than `BRIDGE_TURN_MAX_DEG` (2.5 degrees) off the chord, no slide is tried: the road turns into the bridge, and the
+deck follows the road. Tests: `a_deck_stays_where_its_line_puts_it` (bends of 4 to 60 m; the 8 m bend slid the deck
+10 m before) and `a_deck_on_a_curve_keeps_its_place_and_follows_its_road` (20 degree arc; slid 1.5 m before).
+
+**Result at 2048:**
+
+| | Before Task 9 | b8f801e (slide ≤ 10 m) | 0.25 m steps ≤ 2.5 m | + turn limit (committed) | Null run (before, decks +5 cm) |
+|---|---|---|---|---|---|
+| `join_without_junction` | 65 | 65 | 65 | 65 | 65 |
+| `road_gap` | 347 | 344 | 348 | 348 | 348 |
+| `road_conflict` | 1045 | 1046 | 1051 | 1052 | 1053 |
+| `road_grade` | 1598 | 1674 | 1638 | 1628 | 1628 |
+| `road_misses_terrain` | 4614 | 4615 | 4597 | 4588 | 4657 |
+| `road_not_drivable` | 217 | 230 | 225 | 224 | 227 |
+
+The committed version is at the null run or better on every count; against the single "before" run it is worse by 30
+grade, 7 not drivable and 7 conflict findings, which is what moving any deck by centimetres does. With it, 8 of the 75
+deck runs (OpenStreetMap and dip bridges) slide, all by at most 2.5 m, the rest keep their place; far from the bridges
+(more than 60 m) grade findings are 1404 against 1412 before. Left open: whether the criterion "no worse than before ±3" should be measured against a few
+null runs instead of one, and the junction pair at (4183, 6660), where the 2.5 m slide of `302681746…/bridge0` changes the
+start of the next dip bridge and its approach turns 18 degrees (grade 5 → 16).
