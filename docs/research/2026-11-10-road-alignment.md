@@ -1171,8 +1171,9 @@ the longer chain, then the lower stretch id). The placement stays hierarchical: 
 - A lower road that ends at a crossing stops under the higher road's edge: 2 m inside it, but not nearer than half
   the half width to its centre line (a street of 10 m: 3 m from the centre line). A start is placed exactly there; an
   arriving end cannot be steered that exactly (the pieces are 6.25 m and longer), so the cut is tried at the default
-  depth and then at 1, 0.75, 0.5, 0.25 and 0.1 times the half width until the last piece ends between 0.1 m from the
-  centre line and the edge, else the nearest miss is kept.
+  depth and then at 1, 0.75, 0.5, 0.25 and 0.1 times the half width until the last piece ends between 0.1 m and the half width
+  short of the crossing, measured along the road (a fit can overshoot its path; an end past the centre line counts as a
+  miss), else the nearest miss is kept.
 - A through road that is lower than both side roads of an X crossing is interrupted: two runs, each ending under one
   edge of the crossing road. A higher road that ends on a lower one that runs on is not cut; the lower road runs on.
 - At the cut the lower road is held `OVERLAY_DROP_M` (5 cm) below the junction's height (`JunctionKind::Overlay`,
@@ -1184,12 +1185,12 @@ the longer chain, then the lower stretch id). The placement stays hierarchical: 
 |---|---|---|
 | `join_without_junction` | 878 | 66 |
 | `road_gap` | 388 | 392 |
-| `road_conflict` (conflicts) | 1091 | 1078 |
-| grade excesses (`road_grade`) | 1729 | 1686 |
-| `road_misses_terrain` | 4812 | 4692 |
-| `road_not_drivable` | 250 | 240 |
+| `road_conflict` (conflicts) | 1091 | 1077 |
+| grade excesses (`road_grade`) | 1729 | 1677 |
+| `road_misses_terrain` | 4812 | 4698 |
+| `road_not_drivable` | 250 | 236 |
 | `junction_too_steep` | 2 | 3 |
-| Wall time (analysis) | 365.3 s | 525.7 s |
+| Wall time (analysis) | 365.3 s | 533.9 s |
 
 812 of the 878 joins became overlays; the 66 left are crossings where all roads end. The wall time is not
 comparable: the second run shared the machine with builds and tests. The 4 extra gaps are probably knock-on effects of the

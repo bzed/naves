@@ -1133,7 +1133,6 @@ impl<'a> Placer<'a> {
         {
             // the road arrives under another one: the pieces cannot be steered to a metre, so the cut is
             // moved until the last piece ends under the edge of the road above, short of its centre line
-            let crossing = line.pose_at(total);
             let mut best: Option<(f64, Vec<FitPiece>, Pose)> = None;
             let depths =
                 std::iter::once(Self::cut_depth(edge)).chain(CUT_TRIES.iter().map(|f| edge * f));
@@ -1146,7 +1145,9 @@ impl<'a> Placer<'a> {
                 }
                 let (pieces, end) =
                     self.fit_part(&trial, pose, EndGoal::Free, family, &stretch_id)?;
-                let d = (end.x - crossing.x).hypot(end.y - crossing.y);
+                // the arclength along the road to the crossing, not the distance: a fit can overshoot the end
+                // of its path, and an end beyond the crossing projects onto the end of the line
+                let d = total - line.project((end.x, end.y));
                 let violation = (d - edge).max(MIN_UNDER_M - d).max(0.0);
                 let better = best.as_ref().is_none_or(|(v, _, _)| violation < *v);
                 if better {

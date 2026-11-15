@@ -22,6 +22,9 @@ fn with_roads(root: &Path) -> PathBuf {
     std::fs::copy(fixture, dir.join("osm/roads.osm.pbf")).unwrap();
     let mut p = Project::load(&dir).unwrap();
     p.sources.osm = vec!["osm/roads.osm.pbf".into()];
+    // steep ground, so that the roads have findings (where roads meet without a junction piece one lies on
+    // top of the other, so the fixture has none at the real heights)
+    p.scale.height = 2.0;
     p.save(&dir).unwrap();
     dir
 }
@@ -178,21 +181,6 @@ fn a_violation_is_a_problem_with_a_position() {
     let dir = with_roads(root.path());
     let mut app = app(root.path(), &dir);
     wait_for_the_roads(&mut app);
-    let RoadsState::Ready(ready) = &app.roads else {
-        panic!("the roads are not ready");
-    };
-    // the fixture has no findings of its own (where roads meet without a junction piece one lies on top of
-    // the other): this one is added
-    let mut with_finding = (**ready).clone();
-    with_finding
-        .violations
-        .push(naves_core::validate::Violation {
-            rule: naves_core::validate::Rule::RoadGap,
-            at: (1234.5, 678.9),
-            message: "Road 1:1-2 misses what it has to meet by 1.5 m".to_string(),
-        });
-    app.road_problems = crate::gui::levels::roads::problems(&with_finding);
-    app.roads = RoadsState::Ready(std::sync::Arc::new(with_finding));
     let RoadsState::Ready(generated) = &app.roads else {
         panic!("the roads are not ready");
     };

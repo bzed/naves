@@ -1043,3 +1043,64 @@ fn a_stub_shorter_than_half_the_width_is_dropped_and_reported() {
         net.warnings
     );
 }
+
+#[test]
+fn an_end_under_a_road_never_passes_its_centre_line_at_an_angle() {
+    // a Mud track arriving at a City street at about 27 degrees from the normal, in both directions of
+    // the stretch, and a Mud road crossing a Grav road at that angle (two halves that must not overlap)
+    // the length of the track decides where its last piece lands: many lengths
+    for (nodes, length) in [[2_i64, 4], [4, 2]]
+        .into_iter()
+        .flat_map(|n| (0..6).map(move |k| (n, 12.0 + 6.1 * f64::from(k))))
+    {
+        let end = (500.0 + length * 0.45, 500.0 + length * 0.89);
+        let mut mud = [(500.0, 500.0), end];
+        if nodes[0] == 4 {
+            mud.reverse();
+        }
+        let net = place(&[
+            feature(
+                1,
+                Family::City,
+                &[1, 2, 3],
+                &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+            ),
+            feature(2, Family::Mud, &nodes, &mud),
+        ]);
+        for r in south_north(&net, Family::Mud) {
+            assert!(
+                r.start.y > 500.0 && r.end.y > 500.0,
+                "{nodes:?} {length}: {r:?}"
+            );
+        }
+    }
+    for mud_first in [false, true] {
+        let (grav_way, mud_way) = if mud_first { (2, 1) } else { (1, 2) };
+        let net = place(&[
+            feature(
+                grav_way,
+                Family::Grav,
+                &[1, 2, 3],
+                &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+            ),
+            feature(
+                mud_way,
+                Family::Mud,
+                &[4, 2, 5],
+                &[(300.0, 100.0), (500.0, 500.0), (700.0, 900.0)],
+            ),
+        ]);
+        let mud = south_north(&net, Family::Mud);
+        let (north, south): (Vec<&PlacedRoad>, Vec<&PlacedRoad>) =
+            mud.into_iter().partition(|r| r.start.y > 500.0);
+        assert!(!north.is_empty() && !south.is_empty());
+        assert!(
+            north.iter().all(|r| r.start.y > 500.0 && r.end.y > 500.0),
+            "{mud_first}: a Mud piece passes the Grav centre line"
+        );
+        assert!(
+            south.iter().all(|r| r.start.y < 500.0 && r.end.y < 500.0),
+            "{mud_first}: a Mud piece passes the Grav centre line"
+        );
+    }
+}
