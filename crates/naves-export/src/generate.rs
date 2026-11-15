@@ -348,7 +348,12 @@ pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
     junctions
         .points
         .iter()
-        .filter(|j| matches!(j.kind, JunctionKind::Join | JunctionKind::EndOnRoad))
+        .filter(|j| {
+            matches!(
+                j.kind,
+                JunctionKind::Join | JunctionKind::Overlay | JunctionKind::EndOnRoad
+            )
+        })
         .map(|j| LevelPatch {
             at: j.at,
             radius: j.patch_m + cell_m,

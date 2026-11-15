@@ -11,6 +11,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Where the game has no junction piece for a pair of road types, one road now lies on top of the other instead of the two meeting in a heap: the higher road (asphalt 1, asphalt 2, street, asphalt 3, gravel, dirt track; the longer one among equals) runs on, a lower road ends just under its edge (or is interrupted and starts again under the other edge where it crosses), without an end cap, 5 cm below the higher road's surface. A higher road that ends on a lower one lies on top of it. These places are no longer `join_without_junction` findings and their overlap is no `road_conflict`; the finding remains for crossings where all roads end. A piece of road shorter than half its width between two such cuts is left out.
+
 ### Fixed
 
 - A crossing of two roads of different surfaces gets a junction piece more often: where the game has an X junction only with the roles swapped (the street crossing an Asf1 road has `kr_x_asf1_city` only), that piece is used, turned by 90 degrees, where the through road's fit reaches the crossing. T crossings are never swapped (the Berchtesgaden example has one such crossing and it still has no junction piece, its fit ends 3.3 m from the crossing).

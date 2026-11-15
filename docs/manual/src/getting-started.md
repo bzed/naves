@@ -173,8 +173,19 @@ ground between two roads is too steep for that, the terrain under one of them is
 
 **What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
-line after the junction), railways, houses and trees. Where the game has no junction for a pair of road types the
-roads simply meet; the build lists those places.
+line after the junction), railways, houses and trees.
+
+**Where the game has no junction piece for a pair of road types** (most pairs of different surfaces, and gravel with
+gravel), one road lies on top of the other. The higher road is the one of the better surface (asphalt 1, asphalt 2,
+street, asphalt 3, gravel, dirt track); of two of the same surface the longer one. It runs on unchanged. A lower road
+that ends on it stops just under its edge (it reaches under the edge by up to 2 m, but never past the centre line)
+and has no end cap there. A lower road that crosses it is interrupted: it ends under one edge and starts again under
+the other. A higher road that ends on a lower one lies on top of it, again without an end cap. At the cut the lower
+road is 5 cm below the surface of the higher one, so the two surfaces do not flicker; the ground there is levelled
+like under any junction. A piece of road between two such cuts that is shorter than half its width is left out, and the
+build says so. These overlaps are intended; they are not `road_conflict` findings and not `join_without_junction`.
+`join_without_junction` is left for crossings where no road runs through (several roads of different surfaces that all
+end at one point).
 
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the

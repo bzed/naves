@@ -45,7 +45,8 @@ pub enum Rule {
     EarthworksCapped,
     /// An edit that outlived its object.
     OrphanedEdit,
-    /// Roads that meet without a junction piece.
+    /// Roads that all end at one point without a junction piece (where one road runs through, the lower
+    /// roads end under it instead, see `roadplace::Overlay`).
     JoinWithoutJunction,
     /// A tunnel that got no pieces.
     TunnelOmitted,
@@ -406,8 +407,7 @@ pub fn check_roads(
         violation(
             Rule::JoinWithoutJunction,
             at,
-            "Roads meet here without a junction piece (the game has none for this pair)"
-                .to_string(),
+            "Roads end here without a junction piece (the game has none for this pair)".to_string(),
         )
     }));
     out.extend(net.tunnels_omitted.iter().map(|(id, at)| {

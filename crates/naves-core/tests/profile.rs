@@ -476,6 +476,7 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
         rank: 3,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction(280.0, 100.0), junction(320.0, 160.0)],
@@ -793,6 +794,7 @@ fn a_side_road_ends_at_the_junction_port_height() {
         rank: 3,
         patch_m: 6.25,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![piece_junction],
@@ -1127,10 +1129,13 @@ fn all_roads_at_a_junction_have_its_height() {
             .filter(|q| near(&j.points[0], (q.0, q.1)))
         {
             seen += 1;
-            assert!((joint.2 - want).abs() < 0.01, "{} vs {want}", joint.2);
+            // the City road lies on top; the Asf3 road under it is five centimetres lower
+            let ok = (joint.2 - want).abs() < 0.01
+                || (joint.2 - (want - naves_core::roadplace::OVERLAY_DROP_M)).abs() < 0.01;
+            assert!(ok, "{} vs {want}", joint.2);
         }
     }
-    // the start of the side road and the through road's joint at the crossing (a join: the game has no
+    // the start of the side road and the through road's joint at the crossing (an overlay: the game has no
     // junction piece for this pair)
     assert!(seen >= 2, "{seen}");
 }
@@ -1318,6 +1323,7 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         rank: 3,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![
@@ -1393,6 +1399,7 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
         rank: 3,
         patch_m: 0.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![
@@ -1428,6 +1435,7 @@ fn free_span_then_a_short_piece_then_a_held_joint() -> (PlacedNetwork, Heightmap
         rank: 3,
         patch_m: 0.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction(100.0, 100.0), junction(504.4, 107.0)],
@@ -1483,6 +1491,7 @@ fn tight_bend_chain(family: Family) -> (PlacedNetwork, Heightmap, Junctions) {
         rank: 1,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction((100.0, 100.0)), junction((560.0, 560.0))],
@@ -1534,6 +1543,7 @@ fn a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser
         rank: 1,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![junction(100.0), junction(1000.0)],
@@ -1546,4 +1556,45 @@ fn a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser
         .map(|j| (j.2 - ground(j.0, j.1)).abs())
         .fold(0.0_f64, f64::max);
     assert!(worst <= 12.0, "the profile is {worst} m from the ground");
+}
+
+#[test]
+fn the_lower_road_sits_five_centimetres_below_at_the_cut() {
+    use naves_core::roadplace::OVERLAY_DROP_M;
+    // a City street along y = 200 with a Mud track ending on it: the game has no T for the pair
+    let (net, graph) = placed(&[
+        feature(
+            1,
+            Family::City,
+            &[1, 2, 3],
+            &[(50.0, 200.0), (200.0, 200.0), (350.0, 200.0)],
+        ),
+        feature(2, Family::Mud, &[2, 4], &[(200.0, 200.0), (200.0, 350.0)]),
+    ]);
+    assert_eq!(net.overlays.len(), 1);
+    let hm = terrain(128, 3.125, |_, _| 100.0);
+    let j = find_junctions(&net, &graph, &hm);
+    assert_eq!(j.points.len(), 1);
+    let p = solve_profiles(&net, &hm, &j, &[]);
+    let height_near_cut = |family: Family| {
+        let mut best: Option<(f64, f64)> = None;
+        for (strip, chain) in p.strips.iter().zip(&net.chains) {
+            if net.roads[chain[0]].family != family {
+                continue;
+            }
+            for joint in &strip.joints {
+                let d = (joint.0 - 200.0).hypot(joint.1 - 200.0);
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, joint.2));
+                }
+            }
+        }
+        best.unwrap().1
+    };
+    let (street, track) = (height_near_cut(Family::City), height_near_cut(Family::Mud));
+    assert!(
+        (street - track - OVERLAY_DROP_M).abs() < 1e-6,
+        "street {street}, track {track}"
+    );
+    assert!((street - j.points[0].height).abs() < 1e-6);
 }

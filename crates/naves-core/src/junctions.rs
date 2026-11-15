@@ -18,7 +18,7 @@ use crate::heightmap::Heightmap;
 use crate::limits::grade_ceiling;
 use crate::profile::{ON_ROAD_M, RoadStrip, chain_holds, meeting_bounds, meeting_on, rank};
 use crate::roadnet::RoadGraph;
-use crate::roadplace::{PlacedKind, PlacedNetwork};
+use crate::roadplace::{Overlay, PlacedKind, PlacedNetwork};
 
 /// Radius of the circle the ground is sampled in.
 pub const GROUND_RADIUS_M: f64 = 10.0;
@@ -37,6 +37,8 @@ pub const HOLD_M: f64 = 4.0;
 
 /// How far from a crossing a road may pass and still be one of its arms.
 pub(crate) const ARM_REACH_M: f64 = 13.0;
+/// An overlay of the placement belongs to the crossing of the graph within this distance.
+const OVERLAY_MATCH_M: f64 = 1.0;
 /// A projection this close to the end of a road is the end.
 const END_M: f64 = 3.0;
 /// A junction piece whose centre is this close to a station is the one the station lies on.
@@ -57,8 +59,11 @@ const MIN_LINK_M: f64 = 1.0;
 pub enum JunctionKind {
     /// A placed junction piece.
     Piece,
-    /// Roads meet at a crossing without a junction piece.
+    /// Roads meet at a crossing without a junction piece and none of them lies on top (all end there).
     Join,
+    /// Roads meet at a crossing without a junction piece: the higher road runs on, the lower roads end under
+    /// it, [`crate::roadplace::OVERLAY_DROP_M`] below its surface.
+    Overlay,
     /// A chain ends on another road without a crossing.
     EndOnRoad,
 }
@@ -83,6 +88,9 @@ pub struct Junction {
     /// or are the road a chain end lies on), junction pieces' `a|b` ids split. A chain that has none of them is
     /// not held to this junction, whatever its distance. Empty: not recorded, every chain counts.
     pub stretches: BTreeSet<String>,
+    /// For an overlay, the ids of the stretches of the roads that lie under the top road here: they are held
+    /// [`crate::roadplace::OVERLAY_DROP_M`] below the junction's height. Empty for the other kinds.
+    pub lower: BTreeSet<String>,
 }
 
 /// The road between two neighbouring junctions.
@@ -295,13 +303,16 @@ struct Raw {
     at: (f64, f64),
     kind: JunctionKind,
     arms: Vec<Arm>,
+    /// Of an overlay: the stretches that lie under the top road.
+    lower: BTreeSet<String>,
 }
 
 fn kind_order(kind: JunctionKind) -> u8 {
     match kind {
         JunctionKind::Piece => 0,
-        JunctionKind::Join => 1,
-        JunctionKind::EndOnRoad => 2,
+        JunctionKind::Overlay => 1,
+        JunctionKind::Join => 2,
+        JunctionKind::EndOnRoad => 3,
     }
 }
 
@@ -317,6 +328,7 @@ fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 /// take (`claimed`).
 fn crossing_junctions(
     graph: &RoadGraph,
+    overlays: &[Overlay],
     lines: &[Line],
     claimed: &mut BTreeSet<(usize, bool)>,
 ) -> Vec<Raw> {
@@ -374,15 +386,21 @@ fn crossing_junctions(
             continue;
         }
         claimed.extend(ends);
-        let kind = if arms.iter().any(|a| a.half > 0.0) {
-            JunctionKind::Piece
+        let overlay = overlays
+            .iter()
+            .find(|o| distance(o.at, crossing.point) < OVERLAY_MATCH_M);
+        let (kind, lower) = if arms.iter().any(|a| a.half > 0.0) {
+            (JunctionKind::Piece, BTreeSet::new())
+        } else if let Some(o) = overlay {
+            (JunctionKind::Overlay, o.lower.iter().cloned().collect())
         } else {
-            JunctionKind::Join
+            (JunctionKind::Join, BTreeSet::new())
         };
         out.push(Raw {
             at: crossing.point,
             kind,
             arms,
+            lower,
         });
     }
     out
@@ -486,6 +504,7 @@ fn end_junctions(lines: &[Line], claimed: &BTreeSet<(usize, bool)>, raw: &mut Ve
                 at: item.at,
                 kind: JunctionKind::EndOnRoad,
                 arms: vec![own, on],
+                lower: BTreeSet::new(),
             }),
         }
     }
@@ -549,7 +568,7 @@ fn find_root(parent: &[usize], mut i: usize) -> usize {
 pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) -> Junctions {
     let lines = lines_of(net);
     let mut claimed = BTreeSet::new();
-    let mut raw = crossing_junctions(graph, &lines, &mut claimed);
+    let mut raw = crossing_junctions(graph, &net.overlays, &lines, &mut claimed);
     end_junctions(&lines, &claimed, &mut raw);
     raw.sort_by(|a, b| by_position(&a.at, &b.at).then(kind_order(a.kind).cmp(&kind_order(b.kind))));
     let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base);
@@ -618,6 +637,7 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
     let mut kind = JunctionKind::EndOnRoad;
     let (mut top_rank, mut patch) = (0, 0.0_f64);
     let mut stretches = BTreeSet::new();
+    let mut lower = BTreeSet::new();
     for r in members.iter().filter_map(|m| raw.get(*m)) {
         sx += r.at.0;
         sy += r.at.1;
@@ -639,6 +659,7 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
         for line in r.arms.iter().filter_map(|a| lines.get(a.line)) {
             stretches.extend(line.ids.iter().cloned());
         }
+        lower.extend(r.lower.iter().cloned());
     }
     let n = count(members.len());
     let at = (sx / n, sy / n);
@@ -651,6 +672,11 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
         rank: top_rank,
         patch_m: patch,
         stretches,
+        lower: if kind == JunctionKind::Overlay {
+            lower
+        } else {
+            BTreeSet::new()
+        },
     }
 }
 

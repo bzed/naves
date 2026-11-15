@@ -151,12 +151,13 @@ fn a_crossing_places_an_x() {
 }
 
 #[test]
-fn a_pair_without_a_model_joins_without_a_junction() {
+fn a_pair_without_a_model_overlays_the_roads() {
     // there is no gravel junction
     let net = place(&t_network(Family::Grav));
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
-    assert_eq!(net.joins_without_junction.len(), 1);
-    assert!(dist(net.joins_without_junction[0], (500.0, 500.0)) < 1.0);
+    assert_eq!(net.joins_without_junction.len(), 0);
+    assert_eq!(net.overlays.len(), 1);
+    assert!(dist(net.overlays[0].at, (500.0, 500.0)) < 1.0);
     // the side road ends on the edge of the through road, overlapping it by up to 2 m
     let grav_start = net
         .roads
@@ -192,7 +193,7 @@ fn two_crossings_close_together_use_one_junction() {
         feature(3, Family::Asf3, &[3, 6], &[(506.0, 500.0), (506.0, 200.0)]),
     ]);
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 1);
-    assert_eq!(net.joins_without_junction.len(), 1);
+    assert_eq!(net.overlays.len(), 1);
     // no through piece overlaps the junction by more than 2 m
     let j = of_kind(&net, PlacedKind::Junction)[0];
     let (lo, hi) = (j.start.x.min(j.end.x), j.start.x.max(j.end.x));
@@ -630,7 +631,7 @@ fn no_junction_sits_at_the_end_of_a_bridge() {
     ));
     let net = place(&features);
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
-    assert_eq!(net.joins_without_junction.len(), 1);
+    assert_eq!(net.overlays.len(), 1);
 }
 
 #[test]
@@ -815,7 +816,7 @@ fn a_t_crossing_is_never_swapped() {
     )
     .unwrap();
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
-    assert_eq!(net.joins_without_junction.len(), 1);
+    assert_eq!(net.overlays.len(), 1);
 }
 
 fn t_network_of(through: Family, side: Family) -> Vec<Feature> {
@@ -828,4 +829,217 @@ fn t_network_of(through: Family, side: Family) -> Vec<Feature> {
         ),
         feature(2, side, &[2, 4], &[(500.0, 500.0), (500.0, 900.0)]),
     ]
+}
+
+// ---- the overlay rule: where no junction piece exists the lower road ends under the higher one ----
+
+/// The pieces of a family, with the distance of their ends from the line y = 500.
+fn south_north(net: &PlacedNetwork, family: Family) -> Vec<&PlacedRoad> {
+    net.roads
+        .iter()
+        .filter(|r| r.kind == PlacedKind::Piece && r.family == family)
+        .collect()
+}
+
+fn half(family: Family) -> f64 {
+    width(family) / 2.0
+}
+
+/// The distances from the line y = 500 of the ends of the pieces of `family` that lie on one side of it,
+/// nearest first.
+fn ends_near_line(net: &PlacedNetwork, family: Family, north: bool) -> Vec<f64> {
+    let mut d: Vec<f64> = south_north(net, family)
+        .iter()
+        .flat_map(|r| [r.start.y, r.end.y])
+        .filter(|y| (*y > 500.0) == north)
+        .map(|y| (y - 500.0).abs())
+        .collect();
+    d.sort_by(f64::total_cmp);
+    d
+}
+
+#[test]
+fn a_mud_track_ends_under_the_edge_of_a_street() {
+    // both directions: the track starts at the crossing, or ends there (the node ids decide)
+    for nodes in [[2_i64, 4], [4, 2]] {
+        let mut mud = [(500.0, 500.0), (500.0, 900.0)];
+        if nodes[0] == 4 {
+            mud.reverse();
+        }
+        let net = place(&[
+            feature(
+                1,
+                Family::City,
+                &[1, 2, 3],
+                &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+            ),
+            feature(2, Family::Mud, &nodes, &mud),
+        ]);
+        assert_eq!(net.joins_without_junction.len(), 0);
+        assert_eq!(net.overlays.len(), 1);
+        let nearest = ends_near_line(&net, Family::Mud, true)[0];
+        assert!(
+            nearest > 0.0 && nearest <= half(Family::City),
+            "{nodes:?}: the last Mud piece ends {nearest} m from the City centre line"
+        );
+        // no end cap where the track meets the street
+        assert!(
+            !net.roads.iter().any(|r| r.kind == PlacedKind::EndCap
+                && dist((r.start.x, r.start.y), (500.0, 500.0)) < 15.0),
+            "{nodes:?}"
+        );
+    }
+}
+
+/// A Grav road along y = 500 crossed by a Mud road along x = 500. `mud_first` gives the Mud road the lower
+/// way id, so that it is the one the crossing makes a through road.
+fn grav_mud_cross(mud_first: bool) -> Vec<Feature> {
+    let (grav_way, mud_way) = if mud_first { (2, 1) } else { (1, 2) };
+    vec![
+        feature(
+            grav_way,
+            Family::Grav,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(
+            mud_way,
+            Family::Mud,
+            &[4, 2, 5],
+            &[(500.0, 100.0), (500.0, 500.0), (500.0, 900.0)],
+        ),
+    ]
+}
+
+#[test]
+fn a_crossing_without_piece_interrupts_the_lower_road() {
+    for mud_first in [false, true] {
+        let net = place(&grav_mud_cross(mud_first));
+        assert!(net.joins_without_junction.is_empty(), "{mud_first}");
+        let mud_chains: Vec<&Vec<usize>> = net
+            .chains
+            .iter()
+            .filter(|c| c.iter().any(|i| net.roads[*i].family == Family::Mud))
+            .collect();
+        assert_eq!(mud_chains.len(), 2, "{mud_first}: two parts");
+        for r in south_north(&net, Family::Mud) {
+            assert!(
+                (r.start.y - 500.0) * (r.end.y - 500.0) >= 0.0,
+                "{mud_first}: a Mud piece crosses the Grav centre line: {r:?}"
+            );
+        }
+        for north in [false, true] {
+            let nearest = ends_near_line(&net, Family::Mud, north)[0];
+            assert!(
+                nearest > 0.0 && nearest <= half(Family::Grav) + 1e-6,
+                "{mud_first}: the Mud part ends {nearest} m from the Grav centre line"
+            );
+        }
+        // the Grav road is the one that is not under anything
+        let lower: Vec<&String> = net.overlays.iter().flat_map(|o| &o.lower).collect();
+        assert!(
+            !lower.is_empty()
+                && lower
+                    .iter()
+                    .all(|id| id.contains("1:") || id.contains("2:"))
+        );
+    }
+}
+
+#[test]
+fn the_higher_road_ending_on_a_lower_one_lies_on_top() {
+    // an Asf3 road runs on, a City road ends on it; the game has no T for this pair
+    let net = place(&t_network_of(Family::Asf3, Family::City));
+    assert_eq!(net.joins_without_junction.len(), 0);
+    let asf3: Vec<&PlacedRoad> = south_north(&net, Family::Asf3);
+    let asf3_chains = net
+        .chains
+        .iter()
+        .filter(|c| c.iter().any(|i| net.roads[*i].family == Family::Asf3))
+        .count();
+    assert_eq!(asf3_chains, 1, "the Asf3 road is unbroken");
+    for pair in asf3.windows(2) {
+        assert!(
+            dist(
+                (pair[0].end.x, pair[0].end.y),
+                (pair[1].start.x, pair[1].start.y)
+            ) < 1e-6,
+            "a gap in the Asf3 road"
+        );
+    }
+    // no end cap on the City road where it ends on the Asf3 road
+    assert!(!net.roads.iter().any(|r| r.kind == PlacedKind::EndCap
+        && r.family == Family::City
+        && dist((r.start.x, r.start.y), (500.0, 500.0)) < 15.0));
+    // the Asf3 road is the lower one
+    assert_eq!(net.overlays.len(), 1);
+    assert!(
+        net.overlays[0].lower.iter().all(|id| id.starts_with("1:")),
+        "{:?}",
+        net.overlays
+    );
+    assert_ne!(net.overlays[0].lower.len(), 0);
+}
+
+#[test]
+fn equal_families_put_the_longer_road_on_top() {
+    // two Grav roads, no piece for them; the vertical one is longer
+    let net = place(&[
+        feature(
+            1,
+            Family::Grav,
+            &[1, 2, 3],
+            &[(350.0, 500.0), (500.0, 500.0), (650.0, 500.0)],
+        ),
+        feature(2, Family::Grav, &[2, 4], &[(500.0, 500.0), (500.0, 1300.0)]),
+    ]);
+    assert_eq!(net.overlays.len(), 1);
+    // the short horizontal through road is lower, the long side road on top
+    assert!(
+        net.overlays[0].lower.iter().all(|id| id.starts_with("1:")),
+        "{:?}",
+        net.overlays
+    );
+    assert_ne!(net.overlays[0].lower.len(), 0);
+    // and the other way round: the through road is the longer one
+    let net = place(&[
+        feature(
+            1,
+            Family::Grav,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(2, Family::Grav, &[2, 4], &[(500.0, 500.0), (500.0, 700.0)]),
+    ]);
+    assert!(
+        net.overlays[0].lower.iter().all(|id| id.starts_with("2:")),
+        "{:?}",
+        net.overlays
+    );
+}
+
+#[test]
+fn a_stub_shorter_than_half_the_width_is_dropped_and_reported() {
+    // a 1.5 m Mud stub from the crossing to a dead end, shorter than the cut in front of it
+    let net = place(&[
+        feature(
+            1,
+            Family::City,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(2, Family::Mud, &[2, 4], &[(500.0, 500.0), (500.0, 501.5)]),
+    ]);
+    assert_eq!(south_north(&net, Family::Mud).len(), 0);
+    assert!(
+        net.roads
+            .iter()
+            .all(|r| dist((r.start.x, r.start.y), (r.end.x, r.end.y)) > 1e-6),
+        "a piece of no length"
+    );
+    assert!(
+        net.warnings.iter().any(|w| w.contains("not placed")),
+        "{:?}",
+        net.warnings
+    );
 }

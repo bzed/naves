@@ -12,7 +12,8 @@
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{
-    BridgeSpan, RoadGraph, Stretch, build_graph, chains, widen_bridges, with_bridge_spans,
+    BridgeSpan, RoadGraph, Stretch, build_graph, chains, overlay_rank, widen_bridges,
+    with_bridge_spans,
 };
 use proptest::prelude::*;
 
@@ -686,4 +687,58 @@ fn a_bridge_that_a_dip_bridge_covers_is_not_lost() {
     }
     // and one that stays a bridge is kept
     assert_eq!(lost_bridges(&osm, &osm).len(), 0);
+}
+
+#[test]
+fn the_overlay_rank_goes_by_family_then_length_then_id() {
+    use std::cmp::Ordering;
+    // an Asf3 road of 100 m, a City road of 50 m, two Grav roads of 80 m and 80 m, none sharing a node
+    let graph = build_graph(&[
+        feature(1, Family::Asf3, false, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::City,
+            false,
+            &[3, 4],
+            &[(0.0, 500.0), (50.0, 500.0)],
+        ),
+        feature(
+            3,
+            Family::Grav,
+            false,
+            &[5, 6],
+            &[(0.0, 900.0), (80.0, 900.0)],
+        ),
+        feature(
+            4,
+            Family::Grav,
+            false,
+            &[7, 8],
+            &[(0.0, 1300.0), (80.0, 1300.0)],
+        ),
+        feature(
+            5,
+            Family::Grav,
+            false,
+            &[9, 10],
+            &[(0.0, 1700.0), (120.0, 1700.0)],
+        ),
+    ]);
+    let all = chains(&graph);
+    let of = |way: &str| {
+        all.iter()
+            .find(|c| graph.stretches[c.links[0].stretch].id.starts_with(way))
+            .unwrap()
+    };
+    let (asf3, city, grav3, grav4, grav5) = (of("1:"), of("2:"), of("3:"), of("4:"), of("5:"));
+    // the family decides, not the length
+    assert_eq!(overlay_rank(city, asf3, &graph), Ordering::Less);
+    assert_eq!(overlay_rank(asf3, city, &graph), Ordering::Greater);
+    assert_eq!(overlay_rank(asf3, grav3, &graph), Ordering::Less);
+    // the same family: the longer road is higher
+    assert_eq!(overlay_rank(grav5, grav3, &graph), Ordering::Less);
+    // equal length: the lower stretch id
+    assert_eq!(overlay_rank(grav3, grav4, &graph), Ordering::Less);
+    assert_eq!(overlay_rank(grav4, grav3, &graph), Ordering::Greater);
+    assert_eq!(overlay_rank(grav3, grav3, &graph), Ordering::Equal);
 }

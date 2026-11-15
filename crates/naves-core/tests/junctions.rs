@@ -198,6 +198,7 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
         rank,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     }
 }
 
@@ -300,15 +301,22 @@ fn a_placed_junction_piece_is_a_piece_with_a_patch_of_half_its_length() {
 }
 
 #[test]
-fn a_join_without_a_junction_piece_is_a_join() {
-    // there is no gravel junction
+fn a_crossing_without_a_junction_piece_is_an_overlay() {
+    // there is no gravel junction: the Mud road ends under the Grav road
     let (net, graph) = t_of(Family::Grav, Family::Mud);
-    assert_eq!(net.joins_without_junction.len(), 1);
+    assert_eq!(net.joins_without_junction.len(), 0);
+    assert_eq!(net.overlays.len(), 1);
     let hm = terrain(128, 3.125, |_, _| 100.0);
     let j = find_junctions(&net, &graph, &hm);
     assert_eq!(j.points.len(), 1, "{j:?}");
     let p = &j.points[0];
-    assert_eq!(p.kind, JunctionKind::Join);
+    assert_eq!(p.kind, JunctionKind::Overlay);
+    assert_eq!(
+        p.lower.len(),
+        1,
+        "only the Mud road lies under: {:?}",
+        p.lower
+    );
     assert_eq!(p.rank, 2);
     // half the width of the widest road
     let widest = net.roads.iter().map(|r| r.width).fold(0.0, f64::max);
@@ -667,6 +675,7 @@ fn one_junction_of(at: (f64, f64), patch_m: f64, names: &[&str], kind: JunctionK
             rank: 3,
             patch_m,
             stretches: names.iter().map(|n| (*n).to_string()).collect(),
+            lower: std::collections::BTreeSet::new(),
         }],
         ..Junctions::default()
     }

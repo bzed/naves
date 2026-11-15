@@ -11,19 +11,29 @@
 //! Heading and coordinate conventions are those of [`crate::roadfit`].
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
 use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
 use crate::roadfit::{EndGoal, FitError, FitPiece, GAP_TOLERATED_M, Pose, fit_line};
-use crate::roadnet::{Chain, RoadGraph, chains};
+use crate::roadnet::{Chain, RoadGraph, chains, overlay_rank};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
 const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
-/// A side road without a junction piece ends this far inside the through road's edge.
+/// A road that ends under another one reaches this far under its edge (but not past half its width: the
+/// centre line is never crossed).
 const SIDE_OVERLAP_M: f64 = 2.0;
+/// The end of a road under another one is at least this far from the other road's centre line.
+const MIN_UNDER_M: f64 = 0.1;
+/// Where the free end of a fit lands cannot be steered exactly (the pieces are 6.25 m and longer), so the
+/// cut is tried at these fractions of the top road's half width until the end lies under its edge.
+const CUT_TRIES: [f64; 5] = [1.0, 0.75, 0.5, 0.25, 0.1];
+/// Where roads meet without a junction piece, the surface of the lower road is this far below the surface of
+/// the higher road, so that the two do not flicker where they overlap.
+pub const OVERLAY_DROP_M: f64 = 0.05;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 /// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
@@ -143,6 +153,16 @@ pub struct RoadGap {
     pub heading_error_deg: f64,
 }
 
+/// A place where roads meet without a junction piece and the higher road runs on over the lower one: the
+/// lower road ends (or is interrupted) under the higher road's edge, `OVERLAY_DROP_M` below its surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overlay {
+    /// The crossing, in map metres.
+    pub at: (f64, f64),
+    /// The ids of the stretches of the lower roads that end or are interrupted here.
+    pub lower: Vec<String>,
+}
+
 /// Everything that is placed, and what could not be.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlacedNetwork {
@@ -150,8 +170,11 @@ pub struct PlacedNetwork {
     pub roads: Vec<PlacedRoad>,
     /// Stretches that miss what they had to meet.
     pub gaps: Vec<RoadGap>,
-    /// Crossings where roads meet without a junction piece.
+    /// Crossings where roads meet without a junction piece and no road can lie on top of the others (no
+    /// through road passes: the roads all end there).
     pub joins_without_junction: Vec<(f64, f64)>,
+    /// Crossings where roads meet without a junction piece and the lower roads end under the higher one.
+    pub overlays: Vec<Overlay>,
     /// Tunnel stretches that got no pieces, with their first point.
     pub tunnels_omitted: Vec<(String, (f64, f64))>,
     /// Indices into `roads`, in driving order, one list per placed run of a chain.
@@ -385,6 +408,12 @@ struct Placer<'a> {
     fixed: BTreeMap<Arm, Pose>,
     /// How much of the end of a side arm to leave out, because it ends on a through road without junction.
     trim: BTreeMap<Arm, f64>,
+    /// The half width of the road that a trimmed arm ends under: the end has to lie within it.
+    edge: BTreeMap<Arm, f64>,
+    /// Link boundaries `(chain, k)` between link `k` and `k + 1` where the chain is interrupted: it is the
+    /// lower road at an overlay and the higher road lies across it.
+    cuts: BTreeSet<(usize, usize)>,
+    overlay_points: BTreeSet<(u64, u64)>,
     out: PlacedNetwork,
     joins: BTreeSet<(u64, u64)>,
 }
@@ -424,6 +453,9 @@ impl<'a> Placer<'a> {
             needs,
             fixed: BTreeMap::new(),
             trim: BTreeMap::new(),
+            edge: BTreeMap::new(),
+            cuts: BTreeSet::new(),
+            overlay_points: BTreeSet::new(),
             out: PlacedNetwork::default(),
             joins: BTreeSet::new(),
         }
@@ -560,8 +592,7 @@ impl<'a> Placer<'a> {
                         .or_insert(self.plans.len());
                     self.plans.push(plan);
                 } else {
-                    self.join(at);
-                    self.trim_sides(&chain, i, &sides);
+                    self.overlay_at(c, i, at, &sides, true);
                 }
             }
         }
@@ -580,6 +611,9 @@ impl<'a> Placer<'a> {
         self.out
             .joins_without_junction
             .sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        self.out
+            .overlays
+            .sort_by(|a, b| a.at.0.total_cmp(&b.at.0).then(a.at.1.total_cmp(&b.at.1)));
     }
 
     fn node_of(&self, arm: Arm) -> i64 {
@@ -599,17 +633,115 @@ impl<'a> Placer<'a> {
         .copied()
     }
 
-    /// Side arms that end on a through road without junction piece stop at the edge of the through road.
-    fn trim_sides(&mut self, chain: &Chain, boundary: usize, sides: &[Arm]) {
-        let Some(link) = chain.links.get(boundary) else {
+    /// How far from the crossing a road that ends under a road of half width `half` stops: 2 m inside its
+    /// edge, but not nearer to the centre line than half of `half`.
+    fn cut_depth(half: f64) -> f64 {
+        (half - SIDE_OVERLAP_M).max(half / 2.0)
+    }
+
+    /// Notes that the end of `arm` lies under a road of half width `half`: it stops [`Self::cut_depth`]
+    /// from the crossing. A bridge is not shortened.
+    fn end_under(&mut self, arm: Arm, half: f64) {
+        if self.graph.stretches.get(arm.0).is_some_and(|s| s.bridge) {
+            return;
+        }
+        self.trim.insert(arm, Self::cut_depth(half));
+        self.edge.insert(arm, half);
+    }
+
+    fn stretch_id(&self, stretch: usize) -> Option<String> {
+        self.graph.stretches.get(stretch).map(|s| s.id.clone())
+    }
+
+    /// Roads that meet at a crossing of the chain `c` (between its links `boundary` and `boundary + 1`)
+    /// where the game has no junction piece: the road that lies on top runs on, the others end under its
+    /// edge. Where the side roads are all the higher ones and cross the chain, the chain is interrupted
+    /// (`may_cut`); otherwise a higher road that ends on it lies on top of it and the chain runs on.
+    fn overlay_at(
+        &mut self,
+        c: usize,
+        boundary: usize,
+        at: (f64, f64),
+        sides: &[Arm],
+        may_cut: bool,
+    ) {
+        let Some(chain) = self.chains.get(c).cloned() else {
             return;
         };
-        let family = self.graph.stretches.get(link.stretch).map(|s| s.family);
-        let amount = family.map_or(0.0, |f| {
-            (self.family_width(f) / 2.0 - SIDE_OVERLAP_M).max(0.0)
-        });
-        for arm in sides {
-            self.trim.insert(*arm, amount);
+        let (Some(a), Some(b)) = (chain.links.get(boundary), chain.links.get(boundary + 1)) else {
+            return;
+        };
+        let exit: Arm = (a.stretch, a.reversed);
+        let entry: Arm = (b.stretch, !b.reversed);
+        let half_of = |this: &Self, stretch: usize| {
+            this.graph
+                .stretches
+                .get(stretch)
+                .map_or(0.0, |s| this.family_width(s.family) / 2.0)
+        };
+        let outranks = |this: &Self, arm: Arm| {
+            let d = this.chain_of.get(arm.0).copied().unwrap_or(c);
+            d != c
+                && this
+                    .chains
+                    .get(d)
+                    .zip(this.chains.get(c))
+                    .is_some_and(|(side, through)| {
+                        overlay_rank(side, through, this.graph) == Ordering::Less
+                    })
+        };
+        let plain = |this: &Self, stretch: usize| {
+            this.graph
+                .stretches
+                .get(stretch)
+                .is_some_and(|s| !s.bridge && !s.tunnel)
+        };
+        let mut lower: Vec<String> = Vec::new();
+        let crossing = sides.len() == 2
+            && sides.iter().all(|arm| outranks(self, *arm))
+            && plain(self, a.stretch)
+            && plain(self, b.stretch);
+        if may_cut && crossing {
+            // the higher road crosses: this road stops under its edge on both sides
+            let half = sides
+                .iter()
+                .map(|arm| half_of(self, arm.0))
+                .fold(0.0, f64::max);
+            for arm in [exit, entry] {
+                self.end_under(arm, half);
+            }
+            self.cuts.insert((c, boundary));
+            lower.extend(
+                [self.stretch_id(a.stretch), self.stretch_id(b.stretch)]
+                    .into_iter()
+                    .flatten(),
+            );
+        } else {
+            // this road runs on: the side roads end on it (on top of it if they are the higher ones)
+            let half = half_of(self, a.stretch);
+            let mut under = false;
+            for arm in sides {
+                self.end_under(*arm, half);
+                if self.chain_of.get(arm.0) == Some(&c) {
+                    // the other end of this very chain (a ring): it is not another road
+                } else if outranks(self, *arm) {
+                    under = true;
+                } else {
+                    lower.extend(self.stretch_id(arm.0));
+                }
+            }
+            if under {
+                lower.extend(
+                    [self.stretch_id(a.stretch), self.stretch_id(b.stretch)]
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+        lower.sort();
+        lower.dedup();
+        if self.overlay_points.insert(bits(at)) {
+            self.out.overlays.push(Overlay { at, lower });
         }
     }
 
@@ -707,7 +839,7 @@ impl<'a> Placer<'a> {
                 continue;
             }
             let mut last = first;
-            while last + 1 < links && !tunnel(last + 1) {
+            while last + 1 < links && !tunnel(last + 1) && !self.cuts.contains(&(c, last)) {
                 last += 1;
             }
             self.place_unit(c, first, last)?;
@@ -783,6 +915,31 @@ impl<'a> Placer<'a> {
         let cap_start = fixed_start.is_none() && start_node >= 0 && self.live_arms(start_node) == 1;
         let cap_end = fixed_end.is_none() && end_node >= 0 && self.live_arms(end_node) == 1;
         let width = self.pieces(family).first().map_or(0.0, |p| p.width);
+        let only_roads = links.iter().all(|l| {
+            self.graph
+                .stretches
+                .get(l.stretch)
+                .is_some_and(|s| !s.bridge)
+        });
+        if only_roads
+            && !ring
+            && fixed_start.is_none()
+            && fixed_end.is_none()
+            && trim_start + trim_end > 0.0
+            && total - trim_start - trim_end < width / 2.0
+        {
+            // what is left of the road between the roads it ends under is hardly longer than a piece is wide
+            let id = self
+                .graph
+                .stretches
+                .get(head.stretch)
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+            self.out.warnings.push(format!(
+                "stretch {id} is {total:.1} m long and ends under other roads: it is shorter than half its width and not placed"
+            ));
+            return Ok(());
+        }
 
         let mut items: Vec<Item> = Vec::new();
         let start_pose = fixed_start.unwrap_or_else(|| line.pose_at(trim_start));
@@ -939,10 +1096,8 @@ impl<'a> Placer<'a> {
                 let at = plan.point;
                 let sides: Vec<Arm> = plan.sides.iter().map(|s| s.0).collect();
                 let boundary = plan.link;
-                self.join(at);
-                if let Some(chain) = self.chains.get(c).cloned() {
-                    self.trim_sides(&chain, boundary, &sides);
-                }
+                // this chain is placed already: it cannot be interrupted any more
+                self.overlay_at(c, boundary, at, &sides, false);
             }
         }
         // the last part
@@ -970,6 +1125,49 @@ impl<'a> Placer<'a> {
             let s_end = (total - trim_end).max(s_cur);
             (line.slice(s_cur, s_end), EndGoal::Free)
         };
+        if trim_end > 0.0
+            && let Some(&edge) = self.edge.get(&exit_arm)
+            && !ring
+            && fixed_end.is_none()
+            && path.len() >= 2
+        {
+            // the road arrives under another one: the pieces cannot be steered to a metre, so the cut is
+            // moved until the last piece ends under the edge of the road above, short of its centre line
+            let crossing = line.pose_at(total);
+            let mut best: Option<(f64, Vec<FitPiece>, Pose)> = None;
+            let depths =
+                std::iter::once(Self::cut_depth(edge)).chain(CUT_TRIES.iter().map(|f| edge * f));
+            for depth in depths {
+                let s_end = (total - depth).max(s_cur);
+                let mut trial = line.slice(s_cur, s_end);
+                trial.dedup();
+                if trial.len() < 2 {
+                    continue;
+                }
+                let (pieces, end) =
+                    self.fit_part(&trial, pose, EndGoal::Free, family, &stretch_id)?;
+                let d = (end.x - crossing.x).hypot(end.y - crossing.y);
+                let violation = (d - edge).max(MIN_UNDER_M - d).max(0.0);
+                let better = best.as_ref().is_none_or(|(v, _, _)| violation < *v);
+                if better {
+                    best = Some((violation, pieces, end));
+                }
+                if violation <= 0.0 {
+                    break;
+                }
+            }
+            if let Some((_, pieces, end)) = best {
+                for p in &pieces {
+                    let s = line.project((
+                        f64::midpoint(p.start.x, p.end.x),
+                        f64::midpoint(p.start.y, p.end.y),
+                    ));
+                    items.push(make(p, PlacedKind::Piece, s, None));
+                }
+                pose = end;
+                path = Vec::new();
+            }
+        }
         if path.len() >= 2 && path.windows(2).any(|p| matches!(p, [a, b] if a != b)) {
             path.dedup();
             let (pieces, end) = self.fit_part(&path, pose, goal, family, &stretch_id)?;

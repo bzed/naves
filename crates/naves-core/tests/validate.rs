@@ -491,6 +491,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         rank: 3,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
     };
     let junctions = Junctions {
         points: vec![at(100.0, 100.0), at(160.0, 112.0)],
@@ -635,4 +636,99 @@ fn a_dip_over_water_that_got_no_bridge_is_reported_where_it_is() {
         found[0].message,
         "Road crosses water 8 m below it without a bridge; look at it"
     );
+}
+
+#[test]
+fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
+    use naves_core::catalog::testing::synthetic_catalog;
+    use naves_core::conform::conform;
+    use naves_core::features::{Feature, FeatureKind, Source};
+    use naves_core::heightmap::Heightmap;
+    use naves_core::junctions::find_junctions;
+    use naves_core::profile::solve_profiles;
+    use naves_core::roadnet::build_graph;
+    use naves_core::roadplace::place_network;
+    use naves_core::sideslope::side_slopes;
+
+    let feature = |way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]| Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    };
+    let graph = build_graph(&[
+        feature(
+            1,
+            Family::City,
+            &[1, 2, 3],
+            &[(50.0, 200.0), (200.0, 200.0), (350.0, 200.0)],
+        ),
+        feature(2, Family::Mud, &[2, 4], &[(200.0, 200.0), (200.0, 350.0)]),
+    ]);
+    let n = place_network(&graph, &synthetic_catalog()).unwrap();
+    assert_eq!(n.overlays.len(), 1);
+    let hm = Heightmap {
+        size: 128,
+        cell_m: 3.125,
+        h: vec![100.0; 128 * 128],
+    };
+    let junctions = find_junctions(&n, &graph, &hm);
+    let profiles = solve_profiles(&n, &hm, &junctions, &side_slopes(&n, &hm));
+    let conformed = conform(&hm, &profiles.strips, &[]).unwrap();
+    let v = check_roads(
+        &n,
+        &profiles,
+        &junctions,
+        &conformed,
+        &[],
+        &[],
+        &[],
+        &[],
+        &frame(),
+        &[],
+    );
+    assert!(only(Rule::JoinWithoutJunction, &v).is_empty(), "{v:?}");
+    assert!(only(Rule::RoadConflict, &v).is_empty(), "{v:?}");
+}
+
+#[test]
+fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
+    use naves_core::catalog::testing::synthetic_catalog;
+    use naves_core::features::{Feature, FeatureKind, Source};
+    use naves_core::roadnet::build_graph;
+    use naves_core::roadplace::place_network;
+
+    let feature = |way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]| Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    };
+    // three roads of three families end at one node: no road passes through it
+    let graph = build_graph(&[
+        feature(1, Family::Asf3, &[1, 2], &[(50.0, 200.0), (200.0, 200.0)]),
+        feature(2, Family::City, &[3, 2], &[(200.0, 350.0), (200.0, 200.0)]),
+        feature(3, Family::Mud, &[4, 2], &[(350.0, 200.0), (200.0, 200.0)]),
+    ]);
+    let n = place_network(&graph, &synthetic_catalog()).unwrap();
+    assert_eq!(n.joins_without_junction.len(), 1);
+    assert_eq!(n.overlays.len(), 0);
 }

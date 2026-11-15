@@ -1160,3 +1160,42 @@ with `kr_x_asf1_city`, with the model's ports lying symmetrically on the crossin
 effects of the dropped plan (it takes part in the spacing and chain-order decisions). The rule is covered by
 tests on the synthetic catalog (`an_x_crossing_uses_the_swapped_piece_when_only_that_exists`,
 `a_t_crossing_is_never_swapped`).
+
+### 9.2 The overlay rule (2026-11-15)
+
+Where the game has no junction piece (the 454 joins of 8.2 and every join the spacing, the 3 m tolerance and the
+bridges leave), one road lies on top of the other instead of the two meeting in a heap (`roadplace::overlay_at`).
+The higher road is the one of the higher family rank (`roadnet::overlay_rank`: Asf1, Asf2, City, Asf3, Grav, Mud, then
+the longer chain, then the lower stretch id). The placement stays hierarchical: only the lower road's end moves.
+
+- A lower road that ends at a crossing stops under the higher road's edge: 2 m inside it, but not nearer than half
+  the half width to its centre line (a street of 10 m: 3 m from the centre line). A start is placed exactly there; an
+  arriving end cannot be steered that exactly (the pieces are 6.25 m and longer), so the cut is tried at the default
+  depth and then at 1, 0.75, 0.5, 0.25 and 0.1 times the half width until the last piece ends between 0.1 m from the
+  centre line and the edge, else the nearest miss is kept.
+- A through road that is lower than both side roads of an X crossing is interrupted: two runs, each ending under one
+  edge of the crossing road. A higher road that ends on a lower one that runs on is not cut; the lower road runs on.
+- At the cut the lower road is held `OVERLAY_DROP_M` (5 cm) below the junction's height (`JunctionKind::Overlay`,
+  `Junction::lower`, `profile::holds`); the higher road keeps the height. The level patch is the one of a join.
+- A run left between two cuts that is shorter than half its width is not placed and a warning says so.
+- `join_without_junction` stays only for crossings no through road passes (all roads end there).
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 878 | 66 |
+| `road_gap` | 388 | 392 |
+| `road_conflict` (conflicts) | 1091 | 1078 |
+| grade excesses (`road_grade`) | 1729 | 1686 |
+| `road_misses_terrain` | 4812 | 4692 |
+| `road_not_drivable` | 250 | 240 |
+| `junction_too_steep` | 2 | 3 |
+| Wall time (analysis) | 365.3 s | 525.7 s |
+
+812 of the 878 joins became overlays; the 66 left are crossings where all roads end. The wall time is not
+comparable: the second run shared the machine with builds and tests. The 4 extra gaps are probably knock-on effects of the
+shortened side roads (a side road that ends under a road no longer starts at a place the neighbouring fit assumed).
+The rule is covered by tests on the synthetic catalog (`a_mud_track_ends_under_the_edge_of_a_street`,
+`a_crossing_without_piece_interrupts_the_lower_road`, `the_higher_road_ending_on_a_lower_one_lies_on_top`,
+`equal_families_put_the_longer_road_on_top`, `the_lower_road_sits_five_centimetres_below_at_the_cut`,
+`a_stub_shorter_than_half_the_width_is_dropped_and_reported`). The game check of the look comes after the last step
+of stage 2.

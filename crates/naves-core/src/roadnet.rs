@@ -427,6 +427,49 @@ fn through_pairs(graph: &RoadGraph) -> BTreeMap<Arm, Arm> {
     partner
 }
 
+/// The placement rank of a family: lower is more important.
+fn family_rank(f: Family) -> u8 {
+    match f {
+        Family::Asf1 => 0,
+        Family::Asf2 => 1,
+        Family::City => 2,
+        Family::Asf3 => 3,
+        Family::Grav => 4,
+        Family::Mud => 5,
+    }
+}
+
+/// The length of a chain along its stretches.
+fn chain_length(graph: &RoadGraph, c: &Chain) -> f64 {
+    c.links
+        .iter()
+        .filter_map(|l| graph.stretches.get(l.stretch))
+        .map(|s| polyline_length(&s.points))
+        .sum()
+}
+
+/// Which of two chains lies on top where they meet without a junction piece: `Less` if `a` does. The family
+/// rank decides (Asf1, Asf2, City, Asf3, Grav, Mud), then the longer chain, then the lower stretch id, so
+/// that the answer does not depend on the order of the arguments' roads.
+#[must_use]
+pub fn overlay_rank(a: &Chain, b: &Chain, graph: &RoadGraph) -> std::cmp::Ordering {
+    let key = |c: &Chain| {
+        let first = c.links.first().and_then(|l| graph.stretches.get(l.stretch));
+        let id = c
+            .links
+            .iter()
+            .filter_map(|l| graph.stretches.get(l.stretch))
+            .map(|s| s.id.as_str())
+            .min()
+            .unwrap_or_default();
+        (first.map_or(0, |s| family_rank(s.family)), id)
+    };
+    let (ka, kb) = (key(a), key(b));
+    ka.0.cmp(&kb.0)
+        .then_with(|| chain_length(graph, b).total_cmp(&chain_length(graph, a)))
+        .then_with(|| ka.1.cmp(kb.1))
+}
+
 /// The chains of through roads, in placement order: by family rank (Asf1, Asf2, City, Asf3, Grav, Mud),
 /// then longest first, then by id.
 ///
@@ -474,33 +517,11 @@ pub fn chains(graph: &RoadGraph) -> Vec<Chain> {
         }
         found.push(Chain { links });
     }
-    let rank = |f: Family| match f {
-        Family::Asf1 => 0,
-        Family::Asf2 => 1,
-        Family::City => 2,
-        Family::Asf3 => 3,
-        Family::Grav => 4,
-        Family::Mud => 5,
-    };
-    let length = |c: &Chain| -> f64 {
-        c.links
-            .iter()
-            .filter_map(|l| graph.stretches.get(l.stretch))
-            .map(|s| {
-                s.points
-                    .windows(2)
-                    .map(|p| match p {
-                        [a, b] => (b.0 - a.0).hypot(b.1 - a.1),
-                        _ => 0.0,
-                    })
-                    .sum::<f64>()
-            })
-            .sum()
-    };
+    let length = |c: &Chain| chain_length(graph, c);
     let key = |c: &Chain| {
         let first = c.links.first().and_then(|l| graph.stretches.get(l.stretch));
         (
-            first.map_or(0, |s| rank(s.family)),
+            first.map_or(0, |s| family_rank(s.family)),
             first.map_or(String::new(), |s| s.id.clone()),
         )
     };
