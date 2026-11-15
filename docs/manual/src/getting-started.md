@@ -197,6 +197,12 @@ overlay rule above (the kept road is cut there so that the two meet at a crossin
 stay. A bridge is compared only with bridges and a tunnel only with tunnels, and is never cut: a bridge that runs along
 another one for at least 25 m is not placed at all.
 
+**Junctions move to close a road.** A road that cannot reach the port of a junction piece (it would end more than 0.5 m
+from it, a `road_gap` finding) is tried again with that junction moved along its through road, in steps of 6.25 m up to
+25 m to each side, and the build keeps the position with the smallest gap; the through road's own gap at that junction
+never gets larger. A junction on a roundabout ring is never moved. A junction that moved sits up to 25 m from where
+OpenStreetMap has the crossing.
+
 **Roundabouts.** A closed loop of roads tagged `junction=roundabout` (or `junction=circular`) is built as one ring: a
 closed loop of the game's arcs and straights, with no junction piece on it, lying on top of every road that joins it
 (whatever their surfaces; they end under its edge by the overlay rule above). The ring lies on **one tilted plane** that

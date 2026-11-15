@@ -23,6 +23,12 @@ use crate::roadnet::{Chain, Ring, RoadGraph, chains_with, overlay_rank, rings};
 const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
+/// The steps in which a junction is tried along its through road when a road cannot close against it.
+pub const JUNCTION_SHIFT_STEP_M: f64 = 6.25;
+/// The furthest a junction is moved from its crossing.
+pub const JUNCTION_SHIFT_MAX_M: f64 = 25.0;
+/// The number of steps up to [`JUNCTION_SHIFT_MAX_M`] on each side.
+const JUNCTION_SHIFT_STEPS: u32 = 4;
 /// A road that ends under another one reaches this far under its edge (but not past half its width: the
 /// centre line is never crossed).
 const SIDE_OVERLAP_M: f64 = 2.0;
@@ -200,6 +206,9 @@ pub enum PlaceError {
         source: FitError,
     },
 }
+
+/// How far the junctions are moved along their through roads, by the `(chain, link)` of their plan.
+type Shifts = BTreeMap<(usize, usize), f64>;
 
 /// A stretch end: the stretch and whether the end is its stored start.
 type Arm = (usize, bool);
@@ -432,6 +441,13 @@ struct Placer<'a> {
     overlay_points: BTreeSet<(u64, u64)>,
     out: PlacedNetwork,
     joins: BTreeSet<(u64, u64)>,
+    /// How far each junction is moved along its through road, by `(chain, link)` of its plan.
+    shifts: Shifts,
+    /// The junction a fixed side arm starts at.
+    fixed_from: BTreeMap<Arm, (usize, usize)>,
+    /// The shifts found for junctions whose side road did not close, by `(chain, link)` of their plan: what
+    /// the next placement is asked to do.
+    found: Shifts,
 }
 
 fn bits(p: (f64, f64)) -> (u64, u64) {
@@ -439,7 +455,7 @@ fn bits(p: (f64, f64)) -> (u64, u64) {
 }
 
 impl<'a> Placer<'a> {
-    fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog) -> Self {
+    fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog, shifts: Shifts) -> Self {
         // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads
         let rings: Vec<Ring> = rings(graph)
             .into_iter()
@@ -497,6 +513,9 @@ impl<'a> Placer<'a> {
                 ..PlacedNetwork::default()
             },
             joins: BTreeSet::new(),
+            shifts,
+            fixed_from: BTreeMap::new(),
+            found: BTreeMap::new(),
         }
     }
 
@@ -1054,11 +1073,12 @@ impl<'a> Placer<'a> {
             }
         }
         // the forced elements of the run, in order: junctions and bridges
+        let crossings = self.crossings(c, first, last, &line);
         let mut events: Vec<(f64, Event)> = (first..last)
             .filter_map(|k| self.plan_at(c, k))
             .filter_map(|plan_id| {
                 let plan = self.plans.get(plan_id)?;
-                let s_cross = line.link_start.get(plan.link + 1 - first).copied()?;
+                let s_cross = crossings.get(&plan_id).copied()?;
                 Some((
                     s_cross - plan.junction.half_length(),
                     Event::Junction(plan_id),
@@ -1108,7 +1128,7 @@ impl<'a> Placer<'a> {
             else {
                 continue;
             };
-            let s_cross = line.link_start.get(k + 1 - first).copied().unwrap_or(0.0);
+            let s_cross = crossings.get(&plan_id).copied().unwrap_or(0.0);
             let half = junction.half_length();
             let s_goal = s_cross - half;
             let stretch_id = links
@@ -1135,7 +1155,18 @@ impl<'a> Placer<'a> {
             let Some(plan) = self.plans.get(plan_id) else {
                 continue;
             };
-            let placed = Self::place_junction(plan, pose, line.pose_at(s_cross).heading);
+            let crossing = line
+                .link_start
+                .get(k + 1 - first)
+                .copied()
+                .unwrap_or(s_cross);
+            let at = if (s_cross - crossing).abs() < 1e-9 {
+                plan.point
+            } else {
+                let moved = line.pose_at(s_cross);
+                (moved.x, moved.y)
+            };
+            let placed = Self::place_junction(plan, at, pose, line.pose_at(s_cross).heading);
             match placed {
                 Some((frame, flipped, exit)) => {
                     let (entry_port, exit_port) = if flipped {
@@ -1152,8 +1183,10 @@ impl<'a> Placer<'a> {
                     items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
                     // the side ports become the fixed starts of the side roads
                     let ports = self.side_poses(plan_id, &frame);
+                    let key = (plan.chain, plan.link);
                     for (arm, port) in ports {
                         self.fixed.insert(arm, port);
+                        self.fixed_from.insert(arm, key);
                     }
                     pose = exit;
                     s_cur = s_cross + half;
@@ -1238,7 +1271,17 @@ impl<'a> Placer<'a> {
         }
         if path.len() >= 2 && path.windows(2).any(|p| matches!(p, [a, b] if a != b)) {
             path.dedup();
+            let before = pose;
             let (pieces, end) = self.fit_part(&path, pose, goal, family, &stretch_id)?;
+            if let EndGoal::Fixed(arrive) = goal
+                && fixed_end.is_some()
+                && !ring
+            {
+                let gap = (end.x - arrive.x).hypot(end.y - arrive.y);
+                if gap > GAP_TOLERATED_M {
+                    self.repair_port(exit_arm, &path, before, family, gap);
+                }
+            }
             for p in &pieces {
                 let s = line.project((
                     f64::midpoint(p.start.x, p.end.x),
@@ -1386,6 +1429,7 @@ impl<'a> Placer<'a> {
     /// from the crossing.
     fn place_junction(
         plan: &Plan<'_>,
+        point: (f64, f64),
         at: Pose,
         through_heading: f64,
     ) -> Option<(Frame, bool, Pose)> {
@@ -1419,8 +1463,145 @@ impl<'a> Placer<'a> {
         };
         let a = frame.pose(&entry);
         let centre = (f64::midpoint(a.x, exit.x), f64::midpoint(a.y, exit.y));
-        let off = (centre.0 - plan.point.0).hypot(centre.1 - plan.point.1);
+        let off = (centre.0 - point.0).hypot(centre.1 - point.1);
         (off <= JUNCTION_TOLERANCE_M).then_some((frame, flipped, exit))
+    }
+
+    /// A side road that ends at the port of the junction `arm` starts from did not reach it (`gap` m short):
+    /// tries the junction at [`JUNCTION_SHIFT_STEP_M`] steps along its through road, up to
+    /// [`JUNCTION_SHIFT_MAX_M`] each way, `+` before `-`, refitting the end of the road (`path`, which ends
+    /// at the port, from `pose`) to the port the junction would have there. The first shift that closes
+    /// the road, else the one with the smallest gap, if it is smaller than `gap`, is noted in `found`
+    /// for the next placement. The junction is taken on the line of its through road, which the placed
+    /// junction follows to a fraction of a metre.
+    fn repair_port(&mut self, arm: Arm, path: &[(f64, f64)], pose: Pose, family: Family, gap: f64) {
+        let Some(&key) = self.fixed_from.get(&arm) else {
+            return;
+        };
+        if self.is_ring(key.0) || self.found.contains_key(&key) {
+            return;
+        }
+        let (Some(plan_id), Some(links), Some((_, rest))) = (
+            self.plan_at(key.0, key.1),
+            self.chains.get(key.0).map(|ch| ch.links.len()),
+            path.split_last(),
+        ) else {
+            return;
+        };
+        let Some(plan) = self.plans.get(plan_id) else {
+            return;
+        };
+        let line = self.polyline(key.0, 0, links.saturating_sub(1));
+        let (Some(s_cross), half) = (
+            line.link_start.get(key.1 + 1).copied(),
+            plan.junction.half_length(),
+        ) else {
+            return;
+        };
+        let mut best: Option<(f64, f64)> = None;
+        for step in 1..=JUNCTION_SHIFT_STEPS {
+            for sign in [1.0, -1.0] {
+                let shift = sign * JUNCTION_SHIFT_STEP_M * f64::from(step);
+                let moved = s_cross + shift;
+                if moved - half < 1.0 || moved + half > line.total() - 1.0 {
+                    continue;
+                }
+                let at = line.pose_at(moved);
+                let Some((frame, _, _)) = Self::place_junction(
+                    plan,
+                    (at.x, at.y),
+                    line.pose_at(moved - half),
+                    at.heading,
+                ) else {
+                    continue;
+                };
+                let Some(port) = self
+                    .side_poses(plan_id, &frame)
+                    .into_iter()
+                    .find(|(a, _)| *a == arm)
+                    .map(|(_, port)| port)
+                else {
+                    continue;
+                };
+                let arrive = Pose {
+                    heading: wrap(port.heading + PI),
+                    ..port
+                };
+                let mut trial = rest.to_vec();
+                trial.push((port.x, port.y));
+                // a fit that fails is no candidate
+                let Ok(fit) = fit_line(&trial, pose, EndGoal::Fixed(arrive), self.pieces(family))
+                else {
+                    continue;
+                };
+                let end = fit.pieces.last().map_or(pose, |p| p.end);
+                let missed = (end.x - arrive.x).hypot(end.y - arrive.y);
+                if best.is_none_or(|(g, _)| missed < g) {
+                    best = Some((missed, shift));
+                }
+                if missed <= GAP_TOLERATED_M {
+                    self.found.insert(key, shift);
+                    return;
+                }
+            }
+        }
+        if let Some((missed, shift)) = best
+            && missed < gap
+        {
+            self.found.insert(key, shift);
+        }
+    }
+
+    /// Where the junctions of the run `first..=last` of chain `c` sit along its line: the crossings
+    /// themselves, moved along the line by the shift asked for, if it keeps the junction on the
+    /// run, one junction length from the previous one and off the bridges, and the chain is no ring.
+    fn crossings(
+        &self,
+        c: usize,
+        first: usize,
+        last: usize,
+        line: &Polyline,
+    ) -> BTreeMap<usize, f64> {
+        let mut out = BTreeMap::new();
+        let mut prev: Option<f64> = None;
+        let bridges: Vec<(f64, f64)> = (first..=last)
+            .filter(|k| self.bridge_chord(c, *k).is_some_and(|chord| chord > 0.0))
+            .filter_map(|k| {
+                Some((
+                    line.link_start.get(k - first).copied()?,
+                    line.link_start
+                        .get(k + 1 - first)
+                        .copied()
+                        .unwrap_or_else(|| line.total()),
+                ))
+            })
+            .collect();
+        for k in first..last {
+            let Some(plan_id) = self.plan_at(c, k) else {
+                continue;
+            };
+            let Some(plan) = self.plans.get(plan_id) else {
+                continue;
+            };
+            let Some(s_cross) = line.link_start.get(k + 1 - first).copied() else {
+                continue;
+            };
+            let half = plan.junction.half_length();
+            let wanted = self.shifts.get(&(c, k)).copied().unwrap_or(0.0);
+            let moved = s_cross + wanted;
+            let fits = wanted.abs() < 1e-9
+                || (!self.is_ring(c)
+                    && moved - half >= 1.0
+                    && moved + half <= line.total() - 1.0
+                    && prev.is_none_or(|p| moved - p >= JUNCTION_SPACING_M)
+                    && bridges
+                        .iter()
+                        .all(|(b0, b1)| moved + half <= *b0 || moved - half >= *b1));
+            let at = if fits { moved } else { s_cross };
+            out.insert(plan_id, at);
+            prev = Some(at);
+        }
+        out
     }
 
     /// The world poses of the side ports of a placed junction, matched with the side arms.
@@ -1573,13 +1754,42 @@ pub fn place_network(
     graph: &RoadGraph,
     catalog: &PieceCatalog,
 ) -> Result<PlacedNetwork, PlaceError> {
-    let mut placer = Placer::new(graph, catalog);
+    let (base, found) = place_with_shifts(graph, catalog, BTreeMap::new())?;
+    if found.is_empty() {
+        return Ok(base);
+    }
+    // the shifts found while placing the side roads are placed for real; the one that leaves fewer
+    // gaps (the unmoved network, if neither does) is kept
+    let Ok((moved, _)) = place_with_shifts(graph, catalog, found) else {
+        // the unmoved network is placed already
+        return Ok(base);
+    };
+    Ok(if gap_total(&moved) < gap_total(&base) {
+        moved
+    } else {
+        base
+    })
+}
+
+/// The number of gaps and their summed size: what a placement is judged by.
+fn gap_total(net: &PlacedNetwork) -> (usize, f64) {
+    (net.gaps.len(), net.gaps.iter().map(|g| g.gap_m).sum())
+}
+
+/// One placement with the junctions at `shifts` along their through roads, and the shifts that would
+/// close the side roads that did not close.
+fn place_with_shifts(
+    graph: &RoadGraph,
+    catalog: &PieceCatalog,
+    shifts: Shifts,
+) -> Result<(PlacedNetwork, Shifts), PlaceError> {
+    let mut placer = Placer::new(graph, catalog, shifts);
     placer.analyse();
     let mut state = vec![0u8; placer.chains.len()];
     for c in 0..placer.chains.len() {
         placer.place_chain(c, &mut state)?;
     }
-    Ok(placer.out)
+    Ok((placer.out, placer.found))
 }
 
 #[cfg(test)]

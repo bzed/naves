@@ -1288,3 +1288,70 @@ Asf1, 18.6 m, tilt 1.9 %.
 arc, so it is a plain crossing of its joining roads at the centre, not a ring. The plane and the tilt there are
 therefore not used; the benefit of the task on this map is on the two rings above and on the crossings of the five
 small ones (no loop of cut ring stretches any more).
+
+### 9.5 Gaps closed by moving the junction (2026-11-15)
+
+Section 8.2 found that 54 % of the gaps are side roads that cannot close against a junction port a through road has
+already fixed, and that moving the port up to 25 m along its through road closed 60 of 129 in a test. Task 8 builds
+that into the placement (`roadplace.rs`: `Placer::repair_port`, `Placer::crossings`, `place_network`).
+
+**How it works.** A placement is made as before. When a side road that ends at a junction port (`fixed_end`) misses
+it by more than `GAP_TOLERATED_M` (0.5 m), the end of that road (the last fit, from the pose where it starts to the port)
+is fitted again to the port the junction would have if it were 6.25 m further along its through road, then 6.25 m
+back, 12.5 m further, 12.5 m back, and so on up to 25 m each way (`+` before `-`, in this order, for determinism). The
+junction is taken at its place on the line of its through road with the entry at half its length before the crossing;
+the placed junction follows that line to a fraction of a metre, which is why the trial is cheap: only the last fit of
+the side road is made, not the through road again. The first shift that closes the road (gap at most 0.5 m) is noted
+for the junction, else the one with the smallest gap if it is below the gap of the unmoved placement. After the
+whole network is placed, **it is placed a second time with those shifts** (the through road is then refitted from its
+previous junction as part of the ordinary placement, with the junction's goal and its tolerance circle moved along
+the line), and the second network is kept only if it has fewer gaps (then a smaller sum) than the first; otherwise
+the unmoved one is. A shift is dropped (the junction stays) where it would put the junction closer than one junction
+length to another or less than a metre from the end of the run, or over a bridge, and a junction on a roundabout ring
+is never shifted (the ring's joints lie on the ring plane). Overlay places (no junction piece) have no port, so they
+are not in this repair; their gaps do not arise.
+
+Why two placements and not a trial of the through road per candidate: the first version placed the whole network once
+per candidate shift (all failing junctions at the same time, up to 8 rounds). Placement is the expensive part of the
+analysis (518 s of 531 s, for two rounds with the dips), so that was not an option (it did not finish in 30 minutes).
+A through road's refit cannot be tried locally either: it moves every later junction on it by a fraction of a metre and
+with them the ports of their side roads, which are placed afterwards.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 65 | 65 |
+| `road_gap` | 396 | 345 |
+| `road_conflict` | 1050 | 1052 |
+| `road_grade` (grade excesses) | 1667 | 1559 |
+| `road_misses_terrain` | 4661 | 4633 |
+| `road_not_drivable` | 227 | 219 |
+| `junction_too_steep` | 3 | 5 |
+| Placement with dips (2 rounds, wall) | 518.3 s | 1018.3 s |
+
+The time doubles: the second placement of the network costs as much as the first, and the trials of the side roads' ends
+are cheap beside it. Memoising the fits that a shift does not change would cut it only where the through road and its side
+roads upstream of the shifted junction are untouched; a shift changes every later fit on its through road by a fraction of a
+metre, so this was not tried.
+
+In the first placement of the example the repair found a shift for 115 of the 389 gaps' junctions; the second
+placement had 339 gaps instead of 389 (-50). The grade and terrain counts fall as a side effect: a road that closes
+needs no sharp bend to reach its port. `junction_too_steep` rose by two, because a moved junction sits on other ground.
+
+**The through roads that miss their own junction point (43 % of the gaps).** Before building on it, the same shifts
+were tried for the through roads (the fit to the junction goal, with the goal moved 6.25 to 25 m along the line, the
+fit and the pose it starts from unchanged, and the shifts checked only against the end of the run). Of 879 through
+fits that missed by more than 0.5 m in the four placements of the analysis (about 220 per placement), 604 (69 %) came
+under 0.5 m at some shift and 797 (91 %) had their gap halved. **It was not applied.** The result is not the one that
+section 8.2 expected (none within 0.5 m for a 6 m move), but it measures the wrong thing: a gap is the distance
+to the goal, and a goal that is moved along the line is met more often only because the fit gets to choose where its
+target is. The junction would then sit up to 25 m from the OpenStreetMap crossing where the through road has no
+problem with it, its side roads would have to be built from a port that is that far from where OpenStreetMap has them
+(and could fail to close, which the side-road repair above would have to repair again), and nothing keeps the
+junction near the crossing. A real use needs the side roads of that junction in the test, as the repair of the side
+roads has; it is the next step if the through gaps are worth it (about 220 per placement before this task).
+
+**Left over.** Gaps that no shift closes (the remaining 345) are those where the heading or
+distance cannot be met by arcs and straights at all (the other 69 of 129 in 8.2), where the through road was shifted
+but the side road starts at a port too (`fixed_start`; only the end port is repaired), and gaps against bridges.
+The existing height repair in `junctions::repair` (limit `MAX_MOVE_M`, 3 m) is a different thing (it moves heights, not
+positions) and was not touched; it still does not exclude ring junctions, which the review of task 7 noted.

@@ -1207,3 +1207,74 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     assert!(big.stretches.iter().any(|s| s.roundabout));
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }
+
+/// Two parallel through roads, 40 m apart, with a side road between their junctions; the second junction
+/// is `dx` m east of the first, so that the side road cannot close between the ports where the crossings are.
+fn offset_ladder(dy: f64, dx: f64) -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(100.0, 300.0), (500.0, 300.0), (900.0, 300.0)],
+        ),
+        feature(
+            2,
+            Family::Asf3,
+            &[4, 5, 6],
+            &[
+                (100.0, 300.0 + dy),
+                (500.0 + dx, 300.0 + dy),
+                (900.0, 300.0 + dy),
+            ],
+        ),
+        feature(
+            3,
+            Family::Asf3,
+            &[2, 5],
+            &[(500.0, 300.0), (500.0 + dx, 300.0 + dy)],
+        ),
+    ]
+}
+
+#[test]
+fn a_side_road_that_cannot_close_closes_after_the_junction_moves() {
+    let net = place(&offset_ladder(40.0, 6.0));
+    assert!(net.gaps.is_empty(), "{:?}", net.gaps);
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 2);
+}
+
+#[test]
+fn the_shift_never_exceeds_25_m() {
+    // a case that does not close at any position still keeps the junctions within 25 m (and the 3 m
+    // tolerance) of their crossings
+    for (dy, dx) in [(30.0, 12.0), (40.0, 6.0), (50.0, 12.0)] {
+        let net = place(&offset_ladder(dy, dx));
+        let crossings = [(500.0, 300.0), (500.0 + dx, 300.0 + dy)];
+        for j in of_kind(&net, PlacedKind::Junction) {
+            let nearest = crossings
+                .iter()
+                .map(|c| dist(centre(j), *c))
+                .fold(f64::MAX, f64::min);
+            assert!(nearest <= 25.0 + 3.0, "dy {dy} dx {dx}: {nearest}");
+        }
+    }
+}
+
+#[test]
+fn the_through_road_gaps_do_not_get_worse() {
+    // the through roads close at their junctions without a gap whatever the side road needs
+    for (dy, dx) in [(30.0, 4.0), (40.0, 6.0), (50.0, 8.0), (80.0, 12.0)] {
+        let net = place(&offset_ladder(dy, dx));
+        for gap in &net.gaps {
+            assert!(gap.stretch.starts_with("3:"), "dy {dy} dx {dx}: {gap:?}");
+        }
+    }
+}
+
+#[test]
+fn the_same_network_gives_the_same_shift() {
+    let a = place(&offset_ladder(30.0, 8.0));
+    let b = place(&offset_ladder(30.0, 8.0));
+    assert_eq!(a, b);
+}
