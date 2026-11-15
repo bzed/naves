@@ -219,9 +219,102 @@ Every task in this stage ends with: `road-analysis 2048` before and after, the c
 - [ ] **Step 2:** Write the classification and a proposed fix (what changes, expected effect, risk) into the research subsection. Commit `docs: what makes the humps on steep roads`.
 - [ ] **Step 3:** Stop. The controller and reviewer decide the fix; it becomes Task 12 as an amendment to this plan, with its own tests.
 
-### Task 12: Humps — the fix (defined after Task 11)
+### Task 12: Junctions follow the through road's slope (spec 2.5; research 9.8 class H2, fix 1)
 
-Added to this plan by the controller from Task 11's proposal, in the same format (files, interfaces, failing tests with the spec's values, measurement, commit).
+Amended by the controller from Task 11 (research 9.8). Cause: every junction holds its joints at one height (a level
+patch), so two junctions 14 m apart (median) on a slope leave no room for the rise (725 of 1645 `road_grade`). Pieces are
+not pitched in the world file (`objects::piece_transform`: the engine drapes them on the terrain), so a tilted junction
+needs only tilted holds and a tilted terrain patch; the junction models need no pitch. Rings keep their own plane (Task 7).
+
+**Files:** Modify `crates/naves-core/src/junctions.rs`, `crates/naves-core/src/profile/holds.rs`,
+`crates/naves-core/src/validate.rs` (message of `junction_too_steep`), `crates/naves-export/src/generate.rs` (patches);
+Test `crates/naves-core/tests/{junctions,profile}.rs`, `crates/naves-export/tests/` (patch); Docs
+`docs/research/2026-11-10-road-alignment.md` (9.8 result), manual (Roads: junctions on slopes), `CHANGELOG.md`
+
+**Interfaces and the exact rule:**
+- `Junction` gains `pub gradient: (f64, f64)` (rise per metre east, north) and `pub fn height_at(&self, point: (f64, f64)) -> f64`
+  = `height + gradient.0 * (point.0 - at.0) + gradient.1 * (point.1 - at.1)` (same form as `RingPlane::height_at`).
+  `height` stays the height at `at`; `repair`, `raise_floors` and the clearance floors keep moving `height` only (the
+  tilt moves with it).
+- `pub const JUNCTION_TILT_SHARE: f64 = 0.9;` The tilt, set once in `find_junctions` from the **original** ground `G`
+  (`base.sample`):
+  - the *through road* of a junction: `Piece` — the junction piece's own axis (start → end of the piece);
+    `Overlay` — the top road (the stretch not in `lower`); `EndOnRoad` — the road the chain ends on; `Join` — none:
+    `gradient = (0, 0)` (level, as today). A junction on a ring keeps `(0, 0)` (the ring plane holds it).
+  - `t` = the unit heading of the through road at its point nearest `at`; `r = max(patch_m, 6.25)`;
+  - `s = (G(at + r t) - G(at - r t)) / (2 r)`, clamped to `±JUNCTION_TILT_SHARE * grade_ceiling(family of the through road)`;
+    a sample outside the map, or a non-finite one, gives `s = 0`;
+  - `gradient = (s * t.0, s * t.1)`: the plane tilts along the through road only, it has no fall across it.
+- `holds.rs::hold` gives each held variable `j.height_at(position of that variable)` (less `OVERLAY_DROP_M` for a lowered
+  road, as today) instead of `j.height`. All five rules (`Patch`, `Piece`, `End`, `Inward`, `Arm`) go through it, so a
+  junction piece's two variables now differ by `s` times their distance along `t`, and an arm's `Inward` joints lie on
+  the through road's surface.
+- `Link` gains `pub a_at: (f64, f64)` and `pub b_at: (f64, f64)` (the positions of the two held joints, from
+  `held_links`). Everything that measures a link's rise (`repair`, the unresolved check, `junction_violations`) uses
+  `|a.height_at(a_at) - b.height_at(b_at)|` over `length`; the excess `repair` corrects is still applied to `height`.
+- `generate.rs` patches of `Join`, `Overlay` and `EndOnRoad` junctions get `gradient: j.gradient` (today `(0.0, 0.0)`);
+  `LevelPatch` already shapes a plane (Task 7).
+
+- [ ] **Step 1: Failing tests** (synthetic heightmap: a plane rising 10 % to the east, `City` roads):
+  - `a_junction_on_a_slope_tilts_along_its_through_road` (junctions.rs): an X junction piece with its axis east–west
+    → `gradient.0` within 1e-6 of `0.10`, `gradient.1` within 1e-6 of `0`; the same with the axis north–south →
+    `gradient` `(0, 0)` within 1e-6.
+  - `the_tilt_stops_at_the_share_of_the_grade_ceiling`: the plane at 40 % → `gradient.0 == 0.9 * grade_ceiling(City)`
+    within 1e-9.
+  - `a_join_of_ending_roads_stays_level`: three roads ending at one node (`Join`) on the 10 % plane → `(0, 0)`.
+  - `two_junctions_14_m_apart_on_a_slope_leave_the_road_drivable` (profile.rs): through road east–west on the 10 %
+    plane, two T junction pieces whose centres are 14 m apart (the median of 9.8) → no `road_grade` finding of the
+    solve between them, and the held joints of each piece lie within 1 cm of the plane `height_at` their positions.
+    RED today (level pieces: vertical bend over the limit).
+  - `a_tilted_junction_patch_shapes_a_plane` (naves-export): the terrain patch of an `EndOnRoad` junction on the 10 %
+    plane leaves the terrain inside the patch within 2 cm of the original plane.
+  - `a_link_measures_the_rise_between_its_held_joints`: two junctions whose centres are level but whose held joints
+    differ by 1 m over 5 m (tilts) → the link's rise is 1 m, not 0 (`junction_too_steep` for `City`).
+- [ ] **Step 2:** Run them, capture RED (save the output under `/var/tmp/naves-roadlook/t12/`).
+- [ ] **Step 3:** Implement as above.
+- [ ] **Step 4:** PASS; `make check`; then `road-analysis` at 2048 once: the six counts plus `junction_too_steep`, and
+  `road_grade` split into bends and grades. Expect `road_grade` to fall well beyond the ±30 noise (9.8: up to about 650
+  of the H2 class); `road_misses_terrain`, `road_not_drivable` and `road_conflict` no higher than +50. If `road_grade`
+  falls by less than 100, report DONE_WITH_CONCERNS with the classes of 9.8 recounted (the instrumentation patch is in
+  `/var/tmp/naves-roadlook/t11/hump-dump.patch`). Write the counts into 9.8 as "Result of fix 1".
+- [ ] **Step 5: Commit** `fix: junctions on a slope tilt with their through road`.
+
+### Task 13: Joints less than a metre apart are one variable (research 9.8 class overlap, fix 2)
+
+Cause: 604 overlapped 6.25 m straights put two joints a median 0.28 m apart; the profile solves them as two variables
+and the checks read a 5 cm difference as a 10 % grade and a bend hundreds of times the limit (about 380 findings). The
+pieces drape on the terrain (no pitch), so the fix is in the profile only.
+
+**Files:** Modify `crates/naves-core/src/profile.rs` (strip building, the variable map); Test `crates/naves-core/tests/profile.rs`;
+Docs 9.8 (result of fix 2), `CHANGELOG.md`
+
+**Interfaces and the exact rule:**
+- `pub const MERGE_JOINT_M: f64 = 1.0;` (equal to `MIN_STENCIL_M`; keep both names, the stencil one documents the smoothing).
+- Building a chain's variables: walking the joints in order, a joint whose distance along the chain to the joint that
+  opened the current variable is less than `MERGE_JOINT_M` maps to that variable (as the joints of a bridge deck share
+  one variable today). A merge never crosses a bridge deck's variable or a joint held to a different junction than the
+  variable's (then it opens a new variable). The strip keeps every joint, with the shared variable's height.
+- Every consumer that reads the strip's joints in order (grade, bend, `road_grade` excess finder, `road_not_drivable`,
+  terrain shaping) then sees equal heights at merged joints; the excess finder skips a run under `MERGE_JOINT_M`
+  between two joints of one variable (no grade, no bend there) and measures the bend across the merged pair as one
+  joint (the runs before and after).
+
+- [ ] **Step 1: Failing tests:**
+  - `an_overlapped_straight_gives_one_variable`: a chain of a 12.5 m straight then a 6.25 m straight starting 6.0 m before
+    the first one's end (joints 0.25 m apart), on a 5 % plane → the two joints have equal heights (within 1e-9) and
+    the solve reports no `road_grade` finding. RED today.
+  - `joints_a_metre_apart_stay_two_variables`: the same with the overlap 5.25 m (joints exactly 1.0 m apart) → two
+    variables (heights may differ).
+  - `a_merge_does_not_cross_a_held_joint`: two joints 0.3 m apart held to two different junctions → two variables,
+    each with its junction's height.
+- [ ] **Step 2–4:** RED captured, implement, PASS, `make check`, `road-analysis` at 2048 once (same counts as Task 12).
+  Expect the F2 class and most of F1 to go (9.8: about 280); every other count within noise.
+- [ ] **Step 5: Commit** `fix: joints closer than a metre share one height`.
+
+**Not in this plan (controller ruling, research 9.8):** H3, H1 (a hold on one side, incl. the 540/187/95 % sites),
+F1/F3 on free joints and the bridge-deck class D (site 23's ski jump; measuring the bend at the deck ends) go to the
+joint height solve plan that follows: the QP removes H3/H1/F1 and holds the deck as variables. The junction plane of
+Task 12 becomes a variable there (height and tilt along the through road, bounded by the same share).
 
 ### Checkpoint B (controller): the stage 2 game check and the figures
 
