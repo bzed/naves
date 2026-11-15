@@ -34,7 +34,7 @@ use naves_formats::wrp8::{EditableWorld, WorldObject};
 use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
-use crate::catalog_read::CatalogReadError;
+use crate::catalog_read::{CatalogReadError, unpack_roads};
 use crate::config::{prefix, world_config_with};
 use crate::generate::{Generated, generate};
 use crate::layers::{LayerSet, build_layers};
@@ -108,6 +108,26 @@ pub enum BuildError {
         status: String,
         /// The end of its output.
         output: String,
+    },
+    /// `binarize` could not open road models, so the world would show no roads.
+    #[error(
+        "binarize could not open {} road model(s) ({}); the roads would not be drawn. See {}",
+        models.len(), models.join(", "), log.display()
+    )]
+    RoadModelsMissing {
+        /// The model paths from the log.
+        models: Vec<String>,
+        /// The binarize log.
+        log: PathBuf,
+    },
+    /// `binarize` made no road network from a world with roads.
+    #[error(
+        "binarize found no road directions in a world with roads (every \"Road N dirs\" line is 0); see {}",
+        log.display()
+    )]
+    NoRoadNetwork {
+        /// The binarize log.
+        log: PathBuf,
     },
     /// The private key exists but its public key does not.
     #[error(
@@ -640,6 +660,60 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
     )
 }
 
+/// Checks the log of `binarize` for road models it could not open and for a missing road network.
+///
+/// Every build logs one "Cannot open object" line with an empty name; that line is ignored. The error values
+/// carry an empty log path, [`build`] fills in the real one.
+///
+/// # Errors
+/// [`BuildError::RoadModelsMissing`] naming the models, [`BuildError::NoRoadNetwork`] when the world has
+/// roads and no "Road N dirs" line is above 0.
+pub fn check_binarize_log(log: &str, world_has_roads: bool) -> Result<(), BuildError> {
+    let mut models: Vec<String> = log
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("Cannot open object"))
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    models.sort();
+    models.dedup();
+    if !models.is_empty() {
+        return Err(BuildError::RoadModelsMissing {
+            models,
+            log: PathBuf::new(),
+        });
+    }
+    if world_has_roads {
+        let any_dirs = log.lines().any(|l| {
+            l.trim()
+                .strip_prefix("Road ")
+                .and_then(|r| r.split_once(" dirs:"))
+                .and_then(|(_, n)| n.trim().parse::<u64>().ok())
+                .is_some_and(|n| n > 0)
+        });
+        if !any_dirs {
+            return Err(BuildError::NoRoadNetwork {
+                log: PathBuf::new(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Puts the binarize log path into the error of [`check_binarize_log`].
+fn with_log(error: BuildError, log: &Path) -> BuildError {
+    match error {
+        BuildError::RoadModelsMissing { models, .. } => BuildError::RoadModelsMissing {
+            models,
+            log: log.to_path_buf(),
+        },
+        BuildError::NoRoadNetwork { .. } => BuildError::NoRoadNetwork {
+            log: log.to_path_buf(),
+        },
+        other => other,
+    }
+}
+
 /// Builds the mod and the mission of the project in `project_dir`.
 ///
 /// `progress` is called with a short line before every step.
@@ -704,25 +778,33 @@ pub fn build(
     layout.clean()?;
 
     progress("Writing the world and converting the images");
-    stage_world(
-        &layout,
-        tools,
-        &project,
-        heightmap,
-        &layers,
-        world_objects(&generated),
-    )?;
+    let objects = world_objects(&generated);
+    let has_roads = !objects.is_empty();
+    stage_world(&layout, tools, &project, heightmap, &layers, objects)?;
 
     progress("Binarizing the world (this takes a while)");
     let binarized = layout.staging.join("binarize");
-    let oprw = tools.binarize.binarize_world(
+    // binarize opens the road models on its P: drive; they are the game's, so they are removed again
+    let game_models = layout.staging.join("P").join("dz");
+    if has_roads {
+        unpack_roads(
+            tools,
+            &tools.dayz_server.join("addons/structures_roads.pbo"),
+            &layout.staging.join("P"),
+        )?;
+    }
+    let binarized_world = tools.binarize.binarize_world(
         &layout.staging.join("P"),
         &layout.prefix,
         &layout.world,
         &binarized,
-    )?;
+    );
+    remove_dir(&game_models)?;
+    let oprw = binarized_world?;
     let log = layout.logs.join("binarize.log");
     std::fs::copy(binarized.join("binarize.log"), &log).map_err(io_err(&log))?;
+    let log_text = std::fs::read_to_string(&log).map_err(io_err(&log))?;
+    check_binarize_log(&log_text, has_roads).map_err(|e| with_log(e, &log))?;
 
     progress("Assembling the server mission");
     let half = narrow(project.map_size_m() / 2.0);

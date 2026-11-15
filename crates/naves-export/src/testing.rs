@@ -46,7 +46,9 @@ for d in "$(pwd -P)"/naves/worlds/*/; do
   [ -f "$d$w.wrp" ] || { echo "no $w.wrp in $d" >&2; exit 7; }
   printf 'OPRW\040\000\000\000' > "$sandbox/out/$w.wrp"
 done
-echo "fake binarize log" > "$sandbox/binarize.log"
+{ echo "fake binarize log"
+  if [ -d "$(pwd -P)/dz/structures/roads/Parts" ]; then echo "road models on P: yes"; echo "Road 2 dirs: 4"; else echo "road models on P: no"; echo "Road 2 dirs: 0"; fi
+} > "$sandbox/binarize.log"
 exit 0"#;
 
 const SPAWNS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>
@@ -182,6 +184,18 @@ impl FakeEnv {
     /// Any I/O error while writing the script.
     pub fn replace_dayzmake(&self, body: &str) -> std::io::Result<()> {
         write_script(&self.dayzmake, body)
+    }
+
+    /// Replaces the fake `proton` by a script with the given body (for binarize log tests).
+    ///
+    /// # Errors
+    ///
+    /// Any I/O error while writing the script.
+    pub fn replace_proton(&self, body: &str) -> std::io::Result<()> {
+        write_script(
+            &self.steam.join("steamapps/common/Proton Hotfix/proton"),
+            body,
+        )
     }
 }
 

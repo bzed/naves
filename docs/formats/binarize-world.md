@@ -57,6 +57,12 @@ Notes:
 - Every path has a drive letter and backslashes. The log is only readable through `cmd.exe /c "... > file"`.
 - The first run creates the Wine prefix (about 30 s); later runs take seconds.
 - Vanilla textures (`dz\surfaces_bliss\...`) did **not** have to exist under `P:` for the world to binarize.
+- Vanilla **road models** (`dz\structures\roads\...`) do have to be there when the world places road pieces:
+  otherwise binarize logs `Cannot open object <model>` for each model, finishes with exit 0, and every `Road N dirs`
+  line of its log is 0, so no road is drawn in the game. `naves build` unpacks `structures_roads.pbo` of the DayZ
+  Server install (dayzmake) to `P:\dz\structures\roads\` before binarize, removes `P:\dz` afterwards, and fails when the
+  log names a model it could not open or has no road directions. The models never reach the mod. A build logs one
+  `Cannot open object` with an empty name even without roads; that one is ignored.
 - Nothing is written into Steam directories. Everything lives under `/var/tmp`.
 
 ## What binarize needs from the config

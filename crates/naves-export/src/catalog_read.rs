@@ -164,15 +164,22 @@ fn write_cache(file: &Path, stamp: &Stamp, catalog: &PieceCatalog) -> Result<(),
     Ok(())
 }
 
-/// Unpacks the PBO into a temporary folder and parses the models the catalog uses.
-fn read_models(tools: &Tools, pbo: &Path) -> Result<BTreeMap<String, OdolModel>, CatalogReadError> {
-    let work = tempfile::Builder::new()
-        .prefix("naves-roads-")
+/// Unpacks the road PBO with dayzmake so that `dest/dz/structures/roads/` holds the game's road models,
+/// where `binarize` looks for them below its `P:` drive.
+///
+/// # Errors
+/// [`CatalogReadError::MissingPbo`] naming the file, [`CatalogReadError::Dayzmake`] with the tool's output.
+pub fn unpack_roads(tools: &Tools, pbo: &Path, dest: &Path) -> Result<(), CatalogReadError> {
+    if !pbo.is_file() {
+        return Err(CatalogReadError::MissingPbo(pbo.to_path_buf()));
+    }
+    let out = dest.join("dz").join("structures").join("roads");
+    std::fs::create_dir_all(&out).map_err(io(&out))?;
+    let scratch = tempfile::Builder::new()
+        .prefix("naves-unpack-")
         .tempdir()
         .map_err(io(&std::env::temp_dir()))?;
-    let out = work.path().join("content");
-    std::fs::create_dir(&out).map_err(io(&out))?;
-    let log = work.path().join("dayzmake.log");
+    let log = scratch.path().join("dayzmake.log");
     let mut cmd = std::process::Command::new(&tools.dayzmake);
     cmd.arg("unpack").arg(pbo).arg(&out);
     let failure = match run_supervised(&mut cmd, &log, UNPACK_TIMEOUT)? {
@@ -192,6 +199,17 @@ fn read_models(tools: &Tools, pbo: &Path) -> Result<BTreeMap<String, OdolModel>,
             output: text.chars().skip(skip).collect(),
         });
     }
+    Ok(())
+}
+
+/// Unpacks the PBO into a temporary folder and parses the models the catalog uses.
+fn read_models(tools: &Tools, pbo: &Path) -> Result<BTreeMap<String, OdolModel>, CatalogReadError> {
+    let work = tempfile::Builder::new()
+        .prefix("naves-roads-")
+        .tempdir()
+        .map_err(io(&std::env::temp_dir()))?;
+    unpack_roads(tools, pbo, work.path())?;
+    let out = work.path().join("dz").join("structures").join("roads");
     let mut models = BTreeMap::new();
     for (folder, prefix) in [("parts", PARTS_PREFIX), ("bridges", BRIDGES_PREFIX)] {
         for file in model_files(&out, folder)? {

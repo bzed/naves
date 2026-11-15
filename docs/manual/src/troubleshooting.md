@@ -99,6 +99,15 @@ The roads are built from the game's own pieces, which `naves build` reads from t
 (`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
 External tools.
 
+**`binarize could not open N road model(s) (...)`**
+`binarize` looks for the road models below its `P:` drive, where `naves build` unpacks them from
+`addons/structures_roads.pbo` and removes them again after the run. If it still cannot open one, the game's files are
+not what Náves expects (a game update, a damaged PBO); the message names the models and the binarize log
+(`build/logs/binarize.log`). The one `Cannot open object` line with an empty name that every build logs is harmless.
+
+**`binarize found no road directions in a world with roads`**
+Every `Road N dirs` line of the binarize log is 0, so the world file has no road network. Look at the log for why.
+
 **`dayzmake unpack failed`**
 dayzmake could not open the PBO; its output is in the message. The result of a successful read is cached in
 `$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
