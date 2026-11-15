@@ -18,6 +18,10 @@ use crate::features::{Feature, FeatureKind};
 
 /// A road from crossing to crossing.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent tags of the road, as in the feature they come from"
+)]
 pub struct Stretch {
     /// `<lowest way id>:<start node>-<end node>`: the stable part of the identity of everything placed on
     /// this stretch. It does not depend on the order of the ways.
@@ -30,6 +34,8 @@ pub struct Stretch {
     pub bridge: bool,
     /// A tunnel.
     pub tunnel: bool,
+    /// Part of a roundabout (`junction=roundabout` or `circular`); see [`rings`].
+    pub roundabout: bool,
     /// Positions in map metres, from `start` to `end`.
     pub points: Vec<(f64, f64)>,
     /// Node id at the first point. Of the two ends, this is the one with the lower id.
@@ -76,11 +82,16 @@ pub struct Chain {
 
 /// What must be equal for two segments to belong to one stretch.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent tags of the road, as in the feature they come from"
+)]
 struct Attrs {
     family: Family,
     drivable: bool,
     bridge: bool,
     tunnel: bool,
+    roundabout: bool,
 }
 
 /// The piece of a way between two consecutive nodes.
@@ -101,6 +112,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             drivable,
             bridge,
             tunnel,
+            roundabout,
             ..
         } = feature.kind
         else {
@@ -111,6 +123,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             drivable,
             bridge,
             tunnel,
+            roundabout,
         };
         let pairs = feature.nodes.iter().zip(&feature.points);
         for ((&a, &pa), (&b, &pb)) in pairs.clone().zip(pairs.skip(1)) {
@@ -282,6 +295,7 @@ fn walk(
             drivable: true,
             bridge: false,
             tunnel: false,
+            roundabout: false,
         }),
         way,
         ring,
@@ -327,6 +341,7 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         drivable: w.attrs.drivable,
         bridge: w.attrs.bridge,
         tunnel: w.attrs.tunnel,
+        roundabout: w.attrs.roundabout,
         points: w.points,
         start,
         end,
@@ -390,8 +405,12 @@ fn deviation(a: f64, b: f64) -> f64 {
 }
 
 /// At each crossing, the two arms that continue each other (see [`chains`]), both ways round.
-fn through_pairs(graph: &RoadGraph) -> BTreeMap<Arm, Arm> {
+fn through_pairs(graph: &RoadGraph, rings: &[Ring]) -> BTreeMap<Arm, Arm> {
     let mut partner: BTreeMap<Arm, Arm> = BTreeMap::new();
+    let on_ring: BTreeSet<usize> = rings
+        .iter()
+        .flat_map(|r| r.stretches.iter().copied())
+        .collect();
     // the arms at each node, in the order of the stretches, a stretch's start before its end
     let mut arms_at: BTreeMap<i64, Vec<Arm>> = BTreeMap::new();
     for (i, s) in graph.stretches.iter().enumerate() {
@@ -406,6 +425,18 @@ fn through_pairs(graph: &RoadGraph) -> BTreeMap<Arm, Arm> {
                 .get(arm.0)
                 .map_or(0.0, |s| arm_heading(s, arm.1, crossing.point))
         };
+        // the two arms of a ring are the ring, whatever else leaves here
+        if let [a, b] = arms
+            .iter()
+            .copied()
+            .filter(|arm| on_ring.contains(&arm.0))
+            .collect::<Vec<Arm>>()
+            .as_slice()
+        {
+            partner.insert(*a, *b);
+            partner.insert(*b, *a);
+            continue;
+        }
         let family = |arm: Arm| graph.stretches.get(arm.0).map(|s| s.family);
         let mut best: Option<(f64, Arm, Arm)> = None;
         for (i, &a) in arms.iter().enumerate() {
@@ -425,6 +456,195 @@ fn through_pairs(graph: &RoadGraph) -> BTreeMap<Arm, Arm> {
         }
     }
     partner
+}
+
+/// A roundabout: stretches tagged `junction=roundabout` (or `circular`) that form one closed loop.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ring {
+    /// The stretches of the loop, by index into [`RoadGraph::stretches`], in ascending order.
+    pub stretches: Vec<usize>,
+    /// The middle of the loop, in map metres: the mean of its points, each weighted by the road length
+    /// beside it.
+    pub centre: (f64, f64),
+    /// The mean distance of the loop's centre line from `centre`, in metres.
+    pub radius: f64,
+    /// The surface of the loop.
+    pub family: Family,
+}
+
+/// The roundabouts of the graph: the closed loops of `roundabout` stretches. A loop is a set of stretches that
+/// meet each other only two at a node (so that no third roundabout way leaves it), all of one family and
+/// drivability and none a bridge or a tunnel. An open arc, a loop with a way that is not tagged as a
+/// roundabout in it, or one with a branch is not a ring: its stretches stay ordinary roads. The rings are
+/// ordered by their lowest stretch.
+#[must_use]
+pub fn rings(graph: &RoadGraph) -> Vec<Ring> {
+    let candidates: Vec<usize> = graph
+        .stretches
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.roundabout && !s.bridge && !s.tunnel)
+        .map(|(i, _)| i)
+        .collect();
+    // candidate arms at each node: a loop stretch has two at its one node
+    let mut at: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for &i in &candidates {
+        if let Some(s) = graph.stretches.get(i) {
+            at.entry(s.start).or_default().push(i);
+            at.entry(s.end).or_default().push(i);
+        }
+    }
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let mut found = Vec::new();
+    for &first in &candidates {
+        if seen.contains(&first) {
+            continue;
+        }
+        let mut component: BTreeSet<usize> = BTreeSet::from([first]);
+        let mut todo = vec![first];
+        while let Some(i) = todo.pop() {
+            let Some(s) = graph.stretches.get(i) else {
+                continue;
+            };
+            for node in [s.start, s.end] {
+                for &j in at.get(&node).map(Vec::as_slice).unwrap_or_default() {
+                    if component.insert(j) {
+                        todo.push(j);
+                    }
+                }
+            }
+        }
+        seen.extend(component.iter().copied());
+        let members: Vec<&Stretch> = component
+            .iter()
+            .filter_map(|i| graph.stretches.get(*i))
+            .collect();
+        let simple = members.iter().all(|s| {
+            [s.start, s.end]
+                .iter()
+                .all(|n| at.get(n).is_some_and(|v| v.len() == 2))
+        });
+        let uniform = members.windows(2).all(|w| match w {
+            [a, b] => a.family == b.family && a.drivable == b.drivable,
+            _ => true,
+        });
+        let Some(family) = members.first().map(|s| s.family) else {
+            continue;
+        };
+        if !simple || !uniform {
+            continue;
+        }
+        let (centre, radius) = circle_of(&members);
+        found.push(Ring {
+            stretches: component.into_iter().collect(),
+            centre,
+            radius,
+            family,
+        });
+    }
+    found
+}
+
+/// The graph with every ring of a radius below `tightest(family)` (its family's tightest arc; no arc: any ring)
+/// replaced by a plain crossing: the ring's stretches go, and the roads that joined it end at one node at the
+/// ring's centre, where the usual rules for roads that meet (a junction piece or the overlay rule) apply. A road
+/// that joined the ring at two of its nodes is a chord of nothing and goes with it. A stretch whose end is
+/// moved keeps its id; it is turned round if its ends are no longer in the order of their node ids.
+#[must_use]
+pub fn collapse_small_rings(
+    graph: &RoadGraph,
+    tightest: &dyn Fn(Family) -> Option<f64>,
+) -> RoadGraph {
+    let small: Vec<Ring> = rings(graph)
+        .into_iter()
+        .filter(|r| tightest(r.family).is_none_or(|t| r.radius < t))
+        .collect();
+    if small.is_empty() {
+        return graph.clone();
+    }
+    let gone: BTreeSet<usize> = small
+        .iter()
+        .flat_map(|r| r.stretches.iter().copied())
+        .collect();
+    // ring node -> (the node of the crossing, its place)
+    let mut merged: BTreeMap<i64, (i64, (f64, f64))> = BTreeMap::new();
+    for ring in &small {
+        let nodes: BTreeSet<i64> = ring
+            .stretches
+            .iter()
+            .filter_map(|i| graph.stretches.get(*i))
+            .flat_map(|s| [s.start, s.end])
+            .collect();
+        if let Some(&first) = nodes.first() {
+            for node in nodes {
+                merged.insert(node, (first, ring.centre));
+            }
+        }
+    }
+    let mut stretches: Vec<Stretch> = Vec::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        if gone.contains(&i) {
+            continue;
+        }
+        let (at_start, at_end) = (merged.get(&s.start), merged.get(&s.end));
+        if let (Some(a), Some(b)) = (at_start, at_end)
+            && a.0 == b.0
+        {
+            continue;
+        }
+        let mut s = s.clone();
+        if let Some(&(node, centre)) = at_start {
+            s.start = node;
+            if let Some(p) = s.points.first_mut() {
+                *p = centre;
+            }
+        }
+        if let Some(&(node, centre)) = at_end {
+            s.end = node;
+            if let Some(p) = s.points.last_mut() {
+                *p = centre;
+            }
+        }
+        if s.start > s.end {
+            std::mem::swap(&mut s.start, &mut s.end);
+            s.points.reverse();
+        }
+        stretches.push(s);
+    }
+    let crossings = crossings(&stretches);
+    RoadGraph {
+        stretches,
+        crossings,
+    }
+}
+
+/// The centre and mean radius of the closed line of `members`, every point weighted by half the length of the
+/// segments on both sides of it.
+fn circle_of(members: &[&Stretch]) -> ((f64, f64), f64) {
+    let mut weighted: Vec<((f64, f64), f64)> = Vec::new();
+    for s in members {
+        for pair in s.points.windows(2) {
+            if let [a, b] = pair {
+                let half = (b.0 - a.0).hypot(b.1 - a.1) / 2.0;
+                weighted.push((*a, half));
+                weighted.push((*b, half));
+            }
+        }
+    }
+    let total: f64 = weighted.iter().map(|(_, w)| w).sum();
+    if total <= 0.0 {
+        return ((0.0, 0.0), 0.0);
+    }
+    let centre = (
+        weighted.iter().map(|(p, w)| p.0 * w).sum::<f64>() / total,
+        weighted.iter().map(|(p, w)| p.1 * w).sum::<f64>() / total,
+    );
+    let radius = weighted
+        .iter()
+        .map(|(p, w)| (p.0 - centre.0).hypot(p.1 - centre.1) * w)
+        .sum::<f64>()
+        / total;
+    (centre, radius)
 }
 
 /// The placement rank of a family: lower is more important.
@@ -477,7 +697,14 @@ pub fn overlay_rank(a: &Chain, b: &Chain, graph: &RoadGraph) -> std::cmp::Orderi
 /// through road. The other arms start or end there.
 #[must_use]
 pub fn chains(graph: &RoadGraph) -> Vec<Chain> {
-    let partner = through_pairs(graph);
+    chains_with(graph, &rings(graph))
+}
+
+/// [`chains`] with `rings` taken as the roundabouts: at every node of a ring its two ring arms are one
+/// through road, whatever their angle, so that a ring is one closed chain.
+#[must_use]
+pub fn chains_with(graph: &RoadGraph, rings: &[Ring]) -> Vec<Chain> {
+    let partner = through_pairs(graph, rings);
     let mut visited = vec![false; graph.stretches.len()];
     let mut found: Vec<Chain> = Vec::new();
     for s in 0..graph.stretches.len() {

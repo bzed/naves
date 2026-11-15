@@ -440,6 +440,20 @@ impl PieceCatalog {
         self.pieces.get(&family).map_or(&[], Vec::as_slice)
     }
 
+    /// The radius of the tightest arc of a family, in metres: the chord over twice the sine of half the
+    /// turn, the smallest over its arc pieces. `None` if the family has no arc.
+    #[must_use]
+    pub fn tightest_arc(&self, family: Family) -> Option<f64> {
+        self.pieces(family)
+            .iter()
+            .filter(|p| p.kind == PieceKind::Arc)
+            .filter_map(|p| {
+                let half_turn = p.heading_change().abs() / 2.0;
+                (half_turn.sin() > 1e-9).then(|| p.chord() / (2.0 * half_turn.sin()))
+            })
+            .min_by(f64::total_cmp)
+    }
+
     /// The T junction of a through road with a side road, if the game has one.
     #[must_use]
     pub fn t_junction(&self, through: Family, side: Family) -> Option<&Junction> {

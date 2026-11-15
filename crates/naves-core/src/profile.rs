@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::conform::FILL_SLOPE_MAX;
 use crate::heightmap::Heightmap;
-use crate::junctions::Junctions;
+use crate::junctions::{Junctions, RingPlane};
 use crate::limits::{drive_grade, grade_aim, grade_ceiling, min_vertical_radius};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
@@ -848,6 +848,62 @@ fn ramp_targets(
     infeasible
 }
 
+/// The roundabout whose road the chain `roads` is, if it is one: it lies on its plane, not on the ground that
+/// the plane was fitted to.
+fn ring_of<'a>(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    junctions: &'a Junctions,
+) -> Option<&'a RingPlane> {
+    junctions.rings.iter().find(|ring| {
+        roads
+            .iter()
+            .filter_map(|i| net.roads.get(*i))
+            .any(|r| ring.stretches.contains(&r.slot.stretch))
+    })
+}
+
+/// Fixes and holds every variable of a ring at the height of its plane.
+fn pin_to_plane(
+    plane: &RingPlane,
+    at: &[(f64, f64)],
+    fixed: &mut [Option<f64>],
+    held: &mut [Option<f64>],
+) {
+    for ((pinned, kept), point) in fixed.iter_mut().zip(held.iter_mut()).zip(at) {
+        *pinned = Some(plane.height_at(*point));
+        *kept = *pinned;
+    }
+}
+
+/// The strip of a solved chain: its joints at their heights and what the roads under them are.
+fn strip_of(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    joints: Vec<(f64, f64, f64)>,
+    side: &[f64],
+    first: &PlacedRoad,
+) -> RoadStrip {
+    let is = |kind: PlacedKind| {
+        roads
+            .iter()
+            .map(|i| net.roads.get(*i).is_some_and(|r| r.kind == kind))
+            .collect()
+    };
+    RoadStrip {
+        slots: roads.to_vec(),
+        joints,
+        bridge: is(PlacedKind::Bridge),
+        junction: is(PlacedKind::Junction),
+        side_slope: roads
+            .iter()
+            .map(|i| side.get(*i).copied().unwrap_or(0.0))
+            .collect(),
+        half_width: first.width / 2.0,
+        rank: rank(first.family),
+    }
+}
+
 /// The profile of one chain.
 fn profile_chain(
     net: &PlacedNetwork,
@@ -864,7 +920,11 @@ fn profile_chain(
     let spacing = chain.spacing.clone();
     let radius = min_vertical_radius(family);
     let count = chain.at.len();
-    let ground = |point: (f64, f64)| f64::from(hm.sample(point.0, point.1).height);
+    let ring = ring_of(net, roads, junctions);
+    let ground = |point: (f64, f64)| match ring {
+        Some(plane) => plane.height_at(point),
+        None => f64::from(hm.sample(point.0, point.1).height),
+    };
     let ground_targets: Vec<f64> = chain
         .at
         .iter()
@@ -875,11 +935,20 @@ fn profile_chain(
             None => ground(*point),
         })
         .collect();
-    let (held, fixed, meetings) = fixed_heights(net, &chain, roads, hm, strips, index, junctions)?;
+    let (mut held, mut fixed, meetings) =
+        fixed_heights(net, &chain, roads, hm, strips, index, junctions)?;
     let aim = grade_aim(family);
     let ceiling = grade_ceiling(family);
     let mut solved: Option<(Vec<f64>, Limits)> = None;
-    for base in [aim, f64::midpoint(aim, ceiling), ceiling] {
+    let bases = match ring {
+        // every joint of a ring is on its plane, which is no steeper than the ceiling
+        Some(plane) => {
+            pin_to_plane(plane, &chain.at, &mut fixed, &mut held);
+            vec![ceiling]
+        }
+        None => vec![aim, f64::midpoint(aim, ceiling), ceiling],
+    };
+    for base in bases {
         let limits = Limits {
             grade: segment_grades(net, &index.ends, roads, base, &held),
             radius,
@@ -921,32 +990,7 @@ fn profile_chain(
             )
         })
         .collect();
-    let strip = RoadStrip {
-        slots: roads.to_vec(),
-        joints,
-        bridge: roads
-            .iter()
-            .map(|i| {
-                net.roads
-                    .get(*i)
-                    .is_some_and(|r| r.kind == PlacedKind::Bridge)
-            })
-            .collect(),
-        junction: roads
-            .iter()
-            .map(|i| {
-                net.roads
-                    .get(*i)
-                    .is_some_and(|r| r.kind == PlacedKind::Junction)
-            })
-            .collect(),
-        side_slope: roads
-            .iter()
-            .map(|i| side.get(*i).copied().unwrap_or(0.0))
-            .collect(),
-        half_width: first.width / 2.0,
-        rank: rank(family),
-    };
+    let strip = strip_of(net, roads, joints, side, first);
     let variables = Solved {
         joint_variable: chain.joints.iter().map(|j| j.2).collect(),
         at: chain.at,

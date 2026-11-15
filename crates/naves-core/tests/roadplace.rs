@@ -5,6 +5,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::cast_precision_loss,
     reason = "test helper code; failing loudly is the point"
 )]
 
@@ -13,7 +14,7 @@ use std::collections::BTreeSet;
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_bridges, width};
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::roadnet::{build_graph, widen_bridges};
+use naves_core::roadnet::{build_graph, collapse_small_rings, widen_bridges};
 use naves_core::roadplace::{
     MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network,
 };
@@ -1103,4 +1104,105 @@ fn an_end_under_a_road_never_passes_its_centre_line_at_an_angle() {
             "{mud_first}: a Mud piece passes the Grav centre line"
         );
     }
+}
+
+/// A roundabout of `radius` metres around (1000, 1000), 24 nodes, with a street leaving at each of the
+/// given node indexes.
+fn roundabout(radius: f64, family: Family, spokes: &[i64]) -> Vec<Feature> {
+    let n = 24_i64;
+    let at = |i: i64, r: f64| {
+        let a = (i % n) as f64 / n as f64 * std::f64::consts::TAU;
+        (1000.0 + r * a.sin(), 1000.0 + r * a.cos())
+    };
+    let nodes: Vec<i64> = (0..=n).map(|i| 100 + i % n).collect();
+    let points: Vec<(f64, f64)> = (0..=n).map(|i| at(i, radius)).collect();
+    let mut ring = feature(1, family, &nodes, &points);
+    if let FeatureKind::Road { roundabout, .. } = &mut ring.kind {
+        *roundabout = true;
+    }
+    let mut all = vec![ring];
+    for (k, &i) in (0_i64..).zip(spokes) {
+        all.push(feature(
+            10 + k,
+            Family::Asf3,
+            &[100 + i, 500 + k],
+            &[at(i, radius), at(i, radius + 80.0)],
+        ));
+    }
+    all
+}
+
+#[test]
+fn a_ring_is_placed_as_a_closed_loop() {
+    let net = place(&roundabout(40.0, Family::City, &[0, 8, 16]));
+    assert_eq!(net.rings.len(), 1);
+    // the ring is one chain of its own: the one that is not a spoke
+    let ring_chain = net
+        .chains
+        .iter()
+        .find(|c| {
+            c.iter()
+                .all(|i| net.roads[*i].slot.stretch.starts_with("1:"))
+        })
+        .unwrap();
+    let first = &net.roads[*ring_chain.first().unwrap()];
+    let last = &net.roads[*ring_chain.last().unwrap()];
+    let gap = dist((first.start.x, first.start.y), (last.end.x, last.end.y));
+    assert!(
+        gap < naves_core::roadfit::GAP_CLOSED_M || net.gaps.iter().any(|g| g.gap_m >= gap - 1e-9),
+        "gap {gap}, reported {:?}",
+        net.gaps
+    );
+    // a circle of 40 m is not cut into spoke-sized bits: no junction pieces on it
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
+    // the spokes end under the ring instead
+    assert_eq!(net.overlays.len(), 3, "{:?}", net.overlays);
+}
+
+#[test]
+fn joining_roads_do_not_cut_a_ring_even_when_they_outrank_it() {
+    // an Asf1 spoke on a City ring: the ring still lies on top
+    let mut features = roundabout(40.0, Family::City, &[0]);
+    if let FeatureKind::Road { family, .. } = &mut features[1].kind {
+        *family = Family::Asf1;
+    }
+    let net = place(&features);
+    assert_eq!(net.rings.len(), 1);
+    let o = &net.overlays[0];
+    assert!(o.lower.iter().all(|id| !id.starts_with("1:")), "{o:?}");
+    assert_eq!(o.lower.len(), 1);
+}
+
+#[test]
+fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
+    // the tightest arc of the synthetic catalog turns on a radius of 10 m
+    let c = catalog();
+    let tightest = |f| c.tightest_arc(f);
+    let features = roundabout(6.0, Family::City, &[0, 8, 16]);
+    // placed as it is, the small ring stays a set of ordinary roads
+    let as_roads = place(&features);
+    assert_eq!(as_roads.rings.len(), 0);
+    // collapsed first, as the build does: the three streets meet at one crossing at the centre
+    let graph = collapse_small_rings(&build_graph(&features), &tightest);
+    assert!(graph.stretches.iter().all(|s| !s.roundabout));
+    assert_eq!(graph.stretches.len(), 3);
+    assert_eq!(graph.crossings.len(), 1);
+    let crossing = &graph.crossings[0];
+    assert!(dist(crossing.point, (1000.0, 1000.0)) < 0.5);
+    assert_eq!(crossing.stretches.len(), 3);
+    let net = place_network(&graph, &c).unwrap();
+    assert_eq!(net.rings.len(), 0);
+    // a junction piece where the game has one, else the overlay rule: never a heap
+    assert!(
+        !of_kind(&net, PlacedKind::Junction).is_empty()
+            || !net.overlays.is_empty()
+            || !net.joins_without_junction.is_empty()
+    );
+    // a ring that is big enough is left alone
+    let big = collapse_small_rings(
+        &build_graph(&roundabout(12.0, Family::City, &[0, 8, 16])),
+        &tightest,
+    );
+    assert!(big.stretches.iter().any(|s| s.roundabout));
+    assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }

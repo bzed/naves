@@ -17,7 +17,7 @@ use crate::catalog::Family;
 use crate::heightmap::Heightmap;
 use crate::limits::grade_ceiling;
 use crate::profile::{ON_ROAD_M, RoadStrip, chain_holds, meeting_bounds, meeting_on, rank};
-use crate::roadnet::RoadGraph;
+use crate::roadnet::{Ring, RoadGraph};
 use crate::roadplace::{Overlay, PlacedKind, PlacedNetwork};
 
 /// Radius of the circle the ground is sampled in.
@@ -106,9 +106,111 @@ pub struct Link {
     pub ceiling: f64,
 }
 
+/// The plane of a roundabout: one tilted surface that follows the slope, which the ring, the ground inside it
+/// and the places where roads join it lie on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingPlane {
+    /// The centre of the ring in map metres.
+    pub at: (f64, f64),
+    /// The radius of the surface: the ring's centre line and half its width.
+    pub radius: f64,
+    /// The height of the plane at `at`.
+    pub height: f64,
+    /// Rise per metre to the east and to the north, at most [`grade_ceiling`] of the ring's family in all.
+    pub gradient: (f64, f64),
+    /// Rank of the ring's road.
+    pub rank: u8,
+    /// The ids of the stretches of the ring.
+    pub stretches: BTreeSet<String>,
+}
+
+impl RingPlane {
+    /// The height of the plane at `point`.
+    #[must_use]
+    pub fn height_at(&self, point: (f64, f64)) -> f64 {
+        self.height
+            + self.gradient.0 * (point.0 - self.at.0)
+            + self.gradient.1 * (point.1 - self.at.1)
+    }
+}
+
+/// The plane of `ring`: least squares over the original ground inside its surface (a 1 m grid through the
+/// centre, the samples inside the map), with the tilt cut down to the grade ceiling of its family where it is
+/// steeper. A ring with fewer than three samples or none that vary is level at the median.
+#[must_use]
+pub fn ring_plane(base: &Heightmap, ring: &Ring, graph: &RoadGraph) -> RingPlane {
+    let radius = ring.radius + ring.family.width_m() / 2.0;
+    let extent = f64::from(base.size.saturating_sub(1)) * f64::from(base.cell_m);
+    let inside = |v: f64| (0.0..=extent).contains(&v);
+    let (mut n, mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0, 0.0);
+    let (mut sxx, mut syy, mut sxy, mut sxz, mut syz) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let steps = radius.floor();
+    let mut dx = -steps;
+    while dx <= steps {
+        let mut dy = -steps;
+        while dy <= steps {
+            let (x, y) = (ring.centre.0 + dx, ring.centre.1 + dy);
+            if dx.hypot(dy) <= radius && inside(x) && inside(y) {
+                let z = f64::from(base.sample(x, y).height);
+                n += 1.0;
+                sx += dx;
+                sy += dy;
+                sz += z;
+                sxx += dx * dx;
+                syy += dy * dy;
+                sxy += dx * dy;
+                sxz += dx * z;
+                syz += dy * z;
+            }
+            dy += 1.0;
+        }
+        dx += 1.0;
+    }
+    // the normal equations of z = a + gx dx + gy dy, by Cramer's rule
+    let det = n * (sxx * syy - sxy * sxy) - sx * (sx * syy - sxy * sy) + sy * (sx * sxy - sxx * sy);
+    let level = ground_median(base, ring.centre, radius);
+    let (height, mut gradient) = if n >= 3.0 && det.abs() > 1e-9 {
+        let a = (sz * (sxx * syy - sxy * sxy) - sx * (sxz * syy - sxy * syz)
+            + sy * (sxz * sxy - sxx * syz))
+            / det;
+        let gx = (n * (sxz * syy - sxy * syz) - sz * (sx * syy - sxy * sy)
+            + sy * (sx * syz - sxz * sy))
+            / det;
+        let gy = (n * (sxx * syz - sxz * sxy) - sx * (sx * syz - sxz * sy)
+            + sz * (sx * sxy - sxx * sy))
+            / det;
+        (a, (gx, gy))
+    } else {
+        (level, (0.0, 0.0))
+    };
+    let ceiling = grade_ceiling(ring.family);
+    let steepness = gradient.0.hypot(gradient.1);
+    if steepness > ceiling {
+        gradient = (
+            gradient.0 / steepness * ceiling,
+            gradient.1 / steepness * ceiling,
+        );
+    }
+    RingPlane {
+        at: ring.centre,
+        radius,
+        height,
+        gradient,
+        rank: rank(ring.family),
+        stretches: ring
+            .stretches
+            .iter()
+            .filter_map(|i| graph.stretches.get(*i))
+            .map(|s| s.id.clone())
+            .collect(),
+    }
+}
+
 /// All junctions of a network and the links between them.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Junctions {
+    /// The planes of the roundabouts of the network: the junctions on a ring take their height from it.
+    pub rings: Vec<RingPlane>,
     /// The junctions, sorted by position.
     pub points: Vec<Junction>,
     /// The links, sorted by their ends and length.
@@ -571,7 +673,12 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
     let mut raw = crossing_junctions(graph, &net.overlays, &lines, &mut claimed);
     end_junctions(&lines, &claimed, &mut raw);
     raw.sort_by(|a, b| by_position(&a.at, &b.at).then(kind_order(a.kind).cmp(&kind_order(b.kind))));
-    let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base);
+    let rings: Vec<RingPlane> = net
+        .rings
+        .iter()
+        .map(|ring| ring_plane(base, ring, graph))
+        .collect();
+    let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base, &rings);
     junctions.links = held_links(net, f64::from(base.cell_m), &junctions);
     repair(&mut junctions);
     junctions
@@ -626,7 +733,13 @@ fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link
 
 /// The junction that the raw junctions `members` make: at the mean of their points, the first kind, the
 /// highest rank and the largest patch.
-fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap) -> Junction {
+fn one_junction(
+    lines: &[Line],
+    raw: &[Raw],
+    members: &[usize],
+    base: &Heightmap,
+    rings: &[RingPlane],
+) -> Junction {
     let width_of = |arms: &[Arm]| {
         arms.iter()
             .filter_map(|a| lines.get(a.line))
@@ -663,7 +776,14 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
     }
     let n = count(members.len());
     let at = (sx / n, sy / n);
-    let ground = ground_median(base, at, GROUND_RADIUS_M);
+    // a junction on a ring lies on the ring's plane, not on the ground
+    let ground = rings
+        .iter()
+        .find(|ring| !ring.stretches.is_disjoint(&stretches))
+        .map_or_else(
+            || ground_median(base, at, GROUND_RADIUS_M),
+            |ring| ring.height_at(at),
+        );
     Junction {
         at,
         kind,
@@ -682,7 +802,13 @@ fn one_junction(lines: &[Line], raw: &[Raw], members: &[usize], base: &Heightmap
 
 /// The raw junctions with those joined by a link of [`MERGE_M`] or less made one, at the median of the
 /// ground, and the links between what is left, sorted.
-fn merged(lines: &[Line], raw: &[Raw], raw_links: &[RawLink], base: &Heightmap) -> Junctions {
+fn merged(
+    lines: &[Line],
+    raw: &[Raw],
+    raw_links: &[RawLink],
+    base: &Heightmap,
+    rings: &[RingPlane],
+) -> Junctions {
     // junctions joined by a link of MERGE_M or less are one
     let mut parent: Vec<usize> = (0..raw.len()).collect();
     for link in raw_links.iter().filter(|l| l.length <= MERGE_M) {
@@ -703,7 +829,7 @@ fn merged(lines: &[Line], raw: &[Raw], raw_links: &[RawLink], base: &Heightmap) 
                 *slot = group;
             }
         }
-        merged.push(one_junction(lines, raw, members, base));
+        merged.push(one_junction(lines, raw, members, base, rings));
     }
 
     // sorted by position, and the links with them
@@ -747,6 +873,7 @@ fn merged(lines: &[Line], raw: &[Raw], raw_links: &[RawLink], base: &Heightmap) 
             .then(x.ceiling.total_cmp(&y.ceiling))
     });
     Junctions {
+        rings: rings.to_vec(),
         points,
         links: out_links,
         unresolved: Vec::new(),

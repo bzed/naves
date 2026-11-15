@@ -1247,3 +1247,44 @@ covered by tests (`two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked`,
 `a_parallel_road_further_than_half_the_width_is_kept`, `an_overlap_shorter_than_25_m_is_kept`,
 `headings_more_than_15_degrees_apart_are_kept`, `the_lower_road_goes_on_after_the_overlap`,
 `equal_family_and_length_drops_the_higher_stretch_id_every_time`).
+
+### 9.4 Roundabouts on a tilted plane (2026-11-15)
+
+A closed loop of `junction=roundabout|circular` stretches (`roadnet::rings`: every node of the loop has exactly two
+ring stretches, one family, no bridge or tunnel) is placed as one closed chain of the family's arcs and straights
+with no junction piece on it. The two ring arms at each of its nodes are always one through road, and the ring lies
+on top of every road that joins it whatever the family, so the joining roads end under its edge by the overlay rule of
+9.2 (`Placer::lies_over`). The ring has one more crossing than a chain of the same length: the node where it closes.
+
+The ring and everything on it lie on **one plane** (`junctions::ring_plane`): a least-squares fit to the original
+ground on a 1 m grid inside the ring's surface (centre line plus half the width), the tilt cut to the grade ceiling of
+the family. The junctions on the ring take their height from it instead of the ground median; every joint of the ring is
+held at the plane (no relaxing to the aim grade, no settling), and the terrain under and inside it is levelled to the
+plane by one `LevelPatch` with a gradient (`conform`: a vertex takes `height + gx dx + gy dy`) instead of one level
+patch per junction. A ring whose radius is below the tightest arc of its family (`PieceCatalog::tightest_arc`: 10 m for
+the vanilla set, the 60 degree arc) cannot be laid out and is a plain crossing (`roadnet::collapse_small_rings`, before
+placement, in `generate::widened_graph`): the ring's stretches go and the roads that joined it meet at one node at the
+ring's centre.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 66 | 65 |
+| `road_gap` | 397 | 396 |
+| `road_conflict` (conflicts) | 1072 | 1053 |
+| grade excesses (`road_grade`) | 1699 | 1678 |
+| `road_misses_terrain` | 4676 | 4662 |
+| `road_not_drivable` | 236 | 227 |
+| `junction_too_steep` | 3 | 3 |
+| Wall time (analysis) | 544.3 s | 513.5 s |
+
+Rings: OpenStreetMap has 6 closed roundabout loops in the plain graph of the example, and a seventh appears once
+the bridge stretches of an OSM bridge that has no room for a model are ordinary roads again (`OSMBRIDGE no room`).
+**Five of the seven are smaller than the 10 m tightest arc and became crossings; two were placed as rings.** The map is
+at half scale, so a roundabout of 9 m radius is 4.6 m here: the radii of the seven are 4.6, 5.8, 6.8, 7.2, 8.1, 10.9
+and 18.6 m (centre line, map metres). The two rings: (5308, 6768), Asf1, 10.9 m, tilt 6.0 % (the ceiling), and (6189, 7038),
+Asf1, 18.6 m, tilt 1.9 %.
+
+**Site 20** (OSM ways 257338907, 415138352, 422733023, at map (5944, 7070)) is a ring of 4.6 m radius: too small for any
+arc, so it is a plain crossing of its joining roads at the centre, not a ring. The plane and the tilt there are
+therefore not used; the benefit of the task on this map is on the two rings above and on the crossings of the five
+small ones (no loop of cut ring stretches any more).

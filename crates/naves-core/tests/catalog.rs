@@ -243,3 +243,13 @@ fn the_same_models_give_the_same_catalog() {
     let b = serde_json::to_string(&synthetic_catalog()).unwrap();
     assert_eq!(a, b);
 }
+
+#[test]
+fn the_tightest_arc_is_the_smallest_radius_of_the_families_arcs() {
+    let c = synthetic_catalog();
+    for family in Family::ALL {
+        let radius = c.tightest_arc(family).unwrap();
+        // the synthetic set has a 60 degree arc of 10 m radius
+        assert!((radius - 10.0).abs() < 1e-6, "{family:?}: {radius}");
+    }
+}

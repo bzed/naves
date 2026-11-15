@@ -19,7 +19,7 @@ use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::junctions::{JunctionKind, Junctions, find_junctions};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     road_objects,
@@ -28,8 +28,8 @@ use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_profiles};
 use naves_core::project::Project;
 use naves_core::roadnet::{
-    DroppedDuplicate, RoadGraph, build_graph, drop_duplicates, lost_bridges, widen_bridges,
-    with_bridge_spans,
+    DroppedDuplicate, RoadGraph, build_graph, collapse_small_rings, drop_duplicates, lost_bridges,
+    widen_bridges, with_bridge_spans,
 };
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
@@ -196,7 +196,9 @@ pub fn widened_graph(
     features: &[Feature],
     catalog: &PieceCatalog,
 ) -> (RoadGraph, RoadGraph, Vec<DroppedDuplicate>) {
-    let (built, dropped) = drop_duplicates(&build_graph(features));
+    // a roundabout too small for the tightest arc of its surface is a plain crossing
+    let flat = collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
+    let (built, dropped) = drop_duplicates(&flat);
     let widened = widen_bridges(&built, &|s| model_length(catalog, s.family).unwrap_or(0.0));
     (built, widened, dropped)
 }
@@ -353,22 +355,39 @@ fn place_roads(
 /// none.
 #[must_use]
 pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
-    junctions
+    // a junction on a roundabout lies on the ring's plane and gets no patch of its own
+    let on_ring = |j: &Junction| {
+        junctions
+            .rings
+            .iter()
+            .any(|ring| !ring.stretches.is_disjoint(&j.stretches))
+    };
+    let mut patches: Vec<LevelPatch> = junctions
         .points
         .iter()
         .filter(|j| {
             matches!(
                 j.kind,
                 JunctionKind::Join | JunctionKind::Overlay | JunctionKind::EndOnRoad
-            )
+            ) && !on_ring(j)
         })
         .map(|j| LevelPatch {
             at: j.at,
             radius: j.patch_m + cell_m,
             height: j.height,
+            gradient: (0.0, 0.0),
             rank: j.rank,
         })
-        .collect()
+        .collect();
+    // every roundabout is one tilted plane over the whole ring and the ground inside it
+    patches.extend(junctions.rings.iter().map(|ring| LevelPatch {
+        at: ring.at,
+        radius: ring.radius + cell_m,
+        height: ring.height,
+        gradient: ring.gradient,
+        rank: ring.rank,
+    }));
+    patches
 }
 
 /// The deck level of every bridge object: the height of the profile at its start.

@@ -17,7 +17,7 @@ use std::f64::consts::{PI, TAU};
 
 use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
 use crate::roadfit::{EndGoal, FitError, FitPiece, GAP_TOLERATED_M, Pose, fit_line};
-use crate::roadnet::{Chain, RoadGraph, chains, overlay_rank};
+use crate::roadnet::{Chain, Ring, RoadGraph, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
 const JUNCTION_SPACING_M: f64 = 12.5;
@@ -183,6 +183,9 @@ pub struct PlacedNetwork {
     pub warnings: Vec<String>,
     /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
     pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
+    /// The roundabouts that are placed as a closed loop (the others, smaller than the tightest arc of their
+    /// family, are ordinary crossings).
+    pub rings: Vec<crate::roadnet::Ring>,
 }
 
 /// Why the network could not be placed.
@@ -408,6 +411,8 @@ struct Placer<'a> {
     chains: Vec<Chain>,
     /// For each stretch, the chain that holds it.
     chain_of: Vec<usize>,
+    /// Whether a chain is a placed roundabout: it lies on top of every road that meets it and closes on itself.
+    ring_chain: Vec<bool>,
     /// The live (not tunnel) stretch ends at each node.
     arms_at: BTreeMap<i64, Vec<Arm>>,
     plans: Vec<Plan<'a>>,
@@ -435,7 +440,26 @@ fn bits(p: (f64, f64)) -> (u64, u64) {
 
 impl<'a> Placer<'a> {
     fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog) -> Self {
-        let chains = chains(graph);
+        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads
+        let rings: Vec<Ring> = rings(graph)
+            .into_iter()
+            .filter(|r| {
+                catalog
+                    .tightest_arc(r.family)
+                    .is_some_and(|tightest| r.radius >= tightest)
+            })
+            .collect();
+        let chains = chains_with(graph, &rings);
+        let ring_stretches: BTreeSet<usize> = rings
+            .iter()
+            .flat_map(|r| r.stretches.iter().copied())
+            .collect();
+        let ring_chain: Vec<bool> = chains
+            .iter()
+            .map(|c| {
+                !c.links.is_empty() && c.links.iter().all(|l| ring_stretches.contains(&l.stretch))
+            })
+            .collect();
         let mut chain_of = vec![0; graph.stretches.len()];
         for (c, chain) in chains.iter().enumerate() {
             for link in &chain.links {
@@ -458,6 +482,7 @@ impl<'a> Placer<'a> {
             catalog,
             chains,
             chain_of,
+            ring_chain,
             arms_at,
             plans: Vec::new(),
             plan_index: BTreeMap::new(),
@@ -467,8 +492,29 @@ impl<'a> Placer<'a> {
             edge: BTreeMap::new(),
             cuts: BTreeSet::new(),
             overlay_points: BTreeSet::new(),
-            out: PlacedNetwork::default(),
+            out: PlacedNetwork {
+                rings,
+                ..PlacedNetwork::default()
+            },
             joins: BTreeSet::new(),
+        }
+    }
+
+    fn is_ring(&self, chain: usize) -> bool {
+        self.ring_chain.get(chain).copied().unwrap_or(false)
+    }
+
+    /// Whether the road of chain `side` lies on top of the road of chain `through` where they meet without a
+    /// junction piece: a ring over everything, else [`overlay_rank`].
+    fn lies_over(&self, side: usize, through: usize) -> bool {
+        match (self.is_ring(side), self.is_ring(through)) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => self
+                .chains
+                .get(side)
+                .zip(self.chains.get(through))
+                .is_some_and(|(a, b)| overlay_rank(a, b, self.graph) == Ordering::Less),
         }
     }
 
@@ -551,8 +597,16 @@ impl<'a> Placer<'a> {
             };
             let line = self.polyline(c, 0, chain.links.len().saturating_sub(1));
             let mut last_junction: Option<f64> = None;
-            for i in 0..chain.links.len().saturating_sub(1) {
-                let (Some(a), Some(b)) = (chain.links.get(i), chain.links.get(i + 1)) else {
+            // a ring has one more crossing: where it closes
+            let closed = self.is_ring(c);
+            let crossings = if closed {
+                chain.links.len()
+            } else {
+                chain.links.len().saturating_sub(1)
+            };
+            for i in 0..crossings {
+                let next = (i + 1) % chain.links.len().max(1);
+                let (Some(a), Some(b)) = (chain.links.get(i), chain.links.get(next)) else {
                     continue;
                 };
                 let exit: Arm = (a.stretch, a.reversed);
@@ -572,7 +626,11 @@ impl<'a> Placer<'a> {
                 if sides.is_empty() {
                     continue;
                 }
-                let s_cross = line.link_start.get(i + 1).copied().unwrap_or(0.0);
+                let s_cross = if next == 0 {
+                    line.total()
+                } else {
+                    line.link_start.get(next).copied().unwrap_or(0.0)
+                };
                 let point = line.pose_at(s_cross);
                 let at = (point.x, point.y);
                 let too_close = last_junction.is_some_and(|l| s_cross - l < JUNCTION_SPACING_M);
@@ -582,7 +640,7 @@ impl<'a> Placer<'a> {
                         .get(*i)
                         .is_some_and(|s| s.tunnel || s.bridge)
                 });
-                let plan = if too_close || beside_bridge {
+                let plan = if too_close || beside_bridge || closed {
                     None
                 } else {
                     self.plan_junction(c, i, at, point.heading, &chain, &sides)
@@ -679,7 +737,8 @@ impl<'a> Placer<'a> {
         let Some(chain) = self.chains.get(c).cloned() else {
             return;
         };
-        let (Some(a), Some(b)) = (chain.links.get(boundary), chain.links.get(boundary + 1)) else {
+        let next = (boundary + 1) % chain.links.len().max(1);
+        let (Some(a), Some(b)) = (chain.links.get(boundary), chain.links.get(next)) else {
             return;
         };
         let exit: Arm = (a.stretch, a.reversed);
@@ -692,14 +751,7 @@ impl<'a> Placer<'a> {
         };
         let outranks = |this: &Self, arm: Arm| {
             let d = this.chain_of.get(arm.0).copied().unwrap_or(c);
-            d != c
-                && this
-                    .chains
-                    .get(d)
-                    .zip(this.chains.get(c))
-                    .is_some_and(|(side, through)| {
-                        overlay_rank(side, through, this.graph) == Ordering::Less
-                    })
+            d != c && this.lies_over(d, c)
         };
         let plain = |this: &Self, stretch: usize| {
             this.graph
@@ -917,7 +969,14 @@ impl<'a> Placer<'a> {
         let entry_arm: Arm = (head.stretch, !head.reversed);
         let exit_arm: Arm = (tail.stretch, tail.reversed);
         let (start_node, end_node) = (self.node_of(entry_arm), self.node_of(exit_arm));
-        let ring = links.len() == 1 && start_node == end_node && self.live_arms(start_node) == 2;
+        let whole_ring = self.is_ring(c)
+            && first == 0
+            && self
+                .chains
+                .get(c)
+                .is_some_and(|ch| ch.links.len() == links.len());
+        let ring = start_node == end_node
+            && (whole_ring || (links.len() == 1 && self.live_arms(start_node) == 2));
         let total = line.total();
         let trim_start = self.trim.get(&entry_arm).copied().unwrap_or(0.0);
         let trim_end = self.trim.get(&exit_arm).copied().unwrap_or(0.0);

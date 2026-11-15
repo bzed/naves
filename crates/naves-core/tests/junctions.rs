@@ -5,6 +5,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::cast_precision_loss,
     clippy::indexing_slicing,
     clippy::cast_possible_truncation,
     reason = "test helper code; failing loudly is the point"
@@ -205,6 +206,7 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
 /// Two junctions joined by one link of `length` metres.
 fn two_junctions(length: f64, ceiling: f64, g0: f64, g1: f64, r0: u8, r1: u8) -> Junctions {
     Junctions {
+        rings: Vec::new(),
         points: vec![
             junction((0.0, 0.0), g0, r0),
             junction((length, 0.0), g1, r1),
@@ -222,6 +224,7 @@ fn two_junctions(length: f64, ceiling: f64, g0: f64, g1: f64, r0: u8, r1: u8) ->
 /// Three city junctions in a ring of links of `length` metres.
 fn ring_of_three(length: f64, ceiling: f64, grounds: [f64; 3]) -> Junctions {
     Junctions {
+        rings: Vec::new(),
         points: grounds
             .iter()
             .zip([0.0, 1.0, 2.0])
@@ -462,6 +465,7 @@ fn at_finds_the_nearest_junction_whose_patch_holds_the_point() {
 fn a_link_with_a_negative_ceiling_is_unresolved_and_named() {
     // no height difference satisfies a ceiling below zero; the sound link next to it is not blamed
     let mut j = Junctions {
+        rings: Vec::new(),
         points: vec![
             junction((0.0, 0.0), 100.0, 4),
             junction((10.0, 0.0), 100.0, 4),
@@ -837,4 +841,126 @@ fn a_road_that_crosses_a_junction_above_it_is_not_held_to_it() {
             .iter()
             .any(|(_, h)| h.is_some())
     );
+}
+
+/// A roundabout of `radius` metres around (400, 400) with a street that leaves it to the north.
+fn ring_with_a_street(radius: f64) -> (PlacedNetwork, RoadGraph) {
+    let n = 24_i64;
+    let at = |i: i64, r: f64| {
+        let a = (i % n) as f64 / n as f64 * std::f64::consts::TAU;
+        (400.0 + r * a.sin(), 400.0 + r * a.cos())
+    };
+    let nodes: Vec<i64> = (0..=n).map(|i| 100 + i % n).collect();
+    let points: Vec<(f64, f64)> = (0..=n).map(|i| at(i, radius)).collect();
+    let mut ring = feature(1, Family::City, &nodes, &points);
+    if let FeatureKind::Road { roundabout, .. } = &mut ring.kind {
+        *roundabout = true;
+    }
+    placed(&[
+        ring,
+        feature(
+            2,
+            Family::Asf3,
+            &[100, 500],
+            &[at(0, radius), at(0, radius + 90.0)],
+        ),
+        feature(
+            3,
+            Family::Asf3,
+            &[112, 501],
+            &[at(12, radius), at(12, radius + 90.0)],
+        ),
+    ])
+}
+
+#[test]
+fn the_tilt_is_clamped_to_the_grade_ceiling() {
+    // a hillside of 50 %, far over what a city street may have
+    let base = terrain(256, 3.125, |x, _| 100.0 + 0.5 * x);
+    let (net, graph) = ring_with_a_street(30.0);
+    let junctions = find_junctions(&net, &graph, &base);
+    assert_eq!(junctions.rings.len(), 1);
+    let plane = &junctions.rings[0];
+    let magnitude = plane.gradient.0.hypot(plane.gradient.1);
+    assert!(
+        (magnitude - grade_ceiling(Family::City)).abs() < 1e-9,
+        "{magnitude}"
+    );
+    // it still points uphill
+    assert!(plane.gradient.0 > 0.0 && plane.gradient.1.abs() < 1e-6);
+}
+
+#[test]
+fn a_gentle_hillside_is_the_planes_tilt_as_it_is() {
+    let base = terrain(256, 3.125, |x, y| 100.0 + 0.04 * x + 0.02 * y);
+    let (net, graph) = ring_with_a_street(30.0);
+    let junctions = find_junctions(&net, &graph, &base);
+    let plane = &junctions.rings[0];
+    assert!(
+        (plane.gradient.0 - 0.04).abs() < 1e-3,
+        "{:?}",
+        plane.gradient
+    );
+    assert!(
+        (plane.gradient.1 - 0.02).abs() < 1e-3,
+        "{:?}",
+        plane.gradient
+    );
+    assert!((plane.height - (100.0 + 0.04 * 400.0 + 0.02 * 400.0)).abs() < 0.01);
+}
+
+#[test]
+fn joining_roads_end_on_the_ring_at_the_plane_height() {
+    let base = terrain(256, 3.125, |x, y| 100.0 + 0.04 * x + 0.02 * y);
+    let (net, graph) = ring_with_a_street(30.0);
+    let junctions = find_junctions(&net, &graph, &base);
+    let plane = &junctions.rings[0];
+    let node = junctions
+        .points
+        .iter()
+        .find(|j| j.kind == JunctionKind::Overlay && j.lower.iter().any(|id| id.starts_with("2:")))
+        .unwrap();
+    let want = plane.height_at(node.at);
+    assert!((node.height - want).abs() < 1e-6, "{} {want}", node.height);
+    let side = naves_core::sideslope::side_slopes(&net, &base);
+    let profiles = naves_core::profile::solve_profiles(&net, &base, &junctions, &side);
+    // the ring follows the plane
+    let ring_strip = profiles
+        .strips
+        .iter()
+        .find(|s| net.roads[s.slots[0]].slot.stretch.starts_with("1:"))
+        .unwrap();
+    for joint in &ring_strip.joints {
+        let plane_height = plane.height_at((joint.0, joint.1));
+        assert!(
+            (joint.2 - plane_height).abs() < 0.1,
+            "{joint:?} {plane_height}"
+        );
+    }
+    // the street ends at the plane's height, 5 cm under the ring
+    let street = profiles
+        .strips
+        .iter()
+        .find(|s| net.roads[s.slots[0]].slot.stretch.starts_with("2:"))
+        .unwrap();
+    let end = street.joints.iter().min_by(|a, b| {
+        let d = |j: &&(f64, f64, f64)| (j.0 - node.at.0).hypot(j.1 - node.at.1);
+        d(a).total_cmp(&d(b))
+    });
+    let end = end.unwrap();
+    assert!((end.2 - (want - 0.05)).abs() < 0.02, "{} {want}", end.2);
+}
+
+#[test]
+fn a_ring_on_flat_ground_is_level_and_a_ring_off_the_map_is_level_too() {
+    let flat = terrain(256, 3.125, |_, _| 150.0);
+    let (net, graph) = ring_with_a_street(30.0);
+    let plane = &find_junctions(&net, &graph, &flat).rings[0];
+    assert!(plane.gradient.0.abs() < 1e-9 && plane.gradient.1.abs() < 1e-9);
+    assert!((plane.height - 150.0).abs() < 1e-3);
+    // a map that does not reach the ring: nothing to fit, level at the nearest ground
+    let small = terrain(16, 3.125, |_, _| 120.0);
+    let plane = &find_junctions(&net, &graph, &small).rings[0];
+    assert!(plane.gradient.0.abs() < 1e-9 && plane.gradient.1.abs() < 1e-9);
+    assert!((plane.height - 120.0).abs() < 1e-3);
 }

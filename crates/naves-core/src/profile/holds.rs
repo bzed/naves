@@ -231,7 +231,12 @@ fn junction_heights(
     for (var, junction) in nearest_of_runs(&candidates) {
         give(&mut held, var, junction, HoldRule::Patch);
     }
-    // the ends, and inward from them while the joints lie on the surface of the other road
+    // the ends, and inward from them while the joints lie on the surface of the other road; the ends of a
+    // ring are not ends (it closes there) and its joints lie on its plane, not on a level strip
+    let on_ring = junctions
+        .rings
+        .iter()
+        .any(|r| !r.stretches.is_disjoint(&ids));
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
         let Some((junction_index, _)) = chain.at.get(end).and_then(|point| nearest(*point, HOLD_M))
         else {
@@ -253,7 +258,7 @@ fn junction_heights(
                 .at
                 .get(var)
                 .is_some_and(|p| (p.0 - junction.at.0).hypot(p.1 - junction.at.1) <= reach);
-            if var != end && !on_surface {
+            if var != end && (!on_surface || on_ring) {
                 break;
             }
             if held.get(var).is_some_and(Option::is_none) {

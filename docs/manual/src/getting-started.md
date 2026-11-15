@@ -197,6 +197,19 @@ overlay rule above (the kept road is cut there so that the two meet at a crossin
 stay. A bridge is compared only with bridges and a tunnel only with tunnels, and is never cut: a bridge that runs along
 another one for at least 25 m is not placed at all.
 
+**Roundabouts.** A closed loop of roads tagged `junction=roundabout` (or `junction=circular`) is built as one ring: a
+closed loop of the game's arcs and straights, with no junction piece on it, lying on top of every road that joins it
+(whatever their surfaces; they end under its edge by the overlay rule above). The ring lies on **one tilted plane** that
+follows the slope: the plane is fitted to the original ground inside the ring (least squares), and its tilt is cut down to
+the steepest grade the ring's road may have. The build levels the ground under and inside the ring to that plane, so
+a ring on a steep street needs no large flat bench, and the roads that join it end at the plane's height (the lower
+5 cm below, as above). A ring whose centre line is tighter than the tightest arc of its surface (10 m for the game's
+own roads) cannot be laid out with the game's pieces; it is taken as a **plain crossing**: the ring is left out and the
+roads that joined it meet at one point at its centre, with a junction piece where the game has one and the overlay
+rule elsewhere. This is the common case on a map at a small scale (a mini roundabout of 9 m radius is 4.6 m at half
+scale). An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
+roundabout way leaves, and one with several surfaces are not rings; they stay ordinary roads.
+
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,

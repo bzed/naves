@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use naves_core::junctions::{Junction, JunctionKind, Junctions};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, RingPlane};
 use naves_export::generate::level_patches;
 
 fn junction(kind: JunctionKind, at: (f64, f64), height: f64) -> Junction {
@@ -42,4 +42,33 @@ fn a_join_an_overlay_and_a_chain_end_on_a_road_get_a_patch_one_cell_wider_and_a_
     // an overlay is levelled like a join
     assert_eq!(patches[2].at, (70.0, 80.0));
     assert!((patches[2].height - 104.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_ring_gets_one_tilted_patch_and_the_junctions_on_it_none() {
+    let ring_ids: BTreeSet<String> = ["1:100-112".to_string()].into();
+    let mut on_ring = junction(JunctionKind::Overlay, (400.0, 430.0), 124.0);
+    on_ring.stretches = ring_ids.clone();
+    let junctions = Junctions {
+        points: vec![on_ring, junction(JunctionKind::Join, (10.0, 20.0), 101.0)],
+        rings: vec![RingPlane {
+            at: (400.0, 400.0),
+            radius: 33.5,
+            height: 123.2,
+            gradient: (0.04, 0.02),
+            rank: 3,
+            stretches: ring_ids,
+        }],
+        ..Junctions::default()
+    };
+    let patches = level_patches(&junctions, 3.125);
+    assert_eq!(patches.len(), 2);
+    assert_eq!(patches[0].at, (10.0, 20.0));
+    assert!((patches[0].gradient.0).abs() < 1e-12 && (patches[0].gradient.1).abs() < 1e-12);
+    assert_eq!(patches[1].at, (400.0, 400.0));
+    assert!((patches[1].radius - 36.625).abs() < 1e-9);
+    assert!((patches[1].height - 123.2).abs() < 1e-9);
+    assert!((patches[1].gradient.0 - 0.04).abs() < 1e-12);
+    assert!((patches[1].gradient.1 - 0.02).abs() < 1e-12);
+    assert_eq!(patches[1].rank, 3);
 }

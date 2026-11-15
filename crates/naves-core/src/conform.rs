@@ -46,15 +46,18 @@ const ROUNDING_PASSES: usize = 4;
 /// Impossible limits are reported once per square of this many metres.
 const CONFLICT_REGION_M: f64 = 50.0;
 
-/// A circle of ground levelled to one height, where roads meet without a junction piece.
+/// A circle of ground levelled to one plane, where roads meet without a junction piece or a roundabout lies.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelPatch {
     /// Centre in map metres.
     pub at: (f64, f64),
-    /// Radius in metres; every vertex within it takes `height`.
+    /// Radius in metres; every vertex within it takes the height of the plane.
     pub radius: f64,
-    /// The height of the patch.
+    /// The height of the patch at its centre.
     pub height: f64,
+    /// Rise per metre to the east and to the north; `(0.0, 0.0)` is a level patch. A vertex takes
+    /// `height + gradient.0 * dx + gradient.1 * dy` for its offset `(dx, dy)` from the centre.
+    pub gradient: (f64, f64),
     /// Rank of the most important road meeting here; wins ties against a road of a lower rank.
     pub rank: u8,
 }
@@ -451,7 +454,9 @@ fn candidates(
             && patch.at.1.is_finite()
             && patch.radius.is_finite()
             && patch.radius > 0.0
-            && patch.height.is_finite())
+            && patch.height.is_finite()
+            && patch.gradient.0.is_finite()
+            && patch.gradient.1.is_finite())
         {
             continue;
         }
@@ -472,11 +477,14 @@ fn candidates(
                     continue;
                 }
                 let (cut, fill) = hillside_slopes(base, grid, vertex);
+                let plane = patch.height
+                    + patch.gradient.0 * (px - patch.at.0)
+                    + patch.gradient.1 * (py - patch.at.1);
                 found.entry(vertex).or_default().push(Candidate {
                     patch: true,
                     owner: strips.len() + number,
                     rank: patch.rank,
-                    height: narrow(patch.height),
+                    height: narrow(plane),
                     distance,
                     edge: distance - patch.radius,
                     cut,

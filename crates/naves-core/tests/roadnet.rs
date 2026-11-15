@@ -5,6 +5,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::cast_precision_loss,
     clippy::indexing_slicing,
     reason = "test helper code; failing loudly is the point"
 )]
@@ -13,7 +14,7 @@ use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{
     BridgeSpan, DUPLICATE_MAX_HEADING_DEG, DUPLICATE_MIN_M, RoadGraph, Stretch, build_graph,
-    chains, drop_duplicates, overlay_rank, widen_bridges, with_bridge_spans,
+    chains, drop_duplicates, overlay_rank, rings, widen_bridges, with_bridge_spans,
 };
 use proptest::prelude::*;
 
@@ -932,4 +933,86 @@ fn cut_pieces_and_bridge_cuts_have_unique_ids() {
         "{:?}",
         ids(&out)
     );
+}
+
+/// A roundabout way: `n` points on a circle of `radius` metres, nodes `first..first + n`, closed when `closed`.
+fn circle(way: i64, first: i64, n: i64, radius: f64, closed: bool, roundabout: bool) -> Feature {
+    let around = if closed { n + 1 } else { n };
+    let points: Vec<(f64, f64)> = (0..around)
+        .map(|i| {
+            let a = (i % n) as f64 / n as f64 * std::f64::consts::TAU;
+            (1000.0 + radius * a.sin(), 1000.0 + radius * a.cos())
+        })
+        .collect();
+    let nodes: Vec<i64> = (0..around).map(|i| first + i % n).collect();
+    let mut f = feature(way, Family::City, false, &nodes, &points);
+    if let FeatureKind::Road { roundabout: r, .. } = &mut f.kind {
+        *r = roundabout;
+    }
+    f
+}
+
+/// A road from the ring node `node` (on the circle at index `index` of `n`) straight outwards.
+fn spoke(way: i64, node: i64, index: i64, n: i64, radius: f64) -> Feature {
+    let a = index as f64 / n as f64 * std::f64::consts::TAU;
+    let at = |r: f64| (1000.0 + r * a.sin(), 1000.0 + r * a.cos());
+    road(way, &[node, 9000 + way], &[at(radius), at(radius + 60.0)])
+}
+
+#[test]
+fn a_closed_roundabout_is_one_ring() {
+    let g = build_graph(&[
+        circle(1, 100, 16, 25.0, true, true),
+        spoke(2, 100, 0, 16, 25.0),
+        spoke(3, 104, 4, 16, 25.0),
+        spoke(4, 108, 8, 16, 25.0),
+    ]);
+    let found = rings(&g);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let ring = &found[0];
+    // the ring is cut at the three joining roads
+    assert_eq!(ring.stretches.len(), 3);
+    for i in &ring.stretches {
+        assert!(g.stretches[*i].roundabout);
+    }
+    assert!((ring.centre.0 - 1000.0).abs() < 0.5 && (ring.centre.1 - 1000.0).abs() < 0.5);
+    assert!((ring.radius - 25.0).abs() < 0.5, "{}", ring.radius);
+    assert_eq!(ring.family, Family::City);
+}
+
+#[test]
+fn a_ring_without_joining_roads_is_one_ring_of_one_stretch() {
+    let g = build_graph(&[circle(1, 100, 16, 25.0, true, true)]);
+    let found = rings(&g);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].stretches.len(), 1);
+}
+
+#[test]
+fn an_open_or_cut_ring_stays_ordinary_roads() {
+    // not closed: three quarters of a circle
+    let open = build_graph(&[circle(1, 100, 16, 25.0, false, true)]);
+    assert_eq!(rings(&open), []);
+    // closed, but one way of it is not tagged as a roundabout
+    let mut a = circle(1, 100, 16, 25.0, true, true);
+    let b = {
+        let (nodes, points) = (a.nodes.split_off(9), a.points.split_off(9));
+        let mut b = circle(2, 100, 16, 25.0, true, false);
+        b.nodes = [vec![*a.nodes.last().unwrap()], nodes].concat();
+        b.points = [vec![*a.points.last().unwrap()], points].concat();
+        b
+    };
+    let cut = build_graph(&[a, b]);
+    assert_eq!(rings(&cut), []);
+    // a ring that a third roundabout way leaves is not a simple loop
+    let branch = build_graph(&[circle(1, 100, 16, 25.0, true, true), {
+        let mut f = spoke(2, 100, 0, 16, 25.0);
+        if let FeatureKind::Road { roundabout, .. } = &mut f.kind {
+            *roundabout = true;
+        }
+        f
+    }]);
+    assert_eq!(rings(&branch), []);
+    // the roads are still there as ordinary stretches
+    assert_ne!(cut.stretches.len(), 0);
 }
