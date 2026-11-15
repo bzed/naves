@@ -200,8 +200,8 @@ another one for at least 25 m is not placed at all.
 **Roundabouts.** A closed loop of roads tagged `junction=roundabout` (or `junction=circular`) is built as one ring: a
 closed loop of the game's arcs and straights, with no junction piece on it, lying on top of every road that joins it
 (whatever their surfaces; they end under its edge by the overlay rule above). The ring lies on **one tilted plane** that
-follows the slope: the plane is fitted to the original ground inside the ring (least squares), and its tilt is cut down to
-the steepest grade the ring's road may have. The build levels the ground under and inside the ring to that plane, so
+follows the slope: the plane is fitted to the original ground under the ring's road (a band as wide as the road, least squares), and its tilt is cut down to
+the steepest grade the ring's road may have. The build shapes the ground under the road and one cell beside it to that plane (the ground inside the ring keeps its height), so
 a ring on a steep street needs no large flat bench, and the roads that join it end at the plane's height (the lower
 5 cm below, as above). A ring whose centre line is tighter than the tightest arc of its surface (10 m for the game's
 own roads) cannot be laid out with the game's pieces; it is taken as a **plain crossing**: the ring is left out and the

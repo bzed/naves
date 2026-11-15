@@ -1257,10 +1257,10 @@ on top of every road that joins it whatever the family, so the joining roads end
 9.2 (`Placer::lies_over`). The ring has one more crossing than a chain of the same length: the node where it closes.
 
 The ring and everything on it lie on **one plane** (`junctions::ring_plane`): a least-squares fit to the original
-ground on a 1 m grid inside the ring's surface (centre line plus half the width), the tilt cut to the grade ceiling of
+ground under the ring's band (centre line plus and minus half the width), sampled about 1 m apart, so that the work grows with the ring's length, the tilt cut to the grade ceiling of
 the family. The junctions on the ring take their height from it instead of the ground median; every joint of the ring is
-held at the plane (no relaxing to the aim grade, no settling), and the terrain under and inside it is levelled to the
-plane by one `LevelPatch` with a gradient (`conform`: a vertex takes `height + gx dx + gy dy`) instead of one level
+held at the plane (no relaxing to the aim grade, no settling), and the terrain under the band and one cell beside it is shaped to the
+plane by one annular `LevelPatch` with a gradient and an inner radius (the ground inside a ring keeps its height) (`conform`: a vertex takes `height + gx dx + gy dy`) instead of one level
 patch per junction. A ring whose radius is below the tightest arc of its family (`PieceCatalog::tightest_arc`: 10 m for
 the vanilla set, the 60 degree arc) cannot be laid out and is a plain crossing (`roadnet::collapse_small_rings`, before
 placement, in `generate::widened_graph`): the ring's stretches go and the roads that joined it meet at one node at the
@@ -1270,12 +1270,12 @@ ring's centre.
 |---|---|---|
 | `join_without_junction` | 66 | 65 |
 | `road_gap` | 397 | 396 |
-| `road_conflict` (conflicts) | 1072 | 1053 |
-| grade excesses (`road_grade`) | 1699 | 1678 |
-| `road_misses_terrain` | 4676 | 4662 |
+| `road_conflict` (conflicts) | 1072 | 1050 |
+| grade excesses (`road_grade`) | 1699 | 1667 |
+| `road_misses_terrain` | 4676 | 4661 |
 | `road_not_drivable` | 236 | 227 |
 | `junction_too_steep` | 3 | 3 |
-| Wall time (analysis) | 544.3 s | 513.5 s |
+| Wall time (analysis) | 544.3 s | 534.8 s |
 
 Rings: OpenStreetMap has 6 closed roundabout loops in the plain graph of the example, and a seventh appears once
 the bridge stretches of an OSM bridge that has no room for a model are ordinary roads again (`OSMBRIDGE no room`).

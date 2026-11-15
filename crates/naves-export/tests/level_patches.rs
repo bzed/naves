@@ -54,6 +54,7 @@ fn a_ring_gets_one_tilted_patch_and_the_junctions_on_it_none() {
         rings: vec![RingPlane {
             at: (400.0, 400.0),
             radius: 33.5,
+            inner_radius: 26.5,
             height: 123.2,
             gradient: (0.04, 0.02),
             rank: 3,
@@ -67,6 +68,8 @@ fn a_ring_gets_one_tilted_patch_and_the_junctions_on_it_none() {
     assert!((patches[0].gradient.0).abs() < 1e-12 && (patches[0].gradient.1).abs() < 1e-12);
     assert_eq!(patches[1].at, (400.0, 400.0));
     assert!((patches[1].radius - 36.625).abs() < 1e-9);
+    // the band only: the inside of the ring is not levelled
+    assert!((patches[1].inner_radius - 23.375).abs() < 1e-9);
     assert!((patches[1].height - 123.2).abs() < 1e-9);
     assert!((patches[1].gradient.0 - 0.04).abs() < 1e-12);
     assert!((patches[1].gradient.1 - 0.02).abs() < 1e-12);

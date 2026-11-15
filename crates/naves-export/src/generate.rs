@@ -376,13 +376,15 @@ pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
             radius: j.patch_m + cell_m,
             height: j.height,
             gradient: (0.0, 0.0),
+            inner_radius: 0.0,
             rank: j.rank,
         })
         .collect();
-    // every roundabout is one tilted plane over the whole ring and the ground inside it
+    // every roundabout is one tilted plane over the band of its road (the ground inside it keeps its height)
     patches.extend(junctions.rings.iter().map(|ring| LevelPatch {
         at: ring.at,
         radius: ring.radius + cell_m,
+        inner_radius: (ring.inner_radius - cell_m).max(0.0),
         height: ring.height,
         gradient: ring.gradient,
         rank: ring.rank,

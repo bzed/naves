@@ -114,6 +114,9 @@ pub struct RingPlane {
     pub at: (f64, f64),
     /// The radius of the surface: the ring's centre line and half its width.
     pub radius: f64,
+    /// The inner edge of the surface: the centre line less half the width (not below 0). The plane is
+    /// fitted to, and the terrain is shaped to, the band between `inner_radius` and `radius`.
+    pub inner_radius: f64,
     /// The height of the plane at `at`.
     pub height: f64,
     /// Rise per metre to the east and to the north, at most [`grade_ceiling`] of the ring's family in all.
@@ -139,19 +142,24 @@ impl RingPlane {
 /// steeper. A ring with fewer than three samples or none that vary is level at the median.
 #[must_use]
 pub fn ring_plane(base: &Heightmap, ring: &Ring, graph: &RoadGraph) -> RingPlane {
-    let radius = ring.radius + ring.family.width_m() / 2.0;
+    let half = ring.family.width_m() / 2.0;
+    let radius = ring.radius + half;
+    let inner_radius = (ring.radius - half).max(0.0);
     let extent = f64::from(base.size.saturating_sub(1)) * f64::from(base.cell_m);
     let inside = |v: f64| (0.0..=extent).contains(&v);
     let (mut n, mut sx, mut sy, mut sz) = (0.0, 0.0, 0.0, 0.0);
     let (mut sxx, mut syy, mut sxy, mut sxz, mut syz) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    let steps = radius.floor();
-    let mut dx = -steps;
-    while dx <= steps {
-        let mut dy = -steps;
-        while dy <= steps {
-            let (x, y) = (ring.centre.0 + dx, ring.centre.1 + dy);
-            if dx.hypot(dy) <= radius && inside(x) && inside(y) {
-                let z = f64::from(base.sample(x, y).height);
+    // the ground under the band only, about 1 m apart: work grows with the ring's length, not its area
+    let mut rho = inner_radius;
+    while rho <= radius {
+        let steps = (std::f64::consts::TAU * rho).ceil().max(8.0);
+        let mut index = 0.0;
+        while index < steps {
+            let angle = std::f64::consts::TAU * index / steps;
+            let (dx, dy) = (rho * angle.sin(), rho * angle.cos());
+            let (east, north) = (ring.centre.0 + dx, ring.centre.1 + dy);
+            if inside(east) && inside(north) {
+                let z = f64::from(base.sample(east, north).height);
                 n += 1.0;
                 sx += dx;
                 sy += dy;
@@ -162,13 +170,13 @@ pub fn ring_plane(base: &Heightmap, ring: &Ring, graph: &RoadGraph) -> RingPlane
                 sxz += dx * z;
                 syz += dy * z;
             }
-            dy += 1.0;
+            index += 1.0;
         }
-        dx += 1.0;
+        rho += 1.0;
     }
     // the normal equations of z = a + gx dx + gy dy, by Cramer's rule
     let det = n * (sxx * syy - sxy * sxy) - sx * (sx * syy - sxy * sy) + sy * (sx * sxy - sxx * sy);
-    let level = ground_median(base, ring.centre, radius);
+    let level = ground_median(base, ring.centre, radius.min(GROUND_RADIUS_M));
     let (height, mut gradient) = if n >= 3.0 && det.abs() > 1e-9 {
         let a = (sz * (sxx * syy - sxy * sxy) - sx * (sxz * syy - sxy * syz)
             + sy * (sxz * sxy - sxx * syz))
@@ -194,6 +202,7 @@ pub fn ring_plane(base: &Heightmap, ring: &Ring, graph: &RoadGraph) -> RingPlane
     RingPlane {
         at: ring.centre,
         radius,
+        inner_radius,
         height,
         gradient,
         rank: rank(ring.family),

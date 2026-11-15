@@ -1149,10 +1149,11 @@ fn a_ring_is_placed_as_a_closed_loop() {
     let last = &net.roads[*ring_chain.last().unwrap()];
     let gap = dist((first.start.x, first.start.y), (last.end.x, last.end.y));
     assert!(
-        gap < naves_core::roadfit::GAP_CLOSED_M || net.gaps.iter().any(|g| g.gap_m >= gap - 1e-9),
-        "gap {gap}, reported {:?}",
+        gap < naves_core::roadfit::GAP_CLOSED_M,
+        "the ring does not close: {gap} m, gaps {:?}",
         net.gaps
     );
+    assert!(net.gaps.is_empty(), "{:?}", net.gaps);
     // a circle of 40 m is not cut into spoke-sized bits: no junction pieces on it
     assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 0);
     // the spokes end under the ring instead

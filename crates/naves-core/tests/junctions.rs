@@ -964,3 +964,24 @@ fn a_ring_on_flat_ground_is_level_and_a_ring_off_the_map_is_level_too() {
     assert!(plane.gradient.0.abs() < 1e-9 && plane.gradient.1.abs() < 1e-9);
     assert!((plane.height - 120.0).abs() < 1e-3);
 }
+
+#[test]
+fn a_large_ring_has_a_plane_over_its_band_only() {
+    let base = terrain(256, 3.125, |x, y| 100.0 + 0.04 * x + 0.02 * y);
+    let (net, graph) = ring_with_a_street(120.0);
+    let plane = &find_junctions(&net, &graph, &base).rings[0];
+    // the band: the centre line less and plus half the width (7 m for the City family here)
+    let half = Family::City.width_m() / 2.0;
+    assert!(
+        (plane.radius - (120.0 + half)).abs() < 0.5,
+        "{}",
+        plane.radius
+    );
+    assert!(
+        (plane.inner_radius - (120.0 - half)).abs() < 0.5,
+        "{}",
+        plane.inner_radius
+    );
+    // fitted over the band only, on ground that is itself a plane
+    assert!((plane.gradient.0 - 0.04).abs() < 1e-3 && (plane.gradient.1 - 0.02).abs() < 1e-3);
+}

@@ -58,6 +58,9 @@ pub struct LevelPatch {
     /// Rise per metre to the east and to the north; `(0.0, 0.0)` is a level patch. A vertex takes
     /// `height + gradient.0 * dx + gradient.1 * dy` for its offset `(dx, dy)` from the centre.
     pub gradient: (f64, f64),
+    /// Vertices nearer to the centre than this are not claimed: 0 is a disc, more is a ring-shaped band (the
+    /// ground inside a roundabout keeps its height).
+    pub inner_radius: f64,
     /// Rank of the most important road meeting here; wins ties against a road of a lower rank.
     pub rank: u8,
 }
@@ -456,7 +459,8 @@ fn candidates(
             && patch.radius > 0.0
             && patch.height.is_finite()
             && patch.gradient.0.is_finite()
-            && patch.gradient.1.is_finite())
+            && patch.gradient.1.is_finite()
+            && patch.inner_radius.is_finite())
         {
             continue;
         }
@@ -473,7 +477,10 @@ fn candidates(
                 let vertex = row * grid.size + col;
                 let (px, py) = grid.position(vertex);
                 let distance = (px - patch.at.0).hypot(py - patch.at.1);
-                if distance > patch.radius || shadow.get(vertex).copied().unwrap_or(false) {
+                if distance > patch.radius
+                    || distance < patch.inner_radius
+                    || shadow.get(vertex).copied().unwrap_or(false)
+                {
                     continue;
                 }
                 let (cut, fill) = hillside_slopes(base, grid, vertex);
