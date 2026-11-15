@@ -1692,27 +1692,50 @@ different solve that could have shown a way; the second half of the table (what 
 not a run. The classes are exclusive and ordered (deck, then hold, then free); a hump at a deck end next to a junction
 counts as a hold. Site 21 is not explained by the data. Nothing was driven or photographed in the game for this step.
 
-**Result of fix 1 (junctions follow the through road's slope, 2026-11-15).** Implemented as proposed
-(`Junction::gradient`, held joints and terrain patches on the tilted plane, links measured between the held joints; tilt
-share 0.9 of the grade ceiling of the through road over 6.25 m or the patch radius either side). `road-analysis` at
-`terrain_size = 2048` (log `/var/tmp/naves-roadlook/t12/ra.log`), against the state of 9.8 (`78df272`):
+**Result of fix 1 (junctions follow the through road's slope, 2026-11-15/16).** First implemented as proposed
+(`Junction::gradient`, held joints and terrain patches on the tilted plane, links measured between the held joints;
+tilt from two ground samples 6.25 m, or the patch radius, either side of the junction point along the through road's
+heading, at most 0.9 of its grade ceiling; commit `1034db4`). That made things worse. Instrumented runs of both states
+(the dump of `/var/tmp/naves-roadlook/t11/hump-dump.patch`, plus every junction with its tilt and every finding;
+scripts in `/var/tmp/naves-roadlook/t12/an/`) found two causes:
 
-| Finding | Before | After |
-|---|---|---|
-| `road_grade` | 1645 (1234 bends, 411 grades) | **1732** (1299 bends, 433 grades) |
-| `road_not_drivable` | 237 | 256 |
-| `road_misses_terrain` | 4621 | 5025 |
-| `road_gap` | 347 | 346 |
-| `road_conflict` | 1072 | 1186 |
-| `join_without_junction` | 65 | 65 |
-| `junction_too_steep` | 6 | 6 |
+- **The tilt did not match the grade the road takes.** The two samples were taken at the junction's point, which is
+  the crossing node or the end of the side road and lies up to 9 m (90th percentile 2.5 m) off the through road's
+  centre line, and they measured the ground over 12.5 m only. At a T piece at (1321, 7252) the point was 4 m beside the
+  axis on a hillside: tilt 12.3 percent, ground along the axis 1.3 percent, and the road was held up to 3.4 m under the
+  ground. Against the ground over 25 m either side, 203 of 505 tilted junction pieces got a tilt further from it than a
+  level piece would have been; around those the bends rose, around the others they fell, so the H2 findings that went
+  away (270 of 725) were paid for elsewhere.
+- **Steep tilts break the roads that meet the through road.** The plane's fall along the through road is the fall
+  across every road that crosses or ends on it there, and a road has no fall across of its own (its strip is level
+  across in the terrain shaping): the two surfaces agree only along a line, and differ by the tilt times the half
+  width of the meeting road. The new `road_conflict` findings next to tilted junctions differ by a median 3.5 m times
+  the tilt (0.40 to 0.60 m at tilts of 12 to 20 percent); `road_misses_terrain` (the step between the two cores inside
+  a piece's footprint) and "other road overlaps, different height" (1589 to 2000 pieces) rose with them. Findings rose
+  almost only around junctions tilted by 8 percent or more; up to 3 percent they fell.
 
-**The fix did not reduce `road_grade`; it rose by 87 (noise about 30), and `road_misses_terrain` (+404) and
-`road_conflict` (+114) rose too.** The expectation of 9.8 (up to about 650 of the H2 class) did not materialise. The
-classes were not recounted (no instrumented run after the change); the cause is open. What the synthetic tests show
-(two junction pieces 14 m apart on a 10 percent slope are drivable and their joints lie on the planes) holds, so the
-mechanism works where the through road is straight and the junction is isolated; on the real network something else
-dominates, for instance junctions whose through road is not the road the neighbouring junction lies on, an overlapped
-piece between tilted junctions, or the terrain patch tilting against the finished road. To find out, rerun the
-instrumentation of `/var/tmp/naves-roadlook/t11/hump-dump.patch` on this state.
+The fix (round 1): the tilt is the least-squares slope of the original ground sampled every metre **along the through
+road's own line**, 25 m (or the patch radius) either side of the junction's station on it, and is limited to
+`CROSS_FALL_AIM` (8 percent) as well as 0.9 of the grade ceiling (which is never the lower limit). Variants measured
+at 2048 (same runs, deterministic): fit along the line over 12.5 m alone 1649 / 4903 / 1165 (grade / misses /
+conflict); the 8 percent limit alone 1570 / 4773 / 1089; both, 12.5 m, 1545 / 4689 / 1070; both, 25 m, **1493 / 4612 /
+1041**; a 4 percent limit 1627 / 4555 / 1039; a 6 percent limit 1599 / 4622 / 1055; a tilted terrain patch under
+junction pieces too changed nothing (1545 / 4660 / 1096).
 
+| Finding | Before (`78df272`) | `1034db4` | Round 1 |
+|---|---|---|---|
+| `road_grade` | 1645 (1234 bends, 411 grades) | 1732 (1299, 433) | **1493** (1132 bends, 361 grades) |
+| `road_not_drivable` | 237 | 256 | 206 |
+| `road_misses_terrain` | 4621 | 5025 | 4612 |
+| `road_gap` | 347 | 346 | 347 |
+| `road_conflict` | 1072 | 1186 | 1041 |
+| `join_without_junction` | 65 | 65 | 65 |
+| `junction_too_steep` | 7 | 6 | 7 |
+
+Logs `/var/tmp/naves-roadlook/t12/ra-before.log`, `ra-after.log`, `ra-final.log`. `road_grade` falls by 152, well
+beyond the noise of about 30; the others stay level or fall. The classes of 9.8, recounted with the same model (which
+still counts a tilted run of held joints as a flat end, so it overstates H2 after the fix): H2 725 to 537, H3 338 to
+380, H1 64 to 68, F1 to F3 470 to 464, D 48 to 44. What is left: around tilted junction pieces `road_misses_terrain` still rises (by about 100, made up by falls
+around overlays and joins), the side roads' inward joints stay level across the through road, so H2 between a side
+road's two junctions is untouched (most of the 455 H2 findings that remained after `1034db4` have an `Inward` hold
+next to them), and a junction steeper than 8 percent keeps a bend at its ends. Not checked in the game.

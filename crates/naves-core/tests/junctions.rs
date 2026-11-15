@@ -19,7 +19,7 @@ use naves_core::junctions::{
     JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions,
     ground_median, raise_floors, repair,
 };
-use naves_core::limits::grade_ceiling;
+use naves_core::limits::{CROSS_FALL_AIM, grade_ceiling};
 use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
@@ -1087,7 +1087,7 @@ fn crossing_of(family: Family, vertical: bool, cross: bool) -> (PlacedNetwork, R
 
 #[test]
 fn a_junction_on_a_slope_tilts_along_its_through_road() {
-    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.10 * x);
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.05 * x);
     for cross in [false, true] {
         let (net, graph) = crossing_of(Family::City, false, cross);
         let j = find_junctions(&net, &graph, &plane);
@@ -1097,7 +1097,7 @@ fn a_junction_on_a_slope_tilts_along_its_through_road() {
             .find(|p| p.kind == JunctionKind::Piece)
             .unwrap();
         assert!(
-            (piece.gradient.0 - 0.10).abs() < 1e-6,
+            (piece.gradient.0 - 0.05).abs() < 1e-6,
             "{:?}",
             piece.gradient
         );
@@ -1117,20 +1117,75 @@ fn a_junction_on_a_slope_tilts_along_its_through_road() {
 }
 
 #[test]
-fn the_tilt_stops_at_the_share_of_the_grade_ceiling() {
-    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.40 * x);
-    let (net, graph) = crossing_of(Family::City, false, false);
-    let j = find_junctions(&net, &graph, &plane);
-    let piece = j
-        .points
-        .iter()
-        .find(|p| p.kind == JunctionKind::Piece)
-        .unwrap();
-    let limit = JUNCTION_TILT_SHARE * grade_ceiling(Family::City);
+fn the_tilt_stops_at_the_cross_fall_aim() {
+    // the plane's fall along the through road is the fall across every road that meets it there, and roads
+    // have no fall across of their own: on a 15 % slope the junction tilts by the cross fall aim, not more
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.15 * x);
+    for family in [Family::City, Family::Mud] {
+        let (net, graph) = crossing_of(family, false, false);
+        let j = find_junctions(&net, &graph, &plane);
+        let piece = j
+            .points
+            .iter()
+            .find(|p| p.kind == JunctionKind::Piece)
+            .unwrap();
+        let limit = CROSS_FALL_AIM.min(JUNCTION_TILT_SHARE * grade_ceiling(family));
+        assert!((limit - CROSS_FALL_AIM).abs() < 1e-12);
+        assert!(
+            (piece.gradient.0 - limit).abs() < 1e-9,
+            "{family:?} {:?}",
+            piece.gradient
+        );
+        assert!(piece.gradient.1.abs() < 1e-9, "{:?}", piece.gradient);
+    }
+}
+
+#[test]
+fn a_chain_end_beside_a_road_tilts_with_the_ground_under_the_road() {
+    // the end of the side road (the junction's point) lies 3 m north of the through road's centre line, on a
+    // hillside that is level along the road itself and rises 6 % to the east 3 m north of it: the through road
+    // is level here, and so is the junction
+    let through: Vec<PlacedRoad> = (0..8)
+        .map(|i| {
+            let x = 25.0 * f64::from(i);
+            piece(
+                "a",
+                i,
+                PlacedKind::Piece,
+                Family::Asf3,
+                (x, 100.0),
+                (x + 25.0, 100.0),
+            )
+        })
+        .collect();
+    let side: Vec<PlacedRoad> = (0..4)
+        .map(|i| {
+            let y = 103.0 + 25.0 * f64::from(i);
+            piece(
+                "b",
+                i,
+                PlacedKind::Piece,
+                Family::Mud,
+                (100.0, y),
+                (100.0, y + 25.0),
+            )
+        })
+        .collect();
+    let mut net = PlacedNetwork::default();
+    for chain in [through, side] {
+        let base = net.roads.len();
+        net.chains.push((base..base + chain.len()).collect());
+        net.roads.extend(chain);
+    }
+    let hm = terrain(128, 3.125, |x, y| 100.0 + 0.02 * (y - 100.0) * (x - 100.0));
+    let j = find_junctions(&net, &RoadGraph::default(), &hm);
+    assert_eq!(j.points.len(), 1, "{j:?}");
+    let p = &j.points[0];
+    assert_eq!(p.kind, JunctionKind::EndOnRoad);
     assert!(
-        (piece.gradient.0 - limit).abs() < 1e-9,
+        p.gradient.0.abs() < 1e-6 && p.gradient.1.abs() < 1e-6,
         "{:?}",
-        piece.gradient
+        p.gradient
     );
 }
 
@@ -1168,15 +1223,15 @@ fn a_link_measures_the_rise_between_its_held_joints() {
 #[test]
 fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() {
     // the Grav road runs east-west and lies on top; the Mud road ends under it
-    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.10 * x);
+    let plane = terrain(256, 3.125, |x, _| 100.0 + 0.05 * x);
     let (net, graph) = t_of(Family::Grav, Family::Mud);
     let j = find_junctions(&net, &graph, &plane);
     let top = &j.points[0];
     assert_eq!(top.kind, JunctionKind::Overlay);
-    assert!((top.gradient.0 - 0.10).abs() < 1e-6, "{:?}", top.gradient);
+    assert!((top.gradient.0 - 0.05).abs() < 1e-6, "{:?}", top.gradient);
     assert!(top.gradient.1.abs() < 1e-6, "{:?}", top.gradient);
-    // the ground 6.25 m east of the junction is off the map: no slope is known
-    let small = terrain(66, 3.125, |x, _| 100.0 + 0.10 * x);
+    // the road runs on east of the map edge, 3 m from the junction: no slope is known
+    let small = terrain(66, 3.125, |x, _| 100.0 + 0.05 * x);
     let j = find_junctions(&net, &graph, &small);
     assert_eq!(j.points[0].gradient, (0.0, 0.0));
 }

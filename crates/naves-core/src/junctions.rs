@@ -16,16 +16,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::Family;
 use crate::heightmap::Heightmap;
-use crate::limits::grade_ceiling;
+use crate::limits::{CROSS_FALL_AIM, grade_ceiling};
 use crate::profile::{ON_ROAD_M, RoadStrip, chain_holds, meeting_bounds, meeting_on, rank};
 use crate::roadnet::{Ring, RoadGraph};
 use crate::roadplace::{Overlay, PlacedKind, PlacedNetwork};
 
 /// Radius of the circle the ground is sampled in.
 pub const GROUND_RADIUS_M: f64 = 10.0;
-/// The least distance, in metres, either side of a junction that its tilt is measured over.
-const MIN_TILT_REACH_M: f64 = 6.25;
-/// The share of the grade ceiling of the through road that a junction's tilt may reach.
+/// The least distance, in metres, along the through road either side of a junction that its tilt is measured
+/// over: about the length over which the road's own profile changes its grade (research 9.8).
+const MIN_TILT_REACH_M: f64 = 25.0;
+/// The shortest stretch of road, in metres, that a tilt is fitted to (a junction near a chain end).
+const MIN_TILT_SPAN_M: f64 = 4.0;
+/// Spacing, in metres, of the ground samples along the through road that the tilt is fitted to.
+const TILT_STEP_M: f64 = 1.0;
+/// The share of the grade ceiling of the through road that a junction's tilt may reach. The tilt is also
+/// never more than [`CROSS_FALL_AIM`].
 pub const JUNCTION_TILT_SHARE: f64 = 0.9;
 /// Junctions this close along a road are one.
 pub const MERGE_M: f64 = 3.0;
@@ -362,6 +368,27 @@ impl Line {
             }
         }
         None
+    }
+
+    /// The point of the polyline at `station`, clamped to its ends.
+    fn point_at(&self, station: f64) -> Option<(f64, f64)> {
+        let mut last = None;
+        for (pair, stations) in self.strip.joints.windows(2).zip(self.stations.windows(2)) {
+            let ([from, to], [s0, s1]) = (pair, stations) else {
+                continue;
+            };
+            let t = if s1 - s0 > 1e-9 {
+                ((station - s0) / (s1 - s0)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let point = (from.0 + t * (to.0 - from.0), from.1 + t * (to.1 - from.1));
+            if station <= *s1 {
+                return Some(point);
+            }
+            last = Some(point);
+        }
+        last.or_else(|| self.strip.joints.first().map(|j| (j.0, j.1)))
     }
 
     /// Half the length of the junction piece that carries `station`, or 0.
@@ -803,10 +830,11 @@ fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link
     out
 }
 
-/// The road that runs through a raw junction, as its unit heading there and its family: a junction piece's own
-/// axis, the top road of an overlay, the road a chain end lies on. A join has none.
-fn through_road(lines: &[Line], raw: &Raw) -> Option<((f64, f64), Family)> {
-    let (line, heading) = match raw.kind {
+/// The road that runs through a raw junction: its line, the station on it nearest the junction, and its unit
+/// heading there. A junction piece's own axis at the piece, the top road of an overlay, the road a chain end
+/// lies on. A join has none.
+fn through_road<'a>(lines: &'a [Line], raw: &Raw) -> Option<(&'a Line, f64, (f64, f64))> {
+    match raw.kind {
         JunctionKind::Piece => {
             let arm = raw
                 .arms
@@ -814,7 +842,7 @@ fn through_road(lines: &[Line], raw: &Raw) -> Option<((f64, f64), Family)> {
                 .filter(|a| a.half > 0.0)
                 .max_by(|a, b| a.half.total_cmp(&b.half))?;
             let line = lines.get(arm.line)?;
-            (line, line.piece_axis(arm.station)?)
+            Some((line, arm.station, line.piece_axis(arm.station)?))
         }
         JunctionKind::Overlay => {
             let line = raw
@@ -822,15 +850,14 @@ fn through_road(lines: &[Line], raw: &Raw) -> Option<((f64, f64), Family)> {
                 .iter()
                 .filter_map(|a| lines.get(a.line))
                 .find(|l| l.ids.is_disjoint(&raw.lower))?;
-            (line, line.heading_near(raw.at)?)
+            Some((line, line.project(raw.at).1, line.heading_near(raw.at)?))
         }
         JunctionKind::EndOnRoad => {
             let line = lines.get(raw.arms.get(1)?.line)?;
-            (line, line.heading_near(raw.at)?)
+            Some((line, line.project(raw.at).1, line.heading_near(raw.at)?))
         }
-        JunctionKind::Join => return None,
-    };
-    Some((heading, line.family))
+        JunctionKind::Join => None,
+    }
 }
 
 /// The ground at `point` of the original heightmap, if the point is inside the map and the height is a number.
@@ -841,23 +868,47 @@ fn ground_at(base: &Heightmap, point: (f64, f64)) -> Option<f64> {
     (inside(point.0) && inside(point.1) && height.is_finite()).then_some(height)
 }
 
-/// The tilt of a junction's plane: the slope of the original ground along the through road, `r` metres to
-/// either side of `at`, cut down to [`JUNCTION_TILT_SHARE`] of the grade ceiling of the road's family. The
-/// plane has no fall across the road.
+/// The slope of the original ground under the road `line`, `reach` metres either side of `station`: the
+/// least-squares line through samples every [`TILT_STEP_M`] along the road (where the road goes on; a chain
+/// end cuts it short). None where a sample is outside the map or not a number, or the road is too short there.
+fn ground_slope_along(base: &Heightmap, line: &Line, station: f64, reach: f64) -> Option<f64> {
+    let mut samples = Vec::new();
+    let mut offset = -reach;
+    while offset <= reach + 1e-9 {
+        let along = station + offset;
+        if (0.0..=line.length).contains(&along) {
+            samples.push((offset, ground_at(base, line.point_at(along)?)?));
+        }
+        offset += TILT_STEP_M;
+    }
+    let n = count(samples.len());
+    let mean_d = samples.iter().map(|s| s.0).sum::<f64>() / n.max(1.0);
+    let mean_z = samples.iter().map(|s| s.1).sum::<f64>() / n.max(1.0);
+    let spread: f64 = samples.iter().map(|s| (s.0 - mean_d).powi(2)).sum();
+    let covariance: f64 = samples
+        .iter()
+        .map(|s| (s.0 - mean_d) * (s.1 - mean_z))
+        .sum();
+    let span = samples.last().map_or(0.0, |l| l.0) - samples.first().map_or(0.0, |f| f.0);
+    (span >= MIN_TILT_SPAN_M && spread > 0.0).then(|| covariance / spread)
+}
+
+/// The tilt of a junction's plane: the slope of the original ground under the through road, fitted over `r`
+/// metres either side of the junction (`r` is its patch radius, at least [`MIN_TILT_REACH_M`]), cut down to
+/// [`JUNCTION_TILT_SHARE`] of the grade ceiling of the road's family and to [`CROSS_FALL_AIM`]. The plane has
+/// no fall across the through road. Its fall along the through road is the fall across every road that meets
+/// it there, and a road has no fall across of its own: on a steeper tilt the roads that meet would lie on the
+/// through road's surface only along their centre lines.
 fn junction_gradient(
     base: &Heightmap,
-    at: (f64, f64),
     radius: f64,
-    through: ((f64, f64), Family),
+    through: (&Line, f64, (f64, f64)),
 ) -> (f64, f64) {
-    let (t, family) = through;
-    let reach = radius.max(MIN_TILT_REACH_M);
-    let ahead = ground_at(base, (at.0 + reach * t.0, at.1 + reach * t.1));
-    let behind = ground_at(base, (at.0 - reach * t.0, at.1 - reach * t.1));
-    let Some(slope) = ahead.zip(behind).map(|(a, b)| (a - b) / (2.0 * reach)) else {
+    let (line, station, t) = through;
+    let Some(slope) = ground_slope_along(base, line, station, radius.max(MIN_TILT_REACH_M)) else {
         return (0.0, 0.0);
     };
-    let limit = JUNCTION_TILT_SHARE * grade_ceiling(family);
+    let limit = (JUNCTION_TILT_SHARE * grade_ceiling(line.family)).min(CROSS_FALL_AIM);
     let s = slope.clamp(-limit, limit);
     (s * t.0, s * t.1)
 }
@@ -926,7 +977,7 @@ fn one_junction(
             .filter(|r| r.kind == kind)
             .find_map(|r| through_road(lines, r))
             .map_or((0.0, 0.0), |through| {
-                junction_gradient(base, at, patch, through)
+                junction_gradient(base, patch, through)
             })
     };
     Junction {
