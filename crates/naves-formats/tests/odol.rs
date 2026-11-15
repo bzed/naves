@@ -9,6 +9,7 @@
     reason = "test helper code; failing loudly is the point"
 )]
 
+use naves_formats::odol::synthetic::lzo_literals;
 use naves_formats::odol::{OdolError, read_odol};
 
 const MEMORY: f32 = 999_999_986_991_104.0; // 10^15 as stored in the files
@@ -109,9 +110,15 @@ fn lod_bytes(spec: &LodSpec<'_>) -> Vec<u8> {
     b.extend_from_slice(&[1, 0, 0, 0, 0]);
     put_u32(&mut b, 1); // UV sets
     put_u32(&mut b, u32::try_from(spec.points.len()).unwrap());
+    let mut raw = Vec::new();
     for p in spec.points {
-        put_f32s(&mut b, p);
+        put_f32s(&mut raw, p);
     }
+    // from 1024 bytes on the format stores the array compressed
+    if raw.len() >= 1024 {
+        raw = lzo_literals(&raw);
+    }
+    b.extend_from_slice(&raw);
     b
 }
 
@@ -310,16 +317,21 @@ fn addresses_outside_the_file_are_errors() {
 }
 
 #[test]
-fn a_compressed_array_in_the_memory_lod_is_named() {
+fn an_array_that_is_not_a_valid_lzo_stream_is_an_error() {
     let points = vec![[0.0f32; 3]; 100]; // 1200 bytes: stored compressed in a real file
-    let lod = lod_bytes(&LodSpec {
+    let mut lod = lod_bytes(&LodSpec {
         points: &points,
         selections: &[],
         properties: &[],
         ..LodSpec::default()
     });
+    // the stored stream replaced by 1200 plain bytes
+    let at = lod.len() - lzo_literals(&vec![0u8; 1200]).len();
+    lod.truncate(at);
+    lod.extend_from_slice(&[0xAB; 1200]);
     let e = read_odol(&file(56, &[(MEMORY, lod)])).unwrap_err();
-    assert!(matches!(e, OdolError::Compressed { size: 1200, .. }), "{e}");
+    // 1200 raw bytes are no LZO stream: an error, not a panic or a wrong read
+    assert!(matches!(e, OdolError::Decompress { .. }), "{e}");
 }
 
 #[test]
@@ -504,8 +516,77 @@ fn the_vertices_of_the_geometry_lod_are_read() {
         ..LodSpec::default()
     });
     let m = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory)])).unwrap();
-    assert_eq!(m.geometry, vec![[0.0, 7.9, 0.0], [1.0, 6.4, 2.0]]);
+    assert_eq!(m.geometry, Some(vec![[0.0, 7.9, 0.0], [1.0, 6.4, 2.0]]));
     // the properties still come with it, and a model without a geometry LOD has no vertices
     assert_eq!(m.properties["class"], "road");
-    assert_eq!(read_odol(&sample()).unwrap().geometry, [] as [[f32; 3]; 0]);
+    assert_eq!(read_odol(&sample()).unwrap().geometry, Some(vec![]));
+}
+
+#[test]
+fn a_geometry_lod_with_compressed_vertices_is_read_and_no_other_lod_stands_in() {
+    // 120 vertices are 1440 bytes: stored compressed. The deck is at 7.9, the lowest vertex at 6.4.
+    let points: Vec<[f32; 3]> = (0..120_u8)
+        .map(|i| [f32::from(i), if i == 77 { 6.4 } else { 7.9 }, 2.0])
+        .collect();
+    let geometry = lod_bytes(&LodSpec {
+        points: &points,
+        ..LodSpec::default()
+    });
+    // a roadway LOD (3·10¹³) with one vertex at deck level, which must not be taken for the geometry
+    let roadway = lod_bytes(&LodSpec {
+        points: &[[0.0, 7.9, 0.0]],
+        ..LodSpec::default()
+    });
+    let memory = lod_bytes(&LodSpec {
+        points: &[[7.0, 8.0, 9.0]],
+        selections: &[("lb", &[0])],
+        ..LodSpec::default()
+    });
+    let m = read_odol(&file(
+        56,
+        &[(GEOMETRY, geometry), (3.0e13, roadway), (MEMORY, memory)],
+    ))
+    .unwrap();
+    assert_eq!(m.geometry.as_ref().map(Vec::len), Some(120));
+    assert!((m.geometry.unwrap()[77][1] - 6.4).abs() < 1e-6);
+    // only a roadway LOD: no geometry
+    let roadway = lod_bytes(&LodSpec {
+        points: &[[0.0, 7.9, 0.0]],
+        ..LodSpec::default()
+    });
+    let memory = lod_bytes(&LodSpec {
+        points: &[[7.0, 8.0, 9.0]],
+        selections: &[("lb", &[0])],
+        ..LodSpec::default()
+    });
+    let m = read_odol(&file(56, &[(3.0e13, roadway), (MEMORY, memory)])).unwrap();
+    assert_eq!(m.geometry, None);
+}
+
+#[test]
+fn compressed_memory_vertices_are_read() {
+    let points: Vec<[f32; 3]> = (0..100_u8).map(|i| [f32::from(i), 0.0, 1.0]).collect();
+    let lod = lod_bytes(&LodSpec {
+        points: &points,
+        selections: &[("lb", &[99])],
+        ..LodSpec::default()
+    });
+    let m = read_odol(&file(56, &[(MEMORY, lod)])).unwrap();
+    assert_eq!(m.memory["lb"], vec![[99.0, 0.0, 1.0]]);
+}
+
+#[test]
+fn an_array_that_announces_too_much_is_refused_without_allocating_it() {
+    let mut lod = lod_bytes(&LodSpec {
+        points: &vec![[0.0f32; 3]; 100],
+        ..LodSpec::default()
+    });
+    // the vertex count of a LOD without selections: patch it to 2^31 vertices
+    let at = lod.len() - lzo_literals(&vec![0u8; 1200]).len() - 4;
+    lod[at..at + 4].copy_from_slice(&0x8000_0000u32.to_le_bytes());
+    let e = read_odol(&file(56, &[(MEMORY, lod)])).unwrap_err();
+    assert!(
+        matches!(e, OdolError::Compressed { .. } | OdolError::Count { .. }),
+        "{e}"
+    );
 }

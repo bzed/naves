@@ -64,7 +64,11 @@ fn fixture() -> Fixture {
             .collect();
         let target = tree.join(folder).join(format!("{stem}.p3d"));
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, model_bytes_with_geometry(&points, &model.geometry)).unwrap();
+        std::fs::write(
+            target,
+            model_bytes_with_geometry(&points, model.geometry.as_deref().unwrap_or_default()),
+        )
+        .unwrap();
     }
     // things the catalog must not stumble over
     std::fs::write(tree.join("Parts/runway_main.p3d"), b"not a model").unwrap();

@@ -14,6 +14,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+lzokay-native = { version = "0.2.1", default-features = false, features = ["decompress"] }
 thiserror = "2.0.21"
 
 [features]

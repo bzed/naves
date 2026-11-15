@@ -899,12 +899,12 @@ fn merged(
 /// important road moves less. No junction moves more than [`MAX_MOVE_M`] from its ground median. Links still over by more than 1 cm after the last round are listed in
 /// [`Junctions::unresolved`].
 pub fn repair(junctions: &mut Junctions) {
-    repair_above(junctions, &[]);
+    repair_above(junctions, &[], &[]);
 }
 
 /// [`repair`] with a lower bound per junction (by index; a missing or `-inf` one is none) that a junction is
 /// never moved below, and that lets it go above its ground by more than [`MAX_MOVE_M`].
-fn repair_above(junctions: &mut Junctions, floors: &[f64]) {
+fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
     let floor = |i: usize| floors.get(i).copied().unwrap_or(f64::NEG_INFINITY);
     let mobility = |j: &Junction| 0.5_f64.powi(i32::from(j.rank));
     let excess = |points: &[Junction], link: &Link| {
@@ -937,6 +937,9 @@ fn repair_above(junctions: &mut Junctions, floors: &[f64]) {
             // the higher end goes down by its share, the lower goes up by its share
             let sign = if a_is_higher { 1.0 } else { -1.0 };
             for (index, delta) in [(link.a, -sign * share_a), (link.b, sign * share_b)] {
+                if frozen.contains(&index) {
+                    continue;
+                }
                 if let Some(p) = junctions.points.get_mut(index) {
                     let low = (p.ground - MAX_MOVE_M).max(floor(index));
                     let high = (p.ground + MAX_MOVE_M).max(floor(index));
@@ -955,21 +958,22 @@ fn repair_above(junctions: &mut Junctions, floors: &[f64]) {
 }
 
 /// Lifts junctions to lower bounds: `floors` are indices into [`Junctions::points`] with the least height of
-/// each (an index out of range is ignored). A junction never goes down for a floor.
+/// each (an index out of range is ignored). A junction never goes down for a floor. The `frozen` junctions
+/// get no floor, carry none on to their neighbours and are not moved.
 ///
 /// The floor of a junction goes on along the links as the lower bound of its neighbours, `ceiling * length`
 /// lower per link, so that a junction raised for a bridge pulls the junctions near it up as far as the grade
 /// limits need, beyond [`MAX_MOVE_M`] if it must. Then [`repair`] runs again with the floors as the lower end
 /// of what a junction may be moved to; a floor is the one bound that goes over the [`MAX_MOVE_M`] one, but never
 /// lifts a junction more than [`MAX_RAISE_M`] above its ground.
-pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)]) {
+pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)], frozen: &[usize]) {
     let mut bound = vec![f64::NEG_INFINITY; junctions.points.len()];
     let cap: Vec<f64> = junctions
         .points
         .iter()
         .map(|p| p.ground + MAX_RAISE_M)
         .collect();
-    for &(index, floor) in floors {
+    for &(index, floor) in floors.iter().filter(|(i, _)| !frozen.contains(i)) {
         let top = cap.get(index).copied().unwrap_or(f64::NEG_INFINITY);
         if let Some(slot) = bound.get_mut(index) {
             *slot = slot.max(floor.min(top));
@@ -984,6 +988,9 @@ pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)]) {
         for link in &junctions.links {
             let reach = link.ceiling * link.length;
             for (from, to) in [(link.a, link.b), (link.b, link.a)] {
+                if frozen.contains(&from) || frozen.contains(&to) {
+                    continue;
+                }
                 let Some(carried) = bound.get(from).map(|b| b - reach) else {
                     continue;
                 };
@@ -1004,7 +1011,7 @@ pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)]) {
     for (point, floor) in junctions.points.iter_mut().zip(&bound) {
         point.height = point.height.max(*floor);
     }
-    repair_above(junctions, &bound);
+    repair_above(junctions, &bound, frozen);
 }
 
 impl Junctions {

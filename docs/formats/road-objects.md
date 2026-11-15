@@ -60,8 +60,11 @@ point-to-vertex and vertex-to-point maps (compressed u16 arrays), the faces (cou
 u16 indices each), the sections, the **named selections** (name; faces; 5 bytes; sections; **vertices** as a
 compressed u16 array; weights), the **named properties** (pairs of strings). The memory LOD goes on with key
 frames, 17 bytes, the clip flags, the UV sets and the **vertices** (3 × f32 each). A selection's indices point
-into these vertices. A "compressed" array is `count`, then `count × element size` bytes, or LZO from 1024 bytes;
-the reader refuses to decode LZO, and none occurs in these LODs.
+into these vertices. A "compressed" array is `count`, then `count × element size` bytes, or from 1024 bytes an LZO1X stream that
+ends itself (no stored length; observed on the 1.30 files: the Geometry LODs of the bridges have 230 to 600
+vertices, so their vertex arrays are compressed). The reader decodes it to the announced size, at most 16 MiB. The
+vertices of the Geometry LOD (resolution 10¹³, not the roadway or land-contact LODs) are kept: the thickness of a
+bridge deck is measured on them.
 
 Not parsed: the visual LODs.
 

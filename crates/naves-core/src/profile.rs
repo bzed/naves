@@ -113,8 +113,14 @@ pub struct GradeExcess {
 }
 
 /// The least height of the deck of a bridge at a place.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeckFloor {
+    /// The id of the bridge's stretch: only the roads of this stretch are held to the floor, not another
+    /// bridge that passes the same place.
+    pub stretch: String,
+    /// The id of the stretch of the road below: settling leaves that road alone within
+    /// 250 m of `at`.
+    pub lower: String,
     /// Where, in map metres: a point on the deck.
     pub at: (f64, f64),
     /// The least height of the deck surface.
@@ -934,16 +940,42 @@ fn strip_of(
     }
 }
 
-/// The variables of the decks of `chain` that a floor lies on, with the height it asks for.
-fn deck_lifts(chain: &Chain, floors: &[DeckFloor], half_width: f64) -> Vec<(usize, f64)> {
+/// Whether the road is part of the stretch `id` (a junction piece carries the ids of both its roads).
+fn road_on_stretch(road: &PlacedRoad, id: &str) -> bool {
+    road.slot.stretch.split('|').any(|part| part == id)
+}
+
+/// The index in `roads` of the bridge piece of the stretch `id` that lies at `at` (within the half width of
+/// its road and a metre).
+fn deck_road(net: &PlacedNetwork, roads: &[usize], at: (f64, f64), id: &str) -> Option<usize> {
+    let half = roads
+        .first()
+        .and_then(|r| net.roads.get(*r))
+        .map_or(0.0, |r| r.width / 2.0);
+    roads.iter().position(|r| {
+        net.roads.get(*r).is_some_and(|r| {
+            r.kind == PlacedKind::Bridge
+                && road_on_stretch(r, id)
+                && point_segment_distance(at, (r.start.x, r.start.y), (r.end.x, r.end.y))
+                    <= half + 1.0
+        })
+    })
+}
+
+/// The variables of the decks of the chain `roads` that a floor lies on, with the height it asks for: only
+/// the deck of the floor's own stretch.
+fn deck_lifts(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    chain: &Chain,
+    floors: &[DeckFloor],
+) -> Vec<(usize, f64)> {
     let mut lifts: Vec<(usize, f64)> = Vec::new();
     for floor in floors {
-        let on = chain.deck.iter().position(|deck| {
-            deck.is_some_and(|(from, to)| {
-                point_segment_distance(floor.at, from, to) <= half_width + 1.0
-            })
-        });
-        if let Some(var) = on {
+        let var = deck_road(net, roads, floor.at, &floor.stretch)
+            .and_then(|k| chain.joints.get(k + 1))
+            .map(|joint| joint.2);
+        if let Some(var) = var {
             match lifts.iter_mut().find(|l| l.0 == var) {
                 Some(lift) => lift.1 = lift.1.max(floor.height),
                 None => lifts.push((var, floor.height)),
@@ -1077,7 +1109,7 @@ fn profile_chain(
     let mut solved = solve_with(&fixed);
     // a deck that has to clear a road below: a deck that came out lower is held at the clearance and the
     // chain is solved again, so that the approaches rise to it as far as their limits allow
-    let lifts = deck_lifts(&chain, floors, first.width / 2.0);
+    let lifts = deck_lifts(net, roads, &chain, floors);
     if let Some(lifted) = solved
         .as_ref()
         .and_then(|(heights, _)| lifted_decks(heights, &lifts, &fixed))
@@ -1170,6 +1202,16 @@ pub fn solve_profiles_with(
     side: &[f64],
     floors: &[DeckFloor],
 ) -> Profiles {
+    solve_profiles_inner(net, hm, junctions, side, floors)
+}
+
+fn solve_profiles_inner(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+    floors: &[DeckFloor],
+) -> Profiles {
     let given = Given {
         junctions,
         side,
@@ -1189,7 +1231,26 @@ pub fn solve_profiles_with(
         out.strips.push(strip);
         variables.push(vars);
     }
-    let apart: Vec<(f64, f64)> = floors.iter().map(|f| f.at).collect();
+    // where settling leaves roads alone: near the crossing, and the road below over a longer run
+    let apart: Vec<((f64, f64), Vec<usize>)> = floors
+        .iter()
+        .map(|f| {
+            let below = out
+                .strips
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    s.slots.iter().any(|r| {
+                        net.roads
+                            .get(*r)
+                            .is_some_and(|r| road_on_stretch(r, &f.lower))
+                    })
+                })
+                .map(|(i, _)| i)
+                .collect();
+            (f.at, below)
+        })
+        .collect();
     settle(&mut out.strips, &mut variables, hm.cell_m, &apart);
     // what is over the limits is measured on the heights that are actually used, after settling
     out.excesses = variables.iter().flat_map(excesses_of).collect();
@@ -1197,7 +1258,7 @@ pub fn solve_profiles_with(
 }
 
 /// How many times [`solve_clearing`] solves the profiles: once, and again with what the clearance fell short.
-const CLEARANCE_ROUNDS: usize = 4;
+const CLEARANCE_ROUNDS: usize = 8;
 
 /// How far from its line the placed road of a crossing may lie beyond its half width and still be the road
 /// that the line crosses, in metres.
@@ -1248,6 +1309,21 @@ fn on_stretch(
         .is_some_and(|r| r.slot.stretch.split('|').any(|part| part == id))
 }
 
+/// The height of the surface of the road below `crossing`, as solved in `strips`; found by the lower stretch
+/// of the crossing, not by what lies nearest.
+fn lower_surface(
+    net: &PlacedNetwork,
+    strips: &[RoadStrip],
+    graph: &RoadGraph,
+    crossing: &OverCrossing,
+) -> Option<f64> {
+    let lower = graph.stretches.get(crossing.lower)?.id.as_str();
+    surface_near(strips, crossing.at, &|si, k| {
+        on_stretch(net, strips, si, k, lower)
+    })
+    .map(|(_, height)| height)
+}
+
 /// The clearance of the bridge of `crossing` over the road below, as solved in `strips`: from the surface of
 /// the road to the underside of the deck, which hangs `thickness` below the deck's surface. The two are found by
 /// the stretches of the crossing, not by what lies nearest (the approach of the bridge may end beside the
@@ -1260,14 +1336,10 @@ fn clearance_at(
     thickness: f64,
 ) -> Option<f64> {
     let upper = graph.stretches.get(crossing.upper)?.id.as_str();
-    let lower = graph.stretches.get(crossing.lower)?.id.as_str();
     let (_, deck) = surface_near(strips, crossing.at, &|si, k| {
         on_stretch(net, strips, si, k, upper)
     })?;
-    let (_, road) = surface_near(strips, crossing.at, &|si, k| {
-        on_stretch(net, strips, si, k, lower)
-    })?;
-    Some(deck - thickness - road)
+    Some(deck - thickness - lower_surface(net, strips, graph, crossing)?)
 }
 
 /// The clearance under every bridge over a road of `graph` that is placed in `strips` (see [`over_crossings`]).
@@ -1276,12 +1348,12 @@ pub fn measure_clearances(
     net: &PlacedNetwork,
     strips: &[RoadStrip],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&Stretch) -> f64,
+    thickness: &dyn Fn(&Stretch) -> Option<f64>,
 ) -> Vec<Clearance> {
     over_crossings(graph)
         .iter()
         .filter_map(|c| {
-            let deck = graph.stretches.get(c.upper).map_or(0.0, thickness);
+            let deck = graph.stretches.get(c.upper).and_then(thickness)?;
             clearance_at(net, strips, graph, c, deck).map(|reached| Clearance {
                 at: c.at,
                 reached,
@@ -1311,20 +1383,7 @@ fn junction_floors(
                     .and_then(|r| net.roads.get(*r))
                     .is_some_and(|r| r.kind == PlacedKind::Bridge)
             };
-            let half = roads
-                .first()
-                .and_then(|r| net.roads.get(*r))
-                .map_or(0.0, |r| r.width / 2.0);
-            let Some(on) = roads.iter().position(|r| {
-                net.roads.get(*r).is_some_and(|r| {
-                    r.kind == PlacedKind::Bridge
-                        && point_segment_distance(
-                            deck.at,
-                            (r.start.x, r.start.y),
-                            (r.end.x, r.end.y),
-                        ) <= half + 1.0
-                })
-            }) else {
+            let Some(on) = deck_road(net, roads, deck.at, &deck.stretch) else {
                 continue;
             };
             let (mut first, mut last) = (on, on);
@@ -1365,14 +1424,71 @@ fn junction_floors(
     floors
 }
 
+/// The junctions that the chains of the road below `crossings` are held to: they are never raised for a bridge,
+/// or the road below would rise with them.
+fn lower_road_junctions(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    graph: &RoadGraph,
+    crossings: &[OverCrossing],
+) -> Vec<usize> {
+    let mut frozen = BTreeSet::new();
+    for id in crossings
+        .iter()
+        .filter_map(|c| graph.stretches.get(c.lower).map(|s| s.id.as_str()))
+    {
+        for roads in &net.chains {
+            let on = roads
+                .iter()
+                .any(|r| net.roads.get(*r).is_some_and(|r| road_on_stretch(r, id)));
+            if on {
+                let holds = holds::chain_holds(net, roads, f64::from(hm.cell_m), junctions);
+                frozen.extend(holds.iter().filter_map(|(_, h)| h.map(|h| h.junction)));
+            }
+        }
+    }
+    frozen.into_iter().collect()
+}
+
+/// The height of the road below each crossing as it is solved with the bridges at their own heights and settling
+/// left alone near the crossings, which is what the lifted solves do too: only the lifting may change it.
+fn lower_baseline(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+    graph: &RoadGraph,
+    crossings: &[OverCrossing],
+) -> Vec<Option<f64>> {
+    let at_ground: Vec<DeckFloor> = crossings
+        .iter()
+        .filter_map(|c| {
+            Some(DeckFloor {
+                stretch: graph.stretches.get(c.upper)?.id.clone(),
+                lower: graph.stretches.get(c.lower)?.id.clone(),
+                at: c.at,
+                height: f64::NEG_INFINITY,
+            })
+        })
+        .collect();
+    let baseline = solve_profiles_with(net, hm, junctions, side, &at_ground);
+    crossings
+        .iter()
+        .map(|c| lower_surface(net, &baseline.strips, graph, c))
+        .collect()
+}
+
 /// [`solve_profiles`] with the clearance under bridges over roads (see [`over_crossings`]). A bridge keeps
 /// [`BRIDGE_CLEARANCE_M`] between the surface of the road below and the underside of its deck, which hangs
 /// `thickness(bridge stretch)` metres below the deck surface. The road below keeps its height; the bridge's
-/// deck and the junctions at its ends are given a lower bound (see [`DeckFloor`] and [`raise_floors`]), so that
-/// the approaches and the junctions near the bridge rise as far as needed.
+/// deck and the junctions on its road are given a lower bound (see [`DeckFloor`] and [`raise_floors`]), so that
+/// the approaches and the junctions near the bridge rise as far as needed. A junction that the road below is
+/// held to is never raised; and if the road below moved at a crossing all the same (it should not), that
+/// crossing is left alone from then on and the clearance it reached stays as a finding.
 ///
 /// The lower road is first taken at the original ground, then the profiles are solved and the clearance
-/// measured, and a bridge that falls short gets the shortfall added to its bound, up to four
+/// measured, and a bridge that falls short gets the shortfall added to its bound, up to eight
 /// solves in all. What is still short is in [`Profiles::clearances`]. Returns the junctions with the raised
 /// heights; they are `junctions` itself where there is no bridge over a road.
 #[must_use]
@@ -1382,48 +1498,33 @@ pub fn solve_clearing(
     junctions: &Junctions,
     side: &[f64],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&Stretch) -> f64,
+    thickness: &dyn Fn(&Stretch) -> Option<f64>,
 ) -> (Profiles, Junctions) {
-    let crossings = over_crossings(graph);
+    // a bridge whose deck thickness is not known is not checked (the caller says so)
+    let crossings: Vec<OverCrossing> = over_crossings(graph)
+        .into_iter()
+        .filter(|c| graph.stretches.get(c.upper).and_then(thickness).is_some())
+        .collect();
     if crossings.is_empty() {
         return (solve_profiles(net, hm, junctions, side), junctions.clone());
     }
-    let thick = |c: &OverCrossing| graph.stretches.get(c.upper).map_or(0.0, thickness);
-    // the least height of each deck surface
-    let mut need: Vec<f64> = crossings
-        .iter()
-        .map(|c| ground_median(hm, c.at, GROUND_RADIUS_M) + BRIDGE_CLEARANCE_M + thick(c))
-        .collect();
-    let mut out = (Profiles::default(), junctions.clone());
-    for round in 0..CLEARANCE_ROUNDS {
-        let mut raised = junctions.clone();
-        let decks: Vec<DeckFloor> = crossings
-            .iter()
-            .zip(&need)
-            .map(|(c, height)| DeckFloor {
-                at: c.at,
-                height: *height,
-            })
-            .collect();
-        let floors = junction_floors(net, hm, junctions, &decks);
-        raise_floors(&mut raised, &floors);
-        let mut profiles = solve_profiles_with(net, hm, &raised, side, &decks);
-        let reached: Vec<Option<f64>> = crossings
+    let thick = |c: &OverCrossing| {
+        graph
+            .stretches
+            .get(c.upper)
+            .and_then(thickness)
+            .unwrap_or(0.0)
+    };
+    let measure = |profiles: &Profiles| -> Vec<Option<f64>> {
+        crossings
             .iter()
             .map(|c| clearance_at(net, &profiles.strips, graph, c, thick(c)))
-            .collect();
-        let mut short = false;
-        for (height, reached) in need.iter_mut().zip(&reached) {
-            if let Some(reached) =
-                reached.filter(|r| *r < BRIDGE_CLEARANCE_M - CLEARANCE_TOLERANCE_M)
-            {
-                *height += BRIDGE_CLEARANCE_M - reached;
-                short = true;
-            }
-        }
-        profiles.clearances = crossings
+            .collect()
+    };
+    let clearances = |reached: &[Option<f64>]| -> Vec<Clearance> {
+        crossings
             .iter()
-            .zip(&reached)
+            .zip(reached)
             .filter_map(|(c, r)| {
                 r.map(|reached| Clearance {
                     at: c.at,
@@ -1431,13 +1532,78 @@ pub fn solve_clearing(
                     wanted: BRIDGE_CLEARANCE_M,
                 })
             })
+            .collect()
+    };
+    let frozen = lower_road_junctions(net, hm, junctions, graph, &crossings);
+    let lower_before = lower_baseline(net, hm, junctions, side, graph, &crossings);
+    // the least height of each deck surface, and whether the crossing is still being worked on
+    let mut need: Vec<f64> = crossings
+        .iter()
+        .map(|c| ground_median(hm, c.at, GROUND_RADIUS_M) + BRIDGE_CLEARANCE_M + thick(c))
+        .collect();
+    let mut active = vec![true; crossings.len()];
+    let mut shortfalls = 0;
+    loop {
+        let mut raised = junctions.clone();
+        let decks: Vec<DeckFloor> = crossings
+            .iter()
+            .zip(&need)
+            .zip(&active)
+            .filter(|(_, on)| **on)
+            .filter_map(|((c, height), _)| {
+                Some(DeckFloor {
+                    stretch: graph.stretches.get(c.upper)?.id.clone(),
+                    lower: graph.stretches.get(c.lower)?.id.clone(),
+                    at: c.at,
+                    height: *height,
+                })
+            })
             .collect();
-        out = (profiles, raised);
-        if !short || round + 1 == CLEARANCE_ROUNDS {
-            break;
+        let floors = junction_floors(net, hm, junctions, &decks);
+        raise_floors(&mut raised, &floors, &frozen);
+        let mut profiles = solve_profiles_with(net, hm, &raised, side, &decks);
+        let reached = measure(&profiles);
+        // the road below must not have moved; if it did, this crossing is not lifted any further
+        let moved: Vec<bool> = crossings
+            .iter()
+            .zip(&lower_before)
+            .map(|(c, before)| {
+                let now = lower_surface(net, &profiles.strips, graph, c);
+                matches!((before, now), (Some(a), Some(b)) if (a - b).abs() > CLEARANCE_TOLERANCE_M)
+            })
+            .collect();
+        profiles.clearances = clearances(&reached);
+        // a crossing whose road below moved is dropped, and the profiles are solved again without it
+        let mut dropped = false;
+        for (on, moved) in active.iter_mut().zip(&moved) {
+            if *on && *moved {
+                *on = false;
+                dropped = true;
+            }
+        }
+        if dropped {
+            continue;
+        }
+        let short: Vec<usize> = (0..crossings.len())
+            .filter(|k| {
+                active.get(*k).copied().unwrap_or(false)
+                    && reached
+                        .get(*k)
+                        .copied()
+                        .flatten()
+                        .is_some_and(|r| r < BRIDGE_CLEARANCE_M - CLEARANCE_TOLERANCE_M)
+            })
+            .collect();
+        shortfalls += 1;
+        if short.is_empty() || shortfalls >= CLEARANCE_ROUNDS {
+            break (profiles, raised);
+        }
+        for k in short {
+            if let (Some(height), Some(Some(r))) = (need.get_mut(k), reached.get(k)) {
+                *height += BRIDGE_CLEARANCE_M - r;
+            }
         }
     }
-    out
 }
 
 /// Two roads whose footprints share terrain vertices cannot differ in height by more than this.
@@ -1447,6 +1613,9 @@ const SAMPLE_M: f64 = 3.0;
 /// Settling leaves the roads alone this close to a bridge over a road (see [`DeckFloor`]), in metres: the
 /// approaches rise to the deck right beside the road below.
 const KEEP_APART_M: f64 = 50.0;
+/// Settling leaves the road below a bridge alone this far from the crossing, in metres: a road that runs along
+/// the lifted approach would pull it up or down with it.
+const LOWER_APART_M: f64 = 250.0;
 /// Rounds of [`settle`].
 const SETTLE_ROUNDS: usize = 10;
 /// How far [`settle`] may move a road from where it was first solved; roads that differ by more cross at
@@ -1818,13 +1987,19 @@ fn bound_spans(
 /// to about 3800 and the road not drivable from 37 km to 28 km. A stiffer pull towards the shared height made
 /// both worse: with the ends pinned at what the pull moved them to, a strong pull left neighbouring
 /// variables at opposite sides of the ± [`MAX_SETTLE_M`] range, and the grade between them broke.
-fn settle(strips: &mut [RoadStrip], chains: &mut [Solved], cell: f32, apart: &[(f64, f64)]) {
+fn settle(
+    strips: &mut [RoadStrip],
+    chains: &mut [Solved],
+    cell: f32,
+    apart: &[((f64, f64), Vec<usize>)],
+) {
     let mut spots = spots(strips);
     // near a bridge over a road the two are metres apart and far apart in height, as they have to be
     spots.retain(|s| {
-        apart
-            .iter()
-            .all(|a| (s.x - a.0).hypot(s.y - a.1) > KEEP_APART_M)
+        apart.iter().all(|(at, below)| {
+            let d = (s.x - at.0).hypot(s.y - at.1);
+            d > KEEP_APART_M && !(d <= LOWER_APART_M && below.contains(&s.strip))
+        })
     });
     let pairs = close_pairs(&spots, strips, f64::from(cell));
     for _ in 0..SETTLE_ROUNDS {

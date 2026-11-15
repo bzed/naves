@@ -299,13 +299,74 @@ fn main() {
         let before = solve_profiles(&net, &base, &plain, &side);
         let thickness = |s: &naves_core::roadnet::Stretch| {
             naves_core::roadplace::bridge_for(&catalog, s.family)
-                .map_or(0.0, |(m, scale, _)| m.deck_thickness * scale)
+                .map(|(m, scale, _)| m.deck_thickness * scale)
         };
         for c in naves_core::profile::measure_clearances(&net, &before.strips, &graph, &thickness) {
             println!(
                 "CLEARANCE_BEFORE at ({:.0}, {:.0}) reached {:.2} m",
                 c.at.0, c.at.1, c.reached
             );
+        }
+    }
+    // for each bridge over a road: the stretches, and the joints of the chains of both within 60 m of the
+    // crossing with the junction that holds them and its height before and after the clearance
+    for c in naves_core::roadnet::over_crossings(&graph) {
+        let (Some(up), Some(low)) = (graph.stretches.get(c.upper), graph.stretches.get(c.lower))
+        else {
+            continue;
+        };
+        println!(
+            "XDEBUG crossing ({:.0}, {:.0}) upper {} lower {}",
+            c.at.0, c.at.1, up.id, low.id
+        );
+        let ground = naves_core::junctions::find_junctions(&net, &graph, &base);
+        for (role, id) in [("upper", &up.id), ("lower", &low.id)] {
+            for (ci, roads) in net.chains.iter().enumerate() {
+                if !roads
+                    .iter()
+                    .any(|r| net.roads[*r].slot.stretch.split('|').any(|p| p == id))
+                {
+                    continue;
+                }
+                println!("XDEBUG {role} chain {ci} of {} pieces", roads.len());
+                let holds = chain_holds(&net, roads, f64::from(base.cell_m), &junctions);
+                let strip = profiles.strips.iter().find(|s| s.slots == *roads);
+                for (k, (at, hold)) in holds.iter().enumerate() {
+                    if (at.0 - c.at.0).hypot(at.1 - c.at.1) > 60.0 {
+                        continue;
+                    }
+                    let height = strip
+                        .and_then(|s| s.joints.get(k))
+                        .map_or(f64::NAN, |j| j.2);
+                    let piece = roads.get(k.saturating_sub(1)).map(|r| {
+                        let r = &net.roads[*r];
+                        format!("{:?} {}", r.kind, r.slot.stretch)
+                    });
+                    match hold {
+                        Some(h) => println!(
+                            "XDEBUG   joint {k} ({:.0}, {:.0}) height {height:.2} held {:?} by junction {} (before {:.2}, after {:.2}, ground {:.2}) {:?}",
+                            at.0,
+                            at.1,
+                            h.rule,
+                            h.junction,
+                            ground.points.get(h.junction).map_or(f64::NAN, |j| j.height),
+                            junctions
+                                .points
+                                .get(h.junction)
+                                .map_or(f64::NAN, |j| j.height),
+                            junctions
+                                .points
+                                .get(h.junction)
+                                .map_or(f64::NAN, |j| j.ground),
+                            piece
+                        ),
+                        None => println!(
+                            "XDEBUG   joint {k} ({:.0}, {:.0}) height {height:.2} free {:?}",
+                            at.0, at.1, piece
+                        ),
+                    }
+                }
+            }
         }
     }
     for c in &profiles.clearances {

@@ -9,10 +9,11 @@
 //! Nothing here touches the project folder or runs a tool other than dayzmake for the catalog, so the editor
 //! can run it too.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use naves_core::catalog::{BridgeModel, PieceCatalog};
+use naves_core::catalog::{BridgeModel, PieceCatalog, ThicknessSource};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
 use naves_core::dem::Dem;
@@ -180,10 +181,32 @@ pub fn place_once(
     let junctions = find_junctions(&net, graph, base);
     let side = side_slopes(&net, base);
     // a bridge over a road keeps its clearance: the junctions it needs may be higher than the ground's
+    let borrowed: RefCell<BTreeMap<String, (ThicknessSource, f64)>> = RefCell::new(BTreeMap::new());
     let thickness = |s: &Stretch| {
-        bridge_for(catalog, s.family).map_or(0.0, |(m, scale, _)| m.deck_thickness * scale)
+        bridge_for(catalog, s.family).and_then(|(m, scale, _)| {
+            if m.thickness_source != ThicknessSource::Measured {
+                borrowed
+                    .borrow_mut()
+                    .insert(m.model.clone(), (m.thickness_source, m.deck_thickness));
+            }
+            (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness * scale)
+        })
     };
     let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness);
+    let mut net = net;
+    for (model, (source, value)) in borrowed.into_inner() {
+        net.warnings.push(match source {
+            ThicknessSource::SameType => format!(
+                "bridge model {model}: its Geometry LOD cannot be read; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below"
+            ),
+            ThicknessSource::Thickest => format!(
+                "bridge model {model}: its Geometry LOD cannot be read and no model of its type can be; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below"
+            ),
+            _ => format!(
+                "bridge model {model}: no bridge model's Geometry LOD can be read; the clearance over a road below is not checked"
+            ),
+        });
+    }
     Ok(Placed {
         net,
         junctions,

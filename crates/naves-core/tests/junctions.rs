@@ -991,7 +991,7 @@ fn a_large_ring_has_a_plane_over_its_band_only() {
 fn a_floor_lifts_a_junction_past_the_repair_limit_and_its_neighbour_follows() {
     // 100 m of road at a ceiling of 8 %: a junction raised to 110 m needs its neighbour at 102 m
     let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut j, &[(0, 110.0)]);
+    raise_floors(&mut j, &[(0, 110.0)], &[]);
     assert!(
         (j.points[0].height - 110.0).abs() < 1e-9,
         "{}",
@@ -1006,7 +1006,7 @@ fn a_floor_lifts_a_junction_past_the_repair_limit_and_its_neighbour_follows() {
 fn a_floor_below_the_height_changes_nothing_and_a_neighbour_is_never_lowered() {
     let mut j = two_junctions(100.0, 0.08, 100.0, 105.0, 4, 4);
     let before = j.clone();
-    raise_floors(&mut j, &[(0, 90.0)]);
+    raise_floors(&mut j, &[(0, 90.0)], &[]);
     assert_eq!(j.points, before.points);
 }
 
@@ -1014,7 +1014,7 @@ fn a_floor_below_the_height_changes_nothing_and_a_neighbour_is_never_lowered() {
 fn a_floor_that_finds_no_junction_is_ignored() {
     let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
     let before = j.clone();
-    raise_floors(&mut j, &[(7, 200.0)]);
+    raise_floors(&mut j, &[(7, 200.0)], &[]);
     assert_eq!(j, before);
 }
 
@@ -1022,8 +1022,25 @@ fn a_floor_that_finds_no_junction_is_ignored() {
 fn a_floor_never_lifts_a_junction_more_than_ten_metres_above_its_ground() {
     use naves_core::junctions::MAX_RAISE_M;
     let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut j, &[(0, 150.0)]);
+    raise_floors(&mut j, &[(0, 150.0)], &[]);
     assert!((j.points[0].height - (100.0 + MAX_RAISE_M)).abs() < 1e-9);
     // and its neighbour needs only what the capped height asks of it
     assert!(j.points[1].height <= 100.0 + MAX_RAISE_M);
+}
+
+#[test]
+fn a_frozen_junction_gets_no_floor_and_carries_none_on() {
+    // three junctions in a row: a floor at 0 would carry through 1 to 2; with 1 frozen it stops
+    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
+    raise_floors(&mut j, &[(0, 110.0)], &[1]);
+    assert!((j.points[0].height - 110.0).abs() < 1e-9);
+    assert!(
+        (j.points[1].height - 100.0).abs() < 1e-9,
+        "{}",
+        j.points[1].height
+    );
+    // a floor on the frozen junction itself is ignored
+    let mut k = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
+    raise_floors(&mut k, &[(1, 110.0)], &[1]);
+    assert!((k.points[1].height - 100.0).abs() < 1e-9);
 }

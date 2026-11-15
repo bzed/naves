@@ -240,7 +240,10 @@ pub fn write_road_tree(dir: &Path) -> std::io::Result<()> {
         }
         std::fs::write(
             target,
-            naves_formats::odol::synthetic::model_bytes_with_geometry(&points, &model.geometry),
+            naves_formats::odol::synthetic::model_bytes_with_geometry(
+                &points,
+                model.geometry.as_deref().unwrap_or_default(),
+            ),
         )?;
     }
     Ok(())

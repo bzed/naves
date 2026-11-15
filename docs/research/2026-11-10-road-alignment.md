@@ -1488,60 +1488,78 @@ ground at its abutments and the road below followed the ground, so a bridge over
 **Finding the crossings.** `roadnet::over_crossings`: stretch pairs whose lines cross, with no shared start or end
 node, where one is a bridge (the upper one; of two bridges the higher `layer`) and neither is a tunnel. Berchtesgaden
 at 2048 has **4** such crossings in the placed graph (the spec counted 20 road crossings, all tagged bridge or tunnel;
-most of those are tunnels, share a node, or are cut out as duplicates before this point). They are at (4689, 7321),
-(7995, 7320), (2347, 6546) and (5101, 7913); the first two are the sites 51 (Silbergstrasse) and 50 (Kehlsteinstrasse)
-of the game check.
+most of those are tunnels, share a node, or are cut out as duplicates before this point): (4689, 7321), (7995, 7320),
+(2347, 6546) and (5101, 7913); the first two are the sites 51 (Silbergstrasse) and 50 (Kehlsteinstrasse) of the game
+check.
+
+**Deck thickness.** Measured per bridge model on its own Geometry LOD (resolution 10^13 exactly): the distance from
+the deck surface (the mean height of the four memory points) down to the lowest vertex within 4 m below it
+(`MAX_DECK_THICKNESS_M`; what hangs lower is a pier or an abutment, not the deck; the Geometry LODs of the game's
+bridges have 230 to 600 vertices, the stone arch reaches down to the 4 m cap, the metal truss about 1.7 m). Reading
+these LODs needed the compressed arrays of the ODOL format (LZO1X from 1024 bytes, `lzokay-native`, decompression
+only): the first version of this change read the first geometry-type LOD that could be read, which failed silently on
+the real Geometry LOD (its vertex array is compressed) and took a later small LOD (the roadway) at deck level, hence
+about 0 m for the stone bridge. A model whose Geometry LOD cannot be read takes the thickest deck measured among the
+models of its type (the word after `bridge_`: stone, wood, metal), else the thickest of all (a build warning names the
+model and the value); if no bridge model can be read, the clearance is not checked and the build says so. The
+thickness is scaled with the bridge's scale.
 
 **Change.**
 
-- The deck's thickness is the distance from the deck surface (the mean height of the four memory points) down to the
-  lowest vertex of the model's geometry LOD (`OdolModel::geometry`, new; `BridgeModel::deck_thickness`, 0 without
-  geometry). The geometry LOD is a collision body: for the stone bridge it is a thin slab (about 0 m), for the metal
-  bridge 1.7 m (trusses); wooden bridges have no geometry LOD (0 m). The visual LOD is not read, so a real underside
-  below the collision body is not cleared. The thickness is scaled with the bridge's scale.
 - `solve_clearing` (`profile.rs`): the deck at the crossing gets a lower bound of ground + 4.5 + thickness (the ground
-  median of the crossing, the lower road being at the ground). The bound goes (a) into the profile of the deck's chain:
-  a deck variable that comes out lower is held at it and the chain solved again, so the approaches rise within their
-  limits, and (b) into the junctions: from the deck along its chain, every junction a joint is held to gets the bound
-  less `grade_ceiling * distance` (`junctions::raise_floors`), which goes on along the links to the neighbours and
-  lets `repair` lift a junction beyond the usual 3 m from the ground, but never more than 10 m (`MAX_RAISE_M`).
+  median of the crossing, the lower road being at the ground), only on the deck of the crossing's own upper stretch.
+  The bound goes (a) into the profile of the deck's chain: a deck variable that comes out lower is held at it and the
+  chain solved again, so the approaches rise within their limits, and (b) into the junctions: from the deck along its
+  chain, every junction a joint is held to gets the bound less `grade_ceiling * distance` (`junctions::raise_floors`),
+  which goes on along the links to the neighbours and lets `repair` lift a junction beyond the usual 3 m from the
+  ground, but never more than 10 m (`MAX_RAISE_M`).
+- A junction that the chains of the road below are held to is never raised, and carries no bound on (`frozen`); the
+  road below keeps its height. This is checked on every solve: the road below is compared with the same solve without
+  the lift; where it moved by more than 5 cm, that crossing is dropped from the lift and the profiles are solved again.
+- Settling (the step that brings roads that run close to one height) leaves roads alone within 50 m of a crossing and
+  the road below within 250 m of it. Without the second part, the road below was moved by settling against the lifted
+  approach that runs along it: at Kehlsteinstrasse by up to 1.35 m over 280 m (measured: 1.35 m with settling, 0.00 m
+  without), which dropped the crossing from the lift.
 - The profiles are solved, the clearance measured on the solved strips (the bridge's and the lower road's own stretches,
-  not what lies nearest), and what falls short is added to the bound; at most four solves. The lower road is never
-  lowered. Settling is switched off within 50 m of a crossing: it brought the lower road and the approach, 12 m apart
-  and 5 m apart in height, to one height (the lower road rose by 4.75 m in the synthetic test).
-- A bridge that still clears by less than 4.45 m is the finding `bridge_clearance` (message: reached and wanted).
+  not what lies nearest), and what falls short is added to the bound; at most eight solves (the shortfall is closed by
+  about half per round: 4.05, 4.33, 4.43 m at Kehlsteinstrasse). A bridge that still clears by less than 4.45 m is the
+  finding `bridge_clearance` (message: reached and wanted).
 
 **Deck slide of Task 9.** `upper_s` is only reported; the clearance is found by position (nearest point of the
 bridge's and the lower road's own placed stretches to the crossing) and the bounds by the joints of the deck's chain, so
 the deck's slide of at most 2.5 m changes nothing but where the crossing lies on the deck.
 
-**Result at 2048** (clearance from the surface of the road below to the underside of the deck, the deck thickness taken
-from the real catalog):
+**Result at 2048** (clearance from the surface of the road below to the underside of the deck, real thicknesses):
 
 | Crossing | Before | After |
 |---|---|---|
-| Kehlsteinstrasse over a road, (7995, 7320), site 50 | -0.07 m | **4.88 m** |
-| Silbergstrasse over a road, (4689, 7321), site 51 | -0.17 m | 1.58 m (finding) |
+| Kehlsteinstrasse over a road, (7995, 7320), site 50 | -4.02 m | **4.47 m** (within the 5 cm tolerance) |
+| Silbergstrasse over a road, (4689, 7321), site 51 | -0.17 m | 0.02 m (finding) |
 | (2347, 6546) | 1.77 m | 4.61 m |
-| (5101, 7913) | -0.90 m | 4.49 m |
+| (5101, 7913) | -0.90 m | 4.50 m |
 
 Counts: `bridge_clearance` 1; over-crossings 4. The six counts after the change (noise of the null run: grade up to
-about 30):
+about 30, conflict about 10):
 
 | | After Task 9 | After this change |
 |---|---|---|
-| `road_grade` | 1628 | 1642 |
-| `road_not_drivable` | 224 | 230 |
-| `road_misses_terrain` | 4588 | 4625 |
+| `road_grade` | 1628 | 1645 |
+| `road_not_drivable` | 224 | 237 |
+| `road_misses_terrain` | 4588 | 4621 |
 | `road_gap` | 348 | 347 |
-| `road_conflict` | 1052 | 1064 |
+| `road_conflict` | 1052 | 1072 |
 | `join_without_junction` | 65 | 65 |
 
-**Silbergstrasse.** The crossing lies 4 m from the deck's start, where a junction piece ends and holds the deck's first
-joint; the lower road runs within that junction's patch. Raising the junction for the deck probably raises the lower
-road with it (hypothesis, not measured: it would explain 1.58 m after the lift against -0.17 m before). The bound is
-then not reachable by lifting this junction alone; the finding says so. Left open: whether a crossing within a junction's
-patch should be handled by shifting the junction away from the crossing (Task 8's mechanism) instead.
+**Silbergstrasse (why it stays short, measured).** The deck is held by the junction piece at its start: junction 384
+holds the joints 32 to 34 of the bridge's chain (rule `Piece`: the end of the junction piece, the first bridge joint
+and the deck's variable), at 320.86 m, and the same junction holds the first joints of the road below (rules `End` and
+`Inward`: the residential street ends in this junction). The crossing lies 4 m from the deck's start, in the junction.
+The road below is at 319.15 m at the crossing, the deck at 320.86 m, 1.71 m above it, minus the deck's thickness 1.69 m
+= 0.02 m. Lifting the junction would lift the road below with it, so it is frozen, the deck's variable is held by it
+and cannot rise, and the finding stays. It is the data (the bridge starts in the junction of the road it crosses),
+not the solve; the way out is a junction piece away from the crossing (the junction shift of Task 8 does not move it
+because it is no gap).
 
-**Not done.** The thickness of wooden bridges and of the visual underside; the terrain under the bridge is shaped for
-the lower road as before (no new check of the cut); untagged crossings and tunnels are out of scope (railroad design).
+**Not done.** The terrain under the bridge is shaped for the lower road as before (no new check of the cut); untagged
+crossings and tunnels are out of scope (railroad design); the visual underside of an arch is not read (the Geometry
+LOD is a collision body).
