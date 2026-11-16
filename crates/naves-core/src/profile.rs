@@ -1252,7 +1252,9 @@ pub enum ProfileError {
 
 /// The heights of every chain of `net` and of its junctions, as one quadratic program
 /// (`docs/superpowers/specs/2026-11-16-height-solve-design.md`, phase A: grades, vertical bends and junction
-/// tilts; no clearance under bridges and no nearby roads yet).
+/// tilts, and the rows of roads whose footprints share terrain cells; no clearance under bridges). Without a road
+/// graph there are no bridges over roads, so no pair of roads is left out of those rows; see
+/// [`solve_network_clearing`] for that.
 ///
 /// Every free joint height, and the height and tilt of every junction that holds a joint and is not on a ring,
 /// is an unknown; those junctions are pulled to [`crate::junctions::Junction::ground`] and the tilt of the ground (what `repair` did
@@ -1291,7 +1293,7 @@ pub fn solve_network_with(
     side: &[f64],
     solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
 ) -> Result<(Profiles, Junctions), ProfileError> {
-    let model = model::build(net, hm, junctions)?;
+    let model = model::build(net, hm, junctions, &[])?;
     model::solve(&model, net, junctions, side, solver)
 }
 
@@ -1306,8 +1308,9 @@ pub fn solve_network_with(
 /// without slack). The approaches of the bridge and the junctions on its road rise as far as the grade
 /// limits and the vertical radius ask; a deck and the road below that one junction holds cannot both be kept, and
 /// what is short is in [`Profiles::clearances`] (measured on the result with [`measure_clearances`]). A bridge
-/// whose thickness is `None`, or whose crossing is not placed, is not checked; with no bridge to check the
-/// result is that of [`solve_network`].
+/// whose thickness is `None`, or whose crossing is not placed, is not checked. Roads that share terrain cells
+/// are tied as in [`solve_network`], except a bridge's road and the road below within 50 m of
+/// their crossing, whether or not the thickness is known.
 ///
 /// # Errors
 ///
@@ -1320,6 +1323,16 @@ pub fn solve_network_clearing(
     graph: &RoadGraph,
     thickness: &dyn Fn(&Stretch) -> Option<f64>,
 ) -> Result<(Profiles, Junctions), ProfileError> {
+    let apart: Vec<model::Apart> = over_crossings(graph)
+        .iter()
+        .filter_map(|c| {
+            Some(model::Apart {
+                at: c.at,
+                upper: graph.stretches.get(c.upper)?.id.clone(),
+                lower: graph.stretches.get(c.lower)?.id.clone(),
+            })
+        })
+        .collect();
     let crossings: Vec<model::Crossing> = over_crossings(graph)
         .iter()
         .filter_map(|c| {
@@ -1332,11 +1345,8 @@ pub fn solve_network_clearing(
             })
         })
         .collect();
-    if crossings.is_empty() {
-        return solve_network(net, hm, junctions, side);
-    }
     let solver = &crate::qp::solve;
-    let mut model = model::build(net, hm, junctions)?;
+    let mut model = model::build(net, hm, junctions, &apart)?;
     let mut x = model::solve_x(&model, solver)?;
     if model::add_clearances(&mut model, net, &x, &crossings) {
         x = model::solve_x(&model, solver)?;

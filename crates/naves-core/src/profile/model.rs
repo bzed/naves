@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The heights of the whole road network as one quadratic program: phase A of
-//! `docs/superpowers/specs/2026-11-16-height-solve-design.md` (no clearance and no nearby-road rows yet).
+//! `docs/superpowers/specs/2026-11-16-height-solve-design.md` (no clearance yet), with the rows (N) of roads that share terrain cells.
 //!
 //! Every variable of every chain (see [`Chain`]) has a height that is an affine expression ([`Expr`]) in the
 //! unknowns: its own unknown (a free variable), the plane of the junction that holds it, the plane of a ring,
@@ -26,6 +26,10 @@ use super::{
     MIN_STENCIL_M, ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins,
     holds, joint_heights, meeting_bounds, ring_of, road_on_stretch, segment_grades, strip_of,
 };
+
+mod nearby;
+
+pub(crate) use nearby::Apart;
 
 /// Weight of a junction's height against the ground's.
 const JUNCTION_GROUND: f64 = 2.0;
@@ -607,6 +611,7 @@ pub(crate) fn build(
     net: &PlacedNetwork,
     hm: &Heightmap,
     junctions: &Junctions,
+    apart: &[Apart],
 ) -> Result<Model, ProfileError> {
     let drafts = drafts(net, hm, junctions)?;
     let mut builder = Builder {
@@ -626,6 +631,7 @@ pub(crate) fn build(
     }
     let unknowns = junction_unknowns(&mut builder, &drafts, junctions)?;
     let heights = height_exprs(&drafts, &free, &unknowns, junctions)?;
+    nearby::add(&mut builder, net, hm, &drafts, &heights, apart);
     // the cost and the rows of each chain
     let mut chains = Vec::with_capacity(drafts.len());
     for (draft, chain_heights) in drafts.into_iter().zip(heights) {

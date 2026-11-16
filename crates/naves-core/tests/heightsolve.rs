@@ -15,6 +15,7 @@ use std::collections::BTreeSet;
 
 use naves_core::catalog::Family;
 use naves_core::catalog::testing::synthetic_catalog;
+use naves_core::conform::FILL_SLOPE_MAX;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{Junction, JunctionKind, Junctions, Link, RingPlane, find_junctions};
@@ -343,13 +344,17 @@ fn a_junction_on_a_slope_tilts_with_its_through_road() {
     assert!(junctions.points[0].tilt_axis.is_some(), "{junctions:?}");
     let (p, solved) = solve_network(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
     let j = &solved.points[0];
-    assert!((j.gradient.0 - 0.06).abs() <= 1e-3, "{j:?}");
+    // the arms of the junction share terrain cells with the through road (rows N), so the plane tilts with the
+    // slope only as far as they allow: the sign of the ground's tilt, a part of it
+    assert!(j.gradient.0 > 0.01 && j.gradient.0 < 0.06, "{j:?}");
     assert!(j.gradient.1.abs() <= 1e-3, "{j:?}");
-    let held = held_joints(&net, &p, &hm, &junctions);
-    assert!(held.len() > 1, "{held:?}");
-    for q in held {
-        assert!((q.2 - ground(&hm, q.0, q.1)).abs() <= 0.01, "{q:?}");
-    }
+    // and the held joints of the through road lie on that plane
+    let mut held = held_joints(&net, &p, &hm, &junctions);
+    held.retain(|q| (q.1 - 200.0).abs() < 1e-6);
+    assert_eq!(held.len(), 2, "{held:?}");
+    held.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let slope = (held[1].2 - held[0].2) / (held[1].0 - held[0].0);
+    assert!((slope - j.gradient.0).abs() <= 1e-4, "{slope} {j:?}");
 }
 
 #[test]
@@ -1147,4 +1152,131 @@ fn the_clearing_solve_is_bit_identical() {
     let a = clear(&net, &graph, &hm, &junctions, DECK);
     let b = clear(&net, &graph, &hm, &junctions, DECK);
     assert_eq!(a, b);
+}
+
+// ---- roads that share terrain cells (rows N) ----
+
+/// Two straight asf3 chains going north, `apart` metres from each other (x = 300 and 300 + apart): the first
+/// from y = 150 to 250, the second longer, from 100 to 300, so that no end of it lies on the first (the end of a
+/// chain on another road takes its height).
+fn side_by_side(apart: f64) -> PlacedNetwork {
+    network(vec![
+        pieces("a", Family::Asf3, (300.0, 150.0), (300.0, 250.0), 25.0),
+        pieces(
+            "b",
+            Family::Asf3,
+            (300.0 + apart, 100.0),
+            (300.0 + apart, 300.0),
+            25.0,
+        ),
+    ])
+}
+
+/// The heights of both strips where they are side by side, `(a, b)` per joint of the first.
+fn joint_pairs(p: &Profiles) -> Vec<(f64, f64)> {
+    p.strips[0]
+        .joints
+        .iter()
+        .map(|a| {
+            let b = p.strips[1]
+                .joints
+                .iter()
+                .find(|b| (b.1 - a.1).abs() < 1e-6)
+                .unwrap();
+            (a.2, b.2)
+        })
+        .collect()
+}
+
+#[test]
+fn two_legs_of_a_hairpin_share_one_height() {
+    // 4 m apart, the ground 0.6 m higher at the second
+    let hm = terrain(160, 4.0, |x, _| 100.0 + 0.15 * (x - 300.0));
+    let net = side_by_side(4.0);
+    let p = solve_alone(&net, &hm);
+    let pairs = joint_pairs(&p);
+    assert_eq!(pairs.len(), 5);
+    for (a, b) in pairs {
+        assert!((a - b).abs() <= 0.1 + 0.05, "{a} {b}");
+    }
+}
+
+#[test]
+fn roads_side_by_side_on_a_hillside_stay_apart() {
+    // the ground 4 m higher at the second road, over the whole run
+    let hm = terrain(160, 4.0, |x, _| 100.0 + (x - 300.0));
+    let net = side_by_side(4.0);
+    let p = solve_alone(&net, &hm);
+    for strip in 0..2 {
+        for o in offsets(&p, strip, &hm) {
+            assert!(o.abs() <= 0.5, "strip {strip}: {o}");
+        }
+    }
+}
+
+#[test]
+fn one_untied_pair_unties_the_whole_run() {
+    // 0.6 m apart in the ground, but 3 m in the middle third of the run (y = 150 to 250)
+    let hm = terrain(160, 4.0, |x, y| {
+        let step = if (183.0..=217.0).contains(&y) {
+            3.0
+        } else {
+            0.6
+        };
+        100.0 + step / 4.0 * (x - 300.0)
+    });
+    let net = side_by_side(4.0);
+    let p = solve_alone(&net, &hm);
+    // the first lies on its ground; the second cannot follow the bump in the middle, but is free at the ends
+    for o in offsets(&p, 0, &hm) {
+        assert!(o.abs() <= 0.5, "first: {o}");
+    }
+    for (joint, o) in p.strips[1].joints.iter().zip(offsets(&p, 1, &hm)) {
+        if joint.1 <= 150.0 || joint.1 >= 250.0 {
+            assert!(o.abs() <= 0.5, "second at {}: {o}", joint.1);
+        }
+    }
+    let (a, b) = joint_pairs(&p)[0];
+    assert!((a - b).abs() >= 0.5, "the ends are tied: {a} {b}");
+}
+
+#[test]
+fn roads_further_apart_may_differ_by_the_fill_slope() {
+    // 15 m apart on a 2 m grid: beyond the footprints (7 m and three cells), so the step a cell can hold,
+    // 0.1 + (15 - 13 + 2) * FILL_SLOPE_MAX = 4.1 m, is allowed; the ground is 5 m higher at the second road
+    let hm = terrain(160, 2.0, |x, _| 100.0 + (x - 300.0) / 3.0);
+    let net = side_by_side(15.0);
+    let p = solve_alone(&net, &hm);
+    let allowed = 0.1 + (15.0 - 13.0 + 2.0) * FILL_SLOPE_MAX;
+    for (a, b) in joint_pairs(&p) {
+        assert!((a - b).abs() <= allowed + 0.05, "{a} {b}");
+        assert!((a - b).abs() >= allowed - 0.5, "{a} {b}");
+    }
+}
+
+#[test]
+fn a_bridge_and_the_road_below_are_not_tied() {
+    // the approach and the road below are metres apart in the plan and the deck has to stand 4.5 m over it
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph) = placed(&bridge_features());
+    let junctions = find_junctions(&net, &graph, &hm);
+    let (p, _) = clear(&net, &graph, &hm, &junctions, DECK);
+    assert_eq!(p.clearances.len(), 1);
+    assert!(p.clearances[0].reached >= 4.45, "{:?}", p.clearances);
+}
+
+#[test]
+fn a_bridge_of_unknown_thickness_is_not_tied_either() {
+    // the ground under the road below is 1 m above the ground at the end of the approach: they could be tied
+    // (the ground allows it), and are not near the crossing
+    let hm = terrain(250, 4.0, |_, y| {
+        100.0 + ((y - 482.0) / 18.0).clamp(0.0, 1.0)
+    });
+    let (net, graph) = placed(&bridge_features());
+    let junctions = find_junctions(&net, &graph, &hm);
+    let side = side_slopes(&net, &hm);
+    let (p, _) = solve_network_clearing(&net, &hm, &junctions, &side, &graph, &|_| None).unwrap();
+    let low = height_on(&p, &net, "1:", (300.0, 500.0), false);
+    let approach = height_on(&p, &net, "3:", (300.0, 487.5), false);
+    assert!(low - approach >= 0.4, "{low} {approach}");
 }
