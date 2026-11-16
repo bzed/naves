@@ -81,7 +81,7 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 |---|---|---|---|---|---|---|---|
 | 6.4 km | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
 | 6.4 km | 2048 (crashes the client) | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
-| 8.2 km | 2048 | | | | 905 s (2026-11-16, height solve; 1775 s road look; 396 s 2026-11-15) | 3.5 GiB (2026-11-15, not measured since) | 233 MB (2026-11-15) |
+| 8.2 km | 2048 | | | | 897 s (2026-11-16, height solve at `98cfcf4`; 1775 s road look; 396 s 2026-11-15) | 3.5 GiB (2026-11-15, not measured since) | 233 MB (2026-11-15) |
 
 The figures with roads are from 2026-11-14 to 2026-11-16, each row as dated (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
 gives terrain cells of 3.1 m, and the DayZ client crashes on cells under 4 m (see the grid in
@@ -157,7 +157,7 @@ another, after the clearance under a bridge over a road was put into the same so
   - Deep cuttings under bridges: the road below at (7995, 7320) lies 8.52 m under its ground at the crossing, at
     (2347, 6546) 7.60 m (within their grade limits; no `road_far_from_ground`). The game check found them passable.
   - The thickness of an arch bridge's deck is taken as the lowest vertex of its Geometry LOD within 4 m below the deck,
-    anywhere along the span (3.96 m for the stone arch at (7995, 7320)), not at the crown, so the clearance asked for
+    anywhere in the model (3.96 m for the stone arch at (7995, 7320)), not at the crown, so the clearance asked for
     under an arch is larger than a vehicle needs.
   - Larger terrain misses (more than 2 m: 142 before, 163 now): the legs of a hairpin on a steep flank are tied to one
     height only where their ground differs by less than the terrain cell allows plus 1 m, so they are not pulled

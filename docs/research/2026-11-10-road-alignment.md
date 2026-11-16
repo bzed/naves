@@ -1849,8 +1849,8 @@ clearance is measured), and the steepest grade of each road within 100 m against
 | (5101, 7913) | 4.50 m (4.50 m) | +3.43 / +0.71 m | −4.75 m | 4.9 % (23.8 %) | 14.4 % (45 %) |
 
 No `road_grade` finding lies within 100 m of a crossing. At Silbergstrasse the road below was held to the meeting grade
-(6 %) on three pieces 25 to 45 m from junction 384 because the end of another street (at the junction above, 12 to
-17 m away on the map) counted as meeting it; with the meeting grade only where a road really ends on another, the road
+(6 %) on five pieces (its pieces 4 to 8, from (4671, 7311) to (4710, 7316)) because the end of another street (at
+the junction above, 12 to 17 m away on the map) counted as meeting it; with the meeting grade only where a road really ends on another, the road
 below falls to the crossing within its ceiling and the clearance is reached. Before that fix (log
 `/var/tmp/naves-oneclear/ra-2048.log`) it reached 4.12 m with 5 grade findings; with the road below pinned to its height
 (`982f1d6`, log `/var/tmp/naves-fixwave/ra-2048.log`) 0.93 m here and 3.98 m at (5101, 7913); with only the two joints
@@ -1859,8 +1859,7 @@ below lies in a cutting at three of the four: 8.52 m at (7995, 7320), where the 
 uphill end (5 m above it) and of its downhill end (3.35 m below it); 7.60 m at (2347, 6546), where the road below
 already lay 5.6 m under its ground in the old pipeline (it passes through a hillside nose); 4.75 m at (5101, 7913). The
 deck at (7995, 7320) is a stone arch whose thickness is taken as 3.96 m: the lowest vertex of its Geometry LOD within
-4 m below the deck anywhere along the span (the arch's structure towards its springings, up to the 4 m window), not the
-crown, so the clearance asked for there is larger than a vehicle needs. Other numbers: `path_too_steep` 169 (168),
+4 m below the deck anywhere in the model (not measured at the crown; 3.96 m is just inside the 4 m window), so the clearance asked for there is larger than a vehicle needs. Other numbers: `path_too_steep` 169 (168),
 `road_in_water` 29 (29), `earthworks_capped` 70 (82), `road_over_water` 2 (3). Pieces whose grade ceiling is the meeting
 grade: 649 before the meeting fix, 428 after.
 
