@@ -144,8 +144,11 @@ A deck and the road below held by one junction (Silbergstraße) cannot both be k
 
 **(N) Roads that share terrain cells** (replaces settling). The spots (every 3 m on non-bridge segments) and the
 close pairs are found as today (`spots`, `close_pairs`), from the positions and half widths of the placed roads
-alone, before any height is solved. The pairs are each spot of the first chain with its nearest spot of the other chain (the lower spot index on a tie):
-"share a height" means abreast, and pairs with spots at other places along a slope would flatten roads that run side by side.
+alone, before any height is solved. Of the close pairs only the **mutually nearest** are kept, chosen before the exclusions below: a pair of a spot `a`
+(chain A) and `b` (chain B) stays if `b` is the nearest spot to `a` among `a`'s pairs with chain B and `a` is the
+nearest to `b` among `b`'s pairs with chain A (the lower spot index on a tie; for a chain with itself, among the
+pairs the `follows` rule lets through). "Share a height" means abreast: pairs with spots at other places along a
+slope would flatten roads that run side by side, and the one-sided choice would depend on which road comes first.
 For a pair of spots `a`, `b`:
 
 ```
@@ -160,8 +163,8 @@ it:** at every pair of the run `|ground(a) − ground(b)| ≤ allowed + TIE_STEP
 fails gets no rows: roads side by side on a hillside at really different heights stay apart (the maintainer's
 caveat; a wall or a conflict finding is the terrain shaping's business). No rows either for pairs of the bridge road
 and the road below within `KEEP_APART_M` (50 m) of their crossing. No rows either for a pair of spots of two chains that both lie within `KEEP_APART_M` of a place where the
-two are connected (the centre of a junction that holds a variable of each, the position of a chain end that is a
-meeting on the other): there the roads are one surface (the junction plane, the meeting), and two spots at different
+two are connected (the centre of a junction that holds a variable of each, or, for a chain with itself, a junction it leaves and
+re-enters; the position of a chain end that is a meeting on the other): there the roads are one surface (the junction plane, the meeting), and two spots at different
 places on a slope legitimately differ in height. Such pairs are not pairs: they do not count in the run's ground test.
 
 ### What comes out

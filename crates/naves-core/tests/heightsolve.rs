@@ -1369,16 +1369,18 @@ fn a_shallow_merge_does_not_flatten_the_road_it_joins() {
     let side = pieces("s", Family::Mud, (303.5, 500.0), (316.0, 600.0), 10.0);
     let net = network(vec![through, side]);
     let p = solve_alone(&net, &hm);
-    // the pairs beyond 50 m still pull a little (0.1 m at most, 0.6 m before the nearest-spot rule); tied near the meeting as well, the through road
+    // the pairs beyond 50 m still pull a little (0.04 m at most, 0.6 m before the nearest-spot rule); tied near the meeting as well, the through road
     // leaves the ground by 0.33 m
     let worst = offsets(&p, 0, &hm)
         .into_iter()
         .fold(0.0_f64, |m, o| m.max(o.abs()));
-    assert!(worst <= 0.2, "the through road is {worst} m off the ground");
+    assert!(worst <= 0.1, "the through road is {worst} m off the ground");
 }
 
 #[test]
 fn a_road_entering_a_tilted_roundabout_is_not_tied_to_its_plane() {
+    // a scenario check: with only mutually nearest spots paired no spot of the arm beyond the entry is paired
+    // with the ring; the junction connection code is pinned by `a_junction_on_a_slope_tilts_with_its_through_road`
     // a ring chain going north whose plane rises 3 % to the north, and a road that leaves it to the east on ground
     // that falls 2 % in that direction: beside the ring, its spots lie within a footprint of ring spots at other
     // places on the plane, and must not be tied to them
@@ -1440,14 +1442,9 @@ fn a_loop_that_leaves_and_re_enters_a_junction_is_not_tied_to_itself_there() {
         points: vec![junction],
         ..Junctions::default()
     };
-    let held = held_joints(
-        &net,
-        &solve_network(&net, &hm, &junctions, &[]).unwrap().0,
-        &hm,
-        &junctions,
-    );
+    let (p, solved) = solve_network(&net, &hm, &junctions, &[]).unwrap();
+    let held = held_joints(&net, &p, &hm, &junctions);
     assert_eq!(held.len(), 2, "{held:?}");
-    let (_, solved) = solve_network(&net, &hm, &junctions, &[]).unwrap();
     let tilt = solved.points[0].gradient.0;
     assert!((tilt - 0.06).abs() <= 0.01, "{tilt}");
 }
@@ -1477,6 +1474,46 @@ fn roads_side_by_side_on_a_slope_keep_their_grade() {
                 (h - line).abs() <= 0.2,
                 "strip {strip} at {y}: {h} against {line}"
             );
+        }
+    }
+}
+
+/// A short and a long road side by side, 12 m apart (footprints overlap, no end lies on the other road), on
+/// ground that descends 3 % along both and is 0.3 m higher at the second. The short one is first, or last.
+fn short_and_long(short_first: bool) -> (PlacedNetwork, Heightmap) {
+    let hm = terrain(160, 4.0, |x, y| 100.0 - 0.03 * y + 0.025 * (x - 300.0));
+    let short = pieces("a", Family::Asf3, (300.0, 150.0), (300.0, 250.0), 25.0);
+    let long = pieces("b", Family::Asf3, (312.0, 100.0), (312.0, 300.0), 25.0);
+    let chains = if short_first {
+        vec![short, long]
+    } else {
+        vec![long, short]
+    };
+    (network(chains), hm)
+}
+
+#[test]
+fn the_tie_does_not_depend_on_the_order_of_the_roads() {
+    let (first, hm) = short_and_long(true);
+    let (last, _) = short_and_long(false);
+    let (p, q) = (solve_alone(&first, &hm), solve_alone(&last, &hm));
+    // the short road is strip 0 in the first solve and strip 1 in the second, the long one the other way round
+    for (a, b) in [(0, 1), (1, 0)] {
+        assert_eq!(p.strips[a].joints.len(), q.strips[b].joints.len());
+        for (j, k) in p.strips[a].joints.iter().zip(&q.strips[b].joints) {
+            assert!((j.2 - k.2).abs() <= 1e-6, "{j:?} {k:?}");
+        }
+    }
+}
+
+#[test]
+fn a_road_is_not_tied_to_the_end_of_a_shorter_road_beside_it() {
+    // the long road comes first: beyond the end of the short one it follows its own ground
+    let (net, hm) = short_and_long(false);
+    let p = solve_alone(&net, &hm);
+    for (joint, o) in p.strips[0].joints.iter().zip(offsets(&p, 0, &hm)) {
+        if joint.1 < 150.0 - 6.0 || joint.1 > 250.0 + 6.0 {
+            assert!(o.abs() <= 0.1, "at {joint:?}: {o} m off the ground");
         }
     }
 }

@@ -5,8 +5,9 @@
 //! terrain cells share a height, as far as the ground lets them.
 //!
 //! The spots every [`SAMPLE_M`] and the pairs of close spots are those of the old settling (`spots` and
-//! `close_pairs`), found from the positions and the half widths of the roads alone. The pairs of two chains are
-//! grouped into runs; a run is tied only if the original ground allows it at every pair of the run, else it gets no
+//! `close_pairs`), found from the positions and the half widths of the roads alone. Of those pairs only the mutually
+//! nearest are kept (a spot's nearest spot of the other chain, seen from both sides), chosen before the exclusions
+//! for bridges and for places where the roads are connected. The pairs of two chains are grouped into runs; a run is tied only if the original ground allows it at every pair of the run, else it gets no
 //! rows at all (roads side by side on a hillside stay apart).
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +18,7 @@ use crate::junctions::Junctions;
 use crate::roadplace::PlacedNetwork;
 
 use super::{Builder, Draft, Expr, Source};
+use crate::profile::Pair;
 use crate::profile::{
     KEEP_APART_M, MATCH_M, RoadStrip, SAMPLE_M, Spot, close_pairs, joint_heights, road_on_stretch,
     spots, strip_of,
@@ -132,7 +134,51 @@ fn allowed(distance: f64, gap: f64, cell: f64) -> f64 {
     }
 }
 
-/// Adds the rows (N) and their cost, for the chains `drafts` whose heights are `heights`; no rows for the pairs of
+/// The pairs (by index) that are mutually nearest: the second spot is the nearest of the first's pairs with the
+/// second's chain, and the first spot the nearest of the second's pairs with the first's chain (the lower spot
+/// index on a tie). Roads share a height abreast, not at other places along a slope, and which of the two roads
+/// comes first does not matter. This is chosen before the exclusions.
+fn mutual_nearest(pairs: &[Pair], spots: &[Spot]) -> BTreeSet<usize> {
+    let mut best: BTreeMap<(usize, usize), (f64, usize, usize)> = BTreeMap::new();
+    for (k, pair) in pairs.iter().enumerate() {
+        let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
+            continue;
+        };
+        for (spot, chain, partner) in [
+            (pair.first, b.strip, pair.second),
+            (pair.second, a.strip, pair.first),
+        ] {
+            let slot = best
+                .entry((spot, chain))
+                .or_insert((pair.distance, partner, k));
+            if pair
+                .distance
+                .total_cmp(&slot.0)
+                .then(partner.cmp(&slot.1))
+                .is_lt()
+            {
+                *slot = (pair.distance, partner, k);
+            }
+        }
+    }
+    let chosen = |spot: usize, chain: usize, k: usize| {
+        best.get(&(spot, chain)).is_some_and(|slot| slot.2 == k)
+    };
+    pairs
+        .iter()
+        .enumerate()
+        .filter(|(k, pair)| {
+            let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
+                return false;
+            };
+            chosen(pair.first, b.strip, *k) && chosen(pair.second, a.strip, *k)
+        })
+        .map(|(k, _)| k)
+        .collect()
+}
+
+/// Adds the rows (N) and their cost, for the chains `drafts` whose heights are `heights`, for the pairs of spots
+/// that are mutually nearest (chosen from all close pairs, before the exclusions); no rows for the pairs of
 /// a bridge's road and the road below within [`KEEP_APART_M`] of a crossing in `apart`, and none for two spots within
 /// [`KEEP_APART_M`] of a place where their roads are connected (see [`connections`]).
 pub(super) fn add(
@@ -181,10 +227,9 @@ pub(super) fn add(
     }
     let connected = connections(drafts, junctions);
     let near = |s: &Spot, at: (f64, f64)| (s.x - at.0).hypot(s.y - at.1) <= KEEP_APART_M;
+    let mutual = mutual_nearest(&pairs, &spots);
     // the runs: the pairs of two chains, in the order along the first, split where the first jumps
-    // each spot of the first chain keeps its nearest spot of the other chain (the lower index on a tie): roads
-    // share a height abreast, not at other places along a slope
-    let mut nearest: BTreeMap<(usize, usize), (f64, usize, usize)> = BTreeMap::new();
+    let mut kept_pairs: Vec<usize> = Vec::new();
     for (k, pair) in pairs.iter().enumerate() {
         let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
             continue;
@@ -197,28 +242,17 @@ pub(super) fn add(
         let joined = connected
             .get(&key)
             .is_some_and(|places| places.iter().any(|at| near(a, *at) && near(b, *at)));
-        if kept && !joined {
-            let best =
-                nearest
-                    .entry((pair.first, b.strip))
-                    .or_insert((pair.distance, pair.second, k));
-            if pair
-                .distance
-                .total_cmp(&best.0)
-                .then(pair.second.cmp(&best.1))
-                .is_lt()
-            {
-                *best = (pair.distance, pair.second, k);
-            }
+        if kept && !joined && mutual.contains(&k) {
+            kept_pairs.push(k);
         }
     }
     let mut by_chains: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
-    for (k, strip) in nearest
-        .into_iter()
-        .map(|((_, strip), (_, _, k))| (k, strip))
-    {
-        if let Some(a) = pairs.get(k).and_then(|p| spots.get(p.first)) {
-            by_chains.entry((a.strip, strip)).or_default().push(k);
+    for k in kept_pairs {
+        let strips = pairs
+            .get(k)
+            .and_then(|p| Some((spots.get(p.first)?.strip, spots.get(p.second)?.strip)));
+        if let Some(key) = strips {
+            by_chains.entry(key).or_default().push(k);
         }
     }
     for mut list in by_chains.into_values() {
