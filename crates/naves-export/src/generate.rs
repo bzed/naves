@@ -171,7 +171,8 @@ pub struct Placed {
 /// Places `graph` on `base` and solves the heights of the roads.
 ///
 /// # Errors
-/// A stretch that cannot be fitted.
+/// A stretch that cannot be fitted, or [`BuildError::Profile`] when the height solve reports no solution or
+/// finds a road without ground data.
 pub fn place_once(
     graph: &RoadGraph,
     catalog: &PieceCatalog,
@@ -257,7 +258,8 @@ pub struct RoadPlan {
 /// over water.
 ///
 /// # Errors
-/// A stretch that cannot be fitted.
+/// A stretch that cannot be fitted, or [`BuildError::Profile`] when the height solve reports no solution or
+/// finds a road without ground data.
 pub fn plan_roads(
     features: &[Feature],
     catalog: &PieceCatalog,

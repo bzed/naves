@@ -129,8 +129,10 @@ steep and the map is small (a horizontal scale below 1 steepens everything): rai
 finding. `road_misses_terrain` and a road
 that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
 (a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
-moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 20 % exceeds
-the limit of 12 %" (a stretch that is steeper than its limit, usually between two fixed ends) or "Crest or dip too
+moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 31 % exceeds
+the limit of 27 %" (a stretch that is steeper than the hard limit of its family, the ceiling, not its aim; usually where
+a bridge deck, a junction that cannot give way or two roads at very different heights ask for more than the road can
+climb) or "Crest or dip too
 sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
@@ -139,6 +141,12 @@ size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 20
 1024 (without roads: 38 s and 220 MB against 16 s and 75 MB). These figures were measured on a 6.4 km map at 2048,
 a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
 [the grid](project-file.md#grid).
+
+**`the road heights are not solved: <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
+The build stops. The heights of all roads are one calculation; the first message means the solver found no solution
+(its status is in the message), the second that the input is malformed, for example a road with no ground data under it.
+There is no setting that changes this. A project with roads should always have a solution, so this is a fault of the
+program: report it with the project (`naves.toml`, the edits and the OSM extract) and the message.
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward

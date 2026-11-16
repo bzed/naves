@@ -752,8 +752,9 @@ fn find_root(parent: &[usize], mut i: usize) -> usize {
     i
 }
 
-/// The junctions of the network, each at the median of the original ground, with the links between them. Junctions are sorted by position (x, then y) and links by their ends and length, so the result
-/// does not depend on the order of the roads.
+/// The junctions of the network, each at the median of the original ground, with the links between them.
+/// Junctions are sorted by position (x, then y) and links by their ends and length, so the result does not
+/// depend on the order of the roads.
 #[must_use]
 pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) -> Junctions {
     let lines = lines_of(net);

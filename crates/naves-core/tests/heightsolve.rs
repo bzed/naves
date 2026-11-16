@@ -22,7 +22,7 @@ use naves_core::junctions::{Junction, JunctionKind, Junctions, Link, RingPlane, 
 use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use naves_core::profile::{
     BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, ProfileError, Profiles,
-    chain_holds, solve_clearing, solve_clearing_with,
+    chain_holds, nearby_pairs, solve_clearing, solve_clearing_with,
 };
 use naves_core::qp::QpError;
 use naves_core::roadfit::Pose;
@@ -321,6 +321,42 @@ fn two_junctions_too_steep_for_each_other_both_move() {
     }
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
     assert!(solved.unresolved.is_empty(), "{:?}", solved.unresolved);
+}
+
+#[test]
+fn a_junction_stays_near_its_ground() {
+    // a junction piece on ground that falls 4 % along the through road, with nothing forcing it (no bridge, no
+    // ring, no second junction). The ground under the side road's arm is 4 m higher than under the through road:
+    // a pull on the junction's joints that its own tie to its ground has to resist. Measured: the junction ends
+    // 0.23 m from its ground (0.32 m if `JUNCTION_GROUND` were 0), so the bound sits between
+    let ground_at =
+        |x: f64, y: f64| 100.0 - 0.04 * (x - 306.25) + if y > 108.0 { 4.0 } else { 0.0 };
+    let hm = terrain(160, 6.25, ground_at);
+    let mut through = pieces("t", Family::Asf3, (100.0, 100.0), (300.0, 100.0), 25.0);
+    through.push(piece(
+        "t|a",
+        0,
+        PlacedKind::Junction,
+        Family::Asf3,
+        (300.0, 100.0),
+        (312.5, 100.0),
+    ));
+    through.extend(pieces(
+        "t",
+        Family::Asf3,
+        (312.5, 100.0),
+        (512.5, 100.0),
+        25.0,
+    ));
+    let side = pieces("a", Family::Asf3, (306.25, 300.0), (306.25, 106.25), 25.0);
+    let net = network(vec![through, side]);
+    let junctions = Junctions {
+        points: vec![piece_junction(306.25, ground_at(306.25, 100.0))],
+        ..Junctions::default()
+    };
+    let (_, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let off = solved.points[0].height - junctions.points[0].ground;
+    assert!(off.abs() <= 0.27, "{off}");
 }
 
 /// The held joints of every strip and their heights.
@@ -1227,6 +1263,26 @@ fn roads_side_by_side_on_a_hillside_stay_apart() {
 }
 
 #[test]
+fn the_pairs_of_roads_side_by_side_are_counted() {
+    let count = |slope: f64| {
+        let hm = terrain(160, 4.0, move |x, _| 100.0 + slope * (x - 300.0));
+        nearby_pairs(
+            &side_by_side(4.0),
+            &hm,
+            &Junctions::default(),
+            &RoadGraph::default(),
+        )
+        .unwrap()
+    };
+    // the first road has 37 spots, each the nearest of the other road's spots to it: 1024 close pairs, 37 mutual
+    let gentle = count(0.15);
+    assert_eq!((gentle.close, gentle.mutual, gentle.rows), (1024, 37, 37));
+    // the ground 4 m apart between the roads: the pairs are found, the run is not tied
+    let steep = count(1.0);
+    assert_eq!((steep.close, steep.mutual, steep.rows), (1024, 37, 0));
+}
+
+#[test]
 fn one_untied_pair_unties_the_whole_run() {
     // 0.6 m apart in the ground, but 3 m in the middle third of the run (y = 150 to 250)
     let hm = terrain(160, 4.0, |x, y| {
@@ -1583,7 +1639,7 @@ fn the_grade_limit_of_a_junction_piece_survives_a_merged_joint_before_it() {
 #[test]
 fn a_junction_on_a_ring_keeps_the_plane_and_the_other_end_takes_the_rest() {
     // 100 m of asf3 road (a ceiling of 27 %, 27 m) from a junction on a ring plane at 100 m to a junction whose
-    // ground is 140 m: the ring's junction is not moved (it was never moved by the repair either), the other one
+    // ground is 140 m: the ring's junction is not moved (it is a constant of the problem), the other one
     // gives way as far as it takes
     let hm = terrain(128, 3.125, |x, _| if x < 150.0 { 100.0 } else { 140.0 });
     let net = network(vec![pieces(

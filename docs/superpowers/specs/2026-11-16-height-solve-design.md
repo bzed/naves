@@ -166,8 +166,8 @@ and the road below within `KEEP_APART_M` (50 m) of their crossing. No rows eithe
 and re-enters (a loop: the junction holds two separate runs of its variables): there the legs are one surface, and two
 spots at different places on a slope legitimately differ in height. Such pairs are not pairs: they do not count in the
 run's ground test. Because only mutually nearest pairs are kept, roads that part at an angle (forks, merges, crossings)
-keep about one pair and stay untied beyond their first spot; that is intended: rows (N) are for roads running side by
-side.
+keep few pairs, and fewer the wider the angle (25 at 7°); they stay untied beyond those; that is intended: rows (N)
+are for roads running side by side.
 
 ### What comes out
 
@@ -223,3 +223,14 @@ junction order), the split of `profile.rs` into files, and the exact home of `ti
 
 Rank-dependent weights (a more important road moving less where two are tied), the weights themselves (`AIM`,
 `NEAR`, `SMOOTHNESS` are first values, to be looked at in the game), walls, arc cross fall, the miss threshold.
+
+## Changes during implementation (2026-11-16)
+
+- Smoothness at a deck counts both deck ends (two rows per deck variable, see (B)).
+- The pins of the road below at a crossing are equalities without slack (see (C)).
+- The (N) pairs are the mutually nearest spots, chosen before the exclusions (see (N)).
+- The only exclusion of a chain's own pairs is its loop through one junction (see (N)); no other connection exclusion.
+- `AIM` was measured at 1, 4, 16 and 64 and stays 1. Over-aim length: 39.3 km old, 38.7 / 39.6 / 41.4 / 43.5 km.
+  Segments over the ceiling: 413 old, 5 at `AIM` 1. Points more than 4 m off the ground: 3070 old, 844 / 869 / 970 /
+  1268. No bridge over a dip at any value.
+- The dip thresholds (`DIP_M`, `BRIDGE_DIP_M`) are unchanged.

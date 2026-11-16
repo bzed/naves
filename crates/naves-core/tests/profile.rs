@@ -1329,10 +1329,10 @@ fn a_through_road_is_fixed_at_the_junction_piece_in_its_middle() {
 }
 
 #[test]
-fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
-    // the ground is a ramp at exactly what the road may climb, and two junctions 400 m apart lie on it (their
-    // heights were given, 100 m above the level ground, and held exactly): the profile has to be a straight ramp,
-    // not a ramp with one short steep piece
+fn a_span_between_two_junctions_on_ground_at_its_ceiling_stays_within_its_ceiling() {
+    // the ground is a ramp at exactly what the road may climb, and two junctions 400 m apart lie on it (they start
+    // at its height and may give way a little): no piece is over the ceiling by more than 10 %, and nothing is
+    // reported
     let ceiling = grade_ceiling(Family::Asf3);
     let hm = terrain(128, 6.25, move |_, y| {
         100.0 + ceiling * (y - 100.0).clamp(0.0, 400.0)
@@ -1393,62 +1393,6 @@ fn the_grade_is_kept_over_the_run_between_the_joints_not_the_length_of_the_piece
     let p = solve(&network(vec![roads]), &hm);
     let steepest = grades(&p, 0).iter().fold(0.0_f64, |m, g| m.max(g.abs()));
     assert!(steepest <= grade_ceiling(Family::Asf3) + 1e-3, "{steepest}");
-}
-
-#[test]
-fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() {
-    // the same span, with a side road that ends beside its first piece, on ground that falls by 98 % of the ceiling
-    // along the whole road (the junctions lie on it): the 6 % of a meeting would make that impossible, and the
-    // junctions would have to give way
-    let ceiling = grade_ceiling(Family::Asf3);
-    let hm = terrain(128, 6.25, move |_, y| 100.0 - 0.98 * ceiling * (y - 100.0));
-    let mut roads = vec![
-        piece(
-            "a",
-            0,
-            PlacedKind::Piece,
-            Family::Asf3,
-            (100.0, 100.0),
-            (100.0, 112.5),
-        ),
-        piece(
-            "a",
-            1,
-            PlacedKind::Piece,
-            Family::Asf3,
-            (100.0, 112.5),
-            (100.0, 113.6),
-        ),
-    ];
-    roads.extend(straight("a", Family::Asf3, (100.0, 113.6), (100.0, 300.0)));
-    let side = straight("s", Family::Asf3, (103.5, 106.0), (200.0, 106.0));
-    let net = network(vec![roads, side]);
-    let junction = |y: f64, height: f64| Junction {
-        at: (100.0, y),
-        kind: JunctionKind::Join,
-        ground: height,
-        height,
-        rank: 3,
-        patch_m: 0.5,
-        stretches: std::collections::BTreeSet::new(),
-        lower: std::collections::BTreeSet::new(),
-        gradient: (0.0, 0.0),
-        tilt_axis: None,
-        tilt_cap: 0.0,
-    };
-    let junctions = Junctions {
-        points: vec![
-            junction(100.0, 100.0),
-            junction(113.6, 100.0 - 0.98 * ceiling * 13.6),
-        ],
-        ..Junctions::default()
-    };
-    let (p, solved) = solve_clearing(&net, &hm, &junctions, &[], &RoadGraph::default(), &|_| None);
-    for (i, g) in grades(&p, 0).iter().take(2).enumerate() {
-        assert!(g.abs() <= ceiling + 1e-3, "piece {i}: {g}");
-    }
-    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
-    assert_eq!(solved.unresolved, Vec::<usize>::new());
 }
 
 /// A level road on ground that rises 7 m just before the held joint at its end: held joints A (100 m) at the start
