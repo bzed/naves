@@ -135,8 +135,10 @@ phases:
   h_w = h_w(A)
   ```
   the second for the two variables `w` of the road below that bracket the crossing (an equality without slack; a
-  variable that is a constant, or one that another pin already fixes in the same way, gets no row). Phase B is still
-  feasible: phase A's point satisfies every row of it with its slacks, and `q_c` absorbs any shortfall of the deck.
+  variable that is a constant, or one that another pin already fixes in the same way, gets no row). The height and
+  tilt unknowns of every junction that holds a variable of the road below's chain are held to their phase A values
+  the same way (once each), so that the bridge's road cannot lift the road below through a junction they share. Phase
+  B is still feasible: phase A's point satisfies every row of it with its slacks, and `q_c` absorbs any shortfall of the deck.
   No crossing: phase A is the result.
 
 A deck and the road below held by one junction (Silbergstraße) cannot both be kept: `q_c > 0`, the
@@ -228,6 +230,8 @@ Rank-dependent weights (a more important road moving less where two are tied), t
 
 - Smoothness at a deck counts both deck ends (two rows per deck variable, see (B)).
 - The pins of the road below at a crossing are equalities without slack (see (C)).
+- The junctions that hold the road below's chain are pinned too, height and tilt (see (C)): with only the two bracket
+  pins, junction 384 at Silbergstraße was lifted 4.9 m by the bridge's road and the road below with it (final review).
 - The (N) pairs are the mutually nearest spots, chosen before the exclusions (see (N)).
 - The only exclusion of a chain's own pairs is its loop through one junction (see (N)); no other connection exclusion.
 - `AIM` was measured at 1, 4, 16 and 64 and stays 1. Over-aim length: 39.3 km old, 38.7 / 39.6 / 41.4 / 43.5 km.

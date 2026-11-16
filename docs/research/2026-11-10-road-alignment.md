@@ -1799,8 +1799,8 @@ vehicles manage) plus a slack `f`; (B) the change of grade within `run / R` (`R`
 plus a slack, at every bend and at both ends of a deck, between the approach and the level deck; (T) the tilt of a
 junction within its cap (nine tenths of the ceiling of its through road, at most 8 %), no slack; (C) the deck of a
 bridge over a road at least 4.5 m and its thickness above the road below, a slack that costs as the other hard ones,
-and the two variables of the road below that bracket the crossing held at their height of the solve without (C)
-(phase B: the road below keeps its height); (N) a pair of spots (every 3 m) of two roads whose footprints share terrain
+and the two variables of the road below that bracket the crossing and the height and tilt of every junction that holds
+the road below held at their values of the solve without (C) (phase B: the road below keeps its height); (N) a pair of spots (every 3 m) of two roads whose footprints share terrain
 cells within `0.1 m` (a cell and the fill slope beyond) of each other. Of the close pairs only the mutually nearest are
 kept (roads side by side, not at other places on a slope), a run of them is tied only if the original ground lets it
 (at every pair within the allowance and 1 m), and none is made between roads that meet at a junction, within 50 m of a

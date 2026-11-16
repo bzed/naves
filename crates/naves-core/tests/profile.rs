@@ -1949,6 +1949,87 @@ fn the_road_below_does_not_rise_through_a_junction_it_shares_with_the_approach()
     );
 }
 
+/// The road below (y = 500) with a T junction at x = `jx` whose side road ends on the approach of a deck of
+/// thickness `deck`: how far the road below moved anywhere along it, how far that junction moved, and the
+/// clearance reached against the one wanted.
+fn a_t_junction_on_the_road_below_at(jx: f64, deck: f64) -> (f64, f64, f64, f64) {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let features = [
+        way(
+            1,
+            &[1, 9, 2],
+            &[(50.0, 500.0), (jx, 500.0), (550.0, 500.0)],
+            false,
+        ),
+        way(
+            3,
+            &[3, 8, 4],
+            &[(300.0, 100.0), (300.0, 465.0), (300.0, 487.5)],
+            false,
+        ),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+        way(5, &[5, 6], &[(300.0, 512.5), (300.0, 900.0)], false),
+        way(6, &[9, 8], &[(jx, 500.0), (300.0, 465.0)], false),
+    ];
+    let (net, graph) = placed(&features);
+    let junctions = find_junctions(&net, &graph, &hm);
+    let side = side_slopes(&net, &hm);
+    let (plain, plain_junctions) =
+        solve_clearing(&net, &hm, &junctions, &side, &RoadGraph::default(), &|_| {
+            None
+        });
+    let (p, raised) = solve_clearing(&net, &hm, &junctions, &side, &graph, &|_| Some(deck));
+    let (before, after) = (heights_of(&plain, &net, "1:"), heights_of(&p, &net, "1:"));
+    assert!(before.len() > 10, "{}", before.len());
+    assert_eq!(before.len(), after.len());
+    let moved = before
+        .iter()
+        .zip(&after)
+        .map(|(a, b)| (a.2 - b.2).abs())
+        .fold(0.0_f64, f64::max);
+    let height_at = |js: &Junctions| {
+        js.points
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.at.0 - jx).hypot(a.at.1 - 500.0);
+                let db = (b.at.0 - jx).hypot(b.at.1 - 500.0);
+                da.total_cmp(&db)
+            })
+            .map(|j| j.height)
+            .unwrap()
+    };
+    let junction_moved = (height_at(&plain_junctions) - height_at(&raised)).abs();
+    assert_eq!(p.clearances.len(), 1);
+    (
+        moved,
+        junction_moved,
+        p.clearances[0].reached,
+        p.clearances[0].wanted,
+    )
+}
+
+#[test]
+fn a_junction_on_the_road_below_away_from_the_crossing_keeps_its_height() {
+    // the junction holds neither joint of the road below next to the crossing; the approach rises for the deck
+    // and must not lift it, and the road below with it
+    for (jx, deck) in [(260.0, 8.0), (250.0, 16.0)] {
+        let (moved, junction_moved, reached, wanted) = a_t_junction_on_the_road_below_at(jx, deck);
+        assert!(
+            moved < 0.05,
+            "junction at x = {jx}, deck {deck} m: the road below moved by {moved} m"
+        );
+        assert!(
+            junction_moved < 0.05,
+            "junction at x = {jx}, deck {deck} m: the junction moved by {junction_moved} m"
+        );
+        // the road below keeps its height, so the deck falls short: a finding
+        assert!(
+            reached < wanted - 0.05,
+            "junction at x = {jx}, deck {deck} m: reached {reached} of {wanted}"
+        );
+    }
+}
+
 #[test]
 fn of_two_bridges_the_lower_deck_keeps_its_height_and_the_upper_one_clears_it() {
     let hm = terrain(250, 4.0, |_, _| 100.0);

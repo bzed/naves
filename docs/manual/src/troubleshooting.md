@@ -174,11 +174,12 @@ is how far the road stands above the ground. Look at it in the game or the map: 
 
 **`bridge_clearance`: "A bridge clears the road below by only 1.6 m, the minimum is 4.5 m"**
 A bridge crosses another road without a shared node and its deck could not be lifted to 4.5 m above that road
-(measured from the road's surface to the underside of the deck). The usual cause: the bridge starts at a junction that
-also holds the road below (the crossing lies within a few metres of the junction), so lifting the junction would lift
-the road below with it; the build never lifts the road below, so the bridge stays. Another cause: the grade limits
-and the vertical radius stop the approaches from rising as far as the deck needs. The
-position is where the two lines cross. Move the junction away from the crossing in the data, or accept it.
+(measured from the road's surface to the underside of the deck). The usual cause: the bridge's road and the road below
+meet at a junction (next to the crossing, or further along the road below), so lifting the junction would lift the road
+below with it; the build never lifts the road below nor a junction that holds it, so the bridge's road can rise from
+that junction only as far as its grade limits allow. Another cause: the grade limits and the vertical radius stop the
+approaches from rising as far as the deck needs. The position is where the two lines cross. Move the junction away
+from the crossing in the data, or accept it.
 
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type

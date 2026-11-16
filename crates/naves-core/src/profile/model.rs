@@ -909,10 +909,12 @@ fn height_at(model: &Model, place: &Place) -> Option<Expr> {
 /// without them. Returns whether any were added (the problem has more unknowns and rows then).
 ///
 /// The deck is held at least [`BRIDGE_CLEARANCE_M`] and its thickness above the surface of the road below as it
-/// is in `solved`, less a slack that costs as the other hard ones; the two variables of the road below that
-/// bracket the crossing are held to their height in `solved` exactly (a variable that is a constant has no
-/// unknown and no row; a variable two crossings share has one row). Phase B stays feasible: the solution of
-/// phase A satisfies every row of it, with its slacks, and the deck's slack has room.
+/// is in `solved`, less a slack that costs as the other hard ones. The road below keeps its height: the height
+/// and tilt of every junction that holds a variable of its chain are held to their values in `solved` exactly,
+/// so that the bridge's road cannot lift it through a junction they share, and so are the two variables of the
+/// road below that bracket the crossing (a variable that is a constant has no unknown and no row; a variable two
+/// crossings share has one row; a variable whose unknowns are all held already has none). Phase B stays
+/// feasible: the solution of phase A satisfies every row of it, with its slacks, and the deck's slack has room.
 pub(crate) fn add_clearances(
     model: &mut Model,
     net: &PlacedNetwork,
@@ -923,16 +925,32 @@ pub(crate) fn add_clearances(
         next: model.problem.unknowns,
         problem: std::mem::replace(&mut model.problem, Problem::new(0)),
     };
+    let placed: Vec<(&Crossing, Place, Place)> = crossings
+        .iter()
+        .filter_map(|crossing| {
+            Some((
+                crossing,
+                place_near(model, net, crossing.at, &crossing.upper)?,
+                place_near(model, net, crossing.at, &crossing.lower)?,
+            ))
+        })
+        .collect();
+    // the height and tilt unknowns of the junctions that hold the chain of a road below, each once
+    let held: BTreeSet<usize> = placed
+        .iter()
+        .filter_map(|(_, _, lower)| model.chains.get(lower.chain))
+        .flat_map(|mc| mc.holders.iter().flatten())
+        .filter_map(|&j| model.junctions.get(j).copied().flatten())
+        .flat_map(|u| std::iter::once(u.height).chain(u.tilt))
+        .collect();
+    for &k in &held {
+        let keep = solved.get(k).copied().unwrap_or(0.0);
+        builder.row(vec![(k, 1.0)], keep, keep);
+    }
     // the pins already made, by their terms: variables held by one junction in the same way are one row
     let mut pinned: BTreeSet<Vec<(usize, u64)>> = BTreeSet::new();
     let mut added = false;
-    for crossing in crossings {
-        let (Some(upper), Some(lower)) = (
-            place_near(model, net, crossing.at, &crossing.upper),
-            place_near(model, net, crossing.at, &crossing.lower),
-        ) else {
-            continue;
-        };
+    for (crossing, upper, lower) in placed {
         let (Some(deck), Some(low)) = (height_at(model, &upper), height_at(model, &lower)) else {
             continue;
         };
@@ -951,7 +969,7 @@ pub(crate) fn add_clearances(
                 .chains
                 .get(lower.chain)
                 .and_then(|mc| mc.heights.get(var))
-                .filter(|height| !height.terms.is_empty())
+                .filter(|height| height.terms.iter().any(|(k, _)| !held.contains(k)))
             else {
                 continue;
             };
