@@ -52,6 +52,11 @@ const ROUNDS: usize = 30;
 const REFERENCE_M: f64 = 12.5;
 /// The smallest spacing the second difference is built on.
 const MIN_STENCIL_M: f64 = 1.0;
+
+/// Joints of a chain closer together than this (along the chain) are one variable: the overlapped straights of
+/// the placement put two joints a few centimetres apart, which the pieces (draped on the terrain, not pitched)
+/// cannot tell apart, and which the checks would read as a grade and a bend of hundreds of times the limit.
+pub const MERGE_JOINT_M: f64 = 1.0;
 /// Weight of the second difference against the terrain heights.
 const SMOOTHNESS: f64 = 30.0;
 
@@ -204,12 +209,39 @@ struct Chain {
     deck: Vec<Option<DeckEnds>>,
 }
 
-fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
+/// The chain of the roads `roads`, with joints less than [`MERGE_JOINT_M`] apart merged into one variable
+/// (never into a bridge deck's variable, nor across joints held to two different junctions).
+fn chain_of(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    cell: f64,
+    junctions: &Junctions,
+) -> Option<Chain> {
+    let plain = build_chain(net, roads, None)?;
+    let close = plain
+        .joints
+        .windows(2)
+        .any(|w| matches!(w, [a, b] if (b.0 - a.0).hypot(b.1 - a.1) < MERGE_JOINT_M));
+    if !close {
+        return Some(plain);
+    }
+    let held = holds::joint_junctions(net, &plain, roads, cell, junctions);
+    build_chain(net, roads, Some(&held))
+}
+
+/// [`chain_of`] with `merge` (the junction each joint is held to) deciding what is merged; `None` merges nothing.
+fn build_chain(
+    net: &PlacedNetwork,
+    roads: &[usize],
+    merge: Option<&[Option<usize>]>,
+) -> Option<Chain> {
     let first = net.roads.get(*roads.first()?)?;
     let mut joints = vec![(first.start.x, first.start.y, 0)];
     let mut at = vec![(first.start.x, first.start.y)];
     let mut spacing = Vec::new();
     let mut deck: Vec<Option<DeckEnds>> = vec![None];
+    // the joint that opened the last variable, and the way along the chain from it
+    let (mut opener, mut since) = (0_usize, 0.0_f64);
     for &i in roads {
         let r = net.roads.get(i)?;
         // the run between the joints, not the length of the piece: a piece that starts a little before or after
@@ -234,10 +266,25 @@ fn chain_of(net: &PlacedNetwork, roads: &[usize]) -> Option<Chain> {
                 *ends = Some((start, (r.end.x, r.end.y)));
             }
         } else {
-            joints.push((r.end.x, r.end.y, at.len()));
-            at.push((r.end.x, r.end.y));
-            deck.push(None);
-            spacing.push(length);
+            let var = at.len() - 1;
+            let joint = joints.len();
+            let mergeable = merge.is_some_and(|held| {
+                let opener_hold = held.get(opener).copied().flatten();
+                let joint_hold = held.get(joint).copied().flatten();
+                since + length < MERGE_JOINT_M
+                    && deck.get(var).is_some_and(Option::is_none)
+                    && !matches!((opener_hold, joint_hold), (Some(first), Some(second)) if first != second)
+            });
+            if mergeable {
+                since += length;
+                joints.push((r.end.x, r.end.y, var));
+            } else {
+                joints.push((r.end.x, r.end.y, at.len()));
+                at.push((r.end.x, r.end.y));
+                deck.push(None);
+                spacing.push(length);
+                (opener, since) = (joint, 0.0);
+            }
         }
     }
     Some(Chain {
@@ -1039,7 +1086,7 @@ fn profile_chain(
         side,
         floors,
     } = *given;
-    let chain = chain_of(net, roads)?;
+    let chain = chain_of(net, roads, f64::from(hm.cell_m), junctions)?;
     let first = net.roads.get(*roads.first()?)?;
     let family = first.family;
     let spacing = chain.spacing.clone();
@@ -1374,7 +1421,7 @@ fn junction_floors(
     let mut floors: Vec<(usize, f64)> = Vec::new();
     for deck in decks {
         for roads in &net.chains {
-            let Some(chain) = chain_of(net, roads) else {
+            let Some(chain) = chain_of(net, roads, f64::from(hm.cell_m), junctions) else {
                 continue;
             };
             let is_deck = |k: usize| {

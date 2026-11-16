@@ -2121,3 +2121,98 @@ fn two_junctions_14_m_apart_on_a_slope_leave_the_road_drivable() {
         );
     }
 }
+
+/// A chain of a 12.5 m straight, a straight whose end lies `second_end` m along, and 25 m pieces after it, on a
+/// plane that rises 5 %.
+fn overlapped_straights(second_end: f64) -> (PlacedNetwork, Heightmap) {
+    let hm = terrain(128, 6.25, |_, y| 100.0 + 0.05 * y);
+    let mut roads = vec![
+        piece(
+            "a",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 100.0),
+            (100.0, 112.5),
+        ),
+        piece(
+            "a",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, second_end - 6.25),
+            (100.0, second_end),
+        ),
+    ];
+    roads.extend(straight(
+        "a",
+        Family::Asf3,
+        (100.0, second_end),
+        (100.0, second_end + 50.0),
+    ));
+    (network(vec![roads]), hm)
+}
+
+#[test]
+fn an_overlapped_straight_gives_one_variable() {
+    // the second straight ends 0.25 m after the first
+    let (net, hm) = overlapped_straights(112.75);
+    let p = solve(&net, &hm);
+    let j = &p.strips[0].joints;
+    assert!((j[1].2 - j[2].2).abs() < 1e-9, "{} {}", j[1].2, j[2].2);
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}
+
+#[test]
+fn joints_a_metre_apart_stay_two_variables() {
+    // exactly 1.0 m: not merged. On ground with a step between them the two heights differ.
+    let hm = terrain(128, 6.25, |_, y| if y < 113.0 { 100.0 } else { 100.6 });
+    let (net, _) = overlapped_straights(113.5);
+    let p = solve(&net, &hm);
+    let j = &p.strips[0].joints;
+    assert!((j[1].2 - j[2].2).abs() > 1e-6, "{} {}", j[1].2, j[2].2);
+}
+
+#[test]
+fn a_merge_does_not_cross_a_held_joint() {
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let mut roads = vec![
+        piece(
+            "a",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 100.0),
+            (100.0, 112.5),
+        ),
+        piece(
+            "a",
+            1,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (100.0, 112.5),
+            (100.0, 112.8),
+        ),
+    ];
+    roads.extend(straight("a", Family::Asf3, (100.0, 112.8), (100.0, 200.0)));
+    let net = network(vec![roads]);
+    let junction = |y: f64, height: f64| Junction {
+        at: (100.0, y),
+        kind: JunctionKind::Join,
+        ground: 100.0,
+        height,
+        rank: 3,
+        patch_m: 0.1,
+        stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
+    };
+    let junctions = Junctions {
+        points: vec![junction(112.5, 100.5), junction(112.8, 101.5)],
+        ..Junctions::default()
+    };
+    let p = solve_profiles(&net, &hm, &junctions, &[]);
+    let j = &p.strips[0].joints;
+    assert!((j[1].2 - 100.5).abs() < 1e-6, "{}", j[1].2);
+    assert!((j[2].2 - 101.5).abs() < 1e-6, "{}", j[2].2);
+}

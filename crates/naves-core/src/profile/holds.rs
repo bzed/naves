@@ -99,7 +99,7 @@ fn holds_of(
     junctions: &Junctions,
     check: bool,
 ) -> Vec<((f64, f64), Option<Hold>)> {
-    let Some(chain) = chain_of(net, roads) else {
+    let Some(chain) = chain_of(net, roads, cell, junctions) else {
         return Vec::new();
     };
     let half_width = roads
@@ -111,6 +111,26 @@ fn holds_of(
         .joints
         .iter()
         .map(|j| ((j.0, j.1), held.get(j.2).copied().flatten()))
+        .collect()
+}
+
+/// The junction each joint of `chain` is held to, if any.
+pub(super) fn joint_junctions(
+    net: &PlacedNetwork,
+    chain: &Chain,
+    roads: &[usize],
+    cell: f64,
+    junctions: &Junctions,
+) -> Vec<Option<usize>> {
+    let half_width = roads
+        .first()
+        .and_then(|i| net.roads.get(*i))
+        .map_or(0.0, |r| r.width / 2.0);
+    let held = junction_heights(net, chain, roads, half_width, cell, junctions, true);
+    chain
+        .joints
+        .iter()
+        .map(|j| held.get(j.2).copied().flatten().map(|h| h.junction))
         .collect()
 }
 

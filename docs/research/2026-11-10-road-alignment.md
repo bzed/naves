@@ -1739,3 +1739,24 @@ still counts a tilted run of held joints as a flat end, so it overstates H2 afte
 around overlays and joins), the side roads' inward joints stay level across the through road, so H2 between a side
 road's two junctions is untouched (most of the 455 H2 findings that remained after `1034db4` have an `Inward` hold
 next to them), and a junction steeper than 8 percent keeps a bend at its ends. Not checked in the game.
+
+**Result of fix 2 (joints less than a metre apart are one variable, 2026-11-16).** The profile builds its variables
+per joint; now a joint whose way along the chain from the joint that opened the current variable is less than
+`MERGE_JOINT_M` (1.0 m, equal to `MIN_STENCIL_M`) joins that variable, which keeps the position of the joint that
+opened it. A merge does not enter a bridge deck's variable and does not join two joints held to two different junctions.
+The pieces drape on the terrain, so nothing changes in the export; the checks, which read the strip's joints, now see
+equal heights at the merged joints. Measured at 2048 (`/var/tmp/naves-roadlook/t13/ra.log`, against round 1 of fix 1):
+
+| Finding | Round 1 | Fix 2 |
+|---|---|---|
+| `road_grade` | 1493 (1132 bends, 361 grades) | **1083** (751 bends, 332 grades) |
+| `road_not_drivable` | 206 | 208 |
+| `road_misses_terrain` | 4612 | 4599 |
+| `road_gap` | 347 | 347 |
+| `road_conflict` | 1041 | 1028 |
+| `join_without_junction` | 65 | 65 |
+| `junction_too_steep` | 7 | 8 |
+
+`road_grade` falls by 410, more than the 280 expected (the overlap class and a share of the free-joint class F1); the
+others stay within the noise of about 30. What is left of 9.8: H1 to H3 (a hold on one side), the free joints F1 and F3,
+and the bridge decks (class D); the joint height solve plan takes them.
