@@ -10,19 +10,47 @@
 //!
 //! Heading and coordinate conventions are those of [`crate::roadfit`].
 
+use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
 use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
-use crate::roadfit::{EndGoal, FitError, FitPiece, GAP_TOLERATED_M, Pose, fit_line};
-use crate::roadnet::{Chain, RoadGraph, chains};
+use crate::roadfit::{
+    EndGoal, FitError, FitPiece, GAP_CLOSED_M, GAP_TOLERATED_M, KINK_TOLERATED_DEG, Pose, fit_line,
+};
+use crate::roadnet::{Chain, Ring, RoadGraph, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
 const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
-/// A side road without a junction piece ends this far inside the through road's edge.
+/// The steps in which a junction is tried along its through road when a road cannot close against it.
+pub const JUNCTION_SHIFT_STEP_M: f64 = 6.25;
+/// The furthest a junction is moved from its crossing.
+pub const JUNCTION_SHIFT_MAX_M: f64 = 25.0;
+/// The number of steps up to [`JUNCTION_SHIFT_MAX_M`] on each side.
+const JUNCTION_SHIFT_STEPS: u32 = 4;
+/// A road that ends under another one reaches this far under its edge (but not past half its width: the
+/// centre line is never crossed).
 const SIDE_OVERLAP_M: f64 = 2.0;
+/// The end of a road under another one is at least this far from the other road's centre line.
+const MIN_UNDER_M: f64 = 0.1;
+/// Where the free end of a fit lands cannot be steered exactly (the pieces are 6.25 m and longer), so the
+/// cut is tried at these fractions of the top road's half width until the end lies under its edge.
+const CUT_TRIES: [f64; 5] = [1.0, 0.75, 0.5, 0.25, 0.1];
+/// Where roads meet without a junction piece, the surface of the lower road is this far below the surface of
+/// the higher road, so that the two do not flicker where they overlap.
+pub const OVERLAY_DROP_M: f64 = 0.05;
+/// A deck slides this far along its line, at most [`BRIDGE_SLIDE_STEPS`] times each way, to let the road close on it.
+const BRIDGE_SLIDE_STEP_M: f64 = 0.25;
+/// See [`BRIDGE_SLIDE_STEP_M`]: 2.5 m each way at most, a tenth of a bridge model. The line puts the deck's ends on
+/// the banks; a deck slid by metres has one end over the gap and the other on the ground beyond (research 9.6).
+const BRIDGE_SLIDE_STEPS: u32 = 10;
+/// A deck is laid on its chord only if the road, fitted to the deck's own place, arrives within this of the
+/// chord's heading: the arcs leave a degree or two, a larger error is a road that turns into the bridge (a span
+/// on a curve), and forcing it onto the chord puts a tight turn right before the deck (research 9.6).
+const BRIDGE_TURN_MAX_DEG: f64 = 2.5;
 /// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
 pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 /// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
@@ -142,6 +170,16 @@ pub struct RoadGap {
     pub heading_error_deg: f64,
 }
 
+/// A place where roads meet without a junction piece and the higher road runs on over the lower one: the
+/// lower road ends (or is interrupted) under the higher road's edge, `OVERLAY_DROP_M` below its surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overlay {
+    /// The crossing, in map metres.
+    pub at: (f64, f64),
+    /// The ids of the stretches of the lower roads that end or are interrupted here.
+    pub lower: Vec<String>,
+}
+
 /// Everything that is placed, and what could not be.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlacedNetwork {
@@ -149,14 +187,22 @@ pub struct PlacedNetwork {
     pub roads: Vec<PlacedRoad>,
     /// Stretches that miss what they had to meet.
     pub gaps: Vec<RoadGap>,
-    /// Crossings where roads meet without a junction piece.
+    /// Crossings where roads meet without a junction piece and no road can lie on top of the others (no
+    /// through road passes: the roads all end there).
     pub joins_without_junction: Vec<(f64, f64)>,
+    /// Crossings where roads meet without a junction piece and the lower roads end under the higher one.
+    pub overlays: Vec<Overlay>,
     /// Tunnel stretches that got no pieces, with their first point.
     pub tunnels_omitted: Vec<(String, (f64, f64))>,
     /// Indices into `roads`, in driving order, one list per placed run of a chain.
     pub chains: Vec<Vec<usize>>,
     /// Things worth knowing that did not stop the placement.
     pub warnings: Vec<String>,
+    /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
+    pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
+    /// The roundabouts that are placed as a closed loop (the others, smaller than the tightest arc of their
+    /// family, are ordinary crossings).
+    pub rings: Vec<crate::roadnet::Ring>,
 }
 
 /// Why the network could not be placed.
@@ -172,6 +218,9 @@ pub enum PlaceError {
     },
 }
 
+/// How far the junctions are moved along their through roads, by the `(chain, link)` of their plan.
+type Shifts = BTreeMap<(usize, usize), f64>;
+
 /// A stretch end: the stretch and whether the end is its stored start.
 type Arm = (usize, bool);
 
@@ -181,9 +230,29 @@ struct Plan<'a> {
     /// Between link `link` and link `link + 1`.
     link: usize,
     point: (f64, f64),
-    junction: &'a Junction,
+    junction: Cow<'a, Junction>,
     /// The side arms and whether each leaves to the right of the direction of travel.
     sides: Vec<(Arm, bool)>,
+}
+
+/// An X junction turned by 90 degrees: its side ports become the through ports and the other way round.
+fn swapped(j: &Junction) -> Junction {
+    let turn = |p: &Port| Port {
+        heading: wrap(p.heading + PI),
+        ..*p
+    };
+    let mut ports = j.side_ports.iter();
+    let (Some(a), Some(b)) = (ports.next(), ports.next()) else {
+        return j.clone();
+    };
+    Junction {
+        model: j.model.clone(),
+        through: j.side,
+        side: j.through,
+        start: turn(a),
+        end: *b,
+        side_ports: vec![turn(&j.start), j.end],
+    }
 }
 
 fn wrap(a: f64) -> f64 {
@@ -317,6 +386,15 @@ impl Polyline {
     }
 }
 
+/// How far the end of a fit that arrives under another road misses the window under that road's edge: 0 when
+/// the end lies between [`MIN_UNDER_M`] and `edge` short of the crossing at the end of `line`, measured along
+/// the road. Not the Euclidean distance: a fit can overshoot its path, and an end past the crossing projects
+/// onto the end of the line, which is a miss.
+fn end_violation(line: &Polyline, end: Pose, edge: f64) -> f64 {
+    let d = line.total() - line.project((end.x, end.y));
+    (d - edge).max(MIN_UNDER_M - d).max(0.0)
+}
+
 /// A forced element of a run.
 enum Event {
     /// A junction piece, by index into the plans.
@@ -353,6 +431,8 @@ struct Placer<'a> {
     chains: Vec<Chain>,
     /// For each stretch, the chain that holds it.
     chain_of: Vec<usize>,
+    /// Whether a chain is a placed roundabout: it lies on top of every road that meets it and closes on itself.
+    ring_chain: Vec<bool>,
     /// The live (not tunnel) stretch ends at each node.
     arms_at: BTreeMap<i64, Vec<Arm>>,
     plans: Vec<Plan<'a>>,
@@ -364,8 +444,23 @@ struct Placer<'a> {
     fixed: BTreeMap<Arm, Pose>,
     /// How much of the end of a side arm to leave out, because it ends on a through road without junction.
     trim: BTreeMap<Arm, f64>,
+    /// The half width of the road that a trimmed arm ends under: the end has to lie within it.
+    edge: BTreeMap<Arm, f64>,
+    /// Link boundaries `(chain, k)` between link `k` and `k + 1` where the chain is interrupted: it is the
+    /// lower road at an overlay and the higher road lies across it.
+    cuts: BTreeSet<(usize, usize)>,
+    overlay_points: BTreeSet<(u64, u64)>,
     out: PlacedNetwork,
     joins: BTreeSet<(u64, u64)>,
+    /// How far each junction is moved along its through road, by `(chain, link)` of its plan.
+    shifts: Shifts,
+    /// The junction a fixed side arm starts at.
+    fixed_from: BTreeMap<Arm, (usize, usize)>,
+    /// The shifts found for junctions whose side road did not close, by `(chain, link)` of their plan: what
+    /// the next placement is asked to do.
+    found: Shifts,
+    /// How far the through road's fit ended from the goal before each junction, by `(chain, link)`.
+    through_gaps: Shifts,
 }
 
 fn bits(p: (f64, f64)) -> (u64, u64) {
@@ -373,8 +468,27 @@ fn bits(p: (f64, f64)) -> (u64, u64) {
 }
 
 impl<'a> Placer<'a> {
-    fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog) -> Self {
-        let chains = chains(graph);
+    fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog, shifts: Shifts) -> Self {
+        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads
+        let rings: Vec<Ring> = rings(graph)
+            .into_iter()
+            .filter(|r| {
+                catalog
+                    .tightest_arc(r.family)
+                    .is_some_and(|tightest| r.radius >= tightest)
+            })
+            .collect();
+        let chains = chains_with(graph, &rings);
+        let ring_stretches: BTreeSet<usize> = rings
+            .iter()
+            .flat_map(|r| r.stretches.iter().copied())
+            .collect();
+        let ring_chain: Vec<bool> = chains
+            .iter()
+            .map(|c| {
+                !c.links.is_empty() && c.links.iter().all(|l| ring_stretches.contains(&l.stretch))
+            })
+            .collect();
         let mut chain_of = vec![0; graph.stretches.len()];
         for (c, chain) in chains.iter().enumerate() {
             for link in &chain.links {
@@ -397,14 +511,43 @@ impl<'a> Placer<'a> {
             catalog,
             chains,
             chain_of,
+            ring_chain,
             arms_at,
             plans: Vec::new(),
             plan_index: BTreeMap::new(),
             needs,
             fixed: BTreeMap::new(),
             trim: BTreeMap::new(),
-            out: PlacedNetwork::default(),
+            edge: BTreeMap::new(),
+            cuts: BTreeSet::new(),
+            overlay_points: BTreeSet::new(),
+            out: PlacedNetwork {
+                rings,
+                ..PlacedNetwork::default()
+            },
             joins: BTreeSet::new(),
+            shifts,
+            fixed_from: BTreeMap::new(),
+            found: BTreeMap::new(),
+            through_gaps: BTreeMap::new(),
+        }
+    }
+
+    fn is_ring(&self, chain: usize) -> bool {
+        self.ring_chain.get(chain).copied().unwrap_or(false)
+    }
+
+    /// Whether the road of chain `side` lies on top of the road of chain `through` where they meet without a
+    /// junction piece: a ring over everything, else [`overlay_rank`].
+    fn lies_over(&self, side: usize, through: usize) -> bool {
+        match (self.is_ring(side), self.is_ring(through)) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => self
+                .chains
+                .get(side)
+                .zip(self.chains.get(through))
+                .is_some_and(|(a, b)| overlay_rank(a, b, self.graph) == Ordering::Less),
         }
     }
 
@@ -487,8 +630,16 @@ impl<'a> Placer<'a> {
             };
             let line = self.polyline(c, 0, chain.links.len().saturating_sub(1));
             let mut last_junction: Option<f64> = None;
-            for i in 0..chain.links.len().saturating_sub(1) {
-                let (Some(a), Some(b)) = (chain.links.get(i), chain.links.get(i + 1)) else {
+            // a ring has one more crossing: where it closes
+            let closed = self.is_ring(c);
+            let crossings = if closed {
+                chain.links.len()
+            } else {
+                chain.links.len().saturating_sub(1)
+            };
+            for i in 0..crossings {
+                let next = (i + 1) % chain.links.len().max(1);
+                let (Some(a), Some(b)) = (chain.links.get(i), chain.links.get(next)) else {
                     continue;
                 };
                 let exit: Arm = (a.stretch, a.reversed);
@@ -508,7 +659,11 @@ impl<'a> Placer<'a> {
                 if sides.is_empty() {
                     continue;
                 }
-                let s_cross = line.link_start.get(i + 1).copied().unwrap_or(0.0);
+                let s_cross = if next == 0 {
+                    line.total()
+                } else {
+                    line.link_start.get(next).copied().unwrap_or(0.0)
+                };
                 let point = line.pose_at(s_cross);
                 let at = (point.x, point.y);
                 let too_close = last_junction.is_some_and(|l| s_cross - l < JUNCTION_SPACING_M);
@@ -518,7 +673,7 @@ impl<'a> Placer<'a> {
                         .get(*i)
                         .is_some_and(|s| s.tunnel || s.bridge)
                 });
-                let plan = if too_close || beside_bridge {
+                let plan = if too_close || beside_bridge || closed {
                     None
                 } else {
                     self.plan_junction(c, i, at, point.heading, &chain, &sides)
@@ -539,8 +694,7 @@ impl<'a> Placer<'a> {
                         .or_insert(self.plans.len());
                     self.plans.push(plan);
                 } else {
-                    self.join(at);
-                    self.trim_sides(&chain, i, &sides);
+                    self.overlay_at(c, i, at, &sides, true);
                 }
             }
         }
@@ -559,6 +713,9 @@ impl<'a> Placer<'a> {
         self.out
             .joins_without_junction
             .sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        self.out
+            .overlays
+            .sort_by(|a, b| a.at.0.total_cmp(&b.at.0).then(a.at.1.total_cmp(&b.at.1)));
     }
 
     fn node_of(&self, arm: Arm) -> i64 {
@@ -578,17 +735,117 @@ impl<'a> Placer<'a> {
         .copied()
     }
 
-    /// Side arms that end on a through road without junction piece stop at the edge of the through road.
-    fn trim_sides(&mut self, chain: &Chain, boundary: usize, sides: &[Arm]) {
-        let Some(link) = chain.links.get(boundary) else {
+    /// How far from the crossing a road that ends under a road of half width `half` stops: 2 m inside its
+    /// edge, but not nearer to the centre line than half of `half`.
+    fn cut_depth(half: f64) -> f64 {
+        (half - SIDE_OVERLAP_M).max(half / 2.0)
+    }
+
+    /// Notes that the end of `arm` lies under a road of half width `half`: it stops [`Self::cut_depth`]
+    /// from the crossing. A bridge is not shortened.
+    fn end_under(&mut self, arm: Arm, half: f64) {
+        if self.graph.stretches.get(arm.0).is_some_and(|s| s.bridge) {
+            return;
+        }
+        self.trim.insert(arm, Self::cut_depth(half));
+        self.edge.insert(arm, half);
+    }
+
+    fn stretch_id(&self, stretch: usize) -> Option<String> {
+        self.graph.stretches.get(stretch).map(|s| s.id.clone())
+    }
+
+    /// Roads that meet at a crossing of the chain `c` (between its links `boundary` and `boundary + 1`)
+    /// where the game has no junction piece: the road that lies on top runs on, the others end under its
+    /// edge. Where the side roads are all the higher ones and cross the chain, the chain is interrupted
+    /// (`may_cut`); otherwise a higher road that ends on it lies on top of it and the chain runs on.
+    fn overlay_at(
+        &mut self,
+        c: usize,
+        boundary: usize,
+        at: (f64, f64),
+        sides: &[Arm],
+        may_cut: bool,
+    ) {
+        let Some(chain) = self.chains.get(c).cloned() else {
             return;
         };
-        let family = self.graph.stretches.get(link.stretch).map(|s| s.family);
-        let amount = family.map_or(0.0, |f| {
-            (self.family_width(f) / 2.0 - SIDE_OVERLAP_M).max(0.0)
-        });
-        for arm in sides {
-            self.trim.insert(*arm, amount);
+        let next = (boundary + 1) % chain.links.len().max(1);
+        let (Some(a), Some(b)) = (chain.links.get(boundary), chain.links.get(next)) else {
+            return;
+        };
+        let exit: Arm = (a.stretch, a.reversed);
+        let entry: Arm = (b.stretch, !b.reversed);
+        let half_of = |this: &Self, stretch: usize| {
+            this.graph
+                .stretches
+                .get(stretch)
+                .map_or(0.0, |s| this.family_width(s.family) / 2.0)
+        };
+        let outranks = |this: &Self, arm: Arm| {
+            let d = this.chain_of.get(arm.0).copied().unwrap_or(c);
+            d != c && this.lies_over(d, c)
+        };
+        let plain = |this: &Self, stretch: usize| {
+            this.graph
+                .stretches
+                .get(stretch)
+                .is_some_and(|s| !s.bridge && !s.tunnel)
+        };
+        let mut lower: Vec<String> = Vec::new();
+        // the higher roads cross only when they leave on opposite sides; two on one side are a fork,
+        // and cutting the chain there would leave a hole on the far side
+        let through = self.leaving_heading(entry);
+        let side_of = |this: &Self, arm: Arm| (this.leaving_heading(arm) - through).sin() > 0.0;
+        let crossing = sides.len() == 2
+            && sides
+                .first()
+                .zip(sides.get(1))
+                .is_some_and(|(p, q)| side_of(self, *p) != side_of(self, *q))
+            && sides.iter().all(|arm| outranks(self, *arm))
+            && plain(self, a.stretch)
+            && plain(self, b.stretch);
+        if may_cut && crossing {
+            // the higher road crosses: this road stops under its edge on both sides
+            let half = sides
+                .iter()
+                .map(|arm| half_of(self, arm.0))
+                .fold(0.0, f64::max);
+            for arm in [exit, entry] {
+                self.end_under(arm, half);
+            }
+            self.cuts.insert((c, boundary));
+            lower.extend(
+                [self.stretch_id(a.stretch), self.stretch_id(b.stretch)]
+                    .into_iter()
+                    .flatten(),
+            );
+        } else {
+            // this road runs on: the side roads end on it (on top of it if they are the higher ones)
+            let half = half_of(self, a.stretch);
+            let mut under = false;
+            for arm in sides {
+                self.end_under(*arm, half);
+                if self.chain_of.get(arm.0) == Some(&c) {
+                    // the other end of this very chain (a ring): it is not another road
+                } else if outranks(self, *arm) {
+                    under = true;
+                } else {
+                    lower.extend(self.stretch_id(arm.0));
+                }
+            }
+            if under {
+                lower.extend(
+                    [self.stretch_id(a.stretch), self.stretch_id(b.stretch)]
+                        .into_iter()
+                        .flatten(),
+                );
+            }
+        }
+        lower.sort();
+        lower.dedup();
+        if self.overlay_points.insert(bits(at)) {
+            self.out.overlays.push(Overlay { at, lower });
         }
     }
 
@@ -609,12 +866,18 @@ impl<'a> Placer<'a> {
         let arm_side = |arm: Arm| (self.leaving_heading(arm) - through_heading).sin() > 0.0;
         let family_of = |arm: Arm| self.graph.stretches.get(arm.0).map(|s| s.family);
         let junction = match sides {
-            [one] => self.catalog.t_junction(through, family_of(*one)?)?,
+            [one] => Cow::Borrowed(self.catalog.t_junction(through, family_of(*one)?)?),
             [one, two] => {
                 if family_of(*one)? != family_of(*two)? || arm_side(*one) == arm_side(*two) {
                     return None;
                 }
-                self.catalog.x_junction(through, family_of(*one)?)?
+                let cross = family_of(*one)?;
+                match self.catalog.x_junction(through, cross) {
+                    Some(j) => Cow::Borrowed(j),
+                    // an X looks the same either way round: the piece with the roles swapped,
+                    // turned so that its through ports lie on the crossing arms
+                    None => Cow::Owned(swapped(self.catalog.x_junction(cross, through)?)),
+                }
             }
             _ => return None,
         };
@@ -680,7 +943,7 @@ impl<'a> Placer<'a> {
                 continue;
             }
             let mut last = first;
-            while last + 1 < links && !tunnel(last + 1) {
+            while last + 1 < links && !tunnel(last + 1) && !self.cuts.contains(&(c, last)) {
                 last += 1;
             }
             self.place_unit(c, first, last)?;
@@ -747,7 +1010,14 @@ impl<'a> Placer<'a> {
         let entry_arm: Arm = (head.stretch, !head.reversed);
         let exit_arm: Arm = (tail.stretch, tail.reversed);
         let (start_node, end_node) = (self.node_of(entry_arm), self.node_of(exit_arm));
-        let ring = links.len() == 1 && start_node == end_node && self.live_arms(start_node) == 2;
+        let whole_ring = self.is_ring(c)
+            && first == 0
+            && self
+                .chains
+                .get(c)
+                .is_some_and(|ch| ch.links.len() == links.len());
+        let ring = start_node == end_node
+            && (whole_ring || (links.len() == 1 && self.live_arms(start_node) == 2));
         let total = line.total();
         let trim_start = self.trim.get(&entry_arm).copied().unwrap_or(0.0);
         let trim_end = self.trim.get(&exit_arm).copied().unwrap_or(0.0);
@@ -756,6 +1026,31 @@ impl<'a> Placer<'a> {
         let cap_start = fixed_start.is_none() && start_node >= 0 && self.live_arms(start_node) == 1;
         let cap_end = fixed_end.is_none() && end_node >= 0 && self.live_arms(end_node) == 1;
         let width = self.pieces(family).first().map_or(0.0, |p| p.width);
+        let only_roads = links.iter().all(|l| {
+            self.graph
+                .stretches
+                .get(l.stretch)
+                .is_some_and(|s| !s.bridge)
+        });
+        if only_roads
+            && !ring
+            && fixed_start.is_none()
+            && fixed_end.is_none()
+            && trim_start + trim_end > 0.0
+            && total - trim_start - trim_end < width / 2.0
+        {
+            // what is left of the road between the roads it ends under is hardly longer than a piece is wide
+            let id = self
+                .graph
+                .stretches
+                .get(head.stretch)
+                .map(|s| s.id.clone())
+                .unwrap_or_default();
+            self.out.warnings.push(format!(
+                "stretch {id} is {total:.1} m long and ends under other roads: it is shorter than half its width and not placed"
+            ));
+            return Ok(());
+        }
 
         let mut items: Vec<Item> = Vec::new();
         let start_pose = fixed_start.unwrap_or_else(|| line.pose_at(trim_start));
@@ -800,11 +1095,12 @@ impl<'a> Placer<'a> {
             }
         }
         // the forced elements of the run, in order: junctions and bridges
+        let crossings = self.crossings(c, first, last, &line);
         let mut events: Vec<(f64, Event)> = (first..last)
             .filter_map(|k| self.plan_at(c, k))
             .filter_map(|plan_id| {
                 let plan = self.plans.get(plan_id)?;
-                let s_cross = line.link_start.get(plan.link + 1 - first).copied()?;
+                let s_cross = crossings.get(&plan_id).copied()?;
                 Some((
                     s_cross - plan.junction.half_length(),
                     Event::Junction(plan_id),
@@ -820,18 +1116,20 @@ impl<'a> Placer<'a> {
         }
         events.sort_by(|x, y| x.0.total_cmp(&y.0));
         let mut dropped: Vec<usize> = Vec::new();
-        for (_, event) in events {
+        let starts: Vec<f64> = events.iter().map(|e| e.0).collect();
+        for (i, (s_event, event)) in events.into_iter().enumerate() {
             let plan_id = match event {
                 Event::Junction(plan_id) => plan_id,
                 Event::Bridge(k) => {
                     let placed = self.place_bridge(
                         &line,
-                        c,
+                        (c, first),
                         k - first,
                         family,
                         drivable,
                         &mut pose,
                         &mut s_cur,
+                        starts.get(i + 1).copied().unwrap_or_else(|| line.total()) - s_event - 1.0,
                     )?;
                     for p in &placed.fit {
                         let s = line.project((
@@ -847,10 +1145,14 @@ impl<'a> Placer<'a> {
                     continue;
                 }
             };
-            let Some((k, junction)) = self.plans.get(plan_id).map(|p| (p.link, p.junction)) else {
+            let Some((k, junction)) = self
+                .plans
+                .get(plan_id)
+                .map(|p| (p.link, p.junction.clone()))
+            else {
                 continue;
             };
-            let s_cross = line.link_start.get(k + 1 - first).copied().unwrap_or(0.0);
+            let s_cross = crossings.get(&plan_id).copied().unwrap_or(0.0);
             let half = junction.half_length();
             let s_goal = s_cross - half;
             let stretch_id = links
@@ -863,6 +1165,11 @@ impl<'a> Placer<'a> {
                 let goal = line.pose_at(s_goal);
                 let (pieces, end) =
                     self.fit_part(&path, pose, EndGoal::Fixed(goal), family, &stretch_id)?;
+                if let Some(plan) = self.plans.get(plan_id) {
+                    let key = (plan.chain, plan.link);
+                    self.through_gaps
+                        .insert(key, (end.x - goal.x).hypot(end.y - goal.y));
+                }
                 for p in &pieces {
                     let s = line.project((
                         f64::midpoint(p.start.x, p.end.x),
@@ -877,7 +1184,18 @@ impl<'a> Placer<'a> {
             let Some(plan) = self.plans.get(plan_id) else {
                 continue;
             };
-            let placed = Self::place_junction(plan, pose, line.pose_at(s_cross).heading);
+            let crossing = line
+                .link_start
+                .get(k + 1 - first)
+                .copied()
+                .unwrap_or(s_cross);
+            let at = if (s_cross - crossing).abs() < 1e-9 {
+                plan.point
+            } else {
+                let moved = line.pose_at(s_cross);
+                (moved.x, moved.y)
+            };
+            let placed = Self::place_junction(plan, at, pose, line.pose_at(s_cross).heading);
             match placed {
                 Some((frame, flipped, exit)) => {
                     let (entry_port, exit_port) = if flipped {
@@ -894,8 +1212,10 @@ impl<'a> Placer<'a> {
                     items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
                     // the side ports become the fixed starts of the side roads
                     let ports = self.side_poses(plan_id, &frame);
+                    let key = (plan.chain, plan.link);
                     for (arm, port) in ports {
                         self.fixed.insert(arm, port);
+                        self.fixed_from.insert(arm, key);
                     }
                     pose = exit;
                     s_cur = s_cross + half;
@@ -908,10 +1228,8 @@ impl<'a> Placer<'a> {
                 let at = plan.point;
                 let sides: Vec<Arm> = plan.sides.iter().map(|s| s.0).collect();
                 let boundary = plan.link;
-                self.join(at);
-                if let Some(chain) = self.chains.get(c).cloned() {
-                    self.trim_sides(&chain, boundary, &sides);
-                }
+                // this chain is placed already: it cannot be interrupted any more
+                self.overlay_at(c, boundary, at, &sides, false);
             }
         }
         // the last part
@@ -939,9 +1257,60 @@ impl<'a> Placer<'a> {
             let s_end = (total - trim_end).max(s_cur);
             (line.slice(s_cur, s_end), EndGoal::Free)
         };
+        if trim_end > 0.0
+            && let Some(&edge) = self.edge.get(&exit_arm)
+            && !ring
+            && fixed_end.is_none()
+            && path.len() >= 2
+        {
+            // the road arrives under another one: the pieces cannot be steered to a metre, so the cut is
+            // moved until the last piece ends under the edge of the road above, short of its centre line
+            let mut best: Option<(f64, Vec<FitPiece>, Pose)> = None;
+            let depths =
+                std::iter::once(Self::cut_depth(edge)).chain(CUT_TRIES.iter().map(|f| edge * f));
+            for depth in depths {
+                let s_end = (total - depth).max(s_cur);
+                let mut trial = line.slice(s_cur, s_end);
+                trial.dedup();
+                if trial.len() < 2 {
+                    continue;
+                }
+                let (pieces, end) =
+                    self.fit_part(&trial, pose, EndGoal::Free, family, &stretch_id)?;
+                let violation = end_violation(&line, end, edge);
+                let better = best.as_ref().is_none_or(|(v, _, _)| violation < *v);
+                if better {
+                    best = Some((violation, pieces, end));
+                }
+                if violation <= 0.0 {
+                    break;
+                }
+            }
+            if let Some((_, pieces, end)) = best {
+                for p in &pieces {
+                    let s = line.project((
+                        f64::midpoint(p.start.x, p.end.x),
+                        f64::midpoint(p.start.y, p.end.y),
+                    ));
+                    items.push(make(p, PlacedKind::Piece, s, None));
+                }
+                pose = end;
+                path = Vec::new();
+            }
+        }
         if path.len() >= 2 && path.windows(2).any(|p| matches!(p, [a, b] if a != b)) {
             path.dedup();
+            let before = pose;
             let (pieces, end) = self.fit_part(&path, pose, goal, family, &stretch_id)?;
+            if let EndGoal::Fixed(arrive) = goal
+                && fixed_end.is_some()
+                && !ring
+            {
+                let gap = (end.x - arrive.x).hypot(end.y - arrive.y);
+                if gap > GAP_TOLERATED_M {
+                    self.repair_port(exit_arm, &path, before, family, gap);
+                }
+            }
             for p in &pieces {
                 let s = line.project((
                     f64::midpoint(p.start.x, p.end.x),
@@ -997,17 +1366,18 @@ impl<'a> Placer<'a> {
         Some((model, scale))
     }
 
-    /// Fits the road up to link `k` of the run and lays the bridge models along its chord.
+    /// Fits the road up to link `k` of the run (which starts at link `first` of chain `c`) and lays the bridge models along its chord.
     #[expect(clippy::too_many_arguments, reason = "the state of one run, passed on")]
     fn place_bridge(
         &mut self,
         line: &Polyline,
-        c: usize,
+        (c, first): (usize, usize),
         k: usize,
         family: Family,
         drivable: bool,
         pose: &mut Pose,
         s_cur: &mut f64,
+        deck_limit: f64,
     ) -> Result<PlacedBridge, PlaceError> {
         let mut out = PlacedBridge {
             fit: Vec::new(),
@@ -1025,23 +1395,28 @@ impl<'a> Placer<'a> {
         let id = self
             .chains
             .get(c)
-            .and_then(|ch| ch.links.get(k))
+            .and_then(|ch| ch.links.get(first + k))
             .and_then(|l| self.graph.stretches.get(l.stretch))
             .map(|s| s.id.clone())
             .unwrap_or_default();
         let Some((model, scale)) = self.choose_bridge(family, &id) else {
             return Ok(out);
         };
+        let length = model.length * scale;
+        let count = (chord / length).round().max(1.0);
         if s0 - *s_cur > 1.0 {
-            let path = line.slice(*s_cur, s0);
-            let goal = Pose {
-                x: p0.x,
-                y: p0.y,
-                heading,
-            };
-            let (pieces, end) = self.fit_part(&path, *pose, EndGoal::Fixed(goal), family, &id)?;
+            // the deck lies on its line; the approach closes on the deck's port
+            let (pieces, end, port) = self.fit_approach(
+                line,
+                (*s_cur, s0),
+                (p0, heading),
+                (count * length, deck_limit),
+                *pose,
+                family,
+                &id,
+            )?;
             out.fit = pieces;
-            *pose = end;
+            *pose = port.unwrap_or(end);
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
             pose.heading = heading;
         }
@@ -1051,8 +1426,6 @@ impl<'a> Placer<'a> {
             ..*port
         };
         let (model_start, model_end) = (scaled(&model.start), scaled(&model.end));
-        let length = model.length * scale;
-        let count = (chord / length).round().max(1.0);
         let mut laid = 0.0;
         while laid < count {
             let frame = Frame::through(&pose_of(&model_start), *pose);
@@ -1084,15 +1457,86 @@ impl<'a> Placer<'a> {
         Ok(out)
     }
 
+    /// Fits the road from `pose` up to the port of a deck that starts at `deck` (a point on the line of the
+    /// bridge, with the heading of its chord) at `s0`, `from_to` being where on the line the fit runs.
+    /// A fit ends a degree or two off a heading, and a deck laid along that heading leaves its line (3.5 m
+    /// over 100 m in the test of research 9.6): so the deck is laid on its line and slides along it in
+    /// [`BRIDGE_SLIDE_STEP_M`] steps, the shorter slide first and `+` before `-`, until the approach ends
+    /// within [`GAP_CLOSED_M`] and [`KINK_TOLERATED_DEG`] of the port. `reach` is the length of the deck and
+    /// the room after its start on the line (the deck does not slide into what follows). Returns the pieces,
+    /// the pose where they end and, if they closed on the port, the port, which is where the deck starts then.
+    /// If no slide closes, or the fit to the deck's own place arrives more than [`BRIDGE_TURN_MAX_DEG`] off the
+    /// chord (the road turns into the bridge), that fit is returned and the deck starts where it ends, as
+    /// before: a deck moved further would stand on other ground.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the state of one approach, passed on"
+    )]
+    fn fit_approach(
+        &mut self,
+        line: &Polyline,
+        from_to: (f64, f64),
+        deck: (Pose, f64),
+        reach: (f64, f64),
+        pose: Pose,
+        family: Family,
+        stretch: &str,
+    ) -> Result<(Vec<FitPiece>, Pose, Option<Pose>), PlaceError> {
+        let (s_cur, s0) = from_to;
+        let (p0, heading) = (deck.0, deck.1);
+        let at = |slide: f64| Pose {
+            x: p0.x + slide * heading.sin(),
+            y: p0.y + slide * heading.cos(),
+            heading,
+        };
+        'slides: for step in 0..=BRIDGE_SLIDE_STEPS {
+            for sign in [1.0, -1.0] {
+                if step == 0 && sign < 0.0 {
+                    continue;
+                }
+                let slide = sign * BRIDGE_SLIDE_STEP_M * f64::from(step);
+                let start_s = s0 + slide;
+                if start_s - s_cur <= 1.0 || (slide > 0.0 && slide + reach.0 > reach.1) {
+                    continue;
+                }
+                let goal = at(slide);
+                let path = line.slice(s_cur, start_s);
+                let fit = fit_line(&path, pose, EndGoal::Fixed(goal), self.pieces(family))
+                    .map_err(|source| PlaceError::Fit {
+                        stretch: stretch.to_string(),
+                        source,
+                    })?;
+                if fit.gap_m <= GAP_CLOSED_M && fit.heading_error_deg <= KINK_TOLERATED_DEG {
+                    let end = fit.pieces.last().map_or(pose, |p| p.end);
+                    return Ok((fit.pieces, end, Some(goal)));
+                }
+                if step == 0 && fit.heading_error_deg > BRIDGE_TURN_MAX_DEG {
+                    // the road arrives turned against the chord: the deck follows the road
+                    break 'slides;
+                }
+            }
+        }
+        // no slide closes: the deck stays at its place and starts where the approach ends
+        let (pieces, end) = self.fit_part(
+            &line.slice(s_cur, s0),
+            pose,
+            EndGoal::Fixed(at(0.0)),
+            family,
+            stretch,
+        )?;
+        Ok((pieces, end, None))
+    }
+
     /// Where a junction goes if its entry is at `at`, trying both ways round; the frame, whether it
     /// is flipped, and the pose where the through road leaves. `None` if it is more than the tolerance
     /// from the crossing.
     fn place_junction(
         plan: &Plan<'_>,
+        point: (f64, f64),
         at: Pose,
         through_heading: f64,
     ) -> Option<(Frame, bool, Pose)> {
-        let j = plan.junction;
+        let j = &*plan.junction;
         let mut best: Option<(Frame, bool, Pose, bool)> = None;
         for flipped in [false, true] {
             let (entry, exit) = if flipped {
@@ -1122,8 +1566,162 @@ impl<'a> Placer<'a> {
         };
         let a = frame.pose(&entry);
         let centre = (f64::midpoint(a.x, exit.x), f64::midpoint(a.y, exit.y));
-        let off = (centre.0 - plan.point.0).hypot(centre.1 - plan.point.1);
+        let off = (centre.0 - point.0).hypot(centre.1 - point.1);
         (off <= JUNCTION_TOLERANCE_M).then_some((frame, flipped, exit))
+    }
+
+    /// A side road that ends at the port of the junction `arm` starts from did not reach it (`gap` m short):
+    /// tries the junction at [`JUNCTION_SHIFT_STEP_M`] steps along its through road, up to
+    /// [`JUNCTION_SHIFT_MAX_M`] each way, `+` before `-`, refitting the end of the road (`path`, which ends
+    /// at the port, from `pose`) to the port the junction would have there. The first shift that closes
+    /// the road, else the one with the smallest gap, if it is smaller than `gap`, is noted in `found`
+    /// for the next placement. The junction is taken on the line of its through road, which the placed
+    /// junction follows to a fraction of a metre.
+    fn repair_port(&mut self, arm: Arm, path: &[(f64, f64)], pose: Pose, family: Family, gap: f64) {
+        let Some(&key) = self.fixed_from.get(&arm) else {
+            return;
+        };
+        if self.is_ring(key.0) || self.found.contains_key(&key) {
+            return;
+        }
+        let (Some(plan_id), Some(links), Some((_, rest))) = (
+            self.plan_at(key.0, key.1),
+            self.chains.get(key.0).map(|ch| ch.links.len()),
+            path.split_last(),
+        ) else {
+            return;
+        };
+        let Some(plan) = self.plans.get(plan_id) else {
+            return;
+        };
+        let line = self.polyline(key.0, 0, links.saturating_sub(1));
+        let (Some(s_cross), half) = (
+            line.link_start.get(key.1 + 1).copied(),
+            plan.junction.half_length(),
+        ) else {
+            return;
+        };
+        let mut best: Option<(f64, f64)> = None;
+        for step in 1..=JUNCTION_SHIFT_STEPS {
+            for sign in [1.0, -1.0] {
+                let shift = sign * JUNCTION_SHIFT_STEP_M * f64::from(step);
+                let moved = s_cross + shift;
+                if moved - half < 1.0 || moved + half > line.total() - 1.0 {
+                    continue;
+                }
+                let at = line.pose_at(moved);
+                let Some((frame, _, _)) = Self::place_junction(
+                    plan,
+                    (at.x, at.y),
+                    line.pose_at(moved - half),
+                    at.heading,
+                ) else {
+                    continue;
+                };
+                let Some(port) = self
+                    .side_poses(plan_id, &frame)
+                    .into_iter()
+                    .find(|(a, _)| *a == arm)
+                    .map(|(_, port)| port)
+                else {
+                    continue;
+                };
+                let arrive = Pose {
+                    heading: wrap(port.heading + PI),
+                    ..port
+                };
+                let mut trial = rest.to_vec();
+                trial.push((port.x, port.y));
+                // a fit that fails is no candidate
+                let Ok(fit) = fit_line(&trial, pose, EndGoal::Fixed(arrive), self.pieces(family))
+                else {
+                    continue;
+                };
+                let end = fit.pieces.last().map_or(pose, |p| p.end);
+                let missed = (end.x - arrive.x).hypot(end.y - arrive.y);
+                if best.is_none_or(|(g, _)| missed < g) {
+                    best = Some((missed, shift));
+                }
+                if missed <= GAP_TOLERATED_M {
+                    self.found.insert(key, shift);
+                    return;
+                }
+            }
+        }
+        if let Some((missed, shift)) = best
+            && missed < gap
+        {
+            self.found.insert(key, shift);
+        }
+    }
+
+    /// Where the junctions of the run `first..=last` of chain `c` sit along its line: the crossings
+    /// themselves, moved along the line by the shift asked for. A shift is dropped (the junction stays at
+    /// its crossing) if the junction would come within a metre of the ends of the run, over a bridge, on a
+    /// ring, or less than one junction length from the junction before or after it, both at their final
+    /// places; so a shifted junction never reaches or passes its neighbour.
+    fn crossings(
+        &self,
+        c: usize,
+        first: usize,
+        last: usize,
+        line: &Polyline,
+    ) -> BTreeMap<usize, f64> {
+        let bridges: Vec<(f64, f64)> = (first..=last)
+            .filter(|k| self.bridge_chord(c, *k).is_some_and(|chord| chord > 0.0))
+            .filter_map(|k| {
+                Some((
+                    line.link_start.get(k - first).copied()?,
+                    line.link_start
+                        .get(k + 1 - first)
+                        .copied()
+                        .unwrap_or_else(|| line.total()),
+                ))
+            })
+            .collect();
+        // (plan, crossing, half length, final place, whether it is moved)
+        let mut at: Vec<(usize, f64, f64, f64, bool)> = Vec::new();
+        for k in first..last {
+            let (Some(plan_id), Some(s_cross)) = (
+                self.plan_at(c, k),
+                line.link_start.get(k + 1 - first).copied(),
+            ) else {
+                continue;
+            };
+            let Some(plan) = self.plans.get(plan_id) else {
+                continue;
+            };
+            let half = plan.junction.half_length();
+            let wanted = self.shifts.get(&(c, k)).copied().unwrap_or(0.0);
+            let moved = s_cross + wanted;
+            let fits = wanted.abs() > 1e-9
+                && !self.is_ring(c)
+                && moved - half >= 1.0
+                && moved + half <= line.total() - 1.0
+                && bridges
+                    .iter()
+                    .all(|(b0, b1)| moved + half <= *b0 || moved - half >= *b1);
+            at.push((
+                plan_id,
+                s_cross,
+                half,
+                if fits { moved } else { s_cross },
+                fits,
+            ));
+        }
+        let mut spots: Vec<Spot> = at
+            .iter()
+            .map(|&(_, crossing, _, place, moved)| Spot {
+                crossing,
+                place,
+                moved,
+            })
+            .collect();
+        keep_apart(&mut spots);
+        at.iter()
+            .zip(&spots)
+            .map(|(a, spot)| (a.0, spot.place))
+            .collect()
     }
 
     /// The world poses of the side ports of a placed junction, matched with the side arms.
@@ -1276,11 +1874,274 @@ pub fn place_network(
     graph: &RoadGraph,
     catalog: &PieceCatalog,
 ) -> Result<PlacedNetwork, PlaceError> {
-    let mut placer = Placer::new(graph, catalog);
+    let mut base = place_with_shifts(graph, catalog, BTreeMap::new())?;
+    let mut shifts = base.found.clone();
+    // the shifts found while placing the side roads are placed for real; if a through road's gap before
+    // a junction grew, the shifts on that chain are taken back and the network is placed once more
+    for attempt in 0..2 {
+        if shifts.is_empty() {
+            break;
+        }
+        let moved = match place_with_shifts(graph, catalog, shifts.clone()) {
+            Ok(moved) => moved,
+            Err(error) => {
+                base.net
+                    .warnings
+                    .push(format!("junctions not moved to close roads: {error}"));
+                break;
+            }
+        };
+        let grown = through_grown(&base.through_gaps, &moved.through_gaps, &shifts);
+        if grown.is_empty() {
+            return Ok(if improves(&base.net, &moved.net) {
+                moved.net
+            } else {
+                base.net
+            });
+        }
+        if attempt == 1 {
+            break;
+        }
+        shifts.retain(|key, _| !grown.contains(key));
+    }
+    Ok(base.net)
+}
+
+/// A junction on its through road: where its crossing is, where it sits, and whether that is moved.
+struct Spot {
+    crossing: f64,
+    place: f64,
+    moved: bool,
+}
+
+/// Puts a moved junction back at its crossing where it would be less than [`JUNCTION_SPACING_M`] from the junction
+/// before or after it (the spots are in driving order), both at their final places. Putting one back can
+/// free its neighbour, so this goes on until nothing changes.
+fn keep_apart(spots: &mut [Spot]) {
+    loop {
+        let mut changed = false;
+        for n in 0..spots.len() {
+            let Some(spot) = spots.get(n) else { continue };
+            if !spot.moved {
+                continue;
+            }
+            let place = spot.place;
+            let crossing = spot.crossing;
+            let near = |m: Option<usize>| {
+                m.and_then(|m| spots.get(m))
+                    .is_some_and(|other| (other.place - place).abs() < JUNCTION_SPACING_M)
+            };
+            if (near(n.checked_sub(1)) || near(n.checked_add(1)))
+                && let Some(spot) = spots.get_mut(n)
+            {
+                spot.place = crossing;
+                spot.moved = false;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// The shifted junctions whose through road ends further from the goal of its approach than before, and more
+/// than [`GAP_TOLERATED_M`] from it.
+fn through_grown(base: &Shifts, moved: &Shifts, shifts: &Shifts) -> BTreeSet<(usize, usize)> {
+    shifts
+        .keys()
+        .filter(|key| {
+            let before = base.get(key).copied().unwrap_or(0.0);
+            moved
+                .get(key)
+                .is_some_and(|gap| *gap > before + 1e-9 && *gap > GAP_TOLERATED_M)
+        })
+        .copied()
+        .collect()
+}
+
+/// Whether a placement with moved junctions is better than the one without: fewer gaps (then a smaller sum of
+/// them), and no junction piece lost and no join without a junction added.
+fn improves(base: &PlacedNetwork, moved: &PlacedNetwork) -> bool {
+    let junctions = |net: &PlacedNetwork| {
+        net.roads
+            .iter()
+            .filter(|r| r.kind == PlacedKind::Junction)
+            .count()
+    };
+    let gaps = |net: &PlacedNetwork| {
+        (
+            net.gaps.len(),
+            net.gaps.iter().map(|g| g.gap_m).sum::<f64>(),
+        )
+    };
+    let (before, after) = (gaps(base), gaps(moved));
+    let fewer = after.0 < before.0 || (after.0 == before.0 && after.1 < before.1);
+    fewer
+        && junctions(moved) >= junctions(base)
+        && moved.joins_without_junction.len() <= base.joins_without_junction.len()
+}
+
+/// One placement of the network.
+struct Run {
+    net: PlacedNetwork,
+    /// The shifts that would close the side roads that did not close.
+    found: Shifts,
+    /// The gap of the through road before each junction, see [`Placer::through_gaps`].
+    through_gaps: Shifts,
+}
+
+/// One placement with the junctions at `shifts` along their through roads.
+fn place_with_shifts(
+    graph: &RoadGraph,
+    catalog: &PieceCatalog,
+    shifts: Shifts,
+) -> Result<Run, PlaceError> {
+    let mut placer = Placer::new(graph, catalog, shifts);
     placer.analyse();
     let mut state = vec![0u8; placer.chains.len()];
     for c in 0..placer.chains.len() {
         placer.place_chain(c, &mut state)?;
     }
-    Ok(placer.out)
+    Ok(Run {
+        net: placer.out,
+        found: placer.found,
+        through_gaps: placer.through_gaps,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pose(x: f64, y: f64) -> Pose {
+        Pose { x, y, heading: 0.0 }
+    }
+
+    /// A road going north for 10 m that ends at the crossing (0, 10).
+    fn line() -> Polyline {
+        Polyline {
+            points: vec![(0.0, 0.0), (0.0, 10.0)],
+            cum: vec![0.0, 10.0],
+            link_start: vec![0.0],
+        }
+    }
+
+    fn spots(list: &[(f64, f64, bool)]) -> Vec<Spot> {
+        list.iter()
+            .map(|&(crossing, place, moved)| Spot {
+                crossing,
+                place,
+                moved,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_junction_moved_up_to_its_neighbour_stays() {
+        // a junction shifted 25 m lands 5 m from the one 30 m on: it stays, the neighbour is untouched
+        let mut list = spots(&[(0.0, 25.0, true), (30.0, 30.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[0].place - 0.0).abs() < 1e-9 && !list[0].moved);
+        assert!((list[1].place - 30.0).abs() < 1e-9);
+        // one that passes its neighbour (shifted past it) stays too, so the order is kept
+        let mut list = spots(&[(0.0, 25.0, true), (20.0, 20.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[0].place - 0.0).abs() < 1e-9);
+        // a shift that keeps a junction length from both neighbours is kept
+        let mut list = spots(&[(0.0, 0.0, false), (30.0, 17.5, true), (60.0, 60.0, false)]);
+        keep_apart(&mut list);
+        assert!((list[1].place - 17.5).abs() < 1e-9 && list[1].moved);
+        // two moved junctions that meet: the first goes back, which frees the second
+        let mut list = spots(&[(0.0, 12.5, true), (25.0, 20.0, true)]);
+        keep_apart(&mut list);
+        assert!(!list[0].moved && list[1].moved);
+    }
+
+    #[test]
+    fn a_junction_whose_through_gap_grows_loses_its_shift() {
+        let base: Shifts = [((0, 1), 0.2), ((0, 2), 2.0), ((1, 1), 0.0), ((2, 1), 0.0)].into();
+        // junction (0, 1) now misses by 1.5 m (grown, over the tolerance), (0, 2) by less than before,
+        // (1, 1) by 0.4 m (grown, within the tolerance), (2, 1) by 3 m but it is not shifted
+        let moved: Shifts = [((0, 1), 1.5), ((0, 2), 1.0), ((1, 1), 0.4), ((2, 1), 3.0)].into();
+        let shifts: Shifts = [((0, 1), 6.25), ((0, 2), -6.25), ((1, 1), 12.5)].into();
+        assert_eq!(
+            through_grown(&base, &moved, &shifts),
+            BTreeSet::from([(0, 1)])
+        );
+        assert!(through_grown(&base, &base, &shifts).is_empty());
+    }
+
+    fn network(gaps: usize, junctions: usize, joins: usize) -> PlacedNetwork {
+        let mut net = PlacedNetwork::default();
+        for _ in 0..gaps {
+            net.gaps.push(RoadGap {
+                stretch: String::new(),
+                at: (0.0, 0.0),
+                gap_m: 1.0,
+                heading_error_deg: 0.0,
+            });
+        }
+        for _ in 0..junctions {
+            net.roads.push(PlacedRoad {
+                slot: Slot {
+                    stretch: String::new(),
+                    index: 0,
+                },
+                kind: PlacedKind::Junction,
+                family: Family::Asf3,
+                drivable: true,
+                model: String::new(),
+                origin: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                start: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                end: Pose {
+                    x: 0.0,
+                    y: 0.0,
+                    heading: 0.0,
+                },
+                width: 6.0,
+                scale: 1.0,
+            });
+        }
+        net.joins_without_junction = vec![(0.0, 0.0); joins];
+        net
+    }
+
+    #[test]
+    fn fewer_gaps_do_not_pay_for_a_lost_junction_or_a_new_join() {
+        let base = network(5, 3, 1);
+        assert!(improves(&base, &network(4, 3, 1)));
+        assert!(!improves(&base, &network(5, 3, 1)));
+        // a junction dropped (its side roads then have no port to miss)
+        assert!(!improves(&base, &network(2, 2, 1)));
+        // a join without junction added
+        assert!(!improves(&base, &network(2, 3, 2)));
+    }
+
+    #[test]
+    fn an_end_inside_the_window_is_no_miss() {
+        assert!(end_violation(&line(), pose(0.0, 8.0), 3.0) <= 0.0);
+    }
+
+    #[test]
+    fn an_end_short_of_the_edge_is_a_miss() {
+        assert!((end_violation(&line(), pose(0.0, 5.0), 3.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_end_past_the_centre_line_is_a_miss_whatever_its_distance() {
+        // 0.5 m beyond the crossing: its Euclidean distance (0.5) lies inside the window, but it is past
+        // the centre line
+        assert!(end_violation(&line(), pose(0.0, 10.5), 3.0) > 0.0);
+        // and one that overshoots sideways as well
+        assert!(end_violation(&line(), pose(1.0, 11.0), 3.0) > 0.0);
+    }
 }

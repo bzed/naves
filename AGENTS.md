@@ -68,6 +68,9 @@ builds with `--locked`.
 Automated tests use fakes. To check a real build, run a local server and the headless client (the `dayz-dev`
 skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`). What was learned doing this:
 
+- **The tool:** `tools/ingame-check/` does all of the following for a list of road sites and photographs them (see its
+  README: `road-sites` example for the site list, `run.sh` for the game). Use it for road changes; the notes below
+  are what it is built on and what to do by hand.
 - **Server:** build a server tree outside Steam with its own ports, `verifySignatures = 2`, the mod's `.bikey` in
   `keys/`, `BattlEye = 0;` for the headless client, the built mission copied into `mpmissions/` and
   `template="dayzOffline.<world>";`. Start it with `-mod=@naves_<world>` (a symlink to the build's mod folder in

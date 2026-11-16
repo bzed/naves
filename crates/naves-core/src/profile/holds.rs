@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::heightmap::Heightmap;
 use crate::junctions::{ARM_REACH_M, HOLD_M, JunctionKind, Junctions};
-use crate::roadplace::{PlacedKind, PlacedNetwork};
+use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
 use super::{Chain, Index, Meeting, RoadStrip, chain_of, end_joins, point_segment_distance};
 
@@ -39,19 +39,28 @@ pub struct Hold {
     pub height: f64,
 }
 
-/// Sets the junction that holds variable `var`.
+/// Sets the junction that holds variable `var`, which lies at `at`: it gets the height of the junction's plane
+/// there. A road of a chain that lies under the top road of an overlay
+/// (`ids` are the stretches of the chain) is held [`OVERLAY_DROP_M`] below the junction's height.
 fn hold(
     held: &mut [Option<Hold>],
     var: usize,
+    at: (f64, f64),
     junction: usize,
     junctions: &Junctions,
+    ids: &BTreeSet<String>,
     rule: HoldRule,
 ) {
     if let (Some(slot), Some(j)) = (held.get_mut(var), junctions.points.get(junction)) {
+        let lowered = j.kind == JunctionKind::Overlay && !j.lower.is_disjoint(ids);
         *slot = Some(Hold {
             rule,
             junction,
-            height: j.height,
+            height: if lowered {
+                j.height_at(at) - OVERLAY_DROP_M
+            } else {
+                j.height_at(at)
+            },
         });
     }
 }
@@ -90,7 +99,7 @@ fn holds_of(
     junctions: &Junctions,
     check: bool,
 ) -> Vec<((f64, f64), Option<Hold>)> {
-    let Some(chain) = chain_of(net, roads) else {
+    let Some(chain) = chain_of(net, roads, cell, junctions) else {
         return Vec::new();
     };
     let half_width = roads
@@ -102,6 +111,26 @@ fn holds_of(
         .joints
         .iter()
         .map(|j| ((j.0, j.1), held.get(j.2).copied().flatten()))
+        .collect()
+}
+
+/// The junction each joint of `chain` is held to, if any.
+pub(super) fn joint_junctions(
+    net: &PlacedNetwork,
+    chain: &Chain,
+    roads: &[usize],
+    cell: f64,
+    junctions: &Junctions,
+) -> Vec<Option<usize>> {
+    let half_width = roads
+        .first()
+        .and_then(|i| net.roads.get(*i))
+        .map_or(0.0, |r| r.width / 2.0);
+    let held = junction_heights(net, chain, roads, half_width, cell, junctions, true);
+    chain
+        .joints
+        .iter()
+        .map(|j| held.get(j.2).copied().flatten().map(|h| h.junction))
         .collect()
 }
 
@@ -138,7 +167,8 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
 
 /// The height a junction gives each variable of a chain, by the least that holds the junction's height where
 /// the road has it:
-/// - a junction piece holds its two variables (it is level along its length);
+/// - a junction piece holds its two variables (the joints lie on the piece's plane, which tilts along its
+///   through road);
 /// - a chain that passes a junction is held at the one joint nearest the junction point (`Patch`), or, where
 ///   no joint lies in the patch, at the one joint of the nearest piece that lies nearest the junction (`Arm`,
 ///   within [`ARM_REACH_M`]);
@@ -147,6 +177,10 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
 ///
 /// A chain is held only to the junctions it belongs to (`Junction::stretches`), unless `check` is false (for
 /// measuring what the check removes).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the rules that hold a chain to a junction, in the order they apply"
+)]
 fn junction_heights(
     net: &PlacedNetwork,
     chain: &Chain,
@@ -177,6 +211,10 @@ fn junction_heights(
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, d, _)| (i, d))
     };
+    let give = |held: &mut [Option<Hold>], var: usize, junction: usize, rule: HoldRule| {
+        let at = chain.at.get(var).copied().unwrap_or_default();
+        hold(held, var, at, junction, junctions, &ids, rule);
+    };
     let mut held: Vec<Option<Hold>> = vec![None; count];
     for (k, &road) in roads.iter().enumerate() {
         let Some(road) = net
@@ -195,8 +233,8 @@ fn junction_heights(
             chain.joints.get(k),
             chain.joints.get(k + 1),
         ) {
-            hold(&mut held, from.2, junction, junctions, HoldRule::Piece);
-            hold(&mut held, to.2, junction, junctions, HoldRule::Piece);
+            give(&mut held, from.2, junction, HoldRule::Piece);
+            give(&mut held, to.2, junction, HoldRule::Piece);
         }
     }
     // a junction that a variable lies in the patch of: the variable nearest the junction of each run
@@ -208,9 +246,14 @@ fn junction_heights(
         .filter_map(|(var, point)| nearest(*point, 0.0).map(|(j, d)| (var, j, d)))
         .collect();
     for (var, junction) in nearest_of_runs(&candidates) {
-        hold(&mut held, var, junction, junctions, HoldRule::Patch);
+        give(&mut held, var, junction, HoldRule::Patch);
     }
-    // the ends, and inward from them while the joints lie on the surface of the other road
+    // the ends, and inward from them while the joints lie on the surface of the other road; the ends of a
+    // ring are not ends (it closes there) and its joints lie on its plane, not on a level strip
+    let on_ring = junctions
+        .rings
+        .iter()
+        .any(|r| !r.stretches.is_disjoint(&ids));
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
         let Some((junction_index, _)) = chain.at.get(end).and_then(|point| nearest(*point, HOLD_M))
         else {
@@ -232,7 +275,7 @@ fn junction_heights(
                 .at
                 .get(var)
                 .is_some_and(|p| (p.0 - junction.at.0).hypot(p.1 - junction.at.1) <= reach);
-            if var != end && !on_surface {
+            if var != end && (!on_surface || on_ring) {
                 break;
             }
             if held.get(var).is_some_and(Option::is_none) {
@@ -241,7 +284,7 @@ fn junction_heights(
                 } else {
                     HoldRule::Inward
                 };
-                hold(&mut held, var, junction_index, junctions, rule);
+                give(&mut held, var, junction_index, rule);
             }
             let following = if side == 0 {
                 var.checked_add(1)
@@ -255,7 +298,7 @@ fn junction_heights(
         }
     }
     let members: Vec<usize> = (0..junctions.points.len()).filter(|i| member(*i)).collect();
-    hold_beside(chain, junctions, &members, &mut held);
+    hold_beside(chain, junctions, &members, &ids, &mut held);
     held
 }
 
@@ -263,7 +306,13 @@ fn junction_heights(
 /// crossing, or an arm that passes the crossing at up to [`ARM_REACH_M`]): the nearer variable of the nearest
 /// piece holds its height. `members` are the junctions the chain belongs to; a junction that already holds a
 /// variable of the chain is done.
-fn hold_beside(chain: &Chain, junctions: &Junctions, members: &[usize], held: &mut [Option<Hold>]) {
+fn hold_beside(
+    chain: &Chain,
+    junctions: &Junctions,
+    members: &[usize],
+    ids: &BTreeSet<String>,
+    held: &mut [Option<Hold>],
+) {
     let (mut low, mut high) = (
         (f64::INFINITY, f64::INFINITY),
         (f64::NEG_INFINITY, f64::NEG_INFINITY),
@@ -306,7 +355,8 @@ fn hold_beside(chain: &Chain, junctions: &Junctions, members: &[usize], held: &m
             } else {
                 var + 1
             };
-            hold(held, nearer, junction, junctions, HoldRule::Arm);
+            let at = chain.at.get(nearer).copied().unwrap_or_default();
+            hold(held, nearer, at, junction, junctions, ids, HoldRule::Arm);
         }
     }
 }

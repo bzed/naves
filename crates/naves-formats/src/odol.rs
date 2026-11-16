@@ -12,10 +12,11 @@
 //! * the memory LOD (resolution 10¹⁵) up to its vertices;
 //! * the named properties of the small geometry-type LODs (resolution 10¹³ and up).
 //!
-//! The visual LODs, which hold the big LZO-compressed meshes, are never parsed. An array that the
-//! format stores compressed (1024 bytes or more) is reported as [`OdolError::Compressed`] instead
-//! of being decoded; none occurs in a memory LOD of the road pieces.
+//! The visual LODs, which hold the big meshes, are never parsed. An array that the format stores
+//! compressed (1024 bytes or more) is LZO1X-decompressed (the `lzokay-native` crate, its decompressor
+//! only) to the size it announces, at most 16 MiB; the stream ends itself, so no length is stored.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use thiserror::Error;
@@ -26,11 +27,18 @@ pub const SUPPORTED_VERSION: u32 = 56;
 /// Arrays of this many bytes or more are stored compressed.
 const COMPRESSION_THRESHOLD: usize = 1024;
 
+/// The most an array may announce when it is stored compressed, in bytes, and so the most that is allocated
+/// for it.
+const MAX_ARRAY_BYTES: usize = 16 << 20;
+
 /// A LOD whose resolution lies in this range is the memory LOD (10¹⁵ is stored as 9.99…·10¹⁴).
 const MEMORY_RESOLUTION: std::ops::Range<f32> = 5.0e14..2.0e15;
 
 /// LODs from this resolution on are geometry-type LODs (small, no embedded materials).
 const GEOMETRY_RESOLUTION: f32 = 9.0e12;
+
+/// The Geometry LOD itself (10¹³), the one whose vertices are kept.
+const GEOMETRY_ONLY: std::ops::Range<f32> = 9.5e12..1.05e13;
 
 /// What went wrong while reading an ODOL file.
 #[derive(Debug, Error)]
@@ -71,13 +79,21 @@ pub enum OdolError {
         /// Size of the file.
         len: usize,
     },
-    /// An array in the memory LOD is stored compressed.
-    #[error("{what} holds a compressed array of {size} bytes, which this reader does not decode")]
+    /// An array announces more than 16 MiB.
+    #[error("{what} holds an array of {size} bytes, more than this reader decodes")]
     Compressed {
         /// The array being read.
         what: &'static str,
         /// The uncompressed size the format announces.
         size: usize,
+    },
+    /// A compressed array that cannot be decompressed to the size it announces.
+    #[error("{what} at byte {at} does not decompress to the size it announces")]
+    Decompress {
+        /// The array being read.
+        what: &'static str,
+        /// Byte offset where the compressed data starts.
+        at: usize,
     },
     /// A feature of the format that this reader leaves out.
     #[error("{0} is not supported")]
@@ -108,6 +124,9 @@ pub struct OdolModel {
     pub memory: BTreeMap<String, Vec<[f32; 3]>>,
     /// Named properties of the geometry-type LODs; the first LOD that sets a key wins.
     pub properties: BTreeMap<String, String>,
+    /// Vertices of the Geometry LOD (resolution 10¹³ exactly, not the other geometry-type LODs such as the
+    /// roadway or the land contact), in model coordinates; `None` if there is none or it cannot be read.
+    pub geometry: Option<Vec<[f32; 3]>>,
 }
 
 /// Reads a binarized model.
@@ -138,6 +157,7 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
         bbox_max,
         memory: BTreeMap::new(),
         properties: BTreeMap::new(),
+        geometry: None,
     };
     let mut memory_done = false;
     for (index, resolution) in resolutions.iter().enumerate() {
@@ -165,6 +185,8 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
                 if is_memory {
                     memory_done = true;
                     model.memory = lod.memory;
+                } else if GEOMETRY_ONLY.contains(resolution) {
+                    model.geometry = Some(lod.points);
                 }
             }
             Err(e) if is_memory => return Err(e),
@@ -263,12 +285,13 @@ fn read_lod_table(
 }
 
 struct Lod {
+    points: Vec<[f32; 3]>,
     memory: BTreeMap<String, Vec<[f32; 3]>>,
     properties: BTreeMap<String, String>,
 }
 
 /// Reads one LOD up to its named properties, and for the memory LOD on to its vertices.
-fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
+fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
     const W: &str = "a LOD";
     let mut c = Cursor::new(bytes);
     // proxies: model name, 3×4 matrix, sequence, selection, bone, section
@@ -317,13 +340,25 @@ fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
         let value = c.cstr(W)?;
         properties.entry(key).or_insert(value);
     }
-    if !with_points {
+    let points = match read_points(&mut c) {
+        Ok(points) => points,
+        Err(e) if is_memory => return Err(e),
+        // a geometry-type LOD whose vertices cannot be read still gives its properties
+        Err(_) => {
+            return Ok(Lod {
+                points: Vec::new(),
+                memory: BTreeMap::new(),
+                properties,
+            });
+        }
+    };
+    if !is_memory {
         return Ok(Lod {
+            points,
             memory: BTreeMap::new(),
             properties,
         });
     }
-    let points = read_points(&mut c)?;
     let mut memory = BTreeMap::new();
     for (name, vertices) in selections {
         let mut selected = Vec::new();
@@ -339,7 +374,11 @@ fn read_lod(bytes: &[u8], with_points: bool) -> Result<Lod, OdolError> {
         }
         memory.insert(name, selected);
     }
-    Ok(Lod { memory, properties })
+    Ok(Lod {
+        points,
+        memory,
+        properties,
+    })
 }
 
 /// The named selections: a lower-cased name and the vertex indices it holds.
@@ -352,14 +391,7 @@ fn read_selections(c: &mut Cursor<'_>) -> Result<Vec<(String, Vec<u16>)>, OdolEr
         c.skip(4 + 1, W)?; // unused, is sectional
         c.compressed(4, "a selection's sections")?;
         let vertices = c.compressed_u16(2, "a selection's vertices")?;
-        let weights = c.count_unchecked(W)?;
-        if weights >= COMPRESSION_THRESHOLD {
-            return Err(OdolError::Compressed {
-                what: "a selection's weights",
-                size: weights,
-            });
-        }
-        c.skip(weights, W)?;
+        c.compressed(1, "a selection's weights")?;
         selections.push((name, vertices));
     }
     Ok(selections)
@@ -499,18 +531,44 @@ impl<'a> Cursor<'a> {
 
     /// An array stored as `count` followed by `count × elem` bytes, or compressed when that is
     /// 1024 bytes or more. Returns the raw bytes.
-    fn compressed(&mut self, elem: usize, what: &'static str) -> Result<&'a [u8], OdolError> {
+    fn compressed(&mut self, elem: usize, what: &'static str) -> Result<Cow<'a, [u8]>, OdolError> {
         let at = self.pos;
         let n = self.count_unchecked(what)?;
+        self.body(n, elem, what, at)
+    }
+
+    /// The `n` elements of `elem` bytes that follow a count at `at`: as they are below
+    /// [`COMPRESSION_THRESHOLD`] bytes, else LZO1X-compressed (a stream that ends itself, so its length is
+    /// not stored). The size is checked against [`MAX_ARRAY_BYTES`] before anything is allocated, and the
+    /// output may not grow beyond it.
+    fn body(
+        &mut self,
+        n: usize,
+        elem: usize,
+        what: &'static str,
+        at: usize,
+    ) -> Result<Cow<'a, [u8]>, OdolError> {
         let size = n.checked_mul(elem).ok_or(OdolError::Count {
             what,
             at,
             count: i64::try_from(n).unwrap_or(i64::MAX),
         })?;
-        if size >= COMPRESSION_THRESHOLD {
+        if size < COMPRESSION_THRESHOLD {
+            return self.take(size, what).map(Cow::Borrowed);
+        }
+        if size > MAX_ARRAY_BYTES {
             return Err(OdolError::Compressed { what, size });
         }
-        self.take(size, what)
+        let rest = self.data.get(self.pos..).unwrap_or_default();
+        let mut stream = std::io::Cursor::new(rest);
+        let out = lzokay_native::decompress_bounded(&mut stream, size)
+            .map_err(|_| OdolError::Decompress { what, at: self.pos })?;
+        if out.len() != size {
+            return Err(OdolError::Decompress { what, at: self.pos });
+        }
+        let used = usize::try_from(stream.position()).unwrap_or(usize::MAX);
+        self.skip(used, what)?;
+        Ok(Cow::Owned(out))
     }
 
     fn compressed_u16(&mut self, elem: usize, what: &'static str) -> Result<Vec<u16>, OdolError> {
@@ -530,35 +588,14 @@ impl<'a> Cursor<'a> {
         if self.u8(what)? != 0 {
             return self.skip(elem, what);
         }
-        let size = n.checked_mul(elem).ok_or(OdolError::Count {
-            what,
-            at,
-            count: i64::try_from(n).unwrap_or(i64::MAX),
-        })?;
-        if size >= COMPRESSION_THRESHOLD {
-            return Err(OdolError::Compressed { what, size });
-        }
-        self.skip(size, what)
+        self.body(n, elem, what, at).map(drop)
     }
 
     /// One UV set: the range, the vertex count and the data (4 bytes per vertex).
     fn uv_set(&mut self) -> Result<(), OdolError> {
         const W: &str = "a UV set";
         self.skip(16, W)?;
-        let at = self.pos;
-        let n = usize_from(self.u32(W)?);
-        if self.u8(W)? != 0 {
-            return self.skip(4, W);
-        }
-        let size = n.checked_mul(4).ok_or(OdolError::Count {
-            what: W,
-            at,
-            count: i64::try_from(n).unwrap_or(i64::MAX),
-        })?;
-        if size >= COMPRESSION_THRESHOLD {
-            return Err(OdolError::Compressed { what: W, size });
-        }
-        self.skip(size, W)
+        self.condensed(4, W)
     }
 }
 
@@ -568,6 +605,8 @@ impl<'a> Cursor<'a> {
 pub mod synthetic {
     /// Resolution of the memory LOD as the game files store it.
     const MEMORY_RESOLUTION: f32 = 999_999_986_991_104.0;
+    /// Resolution of the geometry LOD as the game files store it.
+    const GEOMETRY_RESOLUTION: f32 = 9_999_999_827_968.0;
 
     fn put_u32(out: &mut Vec<u8>, v: usize) {
         out.extend_from_slice(&u32::try_from(v).unwrap_or(u32::MAX).to_le_bytes());
@@ -578,17 +617,46 @@ pub mod synthetic {
         out.push(0);
     }
 
-    /// A version 56 model with one memory LOD. Each entry is a named selection holding one point.
+    /// `data` (4 bytes or more) as an LZO1X stream that holds it as one run of literals and ends itself: the
+    /// simplest stream a decompressor must accept, for tests of arrays that the format stores compressed.
     #[must_use]
-    pub fn model_bytes(points: &[(&str, [f32; 3])]) -> Vec<u8> {
+    pub fn lzo_literals(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let len = data.len();
+        if len <= 238 {
+            out.push(u8::try_from(len + 17).unwrap_or(u8::MAX));
+        } else {
+            let extra = len - 18;
+            let zeros = (extra - 1) / 255;
+            out.push(0);
+            out.resize(1 + zeros, 0);
+            out.push(u8::try_from(extra - 255 * zeros).unwrap_or(u8::MAX));
+        }
+        out.extend_from_slice(data);
+        out.extend_from_slice(&[17, 0, 0]);
+        out
+    }
+
+    /// An array of `elem`-byte elements as the format stores it after its count: as it is, or from 1024 bytes
+    /// on as an LZO stream.
+    fn array_body(out: &mut Vec<u8>, bytes: &[u8]) {
+        if bytes.len() >= 1024 {
+            out.extend_from_slice(&lzo_literals(bytes));
+        } else {
+            out.extend_from_slice(bytes);
+        }
+    }
+
+    /// One LOD: named selections of one point each (`names` index into `vertices`) and the vertices.
+    fn lod(names: &[&str], vertices: &[[f32; 3]]) -> Vec<u8> {
         let mut lod = Vec::new();
         lod.extend_from_slice(&[0; 12]); // proxies, sub-skeletons, skeleton map
         lod.extend_from_slice(&[0; 56]);
         lod.extend_from_slice(&[0; 4 * 4]); // textures, materials, two maps
         lod.extend_from_slice(&[0; 10]); // faces
         lod.extend_from_slice(&[0; 4]); // sections
-        put_u32(&mut lod, points.len());
-        for (i, (name, _)) in points.iter().enumerate() {
+        put_u32(&mut lod, names.len());
+        for (i, name) in names.iter().enumerate() {
             put_str(&mut lod, name);
             lod.extend_from_slice(&[0; 4 + 5 + 4]);
             put_u32(&mut lod, 1);
@@ -602,27 +670,62 @@ pub mod synthetic {
         lod.extend_from_slice(&[0; 16 + 4]); // UV range and vertex count
         lod.extend_from_slice(&[1, 0, 0, 0, 0]);
         put_u32(&mut lod, 1); // UV sets
-        put_u32(&mut lod, points.len());
-        for (_, p) in points {
-            for v in p {
-                lod.extend_from_slice(&v.to_le_bytes());
-            }
+        put_u32(&mut lod, vertices.len());
+        let raw: Vec<u8> = vertices
+            .iter()
+            .flat_map(|p| p.iter().flat_map(|v| v.to_le_bytes()))
+            .collect();
+        array_body(&mut lod, &raw);
+        lod
+    }
+
+    /// A version 56 model with one memory LOD. Each entry is a named selection holding one point.
+    #[must_use]
+    pub fn model_bytes(points: &[(&str, [f32; 3])]) -> Vec<u8> {
+        model_bytes_with_geometry(points, &[])
+    }
+
+    /// [`model_bytes`] with a geometry LOD that has the vertices `geometry` (none: no geometry LOD).
+    #[must_use]
+    pub fn model_bytes_with_geometry(
+        points: &[(&str, [f32; 3])],
+        geometry: &[[f32; 3]],
+    ) -> Vec<u8> {
+        let names: Vec<&str> = points.iter().map(|(n, _)| *n).collect();
+        let vertices: Vec<[f32; 3]> = points.iter().map(|(_, p)| *p).collect();
+        let mut lods: Vec<(f32, Vec<u8>)> = Vec::new();
+        if !geometry.is_empty() {
+            lods.push((GEOMETRY_RESOLUTION, lod(&[], geometry)));
         }
+        lods.push((MEMORY_RESOLUTION, lod(&names, &vertices)));
 
         let mut file = Vec::new();
         file.extend_from_slice(b"ODOL");
         put_u32(&mut file, 56);
-        put_u32(&mut file, 1);
-        file.extend_from_slice(&MEMORY_RESOLUTION.to_le_bytes());
+        put_u32(&mut file, lods.len());
+        for (resolution, _) in &lods {
+            file.extend_from_slice(&resolution.to_le_bytes());
+        }
         file.extend_from_slice(&[0; 48 + 24 + 96 + 5 + 28 + 14 + 1 + 1 + 1 + 4 + 34]);
         put_str(&mut file, "road");
         put_str(&mut file, "");
         file.extend_from_slice(&[0; 6 + 1]);
-        let start = file.len() + 9;
-        put_u32(&mut file, start);
-        put_u32(&mut file, start + lod.len());
-        file.push(1);
-        file.extend_from_slice(&lod);
+        // the table: starts, ends, one "permanent" byte per LOD, then the LODs
+        let table = file.len() + 4 * 2 * lods.len() + lods.len();
+        let mut at = table;
+        let mut ends = Vec::new();
+        for (_, lod) in &lods {
+            put_u32(&mut file, at);
+            at += lod.len();
+            ends.push(at);
+        }
+        for end in ends {
+            put_u32(&mut file, end);
+        }
+        file.extend_from_slice(&vec![1; lods.len()]);
+        for (_, lod) in &lods {
+            file.extend_from_slice(lod);
+        }
         file
     }
 }

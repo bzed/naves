@@ -9,25 +9,29 @@
 //! Nothing here touches the project folder or runs a tool other than dayzmake for the catalog, so the editor
 //! can run it too.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use naves_core::catalog::{BridgeModel, PieceCatalog};
+use naves_core::catalog::{BridgeModel, PieceCatalog, ThicknessSource};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::junctions::{JunctionKind, Junctions, find_junctions};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     road_objects,
 };
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
-use naves_core::profile::{Profiles, solve_profiles};
+use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
-use naves_core::roadnet::{RoadGraph, build_graph, lost_bridges, widen_bridges, with_bridge_spans};
+use naves_core::roadnet::{
+    DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
+    lost_bridges, widen_bridges, with_bridge_spans,
+};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
@@ -176,7 +180,33 @@ pub fn place_once(
     let net = place_network(graph, catalog)?;
     let junctions = find_junctions(&net, graph, base);
     let side = side_slopes(&net, base);
-    let profiles = solve_profiles(&net, base, &junctions, &side);
+    // a bridge over a road keeps its clearance: the junctions it needs may be higher than the ground's
+    let borrowed: RefCell<BTreeMap<String, (ThicknessSource, f64)>> = RefCell::new(BTreeMap::new());
+    let thickness = |s: &Stretch| {
+        bridge_for(catalog, s.family).and_then(|(m, scale, _)| {
+            if m.thickness_source != ThicknessSource::Measured {
+                borrowed
+                    .borrow_mut()
+                    .insert(m.model.clone(), (m.thickness_source, m.deck_thickness));
+            }
+            (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness * scale)
+        })
+    };
+    let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness);
+    let mut net = net;
+    for (model, (source, value)) in borrowed.into_inner() {
+        net.warnings.push(match source {
+            ThicknessSource::SameType => format!(
+                "bridge model {model}: its Geometry LOD cannot be read; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below"
+            ),
+            ThicknessSource::Thickest => format!(
+                "bridge model {model}: its Geometry LOD cannot be read and no model of its type can be; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below"
+            ),
+            _ => format!(
+                "bridge model {model}: no bridge model's Geometry LOD can be read; the clearance over a road below is not checked"
+            ),
+        });
+    }
     Ok(Placed {
         net,
         junctions,
@@ -185,13 +215,19 @@ pub fn place_once(
     })
 }
 
-/// The graph of `features` and the same with every OpenStreetMap bridge grown to the length of the bridge
-/// model it gets (see [`widen_bridges`]).
+/// The graph of `features` without the parts of roads that OpenStreetMap draws twice (see
+/// [`drop_duplicates`]), the same with every OpenStreetMap bridge grown to the length of the bridge model it
+/// gets (see [`widen_bridges`]), and the parts that were dropped.
 #[must_use]
-pub fn widened_graph(features: &[Feature], catalog: &PieceCatalog) -> (RoadGraph, RoadGraph) {
-    let built = build_graph(features);
+pub fn widened_graph(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+) -> (RoadGraph, RoadGraph, Vec<DroppedDuplicate>) {
+    // a roundabout too small for the tightest arc of its surface is a plain crossing
+    let flat = collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
+    let (built, dropped) = drop_duplicates(&flat);
     let widened = widen_bridges(&built, &|s| model_length(catalog, s.family).unwrap_or(0.0));
-    (built, widened)
+    (built, widened, dropped)
 }
 
 /// The scaled length of the bridge model a road of `family` gets.
@@ -231,7 +267,7 @@ pub fn plan_roads(
     frame: &MapGeo,
     progress: &dyn Fn(&str),
 ) -> Result<RoadPlan, BuildError> {
-    let (built, widened) = widened_graph(features, catalog);
+    let (built, widened, duplicates) = widened_graph(features, catalog);
     let first = place_once(&widened, catalog, base)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
         find_dips(
@@ -270,6 +306,7 @@ pub fn plan_roads(
             .collect();
         (graph, placed, left, true)
     };
+    placed.net.duplicates = duplicates;
     // a stretch that was an OpenStreetMap bridge and is none any more, not even by a dip bridge
     for id in lost_bridges(&built, &graph) {
         placed.net.warnings.push(format!(
@@ -340,22 +377,46 @@ fn place_roads(
     })
 }
 
-/// The level patches of `junctions`: a circle of the junction's `patch_m` plus one cell at its height under
-/// each join and each chain end on a road. A junction piece is already a level segment of its strip and gets
-/// none.
+/// The patches of `junctions`: a circle of the junction's `patch_m` plus one cell on its plane (its height and
+/// gradient) under each join, overlay and chain end on a road. A junction piece is already a segment of its
+/// strip and gets none.
 #[must_use]
 pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
-    junctions
+    // a junction on a roundabout lies on the ring's plane and gets no patch of its own
+    let on_ring = |j: &Junction| {
+        junctions
+            .rings
+            .iter()
+            .any(|ring| !ring.stretches.is_disjoint(&j.stretches))
+    };
+    let mut patches: Vec<LevelPatch> = junctions
         .points
         .iter()
-        .filter(|j| matches!(j.kind, JunctionKind::Join | JunctionKind::EndOnRoad))
+        .filter(|j| {
+            matches!(
+                j.kind,
+                JunctionKind::Join | JunctionKind::Overlay | JunctionKind::EndOnRoad
+            ) && !on_ring(j)
+        })
         .map(|j| LevelPatch {
             at: j.at,
             radius: j.patch_m + cell_m,
             height: j.height,
+            gradient: j.gradient,
+            inner_radius: 0.0,
             rank: j.rank,
         })
-        .collect()
+        .collect();
+    // every roundabout is one tilted plane over the band of its road (the ground inside it keeps its height)
+    patches.extend(junctions.rings.iter().map(|ring| LevelPatch {
+        at: ring.at,
+        radius: ring.radius + cell_m,
+        inner_radius: (ring.inner_radius - cell_m).max(0.0),
+        height: ring.height,
+        gradient: ring.gradient,
+        rank: ring.rank,
+    }));
+    patches
 }
 
 /// The deck level of every bridge object: the height of the profile at its start.

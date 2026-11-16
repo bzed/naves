@@ -327,7 +327,7 @@ fn village_window() -> GeoWindow {
 }
 
 /// The tags `read_ways` keeps: the ones the road classification reads.
-const KEPT_TAGS: [&str; 11] = [
+const KEPT_TAGS: [&str; 13] = [
     "highway",
     "tracktype",
     "surface",
@@ -339,6 +339,8 @@ const KEPT_TAGS: [&str; 11] = [
     "tunnel",
     "area",
     "waterway",
+    "junction",
+    "layer",
 ];
 
 #[expect(

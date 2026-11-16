@@ -90,6 +90,13 @@ async fn start_with(sources: bool) -> Fixture {
 /// Like [`start`], with the OSM highways of the Königssee as a source; without `tools` no external tool
 /// can be found.
 async fn start_roads(tools: bool) -> Fixture {
+    start_roads_scaled(tools, 1.0).await
+}
+
+/// [`start_roads`] with the heights of the ground multiplied by `height`: at 2 the roads are steep enough
+/// for findings (where roads meet without a junction piece one lies on top of the other, so the
+/// fixture has none of its own at 1).
+async fn start_roads_scaled(tools: bool, height: f64) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let fakes = FakeEnv::new(&root.path().join("fake")).unwrap();
     let proj = root.path().join("proj");
@@ -102,6 +109,7 @@ async fn start_roads(tools: bool) -> Fixture {
     p.grid.land_size = 32;
     // 1500 m on 256 vertices: terrain cells the game client shows
     p.scale.horizontal = 1.0;
+    p.scale.height = height;
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
     std::fs::create_dir_all(proj.join("osm")).unwrap();
@@ -653,7 +661,7 @@ async fn roads_stats_counts_the_network() {
 
 #[tokio::test]
 async fn validation_list_filters_by_rule() {
-    let f = start_roads(true).await;
+    let f = start_roads_scaled(true, 2.0).await;
     let all: Value =
         serde_json::from_str(&text(&call(&f, "validation_list", json!({})).await)).unwrap();
     let all = all["violations"].as_array().unwrap();
@@ -674,6 +682,9 @@ async fn validation_list_filters_by_rule() {
     let only = only["violations"].as_array().unwrap();
     assert!(!only.is_empty() && only.len() <= all.len());
     assert!(only.iter().all(|v| v["rule"] == rule.as_str()));
+    // the filter drops what has another rule
+    let others = all.iter().filter(|v| v["rule"] != rule.as_str()).count();
+    assert_eq!(only.len() + others, all.len());
     // a rule that exists and has no findings gives an empty list; one that does not exist is an error
     let none = call(&f, "validation_list", json!({ "rule": "road_in_water" })).await;
     assert_ne!(none.is_error, Some(true));

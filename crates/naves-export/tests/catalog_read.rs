@@ -13,9 +13,9 @@
 use std::path::{Path, PathBuf};
 
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
-use naves_export::catalog_read::{CatalogReadError, road_catalog};
+use naves_export::catalog_read::{CatalogReadError, road_catalog, unpack_roads};
 use naves_export::testing::FakeEnv;
-use naves_formats::odol::synthetic::model_bytes;
+use naves_formats::odol::synthetic::model_bytes_with_geometry;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -64,7 +64,11 @@ fn fixture() -> Fixture {
             .collect();
         let target = tree.join(folder).join(format!("{stem}.p3d"));
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, model_bytes(&points)).unwrap();
+        std::fs::write(
+            target,
+            model_bytes_with_geometry(&points, model.geometry.as_deref().unwrap_or_default()),
+        )
+        .unwrap();
     }
     // things the catalog must not stumble over
     std::fs::write(tree.join("Parts/runway_main.p3d"), b"not a model").unwrap();
@@ -245,4 +249,15 @@ fn catalog_of_the_installed_game() {
         .sum::<usize>();
     assert!(junctions >= 15, "{junctions} junctions");
     assert_ne!(catalog.bridges().len(), 0);
+}
+
+#[test]
+fn unpack_roads_puts_the_models_where_the_world_refers_to_them() {
+    let f = fixture();
+    let dest = f.root.join("p");
+    let pbo = f.env.server.join("addons/structures_roads.pbo");
+    unpack_roads(&f.env.tools(), &pbo, &dest).unwrap();
+    assert!(dest.join("dz/structures/roads/Parts/asf3_25.p3d").is_file());
+    let e = unpack_roads(&f.env.tools(), &f.root.join("nope.pbo"), &dest).unwrap_err();
+    assert!(matches!(e, CatalogReadError::MissingPbo(_)), "{e}");
 }

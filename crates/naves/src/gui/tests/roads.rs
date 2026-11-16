@@ -22,6 +22,9 @@ fn with_roads(root: &Path) -> PathBuf {
     std::fs::copy(fixture, dir.join("osm/roads.osm.pbf")).unwrap();
     let mut p = Project::load(&dir).unwrap();
     p.sources.osm = vec!["osm/roads.osm.pbf".into()];
+    // steep ground, so that the roads have findings (where roads meet without a junction piece one lies on
+    // top of the other, so the fixture has none at the real heights)
+    p.scale.height = 2.0;
     p.save(&dir).unwrap();
     dir
 }

@@ -175,6 +175,24 @@ pub struct Junction {
     pub side_ports: Vec<Port>,
 }
 
+/// Where the thickness of a bridge deck comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ThicknessSource {
+    /// Measured on the model's own Geometry LOD.
+    Measured,
+    /// The model's Geometry LOD cannot be read: the thickest deck measured among the models of the same type
+    /// (the word after `bridge_` in the name: stone, wood, metal).
+    SameType,
+    /// As before, and no model of the same type can be read either: the thickest deck of all.
+    Thickest,
+    /// No bridge model can be read: nothing is known, `deck_thickness` is 0 and means nothing.
+    #[default]
+    Unknown,
+}
+
+/// Geometry that hangs further below the deck than this is no deck (piers, abutments), in metres.
+pub const MAX_DECK_THICKNESS_M: f64 = 4.0;
+
 /// A bridge model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgeModel {
@@ -186,6 +204,14 @@ pub struct BridgeModel {
     pub width: f64,
     /// Height of the deck above the model origin.
     pub deck_height: f64,
+    /// How far the deck reaches down below its surface, in metres, that a road below has to clear: the distance
+    /// to the lowest vertex of the Geometry LOD within [`MAX_DECK_THICKNESS_M`] of the deck (what hangs lower,
+    /// piers and abutments, is not the deck). Where the model's Geometry LOD cannot be read, taken from the
+    /// other models (see `thickness_source`).
+    pub deck_thickness: f64,
+    /// Where `deck_thickness` comes from.
+    #[serde(default)]
+    pub thickness_source: ThicknessSource,
     /// Where the road enters; the heading says which way the bridge lies.
     pub start: Port,
     /// Where the road leaves.
@@ -234,6 +260,39 @@ enum Class {
 fn stem(path: &str) -> &str {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     name.strip_suffix(".p3d").unwrap_or(name)
+}
+
+/// The type of a bridge model, the word after `bridge_` in its name (stone, wood, metal).
+fn bridge_type(model: &str) -> String {
+    let name = stem(model).to_ascii_lowercase();
+    let rest = name.strip_prefix("bridge_").unwrap_or(&name);
+    rest.split('_').next().unwrap_or(rest).to_string()
+}
+
+/// Gives each bridge whose thickness could not be measured the thickest deck measured among the models of its
+/// type, else the thickest of all; each readable model keeps its own.
+fn fill_thickness(bridges: &mut [BridgeModel]) {
+    let measured: Vec<(String, f64)> = bridges
+        .iter()
+        .filter(|b| b.thickness_source == ThicknessSource::Measured)
+        .map(|b| (bridge_type(&b.model), b.deck_thickness))
+        .collect();
+    let thickest = |of: &mut dyn Iterator<Item = f64>| of.max_by(f64::total_cmp);
+    let overall = thickest(&mut measured.iter().map(|m| m.1));
+    for b in bridges
+        .iter_mut()
+        .filter(|b| b.thickness_source != ThicknessSource::Measured)
+    {
+        let kind = bridge_type(&b.model);
+        let same = thickest(&mut measured.iter().filter(|m| m.0 == kind).map(|m| m.1));
+        if let Some(value) = same {
+            b.deck_thickness = value;
+            b.thickness_source = ThicknessSource::SameType;
+        } else if let Some(value) = overall {
+            b.deck_thickness = value;
+            b.thickness_source = ThicknessSource::Thickest;
+        }
+    }
 }
 
 fn two_families(rest: &str) -> Option<(Family, Family)> {
@@ -367,11 +426,24 @@ fn bridge(m: &OdolModel, model: &str) -> Result<Option<BridgeModel>, CatalogErro
     for name in ["lb", "pb", "le", "pe"] {
         height += f64::from(point(m, model, name)?[1]);
     }
+    let deck_height = height / 4.0;
+    let measured = m.geometry.as_deref().and_then(|g| {
+        g.iter()
+            .map(|p| f64::from(p[1]))
+            .filter(|y| *y >= deck_height - MAX_DECK_THICKNESS_M)
+            .min_by(f64::total_cmp)
+    });
     Ok(Some(BridgeModel {
         model: model.to_string(),
         length: (end.x - start.x).hypot(end.z - start.z),
         width,
-        deck_height: height / 4.0,
+        deck_height,
+        deck_thickness: measured.map_or(0.0, |low| (deck_height - low).max(0.0)),
+        thickness_source: if measured.is_some() {
+            ThicknessSource::Measured
+        } else {
+            ThicknessSource::Unknown
+        },
         start,
         end,
     }))
@@ -431,6 +503,7 @@ impl PieceCatalog {
                 });
             }
         }
+        fill_thickness(&mut catalog.bridges);
         Ok(catalog)
     }
 
@@ -438,6 +511,20 @@ impl PieceCatalog {
     #[must_use]
     pub fn pieces(&self, family: Family) -> &[RoadPiece] {
         self.pieces.get(&family).map_or(&[], Vec::as_slice)
+    }
+
+    /// The radius of the tightest arc of a family, in metres: the chord over twice the sine of half the
+    /// turn, the smallest over its arc pieces. `None` if the family has no arc.
+    #[must_use]
+    pub fn tightest_arc(&self, family: Family) -> Option<f64> {
+        self.pieces(family)
+            .iter()
+            .filter(|p| p.kind == PieceKind::Arc)
+            .filter_map(|p| {
+                let half_turn = p.heading_change().abs() / 2.0;
+                (half_turn.sin() > 1e-9).then(|| p.chord() / (2.0 * half_turn.sin()))
+            })
+            .min_by(f64::total_cmp)
     }
 
     /// The T junction of a through road with a side road, if the game has one.
@@ -472,6 +559,9 @@ pub mod testing {
     use naves_formats::odol::OdolModel;
 
     use super::{BRIDGES_PREFIX, Family, PARTS_PREFIX, PieceCatalog};
+
+    /// How far below its deck the synthetic bridges' geometry reaches.
+    pub const SYNTHETIC_DECK_THICKNESS: f64 = 1.5;
 
     /// Heading change in degrees and radius in metres of the arcs every family has.
     const ARCS: [(f64, f64); 11] = [
@@ -550,6 +640,7 @@ pub mod testing {
                 .map(|(k, p)| ((*k).to_string(), vec![*p]))
                 .collect(),
             properties: BTreeMap::new(),
+            geometry: None,
         }
     }
 
@@ -591,6 +682,14 @@ pub mod testing {
     /// A bridge `length` long and `width` wide, lying north (`along_x` false) or east, with its
     /// deck `deck` above the origin.
     fn bridge(length: f64, width: f64, deck: f64, along_x: bool) -> OdolModel {
+        let mut m = bridge_ports(length, width, deck, along_x);
+        // the deck's beams hang SYNTHETIC_DECK_THICKNESS below the deck
+        let low = vertex(0.0, deck - SYNTHETIC_DECK_THICKNESS, 0.0);
+        m.geometry = Some(vec![vertex(0.0, deck, 0.0), low]);
+        m
+    }
+
+    fn bridge_ports(length: f64, width: f64, deck: f64, along_x: bool) -> OdolModel {
         let h = length / 2.0;
         let w = width / 2.0;
         if along_x {

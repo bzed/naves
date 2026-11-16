@@ -122,3 +122,10 @@ path = "tests/fixtures/imagery/*.tif"
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Contains modified Copernicus Sentinel data 2025"
 SPDX-License-Identifier = "LicenseRef-Copernicus-Sentinel"
+
+# The prefix file of the helper mod of the in-game check holds only the prefix; a header would change it.
+[[annotations]]
+path = "tools/ingame-check/NavesCam/$PREFIX$"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"

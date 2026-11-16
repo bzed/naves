@@ -1143,3 +1143,118 @@ fn a_stale_navmesh_is_warned_about() {
     let out = build(&proj2, &env2.tools(), &quiet).unwrap();
     assert!(!out.warnings.iter().any(|w| w.contains("navigation mesh")));
 }
+
+// --- road models on binarize's P: drive ----------------------------------------------------------------------------
+
+use naves_export::build::check_binarize_log;
+
+const LOG: &str = "build/logs/binarize.log";
+
+#[test]
+fn a_road_model_binarize_cannot_open_is_an_error_naming_it() {
+    let log = "Cannot open object dz\\structures\\roads\\parts\\asf1_25.p3d\nRoad 2 dirs: 0\n";
+    let err = check_binarize_log(log, Path::new(LOG), true).unwrap_err();
+    assert!(matches!(err, BuildError::RoadModelsMissing { .. }), "{err}");
+    assert!(err.to_string().contains("asf1_25.p3d"), "{err}");
+}
+
+#[test]
+fn the_nameless_cannot_open_line_of_every_build_is_ignored() {
+    assert!(
+        check_binarize_log(
+            "Cannot open object \nRoad 0 dirs: 0\n",
+            Path::new(LOG),
+            false
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn roads_but_no_road_directions_is_an_error() {
+    assert!(matches!(
+        check_binarize_log("Road 2 dirs: 0\nRoad 3 dirs: 0\n", Path::new(LOG), true),
+        Err(BuildError::NoRoadNetwork { .. })
+    ));
+    assert!(check_binarize_log("Road 2 dirs: 0\nRoad 3 dirs: 7\n", Path::new(LOG), true).is_ok());
+}
+
+#[test]
+fn road_models_are_staged_for_binarize_and_gone_afterwards() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let log = std::fs::read_to_string(proj.join("build/logs/binarize.log")).unwrap();
+    assert!(log.contains("road models on P: yes"), "{log}");
+    assert!(!proj.join("build/staging/P/dz").exists());
+    let found = walkdir::WalkDir::new(&out.mod_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|e| e.path().extension().is_some_and(|x| x == "p3d"));
+    assert!(!found);
+}
+
+#[test]
+fn a_build_without_roads_stages_no_models() {
+    let (_dir, env, proj) = setup();
+    project(&proj, INSIDE);
+    build(&proj, &env.tools(), &quiet).unwrap();
+    let log = std::fs::read_to_string(proj.join("build/logs/binarize.log")).unwrap();
+    assert!(log.contains("road models on P: no"), "{log}");
+}
+
+#[test]
+fn a_build_whose_binarize_cannot_open_a_road_model_fails_naming_it() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    env.replace_proton(
+        r#"if [ "$4" = "exit" ]; then mkdir -p "$STEAM_COMPAT_DATA_PATH/pfx/dosdevices"; exit 0; fi
+sandbox="$(dirname "$STEAM_COMPAT_DATA_PATH")"
+printf 'OPRW\040\000\000\000' > "$sandbox/out/test.wrp"
+printf 'Cannot open object dz\\structures\\roads\\parts\\asf1_25.p3d\nRoad 2 dirs: 0\n' > "$sandbox/binarize.log""#,
+    )
+    .unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(matches!(err, BuildError::RoadModelsMissing { .. }), "{err}");
+    assert!(err.to_string().contains("asf1_25.p3d"), "{err}");
+    assert!(!proj.join("build/staging/P/dz").exists());
+}
+
+#[test]
+fn a_missing_structures_roads_pbo_is_an_error_naming_the_file() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    std::fs::remove_file(env.server.join("addons/structures_roads.pbo")).unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("structures_roads.pbo"), "{err}");
+}
+
+#[test]
+fn a_failed_unpack_leaves_no_game_files_in_staging() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    env.replace_dayzmake(
+        r#"case "$1" in
+  unpack) echo partial > "$3/asf1_25.p3d"; echo broken >&2; exit 3 ;;
+  *) exit 0 ;;
+esac"#,
+    )
+    .unwrap();
+    let err = build(&proj, &env.tools(), &quiet).unwrap_err();
+    assert!(err.to_string().contains("unpack"), "{err}");
+    assert!(!proj.join("build/staging/P/dz").exists());
+}
+
+#[test]
+fn a_binarize_log_in_another_encoding_is_read() {
+    let (_dir, env, proj) = setup();
+    roads_project(&proj);
+    env.replace_proton(
+        r#"if [ "$4" = "exit" ]; then mkdir -p "$STEAM_COMPAT_DATA_PATH/pfx/dosdevices"; exit 0; fi
+sandbox="$(dirname "$STEAM_COMPAT_DATA_PATH")"
+printf 'OPRW\040\000\000\000' > "$sandbox/out/test.wrp"
+printf 'caf\377\nRoad 2 dirs: 5\n' > "$sandbox/binarize.log""#,
+    )
+    .unwrap();
+    build(&proj, &env.tools(), &quiet).unwrap();
+}

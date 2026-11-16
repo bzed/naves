@@ -468,6 +468,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
+        Rule::RoadDuplicateDropped,
+        Rule::BridgeClearance,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -479,6 +481,26 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     ids.dedup();
     assert_eq!(ids.len(), rules.len());
     assert_eq!(Rule::RoadNotDrivable.id(), "road_not_drivable");
+    assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
+    assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
+}
+
+#[test]
+fn a_dropped_duplicate_is_one_finding_at_its_middle() {
+    let mut n = net(vec![]);
+    n.duplicates.push(naves_core::roadnet::DroppedDuplicate {
+        stretch: "7:1-2".to_string(),
+        kept: "8:3-4".to_string(),
+        from_m: 10.0,
+        to_m: 90.0,
+        at: (45.0, 5.0),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::RoadDuplicateDropped, &v);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].at, (45.0, 5.0));
+    assert!(found[0].message.contains("7:1-2") && found[0].message.contains("8:3-4"));
+    assert!(found[0].message.contains("80 m"), "{}", found[0].message);
 }
 
 #[test]
@@ -491,14 +513,19 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         rank: 3,
         patch_m: 3.5,
         stretches: std::collections::BTreeSet::new(),
+        lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
     };
     let junctions = Junctions {
+        rings: Vec::new(),
         points: vec![at(100.0, 100.0), at(160.0, 112.0)],
         links: vec![Link {
             a: 0,
             b: 1,
             length: 50.0,
             ceiling: 0.12,
+            a_at: (0.0, 0.0),
+            b_at: (0.0, 0.0),
         }],
         unresolved: vec![0],
     };
@@ -635,4 +662,126 @@ fn a_dip_over_water_that_got_no_bridge_is_reported_where_it_is() {
         found[0].message,
         "Road crosses water 8 m below it without a bridge; look at it"
     );
+}
+
+#[test]
+fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
+    use naves_core::catalog::testing::synthetic_catalog;
+    use naves_core::conform::conform;
+    use naves_core::features::{Feature, FeatureKind, Source};
+    use naves_core::heightmap::Heightmap;
+    use naves_core::junctions::find_junctions;
+    use naves_core::profile::solve_profiles;
+    use naves_core::roadnet::build_graph;
+    use naves_core::roadplace::place_network;
+    use naves_core::sideslope::side_slopes;
+
+    let feature = |way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]| Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    };
+    let graph = build_graph(&[
+        feature(
+            1,
+            Family::City,
+            &[1, 2, 3],
+            &[(50.0, 200.0), (200.0, 200.0), (350.0, 200.0)],
+        ),
+        feature(2, Family::Mud, &[2, 4], &[(200.0, 200.0), (200.0, 350.0)]),
+    ]);
+    let n = place_network(&graph, &synthetic_catalog()).unwrap();
+    assert_eq!(n.overlays.len(), 1);
+    let hm = Heightmap {
+        size: 128,
+        cell_m: 3.125,
+        h: vec![100.0; 128 * 128],
+    };
+    let junctions = find_junctions(&n, &graph, &hm);
+    let profiles = solve_profiles(&n, &hm, &junctions, &side_slopes(&n, &hm));
+    let conformed = conform(&hm, &profiles.strips, &[]).unwrap();
+    let v = check_roads(
+        &n,
+        &profiles,
+        &junctions,
+        &conformed,
+        &[],
+        &[],
+        &[],
+        &[],
+        &frame(),
+        &[],
+    );
+    assert!(only(Rule::JoinWithoutJunction, &v).is_empty(), "{v:?}");
+    assert!(only(Rule::RoadConflict, &v).is_empty(), "{v:?}");
+}
+
+#[test]
+fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
+    use naves_core::catalog::testing::synthetic_catalog;
+    use naves_core::features::{Feature, FeatureKind, Source};
+    use naves_core::roadnet::build_graph;
+    use naves_core::roadplace::place_network;
+
+    let feature = |way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]| Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    };
+    // three roads of three families end at one node: no road passes through it
+    let graph = build_graph(&[
+        feature(1, Family::Asf3, &[1, 2], &[(50.0, 200.0), (200.0, 200.0)]),
+        feature(2, Family::City, &[3, 2], &[(200.0, 350.0), (200.0, 200.0)]),
+        feature(3, Family::Mud, &[4, 2], &[(350.0, 200.0), (200.0, 200.0)]),
+    ]);
+    let n = place_network(&graph, &synthetic_catalog()).unwrap();
+    assert_eq!(n.joins_without_junction.len(), 1);
+    assert_eq!(n.overlays.len(), 0);
+}
+
+#[test]
+fn a_bridge_that_misses_its_clearance_is_a_finding_that_names_what_was_reached() {
+    use naves_core::profile::Clearance;
+    let profiles = Profiles {
+        clearances: vec![
+            Clearance {
+                at: (10.0, 20.0),
+                reached: 3.2,
+                wanted: 4.5,
+            },
+            Clearance {
+                at: (30.0, 40.0),
+                reached: 4.48,
+                wanted: 4.5,
+            },
+        ],
+        ..Profiles::default()
+    };
+    let v = run(&net(vec![]), &profiles, &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::BridgeClearance, &v);
+    // 4.48 m is within the tolerance of 4.5 m
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].at, (10.0, 20.0));
+    assert!(found[0].message.contains("3.2 m"), "{}", found[0].message);
+    assert!(found[0].message.contains("4.5 m"), "{}", found[0].message);
 }

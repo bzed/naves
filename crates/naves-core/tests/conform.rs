@@ -629,6 +629,8 @@ fn a_patch_levels_the_ground_at_a_join() {
         radius: 8.0,
         height: 160.0,
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[], &[patch]).unwrap();
     for (dx, dy) in [(0.0, 0.0), (6.0, 0.0), (-6.0, 0.0), (0.0, 6.0)] {
@@ -647,6 +649,8 @@ fn a_patch_beside_a_road_at_another_height_takes_the_vertices_nearer_to_its_edge
         radius: 7.0,
         height: 110.0,
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[road], &[patch]).unwrap();
     assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
@@ -663,6 +667,8 @@ fn a_patch_over_a_road_at_another_height_leaves_the_road_its_width() {
         radius: 7.0,
         height: 100.8,
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[road], &[patch]).unwrap();
     // a patch is not a conflict with a road; the road keeps the vertices of its own width
@@ -682,6 +688,8 @@ fn a_road_sloping_through_a_patch_keeps_its_own_heights_across_its_width() {
         radius: 9.125,
         height: at_x(200.0),
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[road], &[patch]).unwrap();
     assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
@@ -723,6 +731,8 @@ fn a_patch_does_not_level_the_ground_under_a_bridge_span() {
         radius: 8.0,
         height: 100.0,
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[road], &[patch]).unwrap();
     assert!((sample(&out.heightmap, 300.0, 400.0) - 70.0).abs() < 1e-3);
@@ -768,6 +778,8 @@ fn a_patch_that_is_not_a_circle_on_the_map_claims_nothing() {
             radius,
             height,
             rank: 3,
+            gradient: (0.0, 0.0),
+            inner_radius: 0.0,
         };
         let out = conform(&base, &[], &[patch]).unwrap();
         assert_eq!(out.heightmap, base, "{at:?} {radius} {height}");
@@ -786,6 +798,8 @@ fn an_empty_map_with_a_patch_is_left_alone() {
         radius: 8.0,
         height: 120.0,
         rank: 3,
+        gradient: (0.0, 0.0),
+        inner_radius: 0.0,
     };
     let out = conform(&base, &[], &[patch]).unwrap();
     assert_eq!(out.heightmap.h.len(), 0);
@@ -843,4 +857,58 @@ fn equal_ranks_and_equal_edges_go_to_the_first_road() {
     let out = conform(&base, &strips, &[]).unwrap();
     // the vertex at y = 200 is 6 m from both
     assert!((at(&out.heightmap, 64, 64) - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_tilted_patch_follows_the_plane() {
+    let base = terrain(128, 3.125, |_, _| 100.0);
+    let patch = LevelPatch {
+        at: (200.0, 200.0),
+        radius: 30.0,
+        height: 140.0,
+        rank: 3,
+        gradient: (0.06, -0.03),
+        inner_radius: 0.0,
+    };
+    let out = conform(&base, &[], &[patch]).unwrap();
+    let mut checked = 0;
+    for row in 0..128 {
+        for col in 0..128 {
+            let (x, y) = (f64::from(col) * 3.125, f64::from(row) * 3.125);
+            if (x - 200.0).hypot(y - 200.0) <= 22.0 {
+                let want = 140.0 + 0.06 * (x - 200.0) - 0.03 * (y - 200.0);
+                let got = at(&out.heightmap, col, row);
+                assert!((got - want).abs() < 1e-3, "{x} {y}: {got} {want}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100);
+}
+
+#[test]
+fn an_annular_patch_leaves_the_inside_alone() {
+    let base = terrain(256, 3.125, |x, _| 100.0 + 0.1 * x);
+    let patch = LevelPatch {
+        at: (400.0, 400.0),
+        radius: 120.0,
+        height: 140.0,
+        rank: 3,
+        gradient: (0.05, 0.0),
+        inner_radius: 100.0,
+    };
+    let out = conform(&base, &[], &[patch]).unwrap();
+    for row in 0..256 {
+        for col in 0..256 {
+            let (x, y) = (f64::from(col) * 3.125, f64::from(row) * 3.125);
+            let d = (x - 400.0).hypot(y - 400.0);
+            let got = at(&out.heightmap, col, row);
+            if d < 90.0 {
+                assert!((got - (100.0 + 0.1 * x)).abs() < 1e-3, "{x} {y}: {got}");
+            } else if (104.0..=116.0).contains(&d) {
+                let want = 140.0 + 0.05 * (x - 400.0);
+                assert!((got - want).abs() < 0.3, "{x} {y}: {got} {want}");
+            }
+        }
+    }
 }

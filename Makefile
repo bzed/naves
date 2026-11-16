@@ -35,6 +35,7 @@ deny:
 test:
 	$(CARGO) test --workspace --all-targets $(LOCKED)
 	$(CARGO) test --workspace --doc $(LOCKED)
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/ingame-check -p 'test_*.py'
 
 fuzz:
 	@if [ -d fuzz ]; then \

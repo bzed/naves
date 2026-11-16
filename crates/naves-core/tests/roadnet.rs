@@ -5,6 +5,7 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::cast_precision_loss,
     clippy::indexing_slicing,
     reason = "test helper code; failing loudly is the point"
 )]
@@ -12,7 +13,8 @@
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{
-    BridgeSpan, RoadGraph, Stretch, build_graph, chains, widen_bridges, with_bridge_spans,
+    BridgeSpan, DUPLICATE_MAX_HEADING_DEG, DUPLICATE_MIN_M, RoadGraph, Stretch, build_graph,
+    chains, drop_duplicates, over_crossings, overlay_rank, rings, widen_bridges, with_bridge_spans,
 };
 use proptest::prelude::*;
 
@@ -32,6 +34,8 @@ fn feature(
             drivable: true,
             bridge,
             tunnel: false,
+            roundabout: false,
+            layer: 0,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -684,4 +688,448 @@ fn a_bridge_that_a_dip_bridge_covers_is_not_lost() {
     }
     // and one that stays a bridge is kept
     assert_eq!(lost_bridges(&osm, &osm).len(), 0);
+}
+
+#[test]
+fn the_overlay_rank_goes_by_family_then_length_then_id() {
+    use std::cmp::Ordering;
+    // an Asf3 road of 100 m, a City road of 50 m, two Grav roads of 80 m and 80 m, none sharing a node
+    let graph = build_graph(&[
+        feature(1, Family::Asf3, false, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::City,
+            false,
+            &[3, 4],
+            &[(0.0, 500.0), (50.0, 500.0)],
+        ),
+        feature(
+            3,
+            Family::Grav,
+            false,
+            &[5, 6],
+            &[(0.0, 900.0), (80.0, 900.0)],
+        ),
+        feature(
+            4,
+            Family::Grav,
+            false,
+            &[7, 8],
+            &[(0.0, 1300.0), (80.0, 1300.0)],
+        ),
+        feature(
+            5,
+            Family::Grav,
+            false,
+            &[9, 10],
+            &[(0.0, 1700.0), (120.0, 1700.0)],
+        ),
+    ]);
+    let all = chains(&graph);
+    let of = |way: &str| {
+        all.iter()
+            .find(|c| graph.stretches[c.links[0].stretch].id.starts_with(way))
+            .unwrap()
+    };
+    let (asf3, city, grav3, grav4, grav5) = (of("1:"), of("2:"), of("3:"), of("4:"), of("5:"));
+    // the family decides, not the length
+    assert_eq!(overlay_rank(city, asf3, &graph), Ordering::Less);
+    assert_eq!(overlay_rank(asf3, city, &graph), Ordering::Greater);
+    assert_eq!(overlay_rank(asf3, grav3, &graph), Ordering::Less);
+    // the same family: the longer road is higher
+    assert_eq!(overlay_rank(grav5, grav3, &graph), Ordering::Less);
+    // equal length: the lower stretch id
+    assert_eq!(overlay_rank(grav3, grav4, &graph), Ordering::Less);
+    assert_eq!(overlay_rank(grav4, grav3, &graph), Ordering::Greater);
+    assert_eq!(overlay_rank(grav3, grav3, &graph), Ordering::Equal);
+}
+
+// ---- duplicate roads ----
+
+fn way(id: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    feature(id, family, false, nodes, points)
+}
+
+#[test]
+fn the_duplicate_limits_are_the_documented_ones() {
+    assert!((DUPLICATE_MIN_M - 25.0).abs() < 1e-9);
+    assert!((DUPLICATE_MAX_HEADING_DEG - 15.0).abs() < 1e-9);
+}
+
+#[test]
+fn two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked() {
+    let g = build_graph(&[
+        way(1, Family::Grav, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Asf3, &[3, 4], &[(0.0, 1.0), (200.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(ids(&out), vec!["2:3-4"]);
+    assert_eq!(dropped.len(), 1);
+    let d = &dropped[0];
+    assert_eq!((d.stretch.as_str(), d.kept.as_str()), ("1:1-2", "2:3-4"));
+    assert!(
+        d.from_m.abs() < 1e-6 && (d.to_m - 200.0).abs() < 1e-6,
+        "{d:?}"
+    );
+    assert!((d.at.0 - 100.0).abs() < 1.0 && d.at.1.abs() < 1.5, "{d:?}");
+}
+
+#[test]
+fn a_parallel_road_further_than_half_the_width_is_kept() {
+    // two asphalt 3 roads (7 m wide), 5 m apart
+    let g = build_graph(&[
+        way(1, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Asf3, &[3, 4], &[(0.0, 5.0), (200.0, 5.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn an_overlap_shorter_than_25_m_is_kept() {
+    let g = build_graph(&[
+        way(1, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(2, Family::Grav, &[3, 4], &[(0.0, 1.0), (20.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn headings_more_than_15_degrees_apart_are_kept() {
+    // asphalt 1 and 2 cross through the origin: within 4.5 m of each other for more than 25 m
+    let crossing = |deg: f64| {
+        let (s, c) = deg.to_radians().sin_cos();
+        build_graph(&[
+            way(1, Family::Asf1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+            way(
+                2,
+                Family::Asf2,
+                &[3, 4],
+                &[(-100.0 * c, -100.0 * s), (100.0 * c, 100.0 * s)],
+            ),
+        ])
+    };
+    let (_, near) = drop_duplicates(&crossing(10.0));
+    assert_eq!(near.len(), 1, "10 degrees is one road drawn twice");
+    let g = crossing(16.0);
+    let (out, far) = drop_duplicates(&g);
+    assert_eq!(far.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn the_lower_road_goes_on_after_the_overlap() {
+    let g = build_graph(&[
+        way(1, Family::Asf1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(
+            2,
+            Family::Grav,
+            &[3, 5, 4],
+            &[(0.0, 1.0), (100.0, 1.0), (200.0, 100.0)],
+        ),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1);
+    let d = &dropped[0];
+    assert_eq!(d.stretch, "2:3-4");
+    assert!(
+        d.from_m.abs() < 1e-6 && d.to_m > 98.0 && d.to_m < 105.0,
+        "{d:?}"
+    );
+    // the kept road is cut where the other leaves; the rest of the lower road ends there
+    let rest = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("2:3-4"))
+        .unwrap_or_else(|| panic!("the rest of the lower road: {:?}", ids(&out)));
+    assert_eq!(rest.end, 4);
+    let node = rest.start;
+    let crossing = out.crossings.iter().find(|c| c.node == node).unwrap();
+    assert_eq!(crossing.stretches.len(), 3, "{:?}", ids(&out));
+    let kept: Vec<_> = out
+        .stretches
+        .iter()
+        .filter(|s| s.id.starts_with("1:1-2"))
+        .collect();
+    assert_eq!(kept.len(), 2);
+    let on_kept = (crossing.point.0 - 100.0).abs() < 5.0 && crossing.point.1.abs() < 1e-6;
+    assert!(on_kept, "{:?}", crossing.point);
+    assert!(
+        rest.points
+            .first()
+            .is_some_and(|p| (p.0 - crossing.point.0).hypot(p.1 - crossing.point.1) < 1e-6)
+    );
+}
+
+#[test]
+fn equal_family_and_length_drops_the_higher_stretch_id_every_time() {
+    for flip in [false, true] {
+        let a = way(3, Family::Asf3, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]);
+        let b = way(5, Family::Asf3, &[3, 4], &[(0.0, 0.0), (200.0, 0.0)]);
+        let features = if flip { vec![b, a] } else { vec![a, b] };
+        let (out, dropped) = drop_duplicates(&build_graph(&features));
+        assert_eq!(ids(&out), vec!["3:1-2"], "flip {flip}");
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].stretch, "5:3-4");
+        assert_eq!(dropped[0].kept, "3:1-2");
+    }
+}
+
+#[test]
+fn duplicated_bridges_are_placed_once() {
+    let g = build_graph(&[
+        feature(1, Family::Grav, true, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(2, Family::Asf3, true, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(ids(&out), vec!["2:3-4"]);
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].stretch, "1:1-2");
+    assert!(dropped[0].from_m.abs() < 1e-6 && (dropped[0].to_m - 100.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_bridge_is_not_compared_with_a_road() {
+    let g = build_graph(&[
+        feature(1, Family::Asf3, false, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(2, Family::Grav, true, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 0);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn cut_pieces_and_bridge_cuts_have_unique_ids() {
+    let g = build_graph(&[
+        way(1, Family::Asf1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        way(
+            2,
+            Family::Grav,
+            &[3, 5, 4],
+            &[(0.0, 1.0), (100.0, 1.0), (200.0, 100.0)],
+        ),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1);
+    let spans: Vec<BridgeSpan> = (0..out.stretches.len())
+        .map(|stretch| BridgeSpan {
+            stretch,
+            from_m: 20.0,
+            to_m: 40.0,
+        })
+        .collect();
+    let cut = with_bridge_spans(&out, &spans);
+    let all = ids(&cut);
+    let mut unique = all.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), all.len(), "{all:?}");
+    assert!(
+        ids(&out).iter().any(|i| i.contains("/rest")),
+        "{:?}",
+        ids(&out)
+    );
+}
+
+/// A roundabout way: `n` points on a circle of `radius` metres, nodes `first..first + n`, closed when `closed`.
+fn circle(way: i64, first: i64, n: i64, radius: f64, closed: bool, roundabout: bool) -> Feature {
+    let around = if closed { n + 1 } else { n };
+    let points: Vec<(f64, f64)> = (0..around)
+        .map(|i| {
+            let a = (i % n) as f64 / n as f64 * std::f64::consts::TAU;
+            (1000.0 + radius * a.sin(), 1000.0 + radius * a.cos())
+        })
+        .collect();
+    let nodes: Vec<i64> = (0..around).map(|i| first + i % n).collect();
+    let mut f = feature(way, Family::City, false, &nodes, &points);
+    if let FeatureKind::Road { roundabout: r, .. } = &mut f.kind {
+        *r = roundabout;
+    }
+    f
+}
+
+/// A road from the ring node `node` (on the circle at index `index` of `n`) straight outwards.
+fn spoke(way: i64, node: i64, index: i64, n: i64, radius: f64) -> Feature {
+    let a = index as f64 / n as f64 * std::f64::consts::TAU;
+    let at = |r: f64| (1000.0 + r * a.sin(), 1000.0 + r * a.cos());
+    road(way, &[node, 9000 + way], &[at(radius), at(radius + 60.0)])
+}
+
+#[test]
+fn a_closed_roundabout_is_one_ring() {
+    let g = build_graph(&[
+        circle(1, 100, 16, 25.0, true, true),
+        spoke(2, 100, 0, 16, 25.0),
+        spoke(3, 104, 4, 16, 25.0),
+        spoke(4, 108, 8, 16, 25.0),
+    ]);
+    let found = rings(&g);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let ring = &found[0];
+    // the ring is cut at the three joining roads
+    assert_eq!(ring.stretches.len(), 3);
+    for i in &ring.stretches {
+        assert!(g.stretches[*i].roundabout);
+    }
+    assert!((ring.centre.0 - 1000.0).abs() < 0.5 && (ring.centre.1 - 1000.0).abs() < 0.5);
+    assert!((ring.radius - 25.0).abs() < 0.5, "{}", ring.radius);
+    assert_eq!(ring.family, Family::City);
+}
+
+#[test]
+fn a_ring_without_joining_roads_is_one_ring_of_one_stretch() {
+    let g = build_graph(&[circle(1, 100, 16, 25.0, true, true)]);
+    let found = rings(&g);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].stretches.len(), 1);
+}
+
+#[test]
+fn an_open_or_cut_ring_stays_ordinary_roads() {
+    // not closed: three quarters of a circle
+    let open = build_graph(&[circle(1, 100, 16, 25.0, false, true)]);
+    assert_eq!(rings(&open), []);
+    // closed, but one way of it is not tagged as a roundabout
+    let mut a = circle(1, 100, 16, 25.0, true, true);
+    let b = {
+        let (nodes, points) = (a.nodes.split_off(9), a.points.split_off(9));
+        let mut b = circle(2, 100, 16, 25.0, true, false);
+        b.nodes = [vec![*a.nodes.last().unwrap()], nodes].concat();
+        b.points = [vec![*a.points.last().unwrap()], points].concat();
+        b
+    };
+    let cut = build_graph(&[a, b]);
+    assert_eq!(rings(&cut), []);
+    // a ring that a third roundabout way leaves is not a simple loop
+    let branch = build_graph(&[circle(1, 100, 16, 25.0, true, true), {
+        let mut f = spoke(2, 100, 0, 16, 25.0);
+        if let FeatureKind::Road { roundabout, .. } = &mut f.kind {
+            *roundabout = true;
+        }
+        f
+    }]);
+    assert_eq!(rings(&branch), []);
+    // the roads are still there as ordinary stretches
+    assert_ne!(cut.stretches.len(), 0);
+}
+
+fn layered(way: i64, bridge: bool, layer: i8, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    let mut f = feature(way, Family::Asf3, bridge, nodes, points);
+    if let FeatureKind::Road { layer: l, .. } = &mut f.kind {
+        *l = layer;
+    }
+    f
+}
+
+#[test]
+fn a_bridge_over_a_road_is_found_without_a_shared_node() {
+    // the road runs east, the bridge north over it, at (100, 0); the bridge is the second way
+    let features = [
+        road(1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+        layered(2, true, 1, &[3, 4], &[(100.0, -60.0), (100.0, 40.0)]),
+    ];
+    let g = build_graph(&features);
+    let found = over_crossings(&g);
+    assert_eq!(found.len(), 1);
+    let c = &found[0];
+    assert!(g.stretches[c.upper].bridge && !g.stretches[c.lower].bridge);
+    assert!((c.at.0 - 100.0).abs() < 1e-6 && c.at.1.abs() < 1e-6);
+    assert!((c.upper_s - 60.0).abs() < 1e-6, "{}", c.upper_s);
+    assert!((c.lower_s - 200.0).abs() < 1e-6, "{}", c.lower_s);
+}
+
+#[test]
+fn roads_crossing_at_a_shared_node_are_not_an_over_crossing() {
+    let features = [
+        road(1, &[1, 2, 3], &[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)]),
+        layered(
+            2,
+            true,
+            1,
+            &[4, 2, 5],
+            &[(0.0, -50.0), (0.0, 0.0), (0.0, 50.0)],
+        ),
+    ];
+    assert_eq!(over_crossings(&build_graph(&features)).len(), 0);
+}
+
+#[test]
+fn an_untagged_crossing_or_a_tunnel_is_not_an_over_crossing() {
+    let a = road(1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]);
+    let b = road(2, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]);
+    assert_eq!(over_crossings(&build_graph(&[a.clone(), b])).len(), 0);
+    let mut t = layered(2, false, -1, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]);
+    if let FeatureKind::Road { tunnel, .. } = &mut t.kind {
+        *tunnel = true;
+    }
+    assert_eq!(over_crossings(&build_graph(&[a, t])).len(), 0);
+}
+
+#[test]
+fn of_two_bridges_the_higher_layer_is_the_upper() {
+    let features = [
+        layered(1, true, 1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+        layered(2, true, 2, &[3, 4], &[(0.0, -50.0), (0.0, 50.0)]),
+    ];
+    let g = build_graph(&features);
+    let found = over_crossings(&g);
+    assert_eq!(found.len(), 1);
+    assert_eq!(g.stretches[found[0].upper].layer, 2);
+}
+
+/// One way: 100 m east, a U-turn of radius 4 m to the north, 100 m west. Its nodes are 1 to the number
+/// of points.
+fn u_turn_way() -> Feature {
+    let mut points: Vec<(f64, f64)> = (0..=10)
+        .map(|i| (-100.0 + 10.0 * f64::from(i), 0.0))
+        .collect();
+    points.extend((1..30).map(|i| {
+        let t = std::f64::consts::PI * f64::from(i) / 30.0;
+        (4.0 * t.sin(), 4.0 - 4.0 * t.cos())
+    }));
+    points.extend((0..=10).map(|i| (-10.0 * f64::from(i), 8.0)));
+    let nodes: Vec<i64> = (1..=i64::try_from(points.len()).unwrap()).collect();
+    road(1, &nodes, &points)
+}
+
+#[test]
+fn a_bridge_span_that_starts_in_a_bend_keeps_the_road_one_chain() {
+    let g = build_graph(&[u_turn_way()]);
+    assert_eq!(g.stretches.len(), 1);
+    // the middle of the bend: the road turns by 57 degrees on each side within 4 m
+    let apex = 100.0 + 2.0 * std::f64::consts::PI;
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: 0,
+            from_m: apex,
+            to_m: apex + 40.0,
+        }],
+    );
+    assert_eq!(out.stretches.len(), 3, "{:?}", ids(&out));
+    let c = chain_ids(&out);
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert_eq!(c[0].len(), 3, "{c:?}");
+}
+
+#[test]
+fn two_dead_ends_drawn_into_one_node_stay_apart() {
+    // two arms of one family that leave the node 10 degrees apart: a bend of 170 degrees
+    // (the second one is a bridge, so that the way is not simply one stretch)
+    let g = build_graph(&[
+        feature(
+            1,
+            Family::Asf3,
+            false,
+            &[0, 10],
+            &[(0.0, 0.0), (0.0, 100.0)],
+        ),
+        feature(2, Family::Asf3, true, &[0, 20], &[(0.0, 0.0), (17.4, 98.5)]),
+    ]);
+    let c = chain_ids(&g);
+    assert_eq!(c.len(), 2, "{c:?}");
 }

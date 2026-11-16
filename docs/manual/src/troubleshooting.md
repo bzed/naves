@@ -99,6 +99,15 @@ The roads are built from the game's own pieces, which `naves build` reads from t
 (`addons/structures_roads.pbo`). Install *DayZ Server* from Steam, or set `DAYZ_SERVER` or the path under Settings,
 External tools.
 
+**`binarize could not open N road model(s) (...)`**
+`binarize` looks for the road models below its `P:` drive, where `naves build` unpacks them from
+`addons/structures_roads.pbo` and removes them again after the run. If it still cannot open one, the game's files are
+not what Náves expects (a game update, a damaged PBO); the message names the models and the binarize log
+(`build/logs/binarize.log`). The one `Cannot open object` line with an empty name that every build logs is harmless.
+
+**`binarize found no road directions in a world with roads`**
+Every `Road N dirs` line of the binarize log is 0, so the world file has no road network. Look at the log for why.
+
 **`dayzmake unpack failed`**
 dayzmake could not open the PBO; its output is in the message. The result of a successful read is cached in
 `$XDG_CACHE_HOME/naves/catalog` (else `~/.cache/naves/catalog`); delete the folder to read the game again.
@@ -152,6 +161,19 @@ straight line of a model. The road is left as it was solved, and the
 ground under it as the build leaves it (a fill, as for any road); the position is the middle of the run and the number
 is how far the road stands above the ground. Look at it in the game or the map: replace the pieces by a bridge in
 `edits/overrides.toml`, move the OSM line, or accept it. Dips without water are filled and not reported.
+
+**`bridge_clearance`: "A bridge clears the road below by only 1.6 m, the minimum is 4.5 m"**
+A bridge crosses another road without a shared node and its deck could not be lifted to 4.5 m above that road
+(measured from the road's surface to the underside of the deck). The usual cause: the bridge starts at a junction that
+also holds the road below (the crossing lies within a few metres of the junction), so lifting the junction would lift
+the road below with it; the build never lifts the road below, so the bridge stays. Others: the junctions on the
+bridge's road may rise at most 10 m above the ground for a bridge, or the grade limits stop the approaches. The
+position is where the two lines cross. Move the junction away from the crossing in the data, or accept it.
+
+**`bridge model ...: its Geometry LOD cannot be read ...`**
+The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type
+(or of all bridge models) is used, and where no model can be read the clearance under bridges over roads is not
+checked.
 
 **`bridge on ...: the widest bridge model is ... m, scaled up to ... m; the road is ... m wide`**
 The game has no bridge as wide as the road, not even scaled up by the most the build allows (1.5 times). The widest

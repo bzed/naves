@@ -16,7 +16,8 @@ use crate::junctions::Junctions;
 use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
-use crate::profile::{GradeExcessKind, Profiles};
+use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcessKind, Profiles};
+use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// The priority of water among the OSM areas.
@@ -45,7 +46,8 @@ pub enum Rule {
     EarthworksCapped,
     /// An edit that outlived its object.
     OrphanedEdit,
-    /// Roads that meet without a junction piece.
+    /// Roads that all end at one point without a junction piece (where one road runs through, the lower
+    /// roads end under it instead, see `roadplace::Overlay`).
     JoinWithoutJunction,
     /// A tunnel that got no pieces.
     TunnelOmitted,
@@ -55,11 +57,15 @@ pub enum Rule {
     RoadFarFromGround,
     /// A road standing high over water that got no bridge.
     RoadOverWater,
+    /// A road that OpenStreetMap draws twice: the lower-ranked copy's overlapping part is not placed.
+    RoadDuplicateDropped,
+    /// A bridge over a road that does not clear it by [`crate::profile::BRIDGE_CLEARANCE_M`].
+    BridgeClearance,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 14] = [
+    pub const ALL: [Rule; 16] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -74,6 +80,8 @@ impl Rule {
         Rule::JunctionTooSteep,
         Rule::RoadFarFromGround,
         Rule::RoadOverWater,
+        Rule::RoadDuplicateDropped,
+        Rule::BridgeClearance,
     ];
 
     /// The stable id of the rule.
@@ -94,6 +102,8 @@ impl Rule {
             Rule::JunctionTooSteep => "junction_too_steep",
             Rule::RoadFarFromGround => "road_far_from_ground",
             Rule::RoadOverWater => "road_over_water",
+            Rule::RoadDuplicateDropped => "road_duplicate_dropped",
+            Rule::BridgeClearance => "bridge_clearance",
         }
     }
 }
@@ -111,6 +121,25 @@ pub struct Violation {
 
 fn violation(rule: Rule, at: (f64, f64), message: String) -> Violation {
     Violation { rule, at, message }
+}
+
+/// A bridge that clears the road below by less than it should.
+fn clearance_violations(profiles: &Profiles) -> Vec<Violation> {
+    profiles
+        .clearances
+        .iter()
+        .filter(|c| c.reached < c.wanted - CLEARANCE_TOLERANCE_M)
+        .map(|c| {
+            violation(
+                Rule::BridgeClearance,
+                c.at,
+                format!(
+                    "A bridge clears the road below by only {:.1} m, the minimum is {:.1} m",
+                    c.reached, c.wanted
+                ),
+            )
+        })
+        .collect()
 }
 
 fn length_of(check: &PieceCheck) -> f64 {
@@ -261,7 +290,7 @@ fn junction_violations(junctions: &Junctions) -> Vec<Violation> {
                 (f64::midpoint(a.at.0, b.at.0), f64::midpoint(a.at.1, b.at.1)),
                 format!(
                     "Junctions too close for their heights: {:.1} m over {:.0} m",
-                    (a.height - b.height).abs(),
+                    (a.height_at(link.a_at) - b.height_at(link.b_at)).abs(),
                     link.length
                 ),
             ))
@@ -292,6 +321,25 @@ fn far_from_ground(piece: &PieceCheck) -> Option<Violation> {
         f64::midpoint(piece.start.1, piece.end.1),
     );
     Some(violation(Rule::RoadFarFromGround, at, message))
+}
+
+/// One violation for each part of a road left out because another road runs along it, in the middle of it.
+fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
+    duplicates
+        .iter()
+        .map(|d| {
+            violation(
+                Rule::RoadDuplicateDropped,
+                d.at,
+                format!(
+                    "Road {} runs along {} for {:.0} m: OpenStreetMap draws it twice, this part is not placed",
+                    d.stretch,
+                    d.kept,
+                    d.to_m - d.from_m
+                ),
+            )
+        })
+        .collect()
 }
 
 /// A road left standing over water: one violation for each dip that is reported, where it is.
@@ -406,8 +454,7 @@ pub fn check_roads(
         violation(
             Rule::JoinWithoutJunction,
             at,
-            "Roads meet here without a junction piece (the game has none for this pair)"
-                .to_string(),
+            "Roads end here without a junction piece (the game has none for this pair)".to_string(),
         )
     }));
     out.extend(net.tunnels_omitted.iter().map(|(id, at)| {
@@ -417,6 +464,8 @@ pub fn check_roads(
             format!("Tunnel {id} has no pieces: real tunnels need terrain holes"),
         )
     }));
+    out.extend(clearance_violations(profiles));
+    out.extend(duplicate_violations(&net.duplicates));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.sort_by(|a, b| {

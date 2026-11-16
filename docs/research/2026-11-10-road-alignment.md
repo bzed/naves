@@ -1132,3 +1132,631 @@ Not installed. (The repository also has a 85 KB `CLAUDE.md`, the author's workin
 
 Measurement code: `/var/tmp/naves-solver/instrumentation.patch` (not in the repository); run logs in the same
 folder.
+
+## 9. Roads that look right (2026-11-15)
+
+Stage 2 of `docs/superpowers/specs/2026-11-15-road-look-design.md`. Every step is measured with `road-analysis` on
+the Berchtesgaden example at `terrain_size = 2048` (release build, whole run), before and after.
+
+### 9.1 Swapped X pieces
+
+An X crossing whose through road and crossing road have no piece for that order of families takes the piece with
+the roles swapped, turned by 90 degrees so that its through ports lie on the crossing arms (`roadplace::swapped`).
+In the vanilla set this is `kr_x_asf1_city` for a street as through road crossed by an Asf1 road. T crossings are
+never swapped.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 877 | 878 |
+| `road_gap` | 388 | 388 |
+| grade excesses | 1729 | 1729 |
+| `road_conflict` (conflicts) | 1089 | 1091 |
+| Wall time (analysis) | 367.6 s | 359.6 s |
+
+No gain on this map. The one crossing that qualifies (street through, Asf1 across, at (4835, 7760)) is planned
+with `kr_x_asf1_city`, with the model's ports lying symmetrically on the crossing arms, but the street's fit ends
+3.28 m from the crossing, over the 3 m a junction piece may sit from it (`JUNCTION_TOLERANCE_M`, the 115 joins
+"over 3 m" of 8.2), so it is dropped and stays a join, as before. The extra join and conflicts are knock-on
+effects of the dropped plan (it takes part in the spacing and chain-order decisions). The rule is covered by
+tests on the synthetic catalog (`an_x_crossing_uses_the_swapped_piece_when_only_that_exists`,
+`a_t_crossing_is_never_swapped`).
+
+### 9.2 The overlay rule (2026-11-15)
+
+Where the game has no junction piece (the 454 joins of 8.2 and every join the spacing, the 3 m tolerance and the
+bridges leave), one road lies on top of the other instead of the two meeting in a heap (`roadplace::overlay_at`).
+The higher road is the one of the higher family rank (`roadnet::overlay_rank`: Asf1, Asf2, City, Asf3, Grav, Mud, then
+the longer chain, then the lower stretch id). The placement stays hierarchical: only the lower road's end moves.
+
+- A lower road that ends at a crossing stops under the higher road's edge: 2 m inside it, but not nearer than half
+  the half width to its centre line (a street of 10 m: 3 m from the centre line). A start is placed exactly there; an
+  arriving end cannot be steered that exactly (the pieces are 6.25 m and longer), so the cut is tried at the default
+  depth and then at 1, 0.75, 0.5, 0.25 and 0.1 times the half width until the last piece ends between 0.1 m and the half width
+  short of the crossing, measured along the road (a fit can overshoot its path; an end past the centre line counts as a
+  miss), else the nearest miss is kept.
+- A through road that is lower than both side roads of an X crossing is interrupted: two runs, each ending under one
+  edge of the crossing road. A higher road that ends on a lower one that runs on is not cut; the lower road runs on.
+- At the cut the lower road is held `OVERLAY_DROP_M` (5 cm) below the junction's height (`JunctionKind::Overlay`,
+  `Junction::lower`, `profile::holds`); the higher road keeps the height. The level patch is the one of a join.
+- A run left between two cuts that is shorter than half its width is not placed and a warning says so.
+- `join_without_junction` stays only for crossings no through road passes (all roads end there).
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 878 | 66 |
+| `road_gap` | 388 | 392 |
+| `road_conflict` (conflicts) | 1091 | 1077 |
+| grade excesses (`road_grade`) | 1729 | 1677 |
+| `road_misses_terrain` | 4812 | 4698 |
+| `road_not_drivable` | 250 | 236 |
+| `junction_too_steep` | 2 | 3 |
+| Wall time (analysis) | 365.3 s | 533.9 s |
+
+812 of the 878 joins became overlays; the 66 left are crossings where all roads end. The wall time is not
+comparable: the second run shared the machine with builds and tests. The 4 extra gaps are probably knock-on effects of the
+shortened side roads (a side road that ends under a road no longer starts at a place the neighbouring fit assumed).
+The rule is covered by tests on the synthetic catalog (`a_mud_track_ends_under_the_edge_of_a_street`,
+`a_crossing_without_piece_interrupts_the_lower_road`, `the_higher_road_ending_on_a_lower_one_lies_on_top`,
+`equal_families_put_the_longer_road_on_top`, `the_lower_road_sits_five_centimetres_below_at_the_cut`,
+`a_stub_shorter_than_half_the_width_is_dropped_and_reported`). The game check of the look comes after the last step
+of stage 2.
+
+### 9.3 Duplicate roads (2026-11-15)
+
+Two roads along each other for at least 25 m, centre lines closer than half the narrower road's width and headings
+within 15 degrees (a road and its reverse count as the same heading), are one road drawn twice in OpenStreetMap
+(`roadnet::drop_duplicates`, before bridge widening and placement). Stretches are taken in the order of
+`overlay_rank` and compared with what is left of the higher-ranked ones of other chains, at every metre; the lower road's
+overlapping part is dropped and reported (`road_duplicate_dropped`, at its middle). Where it goes on, the kept stretch
+is cut at the point where the lower road leaves (new node, `<id>` and `<id>/after<n>`) and the rest of the lower road
+ends there, so that the overlay rule of 9.2 is what joins them. The cut pieces are named `<id>` and `<id>/rest<n>` (not
+`/after<n>`, which the bridge cuts of the dips use). A bridge is compared only with bridges and a tunnel only with
+tunnels, and is never cut: a bridge that runs along a kept one for 25 m is dropped whole.
+
+| | Before | After |
+|---|---|---|
+| `road_duplicate_dropped` | - | 9 |
+| `join_without_junction` | 66 | 66 |
+| `road_gap` | 392 | 397 |
+| `road_conflict` (conflicts) | 1077 | 1072 |
+| grade excesses (`road_grade`) | 1677 | 1699 |
+| `road_misses_terrain` | 4698 | 4676 |
+| `road_not_drivable` | 236 | 236 |
+| Wall time (analysis) | 528.9 s | 599.5 s |
+
+The example has 9 dropped parts, 492 m in all. The five largest:
+
+| Dropped (stretch) | Along (kept) | Length | At (map metres) |
+|---|---|---|---|
+| 206825784:428124318-1581812526 | 944576472:8745141196-8745141208 | 104 m | (7077, 7210) |
+| 1458329776:13374507439-13374507449 | 258382705:2637465849-2637505139 | 88 m | (1645, 7140) |
+| 715025603:21623809-6720613450 | 715025602:21623809-6720613451 | 62 m | (2835, 5999) |
+| 275847468:2805118909-2805118944 | 275847447:2805118909-2805118944 | 45 m | (5474, 7396) |
+| 39624158:474968784-474968794 | 39624159:474968784-474968794 | 43 m | (6161, 7055) |
+
+The largest, 104 m at (7077, 7210), lies about 2981 m east and 3114 m north of the map centre; at the example's scale
+of 0.5 (`real_extent_m` 16384 for an 8192 m map) that is roughly 5.96 km east and 6.23 km north of the area centre
+47.5718 N, 12.9465 E, about 47.628 N, 13.026 E (assuming y grows to the north; not checked against the frame). The two
+rows with the same two end nodes (715025603/715025602, 39624158/39624159, 275847468/275847447) are parallel ways
+between the same two junctions, the classic OpenStreetMap duplicate.
+
+A re-run after the bridge rule gives the same counts (the example has no duplicated bridge). The effect on the other counts is small and mixed (the wall times are not comparable, the second run shared the
+machine with `make check`): the 9 dropped parts remove some pieces (`road_misses_terrain` 22 fewer), the cuts add 5
+gaps and the profiles of the cut roads gain 22 grade excesses; none of it is more than 0.5 % of its count. The rule is
+covered by tests (`two_roads_drawn_on_top_of_each_other_keep_the_higher_ranked`,
+`a_parallel_road_further_than_half_the_width_is_kept`, `an_overlap_shorter_than_25_m_is_kept`,
+`headings_more_than_15_degrees_apart_are_kept`, `the_lower_road_goes_on_after_the_overlap`,
+`equal_family_and_length_drops_the_higher_stretch_id_every_time`).
+
+### 9.4 Roundabouts on a tilted plane (2026-11-15)
+
+A closed loop of `junction=roundabout|circular` stretches (`roadnet::rings`: every node of the loop has exactly two
+ring stretches, one family, no bridge or tunnel) is placed as one closed chain of the family's arcs and straights
+with no junction piece on it. The two ring arms at each of its nodes are always one through road, and the ring lies
+on top of every road that joins it whatever the family, so the joining roads end under its edge by the overlay rule of
+9.2 (`Placer::lies_over`). The ring has one more crossing than a chain of the same length: the node where it closes.
+
+The ring and everything on it lie on **one plane** (`junctions::ring_plane`): a least-squares fit to the original
+ground under the ring's band (centre line plus and minus half the width), sampled about 1 m apart, so that the work grows with the ring's length, the tilt cut to the grade ceiling of
+the family. The junctions on the ring take their height from it instead of the ground median; every joint of the ring is
+held at the plane (no relaxing to the aim grade, no settling), and the terrain under the band and one cell beside it is shaped to the
+plane by one annular `LevelPatch` with a gradient and an inner radius (the ground inside a ring keeps its height) (`conform`: a vertex takes `height + gx dx + gy dy`) instead of one level
+patch per junction. A ring whose radius is below the tightest arc of its family (`PieceCatalog::tightest_arc`: 10 m for
+the vanilla set, the 60 degree arc) cannot be laid out and is a plain crossing (`roadnet::collapse_small_rings`, before
+placement, in `generate::widened_graph`): the ring's stretches go and the roads that joined it meet at one node at the
+ring's centre.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 66 | 65 |
+| `road_gap` | 397 | 396 |
+| `road_conflict` (conflicts) | 1072 | 1050 |
+| grade excesses (`road_grade`) | 1699 | 1667 |
+| `road_misses_terrain` | 4676 | 4661 |
+| `road_not_drivable` | 236 | 227 |
+| `junction_too_steep` | 3 | 3 |
+| Wall time (analysis) | 544.3 s | 534.8 s |
+
+Rings: OpenStreetMap has 6 closed roundabout loops in the plain graph of the example, and a seventh appears once
+the bridge stretches of an OSM bridge that has no room for a model are ordinary roads again (`OSMBRIDGE no room`).
+**Five of the seven are smaller than the 10 m tightest arc and became crossings; two were placed as rings.** The map is
+at half scale, so a roundabout of 9 m radius is 4.6 m here: the radii of the seven are 4.6, 5.8, 6.8, 7.2, 8.1, 10.9
+and 18.6 m (centre line, map metres). The two rings: (5308, 6768), Asf1, 10.9 m, tilt 6.0 % (the ceiling), and (6189, 7038),
+Asf1, 18.6 m, tilt 1.9 %.
+
+**Site 20** (OSM ways 257338907, 415138352, 422733023, at map (5944, 7070)) is a ring of 4.6 m radius: too small for any
+arc, so it is a plain crossing of its joining roads at the centre, not a ring. The plane and the tilt there are
+therefore not used; the benefit of the task on this map is on the two rings above and on the crossings of the five
+small ones (no loop of cut ring stretches any more).
+
+### 9.5 Gaps closed by moving the junction (2026-11-15)
+
+Section 8.2 found that 54 % of the gaps are side roads that cannot close against a junction port a through road has
+already fixed, and that moving the port up to 25 m along its through road closed 60 of 129 in a test. Task 8 builds
+that into the placement (`roadplace.rs`: `Placer::repair_port`, `Placer::crossings`, `place_network`).
+
+**How it works.** A placement is made as before. When a side road that ends at a junction port (`fixed_end`) misses
+it by more than `GAP_TOLERATED_M` (0.5 m), the end of that road (the last fit, from the pose where it starts to the port)
+is fitted again to the port the junction would have if it were 6.25 m further along its through road, then 6.25 m
+back, 12.5 m further, 12.5 m back, and so on up to 25 m each way (`+` before `-`, in this order, for determinism). The
+junction is taken at its place on the line of its through road with the entry at half its length before the crossing;
+the placed junction follows that line to a fraction of a metre, which is why the trial is cheap: only the last fit of
+the side road is made, not the through road again. The first shift that closes the road (gap at most 0.5 m) is noted
+for the junction, else the one with the smallest gap if it is below the gap of the unmoved placement. After the
+whole network is placed, **it is placed a second time with those shifts** (the through road is then refitted from its
+previous junction as part of the ordinary placement, with the junction's goal and its tolerance circle moved along
+the line), and the second network is kept only if it has fewer gaps (then a smaller sum) than the first; otherwise
+the unmoved one is. A shift is dropped (the junction stays) where it would put the junction closer than one junction
+length to another or less than a metre from the end of the run, or over a bridge, and a junction on a roundabout ring
+is never shifted (the ring's joints lie on the ring plane). Overlay places (no junction piece) have no port, so they
+are not in this repair; their gaps do not arise.
+
+Why two placements and not a trial of the through road per candidate: the first version placed the whole network once
+per candidate shift (all failing junctions at the same time, up to 8 rounds). Placement is the expensive part of the
+analysis (518 s of 531 s, for two rounds with the dips), so that was not an option (it did not finish in 30 minutes).
+A through road's refit cannot be tried locally either: it moves every later junction on it by a fraction of a metre and
+with them the ports of their side roads, which are placed afterwards.
+
+| | Before | After |
+|---|---|---|
+| `join_without_junction` | 65 | 65 |
+| `road_gap` | 396 | 347 |
+| `road_conflict` | 1050 | 1045 |
+| `road_grade` (grade excesses) | 1667 | 1598 |
+| `road_misses_terrain` | 4661 | 4614 |
+| `road_not_drivable` | 227 | 217 |
+| `junction_too_steep` | 3 | 5 |
+| Placement with dips (2 rounds, wall) | 518.3 s | 1492.0 s |
+
+The time triples (fix round 1: up to two extra placements per call): a second placement of the network costs as much as the first, and the trials of the side roads' ends
+are cheap beside it. Memoising the fits that a shift does not change would cut it only where the through road and its side
+roads upstream of the shifted junction are untouched; a shift changes every later fit on its through road by a fraction of a
+metre, so this was not tried.
+
+Where the figures come from: the example is placed twice (two rounds with the dips). In the first round the
+unmoved placement had 389 gaps, the repair found a shift for 115 junctions and the placement with them had 341 (-48);
+in the second round 396, 116 shifts and 347 (all shifts, before the check of the acceptance below). The `road_gap`
+of the table is the analysis at its end (the second round's placement), 396 to 347. The grade and terrain counts fall as a side effect: a road that closes needs no
+sharp bend to reach its port. `junction_too_steep` rose by two, because a moved junction sits on other ground.
+
+**Acceptance (fix round 1).** The first version kept the moved network when it had fewer gaps, which could trade a
+through road's gap, or a junction piece (a through fit missing a shifted junction by over 3 m drops it, and its
+side roads then have no port to miss), for side gaps. Now the second placement is kept only if no junction piece is lost
+and no join without a junction is added as well, and a through road's gap before a *shifted* junction must not grow (beyond
+0.5 m): the shifts where it did are removed and the network is placed once more (two extra placements in all; the
+unmoved network if the last still fails the check). A first version checked every junction and removed the shifts of the
+whole chain; that rejected every move (the unshifted junctions after a move change by fractions of a metre), so it
+is per shifted junction. In the example's first round 20 of the 115 shifts grew the through gap and the network with
+all 115 had 5 junction pieces fewer (539 against 544): the loss the second check rules out. Without those 20 the
+network has 95 shifts, 341 gaps (389 unmoved) and 547 junction pieces. A moved
+junction is also checked against both neighbours at their final places (12.5 m), not only the one before. The
+second placement's error is recorded in the warnings of the network (`naves-core` has no `tracing`
+dependency).
+
+**The through roads that miss their own junction point (43 % of the gaps).** Before building on it, the same shifts
+were tried for the through roads (the fit to the junction goal, with the goal moved 6.25 to 25 m along the line, the
+fit and the pose it starts from unchanged, and the shifts checked only against the end of the run). Of 879 through
+fits that missed by more than 0.5 m in the four placements of the analysis (about 220 per placement), 604 (69 %) came
+under 0.5 m at some shift and 797 (91 %) had their gap halved. **It was not applied.** The result is not the one that
+section 8.2 expected (none within 0.5 m for a 6 m move), but it measures the wrong thing: a gap is the distance
+to the goal, and a goal that is moved along the line is met more often only because the fit gets to choose where its
+target is. The junction would then sit up to 25 m from the OpenStreetMap crossing where the through road has no
+problem with it, its side roads would have to be built from a port that is that far from where OpenStreetMap has them
+(and could fail to close, which the side-road repair above would have to repair again), and nothing keeps the
+junction near the crossing. A real use needs the side roads of that junction in the test, as the repair of the side
+roads has; it is the next step if the through gaps are worth it (about 220 per placement before this task).
+
+**Left over.** Gaps that no shift closes (the remaining 347) are those where the heading or
+distance cannot be met by arcs and straights at all (the other 69 of 129 in 8.2), where the through road was shifted
+but the side road starts at a port too (`fixed_start`; only the end port is repaired), and gaps against bridges.
+The existing height repair in `junctions::repair` (limit `MAX_MOVE_M`, 3 m) is a different thing (it moves heights, not
+positions) and was not touched; it still does not exclude ring junctions, which the review of task 7 noted.
+
+### 9.6 Bridges joined to their road (2026-11-15)
+
+**Cause (written before the change).** `place_bridge` fitted the road before the deck to a fixed goal at the start of
+the bridge link, heading along the chord of the link, and then laid the deck models from the pose where the fit
+*ended*, not from the goal. The fit closes the position (the length of its straight runs is solved for it) but not the
+heading: arcs come in fixed angles, so the heading at the end is off by what the arcs cannot make, up to a degree or
+two. The deck was laid along that heading, so:
+
+- the deck left its OSM line by `length * sin(error)`: on a synthetic river crossing (bend of 40 m sideways in the 100 m
+  before a 100 m bridge, `bent_river_crossing` in `tests/roadplace.rs`) the approach ended at heading 88.0 degrees
+  instead of 90.0, and the deck ended at (499.94, 543.49) for a line at y = 540: **3.5 m sideways** at the far end;
+- the road behind the deck started from that deck end, so it began 3.5 m off its line and had to bend back (the next
+  pieces: heading 98, 97, 89.5 degrees) or, with a junction behind the bridge, missed its fixed goal (a `road_gap`);
+- the deck was never wrong against its own approach (it started at the approach's end pose), so a check of
+  "approach pose equals deck port" passes; what failed was the deck against its line. The visible result is the
+  sideways offset and the kink the spec describes.
+
+Heights are not part of the cause: in the profile a deck is one variable, its two end joints are the end joints of
+the neighbouring pieces, so the approach meets the deck at the deck's height by construction
+(`the_deck_end_heights_equal_the_approach_heights` passes before and after).
+
+**Choice.** Both options were weighed against this cause. Closing on the deck's port as a fixed end alone cannot
+work: the fit already tries and ends 2 degrees off, since the arcs have no such angle. Moving the deck along its line
+changes which port the approach has to reach, and a different position needs different arc/straight combinations, so one
+usually closes. Both are combined, which is the minimal change: the deck is laid on its line (the heading of the
+chord, never the fit's heading), the approach is fitted to the deck's start as a fixed end, and when it does not end
+within `GAP_CLOSED_M` and `KINK_TOLERATED_DEG` the deck slides along its line (`BRIDGE_SLIDE_STEP_M` 2.5 m, four steps each way,
+`+` before `-`, only forward as far as the next junction or the end of the run leaves room) and the fit is tried again.
+The first slide that closes is used; if none does, the best fit is used and the deck starts where the approach ended (as
+before), with the gap reported.
+
+**Result at 2048** (same example, unchanged inputs; the "before" was re-measured on the commit before the change and
+agrees with 9.5):
+
+| | Before | After (slide up to 10 m) | After (slide up to 2.5 m) |
+|---|---|---|---|
+| `join_without_junction` | 65 | 65 | 65 |
+| `road_gap` | 347 | 344 | 348 |
+| `road_conflict` | 1045 | 1046 | 1051 |
+| `road_grade` | 1598 | 1674 | 1691 |
+| `road_misses_terrain` | 4614 | 4615 | 4629 |
+| `road_not_drivable` | 217 | 230 | 236 |
+| terrain misses over 0.5 m at a bridge end | 82 | 106 | 104 |
+| wall (analysis) | 1545 s | 1585 s | 1550 s |
+
+**What the numbers say, honestly.** The geometry is fixed (the synthetic crossing: deck on its line within 0.5 m instead
+of 3.5 m off, both approaches within 0.1 m and 1 degree of the deck's ports), but on the real map the aggregate counts
+do not improve: gaps move by 3, and grade, not-drivable and the misses at bridge ends grow (+76, +13, +24 for the
+10 m slide). A shorter slide is worse, not better, so the growth does not come from sliding. What differs from before
+is that the deck now lies on the OSM line where it used to follow the approach's end heading, and the roads behind a deck
+start on the line; bridge ends over a dip (the second placement) are measured against the terrain there. I did not find
+which of these is the cause of the growth in the time available (each analysis takes 26 minutes); it needs the
+bridge sites looked at in the game or a per-site diff of the two analyses. Left for the review: whether the growth
+is the deck now being where the OSM line is (and the terrain shaping at the abutments following the old position), or noise
+from a changed placement.
+
+**The cause of the growth (round 2, measured per bridge).** Each run of the analysis was repeated with a dump of every
+violation (rule, position) and of every placed deck (stretch, ends, heading); a violation counts for a bridge when it lies
+within 60 m of one of its deck ends, in either run. Findings:
+
+- **The slide moved most decks by metres.** With 2.5 m steps the fit rarely closes at the deck's own place, so 28 of the
+  65 OpenStreetMap decks moved: 10 by about 2.5 m, 18 by 5 to 10 m. When no slide closed, the best of the nine fits was
+  kept, which is a slid one too. A bridge line is grown to the model length so that its ends sit on the banks; a deck
+  slid by 10 m has one end over the gap and the other 10 m onto the ground beyond (deck ends up to 10 m past the end of
+  their line in the dump; e.g. `23458920` start ground 290.8 → 287.4 m, `1467990031` 325.2 → 322.2 m, ground grade of
+  the approach 30 → 44 %).
+- **The road after a moved deck is a new fit, and that alone changes the counts.** Within 60 m of the decks the counts
+  changed by grade +27, not drivable +10; the other +49 grade came from roads further along the chains (and from the
+  second placement deciding a different dip bridge: `90238829…/bridge0` only before, `169999496…/bridge0` only after).
+  Single sites went both ways: `299428041` +11, `130657211` +9, `419057266` +8, `495868617` +7; `830320923` −8,
+  `23631314` −7, `23458060` −5, `39605281` −5.
+- **The counts are below their own noise here.** A null run, the code before Task 9 with every deck moved 5 cm along its
+  heading (nothing a player could see), gives road_grade 1628 (+30), road_not_drivable 227 (+10),
+  road_misses_terrain 4657 (+43), road_conflict 1053 (+8), road_gap 348, join_without_junction 65. A 9 cm change of
+  two decks at (2339, 6541), heading unchanged, re-fits the road behind them and adds 5 grade findings 40 m further on;
+  a 0.27 m slide at `1299522645` adds 5. A difference of ±3 cannot be told from a re-rolled placement.
+- **One systematic case: a road that turns into the bridge.** At the dip bridge `343477741…/bridge0` (four decks on a
+  curve) the deck used to follow the road's heading, 18 degrees off the chord; on the chord the approach has to turn
+  those 18 degrees right before the deck (grade 5 → 16 there). The synthetic `bridge_on_a_curve` shows the same: on a
+  20 degree arc the fit to the deck's place arrives 3.5 degrees off the chord and is closed only by a tight last piece
+  and a 1.5 m slide.
+
+**Change.** Slides of 0.25 m, at most 2.5 m each way, the shortest first (`BRIDGE_SLIDE_STEP_M`, `BRIDGE_SLIDE_STEPS`):
+on the synthetic crossing of 9.6 a 0.5 m slide closes where 2.5 m steps needed 2.5 m. When no slide closes, the deck stays
+at its place and starts where the fit to that place ends, as before Task 9 (no "best slid" fit). When that fit arrives
+more than `BRIDGE_TURN_MAX_DEG` (2.5 degrees) off the chord, no slide is tried: the road turns into the bridge, and the
+deck follows the road. Tests: `a_deck_stays_where_its_line_puts_it` (bends of 4 to 60 m; the 8 m bend slid the deck
+10 m before) and `a_deck_on_a_curve_keeps_its_place_and_follows_its_road` (20 degree arc; slid 1.5 m before).
+
+**Result at 2048:**
+
+| | Before Task 9 | b8f801e (slide ≤ 10 m) | 0.25 m steps ≤ 2.5 m | + turn limit (committed) | Null run (before, decks +5 cm) |
+|---|---|---|---|---|---|
+| `join_without_junction` | 65 | 65 | 65 | 65 | 65 |
+| `road_gap` | 347 | 344 | 348 | 348 | 348 |
+| `road_conflict` | 1045 | 1046 | 1051 | 1052 | 1053 |
+| `road_grade` | 1598 | 1674 | 1638 | 1628 | 1628 |
+| `road_misses_terrain` | 4614 | 4615 | 4597 | 4588 | 4657 |
+| `road_not_drivable` | 217 | 230 | 225 | 224 | 227 |
+
+The committed version is at the null run or better on every count; against the single "before" run it is worse by 30
+grade, 7 not drivable and 7 conflict findings, which is what moving any deck by centimetres does. With it, 8 of the 75
+deck runs (OpenStreetMap and dip bridges) slide, all by at most 2.5 m, the rest keep their place; far from the bridges
+(more than 60 m) grade findings are 1404 against 1412 before. Left open: whether the criterion "no worse than before ±3" should be measured against a few
+null runs instead of one, and the junction pair at (4183, 6660), where the 2.5 m slide of `302681746…/bridge0` changes the
+start of the next dip bridge and its approach turns 18 degrees (grade 5 → 16).
+
+### 9.7 Clearance under bridges over a road (2026-11-15)
+
+**Question.** Bridges that cross another road without a shared node (spec 2.4): do they keep 4.5 m between the
+surface of the road below and the underside of the deck? Before the change nothing looked at it; the deck followed the
+ground at its abutments and the road below followed the ground, so a bridge over a road in a flat place lay in the road.
+
+**Finding the crossings.** `roadnet::over_crossings`: stretch pairs whose lines cross, with no shared start or end
+node, where one is a bridge (the upper one; of two bridges the higher `layer`) and neither is a tunnel. Berchtesgaden
+at 2048 has **4** such crossings in the placed graph (the spec counted 20 road crossings, all tagged bridge or tunnel;
+most of those are tunnels, share a node, or are cut out as duplicates before this point): (4689, 7321), (7995, 7320),
+(2347, 6546) and (5101, 7913); the first two are the sites 51 (Silbergstrasse) and 50 (Kehlsteinstrasse) of the game
+check.
+
+**Deck thickness.** Measured per bridge model on its own Geometry LOD (resolution 10^13 exactly): the distance from
+the deck surface (the mean height of the four memory points) down to the lowest vertex within 4 m below it
+(`MAX_DECK_THICKNESS_M`; what hangs lower is a pier or an abutment, not the deck; the Geometry LODs of the game's
+bridges have 230 to 600 vertices, the stone arch reaches down to the 4 m cap, the metal truss about 1.7 m). Reading
+these LODs needed the compressed arrays of the ODOL format (LZO1X from 1024 bytes, `lzokay-native`, decompression
+only): the first version of this change read the first geometry-type LOD that could be read, which failed silently on
+the real Geometry LOD (its vertex array is compressed) and took a later small LOD (the roadway) at deck level, hence
+about 0 m for the stone bridge. A model whose Geometry LOD cannot be read takes the thickest deck measured among the
+models of its type (the word after `bridge_`: stone, wood, metal), else the thickest of all (a build warning names the
+model and the value); if no bridge model can be read, the clearance is not checked and the build says so. The
+thickness is scaled with the bridge's scale.
+
+**Change.**
+
+- `solve_clearing` (`profile.rs`): the deck at the crossing gets a lower bound of ground + 4.5 + thickness (the ground
+  median of the crossing, the lower road being at the ground), only on the deck of the crossing's own upper stretch.
+  The bound goes (a) into the profile of the deck's chain: a deck variable that comes out lower is held at it and the
+  chain solved again, so the approaches rise within their limits, and (b) into the junctions: from the deck along its
+  chain, every junction a joint is held to gets the bound less `grade_ceiling * distance` (`junctions::raise_floors`),
+  which goes on along the links to the neighbours and lets `repair` lift a junction beyond the usual 3 m from the
+  ground, but never more than 10 m (`MAX_RAISE_M`).
+- A junction that the chains of the road below are held to is never raised, and carries no bound on (`frozen`); the
+  road below keeps its height. This is checked on every solve: the road below is compared with the same solve without
+  the lift; where it moved by more than 5 cm, that crossing is dropped from the lift and the profiles are solved again.
+- Settling (the step that brings roads that run close to one height) leaves roads alone within 50 m of a crossing and
+  the road below within 250 m of it. Without the second part, the road below was moved by settling against the lifted
+  approach that runs along it: at Kehlsteinstrasse by up to 1.35 m over 280 m (measured: 1.35 m with settling, 0.00 m
+  without), which dropped the crossing from the lift.
+- The profiles are solved, the clearance measured on the solved strips (the bridge's and the lower road's own stretches,
+  not what lies nearest), and what falls short is added to the bound; at most eight solves (the shortfall is closed by
+  about half per round: 4.05, 4.33, 4.43 m at Kehlsteinstrasse). A bridge that still clears by less than 4.45 m is the
+  finding `bridge_clearance` (message: reached and wanted).
+
+**Deck slide of Task 9.** `upper_s` is only reported; the clearance is found by position (nearest point of the
+bridge's and the lower road's own placed stretches to the crossing) and the bounds by the joints of the deck's chain, so
+the deck's slide of at most 2.5 m changes nothing but where the crossing lies on the deck.
+
+**Result at 2048** (clearance from the surface of the road below to the underside of the deck, real thicknesses):
+
+| Crossing | Before | After |
+|---|---|---|
+| Kehlsteinstrasse over a road, (7995, 7320), site 50 | -4.02 m | **4.47 m** (within the 5 cm tolerance) |
+| Silbergstrasse over a road, (4689, 7321), site 51 | -0.17 m | 0.02 m (finding) |
+| (2347, 6546) | 1.77 m | 4.61 m |
+| (5101, 7913) | -0.90 m | 4.50 m |
+
+Counts: `bridge_clearance` 1; over-crossings 4. The six counts after the change (noise of the null run: grade up to
+about 30, conflict about 10):
+
+| | After Task 9 | After this change |
+|---|---|---|
+| `road_grade` | 1628 | 1645 |
+| `road_not_drivable` | 224 | 237 |
+| `road_misses_terrain` | 4588 | 4621 |
+| `road_gap` | 348 | 347 |
+| `road_conflict` | 1052 | 1072 |
+| `join_without_junction` | 65 | 65 |
+
+**Silbergstrasse (why it stays short, measured).** The deck is held by the junction piece at its start: junction 384
+holds the joints 32 to 34 of the bridge's chain (rule `Piece`: the end of the junction piece, the first bridge joint
+and the deck's variable), at 320.86 m, and the same junction holds the first joints of the road below (rules `End` and
+`Inward`: the residential street ends in this junction). The crossing lies 4 m from the deck's start, in the junction.
+The road below is at 319.15 m at the crossing, the deck at 320.86 m, 1.71 m above it, minus the deck's thickness 1.69 m
+= 0.02 m. Lifting the junction would lift the road below with it, so it is frozen, the deck's variable is held by it
+and cannot rise, and the finding stays. It is the data (the bridge starts in the junction of the road it crosses),
+not the solve; the way out is a junction piece away from the crossing (the junction shift of Task 8 does not move it
+because it is no gap).
+
+**Not done.** The terrain under the bridge is shaped for the lower road as before (no new check of the cut); untagged
+crossings and tunnels are out of scope (railroad design); the visual underside of an arch is not read (the Geometry
+LOD is a collision body).
+
+### 9.8 What makes the humps on steep roads (2026-11-15)
+
+**Question.** Spec 2.5: `road_grade` (1729 at the start of the plan) and `road_not_drivable` (250) on steep stretches,
+and the "ski jump" of the sites 21 and 23 of the game check. Does the hump come from vertical bends at fixed junction
+heights, from short pieces between patches, from the terrain shaping, or from something else? This section only
+diagnoses; nothing in the product code changed.
+
+**Method.** `road-analysis` at `terrain_size = 2048` on the state after Task 10 (HEAD `78df272`), with temporary
+instrumentation (kept outside the repository as a patch, `/var/tmp/naves-roadlook/t11/hump-dump.patch`) that dumps, for
+every strip, each joint (planned height, original ground, finished terrain, the junction hold with its rule and
+height), each piece (kind, run between its joints, model, start and end pose, the check's grade, cross fall and state)
+and every `road_grade` excess of the profile and every `road_not_drivable` run. Two runs (the second added the model and
+poses) give the same joints, pieces and findings (same checksum). Counts of that state: `road_grade` **1645** (411
+grade excesses and 1234 vertical-bend excesses, one per joint, so a hump gives several), `road_not_drivable` **237**
+runs of pieces. Each finding was matched to its joint and classified from the dump (script
+`/var/tmp/naves-roadlook/t11/cons.py`). Counts are exact for this run; a different run of the same code moves every
+deck a few centimetres and `road_grade` by about 30, so the classes are what counts, not single numbers. The test for
+"too close for the rise" is a model, not a result of the solve: between two held heights `h1`, `h2` that lie `L`
+metres apart (an end is *flat* when a run of two or more joints is held to one junction: the junction piece and its
+patch), the shortest road with the family's minimum vertical radius `R` and 0.9 of its drive grade `c` is
+`L = sqrt(2 n R dh)` (`n` flat ends, if the peak grade stays under `c`, else `dh / c + n R c / 2`); a span shorter than
+that cannot be driven within the limits whatever the solver does, **with the heights held as they are**.
+
+**Result: the 1645 `road_grade` findings by cause.**
+
+| Class | Bends | Grades | Total | What it is |
+|---|---|---|---|---|
+| H2 held heights too close for the rise | 561 | 164 | **725** | Two junctions (level patches) so close that the road cannot change height between them within the minimum radius. Span between the two held runs: median 14 m, 10 to 90 percent 4 to 44 m; height difference median 2.3 m (0.5 to 7.9 m); 370 of the 561 bends are on `City` roads (R 150 m). The road has about 46 percent of the length it would need (median). |
+| H3 held heights far enough apart | 261 | 77 | **338** | The same places, but the two heights are far enough apart for a curve; the solve does not use the room. Height to move to clear the bend: median 0.20 m, 90 percent 1.4 m (max 4.9 m). |
+| H1 hold on one side only | 31 | 33 | **64** | A junction height on one side and a free chain end (dead end, end cap) on the other; the blend (`bound_spans`) needs two held ends. These include the three worst: 540 percent (2635, 6118), 187 percent (2454, 6431), 95 percent (7736, 8168). |
+| F1 free joints, ground bends or is steeper than the limit | 253 | 68 | **321** | No hold nearby. 206 of the 321 have a piece of under 1 m at the joint (see F2/overlap below); bends clear with a move of median 0 cm, 90 percent 9 cm. The 68 grades are on ground that is itself steeper than the limit (Mud, Grav, City), 38 at a chain end. |
+| F2 free joints, short pieces | 93 | 0 | **93** | No hold, straight ground, a piece under 12.5 m next to the joint; 72 of them under 1 m. Clears with 0 to 8 cm. |
+| F3 free joints, other | 6 | 50 | **56** | Unexplained by these measures (grade excess on free joints with ground within the limit); not looked at one by one. |
+| D bridge deck (and its ends) | 29 | 19 | **48** | At or next to a deck, 12 bends and 6 grades have no joint (the deck's single variable). |
+| | **1234** | **411** | **1645** | |
+
+The 50 worst grade excesses (grades from 30 to 540 percent): H2 15, H1 11, H3 6, F1 7, F3 4, deck 7. The earlier
+finding (section 7.2: 640 of 1180 bends at a held joint, 220 next to one) holds: at HEAD 602 bends are at a held joint
+and 251 next to one, **853 of 1234 (69 percent)**; of the grades 274 of 411. What was missing then is the cause there.
+
+**Overlapped 6 m straights (F1, F2, part of the others).** 604 pieces of the chains have a run between their joints of
+under 1 m (median 0.28 m, 6 of them at the end of a chain). All 604 are the 6.25 m straight of their family (`city_6`
+236, `asf3_6` 118, `mud_6` 89, `asf1_6` 71, `asf2_6` 63, `grav_6` 27) placed over the end of the piece before it: its
+start is a median 6.0 m before the previous piece's end (the "straights that overlap to make a length" of section 1; 1382
+of 21 990 pieces start more than 0.5 m from the previous end). The profile has a joint at the end of each piece, so such
+a piece is a run of 0.2 m between two joints, which the checks measure as it is (`max(0.5 m)`): a 5 cm difference of
+height there is a 10 percent grade and a bend of 0.05 per metre, hundreds of times the limit. 350 of the 1234 bends have
+such a run next to the joint (276 of the 351 free ones), and the move that clears them is under 5 cm in 333 of the 350.
+**This is a hump of centimetres in the planned heights, but two pieces lie over each other there at different
+heights**, which the game shows as a step or z-fighting, not as a ski jump. How the export sets the height and pitch
+of an overlapped piece was not checked here.
+
+**Not drivable (237 runs, 424 pieces).** 207 are cross fall only (grade within its limit, fall across the road over
+20 percent): not humps, the side-slope problem of section 1, terrain shaping. 30 are grade humps: 15 at a held
+joint (13 plus 2 beside a deck; planned grade over the hard limit, e.g. 95 percent over 4.4 m at (7736, 8168), planned 67 percent
+at (5825, 5806), 46 percent at (5204, 5108), planned 535 percent at (2635, 6118)), 14 where the plan is within the
+limit and the finished terrain is steeper in a 12.5 m window (11 plus 3 beside a deck: the earthworks of ground at 50
+percent and more, e.g. Grav at (7316, 6280), base ground 51 percent, plan 18 percent, finished 79 percent) and 1 on
+free joints. So terrain shaping is a small part of the grade humps (14 runs of 237), and not a cause of `road_grade`
+at all, which counts the plan.
+
+**The six sites of the game check** (Checkpoint A numbers; the plan has changed the roads since, so the measures are
+those of HEAD at the same place):
+
+| Site | Where | What the data shows | Class |
+|---|---|---|---|
+| 21 end cap | (7198, 6574) | Asf3 climbing a steady 17 to 18 percent (aim 12) for 65 m to the cap; no bend and no `road_grade` finding within 45 m. The photograph shows the cap detached from the last piece with a dark band between. | Not a profile excess: the end cap at the end of a steep road; look at its placement in the game check |
+| 23 wooden bridge | (6101, 3040) | Mud road at 21 to 23 percent into a flat 37 m deck (562.41 m), whose far end is 3.5 m above the ground, then 15 percent down. The grade jumps from 21 percent to 0 at the deck start and from 0 to -15 percent at its end: the sag and the crest of the ski jump. The excess finder measures the change over the middle of the deck piece (about 25 m), 0.006 to 0.009 per metre, under the 0.0167 of `Mud`. | D |
+| 36 `road_grade` | (2454, 6431) | Chain of two pieces: held at 401.60 m at junction 167, the free end 13 m under the ground (389.88 m) | H1 |
+| 37 `road_grade` | (6743, 7377) | Two junctions 17.4 m apart with 2.1 m between their heights (25 m needed); behind the second, the free end drops 4 m in 6.2 m | H2 (and H1) |
+| 42 `road_not_drivable` | (7736, 8168) | Free joints at the ground (295.18 m), then the hold of junction 1340 at 291.04 m, 3.2 m under the ground: 4.1 m down in 4.4 m (95 percent); 22 m of free road before it would take it at 19 percent | H1 |
+| 43 `road_not_drivable` | (5204, 5108) | Grav planned at 36 to 46 percent on ground of 18 to 39 percent, 1.8 m over the ground at the top and held 3 m under it at the junction arm at the bottom (359.71 m); 64 percent over 13 m | H1 (a hold on one side) with steep ground |
+
+Bridges (not only those two sites): 75 decks, 52 with a grade step of over 1/R across the approach piece alone, 30 with
+an approach grade of 10 percent or more, 21 of 15 percent or more, up to 99 percent at (7682, 6073). The bend of a deck
+is measured over the deck's length, which hides most of this.
+
+**What the joint height solve (the plan that follows) would do with each class, and what needs its own fix now.**
+
+| Class | Joint solve (one QP over all joints) | Own fix now (Task 12)? |
+|---|---|---|
+| H3 (338) | removes it: the room exists, the junction heights and the free joints are variables | no |
+| F1, F2 (414) | removes what is not an artefact of overlapped pieces; the rest are cm | partly: see overlap |
+| H1 (64) | removes it (a hold on one side, free joints to blend over; the QP has no "two held ends" condition) | optional: the three worst (540, 187, 95 percent) make hard-to-drive runs now |
+| H2 (725) | **does not remove it**: the equality of the joints of a junction makes the patch level, and a level patch on a slope with the minimum radius needs `2 sqrt(R dh)` of road: with the junctions 14 m apart and 2.3 m of ground between them, no height assignment on the ground works; the QP trades the radius against the ground distance and leaves the road under or above the ground by metres (`road_misses_terrain`, earthworks) or breaks the bound | **yes** |
+| Overlap (604 pieces, about 380 findings) | does not: the variables are the joints, and 0.2 m runs stay in it | **yes** |
+| D (48, and 75 decks) | partly: a flat deck is one variable; the joint solve can bend the approach but not the deck, and the check must measure the bend at the deck ends | yes, with the check |
+
+**Proposed fixes (Task 12 candidates, by size of effect).**
+
+1. **Junction pieces follow the through road's grade instead of lying level (H2, up to 725 of 1645).** Hold the height
+   of a junction only at its centre (or the crossing point on the through road's axis) and let the held joints of the
+   through road, and the side roads' ports at the edge of the through road, lie on the through road's profile; the
+   level terrain patch becomes a plane that follows the through road (as the ring plane of 9.4 does). If the junction
+   joints were free of the flatness, the span between the two junctions would be a straight line of at most 0.9 times
+   the drive grade in 518 of the 561 bends and 133 of the 164 grades; the rest (43 and 31) have junctions too close
+   for any grade. Risk: a junction model pitched along a slope (the game's junction pieces are placed pitched?
+   untested in the game); the side road's first piece must meet the through surface at its edge; the terrain patch and
+   `junction_too_steep` change; it changes the junction height rules (`Piece`, `Inward`, `Arm`, `End`, `Patch`) and the
+   heights of the level patch used by the earthworks. Needs the game check on the sites 28, 29, 37.
+2. **The overlapped 6.25 m straights (604 pieces, about 380 findings).** Treat joints less than about 1 m apart as one
+   variable (the profile has a `MIN_STENCIL_M` for the smoothing already, not for the limits or the excess finder), and
+   give the overlapped piece the pose and pitch of the surface it overlaps; check how the export sets the height of
+   such a piece. Effect: removes the F2 class and most of F1 (about 280 findings), and the centimetre steps between
+   overlapped pieces. Risk: low for the check, medium for the export (the pose of the overlapped piece).
+3. **A hold on one side only (H1, 64, including the three worst).** Extend `bound_spans` so that a span from a held
+   joint to a free chain end blends away from the hold at the grade limit and the radius (a line of the limit's slope
+   from the held height backwards over the free joints). Effect: the three pieces over 90 percent and most of the 15
+   grade runs of `road_not_drivable` at a held joint. Risk: low; it moves free joints only. The joint solve does this too; do it now
+   only if the joint solve is not near.
+4. **Bridge decks (D, 48; 75 decks).** Measure the bend at the deck ends over the approach piece (not the middle of
+   the deck) and let the approach lead into the deck over its own pieces; where an approach of over 10 percent meets a
+   flat deck, either lengthen the ramp on the approach (the deck's variable is held) or pitch the deck along the road
+   (a pitched bridge model; not tried in the game). Effect: the ski jump of site 23 and 30 decks with an approach of 10
+   percent or more. Risk: medium (decks are held by clearance and junctions; the check changes `road_grade` upwards by
+   the decks that were hidden: expect up to about 50 new findings).
+
+H3 (338), F1 and F2 without the overlap, and the grade humps on steep ground of `road_not_drivable` (14 runs where the
+plan is within the limit and the earthworks make it steeper) are for the joint solve and the terrain shaping of the
+plan after this one; the 207 cross-fall runs are not humps. F3 (56) was not explained: grade excesses on free joints
+whose ground is within the limit, to be looked at when the others are gone.
+
+**Limits of this diagnosis.** The classes use the held heights as the solve left them: that H2 is "infeasible" is the
+model above (radius and grade ceiling per family, flat ends where two joints are held to one junction), not a
+different solve that could have shown a way; the second half of the table (what the joint solve does) is expectation,
+not a run. The classes are exclusive and ordered (deck, then hold, then free); a hump at a deck end next to a junction
+counts as a hold. Site 21 is not explained by the data. Nothing was driven or photographed in the game for this step.
+
+**Result of fix 1 (junctions follow the through road's slope, 2026-11-15/16).** First implemented as proposed
+(`Junction::gradient`, held joints and terrain patches on the tilted plane, links measured between the held joints;
+tilt from two ground samples 6.25 m, or the patch radius, either side of the junction point along the through road's
+heading, at most 0.9 of its grade ceiling; commit `1034db4`). That made things worse. Instrumented runs of both states
+(the dump of `/var/tmp/naves-roadlook/t11/hump-dump.patch`, plus every junction with its tilt and every finding;
+scripts in `/var/tmp/naves-roadlook/t12/an/`) found two causes:
+
+- **The tilt did not match the grade the road takes.** The two samples were taken at the junction's point, which is
+  the crossing node or the end of the side road and lies up to 9 m (90th percentile 2.5 m) off the through road's
+  centre line, and they measured the ground over 12.5 m only. At a T piece at (1321, 7252) the point was 4 m beside the
+  axis on a hillside: tilt 12.3 percent, ground along the axis 1.3 percent, and the road was held up to 3.4 m under the
+  ground. Against the ground over 25 m either side, 203 of 505 tilted junction pieces got a tilt further from it than a
+  level piece would have been; around those the bends rose, around the others they fell, so the H2 findings that went
+  away (270 of 725) were paid for elsewhere.
+- **Steep tilts break the roads that meet the through road.** The plane's fall along the through road is the fall
+  across every road that crosses or ends on it there, and a road has no fall across of its own (its strip is level
+  across in the terrain shaping): the two surfaces agree only along a line, and differ by the tilt times the half
+  width of the meeting road. The new `road_conflict` findings next to tilted junctions differ by a median 3.5 m times
+  the tilt (0.40 to 0.60 m at tilts of 12 to 20 percent); `road_misses_terrain` (the step between the two cores inside
+  a piece's footprint) and "other road overlaps, different height" (1589 to 2000 pieces) rose with them. Findings rose
+  almost only around junctions tilted by 8 percent or more; up to 3 percent they fell.
+
+The fix (round 1): the tilt is the least-squares slope of the original ground sampled every metre **along the through
+road's own line**, 25 m (or the patch radius) either side of the junction's station on it, and is limited to
+`CROSS_FALL_AIM` (8 percent) as well as 0.9 of the grade ceiling (which is never the lower limit). Variants measured
+at 2048 (same runs, deterministic): fit along the line over 12.5 m alone 1649 / 4903 / 1165 (grade / misses /
+conflict); the 8 percent limit alone 1570 / 4773 / 1089; both, 12.5 m, 1545 / 4689 / 1070; both, 25 m, **1493 / 4612 /
+1041**; a 4 percent limit 1627 / 4555 / 1039; a 6 percent limit 1599 / 4622 / 1055; a tilted terrain patch under
+junction pieces too changed nothing (1545 / 4660 / 1096).
+
+| Finding | Before (`78df272`) | `1034db4` | Round 1 |
+|---|---|---|---|
+| `road_grade` | 1645 (1234 bends, 411 grades) | 1732 (1299, 433) | **1493** (1132 bends, 361 grades) |
+| `road_not_drivable` | 237 | 256 | 206 |
+| `road_misses_terrain` | 4621 | 5025 | 4612 |
+| `road_gap` | 347 | 346 | 347 |
+| `road_conflict` | 1072 | 1186 | 1041 |
+| `join_without_junction` | 65 | 65 | 65 |
+| `junction_too_steep` | 7 | 6 | 7 |
+
+Logs `/var/tmp/naves-roadlook/t12/ra-before.log`, `ra-after.log`, `ra-final.log`. `road_grade` falls by 152, well
+beyond the noise of about 30; the others stay level or fall. The classes of 9.8, recounted with the same model (which
+still counts a tilted run of held joints as a flat end, so it overstates H2 after the fix): H2 725 to 537, H3 338 to
+380, H1 64 to 68, F1 to F3 470 to 464, D 48 to 44. What is left: around tilted junction pieces `road_misses_terrain` still rises (by about 100, made up by falls
+around overlays and joins), the side roads' inward joints stay level across the through road, so H2 between a side
+road's two junctions is untouched (most of the 455 H2 findings that remained after `1034db4` have an `Inward` hold
+next to them), and a junction steeper than 8 percent keeps a bend at its ends. Not checked in the game.
+
+**Result of fix 2 (joints less than a metre apart are one variable, 2026-11-16).** The profile builds its variables
+per joint; now a joint whose way along the chain from the joint that opened the current variable is less than
+`MERGE_JOINT_M` (1.0 m, equal to `MIN_STENCIL_M`) joins that variable, which keeps the position of the joint that
+opened it. A merge does not enter a bridge deck's variable and does not join two joints held to two different junctions.
+The pieces drape on the terrain, so nothing changes in the export; the checks, which read the strip's joints, now see
+equal heights at the merged joints. Measured at 2048 (`/var/tmp/naves-roadlook/t13/ra.log`, against round 1 of fix 1):
+
+| Finding | Round 1 | Fix 2 |
+|---|---|---|
+| `road_grade` | 1493 (1132 bends, 361 grades) | **1083** (751 bends, 332 grades) |
+| `road_not_drivable` | 206 | 208 |
+| `road_misses_terrain` | 4612 | 4599 |
+| `road_gap` | 347 | 347 |
+| `road_conflict` | 1041 | 1028 |
+| `join_without_junction` | 65 | 65 |
+| `junction_too_steep` | 7 | 8 |
+
+`road_grade` falls by 410, more than the 280 expected (the overlap class and a share of the free-joint class F1); the
+others stay within the noise of about 30. What is left of 9.8: H1 to H3 (a hold on one side), the free joints F1 and F3,
+and the bridge decks (class D); the joint height solve plan takes them.

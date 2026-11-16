@@ -38,6 +38,8 @@ fn road(family: Family, drivable: bool) -> Option<FeatureKind> {
         drivable,
         bridge: false,
         tunnel: false,
+        roundabout: false,
+        layer: 0,
     })
 }
 
@@ -690,4 +692,54 @@ fn only_streams_rivers_and_canals_that_are_not_tunnels_are_water_lines() {
     assert_eq!(count(&[("waterway", "stream"), ("tunnel", "yes")]), 0);
     assert_eq!(count(&[("waterway", "stream"), ("highway", "track")]), 0);
     assert_eq!(count(&[("highway", "track")]), 0);
+}
+
+#[test]
+fn roundabout_and_circular_set_the_flag() {
+    let flag = |extra: &[(&str, &str)]| {
+        let mut t = vec![("highway", "tertiary")];
+        t.extend_from_slice(extra);
+        match classify(&tags(&t)) {
+            Some(FeatureKind::Road { roundabout, .. }) => roundabout,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(flag(&[("junction", "roundabout")]));
+    assert!(flag(&[("junction", "circular")]));
+    assert!(!flag(&[("junction", "yes")]));
+    assert!(!flag(&[]));
+}
+
+#[test]
+fn layer_is_read_and_clamped() {
+    let layer = |v: Option<&str>| {
+        let mut t = vec![("highway", "tertiary")];
+        if let Some(v) = v {
+            t.push(("layer", v));
+        }
+        match classify(&tags(&t)) {
+            Some(FeatureKind::Road { layer, .. }) => layer,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(layer(None), 0);
+    assert_eq!(layer(Some("1")), 1);
+    assert_eq!(layer(Some("-1")), -1);
+    assert_eq!(layer(Some("9")), 5);
+    assert_eq!(layer(Some("-9")), -5);
+    assert_eq!(layer(Some("x")), 0);
+}
+
+#[test]
+fn a_road_serialized_before_these_fields_still_loads() {
+    let old = r#"{"Road":{"family":"Asf3","drivable":true,"bridge":false,"tunnel":false}}"#;
+    let kind: FeatureKind = serde_json::from_str(old).unwrap();
+    assert!(matches!(
+        kind,
+        FeatureKind::Road {
+            roundabout: false,
+            layer: 0,
+            ..
+        }
+    ));
 }

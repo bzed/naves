@@ -45,6 +45,7 @@ use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_
 use naves_core::osm::read_ways;
 use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
 use naves_core::project::Project;
+use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, check_roads};
@@ -156,10 +157,38 @@ fn main() {
     let window = frame.window(100.0).expect("window");
     let files: Vec<_> = project.sources.osm.iter().map(|p| dir.join(p)).collect();
     let ways = read_ways(&files, window).expect("ways");
-    let features = road_features(&ways, &frame, project.map_size_m());
+    let mut features = road_features(&ways, &frame, project.map_size_m());
+    if std::env::var("NO_RINGS").is_ok() {
+        // the roads as they were placed before roundabouts were rings: every ring is a set of ordinary roads
+        for feature in &mut features {
+            if let naves_core::features::FeatureKind::Road { roundabout, .. } = &mut feature.kind {
+                *roundabout = false;
+            }
+        }
+    }
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
-    let (built, widened) = widened_graph(&features, &catalog);
+    let (built, widened, duplicates) = widened_graph(&features, &catalog);
+    {
+        let total: f64 = duplicates.iter().map(|d| d.to_m - d.from_m).sum();
+        println!(
+            "DUPLICATES dropped parts {} total {:.0} m",
+            duplicates.len(),
+            total
+        );
+        let mut by_length: Vec<_> = duplicates.iter().collect();
+        by_length.sort_by(|a, b| (b.to_m - b.from_m).total_cmp(&(a.to_m - a.from_m)));
+        for d in by_length.iter().take(5) {
+            println!(
+                "DUPLICATES {} along {} {:.0} m at ({:.0}, {:.0})",
+                d.stretch,
+                d.kept,
+                d.to_m - d.from_m,
+                d.at.0,
+                d.at.1
+            );
+        }
+    }
     {
         // OSM bridge stretches: before (built as a bridge only from 10 m chord) and after widening
         let chord = |s: &naves_core::roadnet::Stretch| match (s.points.first(), s.points.last()) {
@@ -259,9 +288,105 @@ fn main() {
             return;
         }
     }
+    println!(
+        "OVERCROSSINGS {} bridges over roads, {} measured",
+        naves_core::roadnet::over_crossings(&graph).len(),
+        profiles.clearances.len()
+    );
+    {
+        // the same placement with the junctions at the ground, as it was without the clearance
+        let plain = naves_core::junctions::find_junctions(&net, &graph, &base);
+        let before = solve_profiles(&net, &base, &plain, &side);
+        let thickness = |s: &naves_core::roadnet::Stretch| {
+            naves_core::roadplace::bridge_for(&catalog, s.family)
+                .map(|(m, scale, _)| m.deck_thickness * scale)
+        };
+        for c in naves_core::profile::measure_clearances(&net, &before.strips, &graph, &thickness) {
+            println!(
+                "CLEARANCE_BEFORE at ({:.0}, {:.0}) reached {:.2} m",
+                c.at.0, c.at.1, c.reached
+            );
+        }
+    }
+    // for each bridge over a road: the stretches, and the joints of the chains of both within 60 m of the
+    // crossing with the junction that holds them and its height before and after the clearance
+    for c in naves_core::roadnet::over_crossings(&graph) {
+        let (Some(up), Some(low)) = (graph.stretches.get(c.upper), graph.stretches.get(c.lower))
+        else {
+            continue;
+        };
+        println!(
+            "XDEBUG crossing ({:.0}, {:.0}) upper {} lower {}",
+            c.at.0, c.at.1, up.id, low.id
+        );
+        let ground = naves_core::junctions::find_junctions(&net, &graph, &base);
+        for (role, id) in [("upper", &up.id), ("lower", &low.id)] {
+            for (ci, roads) in net.chains.iter().enumerate() {
+                if !roads
+                    .iter()
+                    .any(|r| net.roads[*r].slot.stretch.split('|').any(|p| p == id))
+                {
+                    continue;
+                }
+                println!("XDEBUG {role} chain {ci} of {} pieces", roads.len());
+                let holds = chain_holds(&net, roads, f64::from(base.cell_m), &junctions);
+                let strip = profiles.strips.iter().find(|s| s.slots == *roads);
+                for (k, (at, hold)) in holds.iter().enumerate() {
+                    if (at.0 - c.at.0).hypot(at.1 - c.at.1) > 60.0 {
+                        continue;
+                    }
+                    let height = strip
+                        .and_then(|s| s.joints.get(k))
+                        .map_or(f64::NAN, |j| j.2);
+                    let piece = roads.get(k.saturating_sub(1)).map(|r| {
+                        let r = &net.roads[*r];
+                        format!("{:?} {}", r.kind, r.slot.stretch)
+                    });
+                    match hold {
+                        Some(h) => println!(
+                            "XDEBUG   joint {k} ({:.0}, {:.0}) height {height:.2} held {:?} by junction {} (before {:.2}, after {:.2}, ground {:.2}) {:?}",
+                            at.0,
+                            at.1,
+                            h.rule,
+                            h.junction,
+                            ground.points.get(h.junction).map_or(f64::NAN, |j| j.height),
+                            junctions
+                                .points
+                                .get(h.junction)
+                                .map_or(f64::NAN, |j| j.height),
+                            junctions
+                                .points
+                                .get(h.junction)
+                                .map_or(f64::NAN, |j| j.ground),
+                            piece
+                        ),
+                        None => println!(
+                            "XDEBUG   joint {k} ({:.0}, {:.0}) height {height:.2} free {:?}",
+                            at.0, at.1, piece
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    for c in &profiles.clearances {
+        println!(
+            "CLEARANCE at ({:.0}, {:.0}) reached {:.2} m of {:.1} m",
+            c.at.0, c.at.1, c.reached, c.wanted
+        );
+    }
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
     let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
     let t_conform = t0.elapsed();
+    ring_report(
+        &features,
+        &net,
+        &junctions,
+        &base,
+        &conformed.heightmap,
+        &frame,
+        &catalog,
+    );
     let pieces = check_roads_on_terrain(&net, &conformed.heightmap, &base, &side);
     let raw = check_roads_on_terrain(&net, &base, &base, &side);
     let raw_by: BTreeMap<usize, &PieceCheck> = raw.iter().map(|p| (p.slot, p)).collect();
@@ -5913,5 +6038,159 @@ fn junction_places(
         }
     } else {
         println!("    Klingerweg strip not found");
+    }
+}
+
+/// Site 20 of the Berchtesgaden example: the roundabout of Berchtesgaden town (latitude, longitude).
+const RING_SITE: (f64, f64) = (47.626_173, 12.994_013);
+
+/// The roundabouts: how many the graph has, how many are placed as a ring, the planes, and, with
+/// `RING_RENDER=<dir>`, top-down pictures of site 20 before and after the shaping.
+fn ring_report(
+    features: &[naves_core::features::Feature],
+    net: &naves_core::roadplace::PlacedNetwork,
+    junctions: &Junctions,
+    base: &Heightmap,
+    shaped: &Heightmap,
+    frame: &MapGeo,
+    catalog: &naves_core::catalog::PieceCatalog,
+) {
+    // the rings of OpenStreetMap as the plain graph has them: the small ones became crossings in the build;
+    // a ring with a bridge that had no room to be one is no ring here but is in the build (it is listed
+    // with the placed ones)
+    let found = naves_core::roadnet::rings(&naves_core::roadnet::build_graph(features));
+    let small = |r: &naves_core::roadnet::Ring| {
+        catalog
+            .tightest_arc(r.family)
+            .is_none_or(|tightest| r.radius < tightest)
+    };
+    println!(
+        "RINGS in the OpenStreetMap graph {}, turned into crossings {}, placed as rings in the build {}",
+        found.len(),
+        found.iter().filter(|r| small(r)).count(),
+        net.rings.len()
+    );
+    for ring in &found {
+        println!(
+            "RING found at ({:.0}, {:.0}) {:?} radius {:.1} m, tightest arc {} m: {}",
+            ring.centre.0,
+            ring.centre.1,
+            ring.family,
+            ring.radius,
+            catalog
+                .tightest_arc(ring.family)
+                .map_or("none".to_string(), |t| format!("{t:.1}")),
+            if small(ring) {
+                "too small, a crossing"
+            } else {
+                "a ring"
+            }
+        );
+    }
+    let mut tilts: Vec<f64> = junctions
+        .rings
+        .iter()
+        .map(|r| r.gradient.0.hypot(r.gradient.1))
+        .collect();
+    tilts.sort_by(f64::total_cmp);
+    if let (Some(low), Some(high)) = (tilts.first(), tilts.last()) {
+        println!(
+            "RINGS tilt min {:.1} % median {:.1} % max {:.1} %",
+            low * 100.0,
+            tilts[tilts.len() / 2] * 100.0,
+            high * 100.0
+        );
+    }
+    for plane in &junctions.rings {
+        println!(
+            "RING at ({:.0}, {:.0}) radius {:.1} m height {:.1} m tilt {:.1} % towards ({:+.3}, {:+.3}) stretches {}",
+            plane.at.0,
+            plane.at.1,
+            plane.radius,
+            plane.height,
+            plane.gradient.0.hypot(plane.gradient.1) * 100.0,
+            plane.gradient.0,
+            plane.gradient.1,
+            plane.stretches.len()
+        );
+    }
+    let Ok((x, y)) = frame.to_map(RING_SITE.0, RING_SITE.1) else {
+        println!("RING site 20 lies outside the frame");
+        return;
+    };
+    let nearest = junctions.rings.iter().min_by(|a, b| {
+        let d = |r: &naves_core::junctions::RingPlane| (r.at.0 - x).hypot(r.at.1 - y);
+        d(a).total_cmp(&d(b))
+    });
+    match nearest {
+        Some(plane) => println!(
+            "RING site 20 at map ({x:.0}, {y:.0}): nearest ring at ({:.0}, {:.0}) {:.0} m away, radius {:.1} m, tilt {:.1} % ({:+.3}, {:+.3}), height {:.1} m",
+            plane.at.0,
+            plane.at.1,
+            (plane.at.0 - x).hypot(plane.at.1 - y),
+            plane.radius,
+            plane.gradient.0.hypot(plane.gradient.1) * 100.0,
+            plane.gradient.0,
+            plane.gradient.1,
+            plane.height
+        ),
+        None => println!("RING site 20 at map ({x:.0}, {y:.0}): no ring placed"),
+    }
+    let Ok(dir) = std::env::var("RING_RENDER") else {
+        return;
+    };
+    // site 20, and the nearest placed ring (or the place in RING_AT=x,y, to look at the same ground without rings)
+    let ring_at = nearest.map(|r| r.at).or_else(|| {
+        let at = std::env::var("RING_AT").ok()?;
+        let (a, b) = at.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    });
+    let mut places = vec![("site20", (x, y))];
+    places.extend(ring_at.map(|at| ("ring", at)));
+    let half = 70.0;
+    for ((place, (cx, cy)), (name, heightmap)) in places
+        .iter()
+        .flat_map(|p| [(p, ("before", base)), (p, ("after", shaped))])
+    {
+        for (overlay, label) in [(Overlay::Hillshade, "hillshade"), (Overlay::Slope, "slope")] {
+            let request = RenderRequest {
+                x0: cx - half,
+                y0: cy - half,
+                x1: cx + half,
+                y1: cy + half,
+                px: 840,
+                overlay,
+            };
+            let Ok(mut picture) = render_topdown(heightmap, &request, None, None) else {
+                continue;
+            };
+            // the road pieces as lines: the ring and what joins it
+            let scale = 840.0 / (2.0 * half);
+            let pixel = |p: (f64, f64)| ((p.0 - (cx - half)) * scale, ((cy + half) - p.1) * scale);
+            for road in &net.roads {
+                let colour = image::Rgba([230, 40, 40, 255]);
+                let (a, b) = (
+                    pixel((road.start.x, road.start.y)),
+                    pixel((road.end.x, road.end.y)),
+                );
+                for i in 0..=40 {
+                    let t = f64::from(i) / 40.0;
+                    let (px, py) = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+                    if px >= 0.0 && py >= 0.0 && px < 840.0 && py < 840.0 {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "checked to lie inside the picture"
+                        )]
+                        picture.put_pixel(px as u32, py as u32, colour);
+                    }
+                }
+            }
+            let file = format!("{dir}/{place}-{name}-{label}.png");
+            match picture.save(&file) {
+                Ok(()) => println!("RING picture {file}"),
+                Err(e) => println!("RING picture {file} failed: {e}"),
+            }
+        }
     }
 }

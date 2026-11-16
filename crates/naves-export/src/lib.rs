@@ -13,6 +13,7 @@ pub mod imagery_fetch;
 pub mod layers;
 pub mod mission;
 pub mod rvmat;
+pub mod sites;
 #[cfg(all(feature = "test-util", unix))]
 pub mod testing;
 pub mod tools;
