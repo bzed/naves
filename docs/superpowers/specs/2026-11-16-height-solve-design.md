@@ -144,7 +144,9 @@ A deck and the road below held by one junction (Silbergstraße) cannot both be k
 
 **(N) Roads that share terrain cells** (replaces settling). The spots (every 3 m on non-bridge segments) and the
 close pairs are found as today (`spots`, `close_pairs`), from the positions and half widths of the placed roads
-alone, before any height is solved. For a pair of spots `a`, `b`:
+alone, before any height is solved. The pairs are each spot of the first chain with its nearest spot of the other chain (the lower spot index on a tie):
+"share a height" means abreast, and pairs with spots at other places along a slope would flatten roads that run side by side.
+For a pair of spots `a`, `b`:
 
 ```
 allowed = MATCH_M                                              if distance < gap

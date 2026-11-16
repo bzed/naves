@@ -1369,12 +1369,12 @@ fn a_shallow_merge_does_not_flatten_the_road_it_joins() {
     let side = pieces("s", Family::Mud, (303.5, 500.0), (316.0, 600.0), 10.0);
     let net = network(vec![through, side]);
     let p = solve_alone(&net, &hm);
-    // the pairs beyond 50 m still pull a little (0.6 m at most); tied near the meeting as well, the through road
-    // leaves the ground by 2 m
+    // the pairs beyond 50 m still pull a little (0.1 m at most, 0.6 m before the nearest-spot rule); tied near the meeting as well, the through road
+    // leaves the ground by 0.33 m
     let worst = offsets(&p, 0, &hm)
         .into_iter()
         .fold(0.0_f64, |m, o| m.max(o.abs()));
-    assert!(worst <= 1.0, "the through road is {worst} m off the ground");
+    assert!(worst <= 0.2, "the through road is {worst} m off the ground");
 }
 
 #[test]
@@ -1450,4 +1450,33 @@ fn a_loop_that_leaves_and_re_enters_a_junction_is_not_tied_to_itself_there() {
     let (_, solved) = solve_network(&net, &hm, &junctions, &[]).unwrap();
     let tilt = solved.points[0].gradient.0;
     assert!((tilt - 0.06).abs() <= 0.01, "{tilt}");
+}
+
+#[test]
+fn roads_side_by_side_on_a_slope_keep_their_grade() {
+    // two roads 4 m apart on ground that descends 5.8 % along both, 0.6 m higher at the second: tied abreast,
+    // but not flattened by pairs that compare different places along the slope
+    let hm = terrain(160, 4.0, |x, y| 100.0 - 0.058 * y + 0.15 * (x - 300.0));
+    let net = side_by_side(4.0);
+    let p = solve_alone(&net, &hm);
+    for (a, b) in joint_pairs(&p) {
+        assert!((a - b).abs() <= 0.1 + 0.05, "{a} {b}");
+    }
+    for strip in 0..2 {
+        let middle: Vec<(f64, f64)> = p.strips[strip]
+            .joints
+            .iter()
+            .filter(|j| (175.0..=225.0).contains(&j.1))
+            .map(|j| (j.1, j.2))
+            .collect();
+        assert!(middle.len() >= 2, "{middle:?}");
+        let (y0, h0) = middle[0];
+        for (y, h) in middle {
+            let line = h0 - 0.058 * (y - y0);
+            assert!(
+                (h - line).abs() <= 0.2,
+                "strip {strip} at {y}: {h} against {line}"
+            );
+        }
+    }
 }

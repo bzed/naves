@@ -182,7 +182,9 @@ pub(super) fn add(
     let connected = connections(drafts, junctions);
     let near = |s: &Spot, at: (f64, f64)| (s.x - at.0).hypot(s.y - at.1) <= KEEP_APART_M;
     // the runs: the pairs of two chains, in the order along the first, split where the first jumps
-    let mut by_chains: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+    // each spot of the first chain keeps its nearest spot of the other chain (the lower index on a tie): roads
+    // share a height abreast, not at other places along a slope
+    let mut nearest: BTreeMap<(usize, usize), (f64, usize, usize)> = BTreeMap::new();
     for (k, pair) in pairs.iter().enumerate() {
         let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
             continue;
@@ -196,7 +198,27 @@ pub(super) fn add(
             .get(&key)
             .is_some_and(|places| places.iter().any(|at| near(a, *at) && near(b, *at)));
         if kept && !joined {
-            by_chains.entry((a.strip, b.strip)).or_default().push(k);
+            let best =
+                nearest
+                    .entry((pair.first, b.strip))
+                    .or_insert((pair.distance, pair.second, k));
+            if pair
+                .distance
+                .total_cmp(&best.0)
+                .then(pair.second.cmp(&best.1))
+                .is_lt()
+            {
+                *best = (pair.distance, pair.second, k);
+            }
+        }
+    }
+    let mut by_chains: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
+    for (k, strip) in nearest
+        .into_iter()
+        .map(|((_, strip), (_, _, k))| (k, strip))
+    {
+        if let Some(a) = pairs.get(k).and_then(|p| spots.get(p.first)) {
+            by_chains.entry((a.strip, strip)).or_default().push(k);
         }
     }
     for mut list in by_chains.into_values() {
