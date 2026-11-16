@@ -31,8 +31,8 @@ pub const BRIDGE_DIP_M: f64 = 8.0;
 /// The road may leave the straight line of a bridge model by this much.
 pub const BRIDGE_STRAIGHT_M: f64 = 2.0;
 
-/// At each end of a dip bridge span the line, over 4 m outside the span and over 4 m inside it, runs within this
-/// of the chord of the model at that end.
+/// At each end of a dip bridge span the line over 4 m inside the span runs within this of the chord of the model
+/// at that end. Outside the span the stricter [`SPAN_APPROACH_DEG`] holds over [`SPAN_APPROACH_M`].
 pub const SPAN_END_STRAIGHT_DEG: f64 = 20.0;
 /// The line within this many metres outside a span end is measured: at least 4 m of it
 /// must exist.

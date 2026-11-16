@@ -196,7 +196,8 @@ type DeckEnds = ((f64, f64), (f64, f64));
 /// A chain (by index) and the position of one of its ends.
 type ChainEnd = (usize, (f64, f64));
 
-/// The variables of a chain: one per joint, except that a junction has one height along its length.
+/// The variables of a chain: one per joint, except that joints less than a metre apart share one variable
+/// and the two joints of a junction piece are held to its plane.
 struct Chain {
     /// (x, y, variable) of each joint.
     joints: Vec<(f64, f64, usize)>,

@@ -167,7 +167,8 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
 
 /// The height a junction gives each variable of a chain, by the least that holds the junction's height where
 /// the road has it:
-/// - a junction piece holds its two variables (it is level along its length);
+/// - a junction piece holds its two variables (the joints lie on the piece's plane, which tilts along its
+///   through road);
 /// - a chain that passes a junction is held at the one joint nearest the junction point (`Patch`), or, where
 ///   no joint lies in the patch, at the one joint of the nearest piece that lies nearest the junction (`Arm`,
 ///   within [`ARM_REACH_M`]);

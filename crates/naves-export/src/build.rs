@@ -721,8 +721,8 @@ fn binarize(
             &layout.staging.join("P"),
         );
         if let Err(e) = unpacked {
-            // a failed unpack may have written part of the game's files; the unpack error wins
-            // the unpack error is the one to report; the next build removes the whole staging folder
+            // a failed unpack may have written part of the game's files; the unpack error is the one to
+            // report, and the next build removes the whole staging folder
             let _ = remove_dir(&game_models);
             return Err(e.into());
         }

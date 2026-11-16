@@ -135,7 +135,7 @@ therefore be too steep to walk up, while the downhill side can always be left on
 side of a road may be a rock face:** where the original ground rises more than 35 % across the road (measured 10 m to
 each side of the road, as the median over the pieces within 25 m), the cutting is as steep as the terrain grid allows,
 one cell wide, and nobody can walk up it. A player can then no longer always walk off a road on its uphill side. The
-ground under a junction without a junction piece is levelled to the junction's height, in a circle of half the width
+ground under a junction without a junction piece lies on the junction's plane (tilted along its through road, see below), in a circle of half the width
 of the widest road plus one cell. **Roads close together keep their own ground:** where two roads, or two legs of one
 road, at different heights come closer than their level strips, each keeps the terrain inside its own width and the
 height difference becomes a face one cell wide between them; the vertices just outside a road's width that both need
@@ -153,7 +153,7 @@ piece, a road that ends on another) gets one height at its point: the median of 
 road that reaches the junction is held to that height, the through road at the junction piece as much as the side
 road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
 together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
-of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece lies on its plane, which leans along the through road (below) and is level where there is none; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. What cannot be repaired within 3 m is the `junction_too_steep` finding.
+of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece lies on its plane, which leans along the through road (below) and is level where there is none; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. Joints of a road less than a metre apart (the overlapped straights of a long road put two a few centimetres apart) are one height. What cannot be repaired within 3 m is the `junction_too_steep` finding.
 
 **Junctions on a slope lean with the road.** A junction is not level on a hillside: its plane tilts along the road that runs through it (a junction piece's own axis, the road on top at a crossing without a junction piece, the road a chain ends on) by the slope of the original ground under that road (measured along the road over 25 m either side), at most 8 percent, and has no fall across the road. The limit is the fall across that a road is aimed at: the junction's tilt is the fall across every road that meets the through road there, and those roads have no fall across of their own. The joints of a junction piece, the end of a side road and the ground patch under a crossing lie on that plane, so two junctions only a few metres apart on a slope are connected by a road that climbs instead of a step. A crossing where all roads end, and a junction on a roundabout, stay level (a roundabout has its own plane).
 
@@ -177,14 +177,22 @@ ground between two roads is too steep for that, the terrain under one of them is
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
 line after the junction), railways, houses and trees.
 
+**Which junction piece is used.** A T crossing needs the game's T piece for the pair of surfaces. For a crossing of two
+roads the game has an X junction for the pair with the roles swapped (the street crossing an asphalt 1 road has only the
+asphalt 1 road crossing a street); that piece is used, turned by 90°. A T crossing is never swapped.
+
+**One road through a node.** Two roads of one surface that meet alone at a node (a bridge cut from its way, a way that
+only changes bridge, tunnel or layer there) are one road up to a bend of 150°, so a bridge that begins in a bend does not
+split the road. Nodes with three or more roads keep a 45° limit for choosing the through road.
+
 **Where the game has no junction piece for a pair of road types** (most pairs of different surfaces, and gravel with
 gravel), one road lies on top of the other. The higher road is the one of the better surface (asphalt 1, asphalt 2,
 street, asphalt 3, gravel, dirt track); of two of the same surface the longer one. It runs on unchanged. A lower road
 that ends on it stops just under its edge (it reaches under the edge by up to 2 m, but never past the centre line)
 and has no end cap there. A lower road that crosses it (two higher roads that leave it on opposite sides) is interrupted: it ends under one edge and starts again under
 the other; two higher roads that leave it on the same side (a fork) do not interrupt it, they end on it. A higher road that ends on a lower one lies on top of it, again without an end cap. At the cut the lower
-road is 5 cm below the surface of the higher one, so the two surfaces do not flicker; the ground there is levelled
-like under any junction. A piece of road between two such cuts that is shorter than half its width is left out, and the
+road is 5 cm below the surface of the higher one, so the two surfaces do not flicker; the ground there lies on the
+junction's plane like under any junction. A piece of road between two such cuts that is shorter than half its width is left out, and the
 build says so. These overlaps are intended; they are not `road_conflict` findings and not `join_without_junction`.
 `join_without_junction` is left for crossings where no road runs through (several roads of different surfaces that all
 end at one point).
@@ -257,7 +265,7 @@ ids are `road/<stretch>/bridge<n>/<slot>`.
 The ground under the pieces that were placed (not under the OSM line, which they may leave by some metres) is painted
 as soil, 2 m wider than the road.
 
-**Roads, bridges over dips and scaled bridges have not been tested in the game.** The build, including `binarize`, finishes without the road models (they are not in the game's `P:` drive, which `binarize` only reports); draping on the terrain, scaled bridges and the vehicle limits are unverified. If a bridge misbehaves, replace it in `edits/overrides.toml`.
+**Roads in the game.** `binarize` is given the game's road models (the build unpacks `structures_roads.pbo` and puts the models on its `P:` drive for the run, and removes them afterwards), and roads, junctions and bridges have been looked at in the game. Scaled bridges and the vehicle limits are less tested. If a bridge misbehaves, replace it in `edits/overrides.toml`.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`
 ([the project file](project-file.md#editsoverridestoml)).

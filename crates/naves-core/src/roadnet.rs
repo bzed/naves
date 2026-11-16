@@ -503,7 +503,7 @@ fn deviation(a: f64, b: f64) -> f64 {
 }
 
 /// The sharpest bend, in degrees, at which the two arms of a node with no other arm continue each other
-/// (three or more arms: a quarter turn, see [`chains`]).
+/// (three or more arms: 45 degrees, see [`chains`]).
 pub const TWO_ARM_PAIR_MAX_DEG: f64 = 150.0;
 
 /// At each crossing, the two arms that continue each other (see [`chains`]), both ways round.
