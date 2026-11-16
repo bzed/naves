@@ -183,7 +183,9 @@ through roads missing their own junction point; the builder looks at whether the
   bridge keeps 4.5 m from the lower road's surface to the underside of its deck. The lower road keeps its height and
   never dips into a cutting for it; the terrain under the bridge is shaped for the lower road. **The upper road, its
   approaches and the junctions near the bridge rise as far as needed (maintainer)**, as real bridges do: their fixed
-  heights get a lower bound from the clearance, which goes through the junction holds and the profile solve. Only where
+  heights get a lower bound from the clearance, which goes through the junction holds and the profile solve. (2026-11-16:
+  replaced by `2026-11-16-height-solve-design.md` (C): the maintainer's goal is drivable and usable roads, and the road
+  below may now be lowered into a cutting within its grade limits.) Only where
   even that cannot reach 4.5 m (within the grade limits) is it a new finding (proposal: `bridge_clearance`). Berchtesgaden
   has 20 such road crossings, all tagged bridge or tunnel (e.g. Kehlsteinstraße over Scharitzkehlstraße at site 41,
   Silbergstraße primary over Silbergstraße residential at site 42, with `kr_t_asf1_city` and `kr_t_city_city` right

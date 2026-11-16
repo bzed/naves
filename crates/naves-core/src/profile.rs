@@ -661,8 +661,7 @@ pub enum ProfileError {
     /// The solver did not report a solution.
     #[error("the road heights are not solved: {status}")]
     NotSolved {
-        /// The phase (A without the clearance under bridges over roads, B with it), the size of the problem
-        /// and the solver's status.
+        /// The size of the problem and the solver's status.
         status: String,
     },
     /// The input cannot be solved (no ground data under a road, a malformed problem).
@@ -708,13 +707,12 @@ pub fn solve_profiles(
 ///
 /// A bridge over a road (see [`over_crossings`]) whose deck thickness `thickness` knows keeps
 /// [`BRIDGE_CLEARANCE_M`] between the surface of the road below and the underside of its deck, as far as the
-/// rest of the problem allows. The road below keeps its height, so there are two solves. Phase A is the problem
-/// without the clearance; the height of the road below at each crossing is read from its result. Phase B adds, for
-/// each crossing, the row that holds the deck at least that high (the shortfall is a slack, kept only where
-/// nothing else is possible) and two rows that hold the two joints of the road below that bracket the crossing to
-/// their height of phase A (equalities, without slack). The approaches of the bridge and the junctions on its
-/// road rise as far as the grade limits and the vertical radius ask; a deck and the road below that one junction
-/// holds cannot both be kept, and what is short is in [`Profiles::clearances`] (measured on the result with
+/// rest of the problem allows. It is a row of the same problem, solved once: the height of the deck less the
+/// height of the road below at the crossing (between its two joints there) is at least the clearance and the
+/// thickness, less a slack that is kept only where nothing else is possible. Both roads are free: the bridge's
+/// road and the junctions on it rise and the road below may be lowered, each within its own grade limits and
+/// vertical radius, and the cost shares the lift between them. A deck and the road below that one junction
+/// holds cannot be parted, and what is short is in [`Profiles::clearances`] (measured on the result with
 /// [`measure_clearances`]). A bridge whose thickness is `None`, or whose crossing is not placed, is not checked.
 /// Roads that share terrain cells are not tied to each other within 50 m of a crossing, whether or not the
 /// thickness is known (that needs the graph, which is why the build calls this function and not
@@ -743,7 +741,7 @@ pub fn solve_clearing(
     )
 }
 
-/// [`solve_clearing`] with another solver (for tests and for measuring), called once per phase.
+/// [`solve_clearing`] with another solver (for tests and for measuring), called once.
 ///
 /// # Errors
 ///
@@ -771,10 +769,8 @@ pub fn solve_clearing_with(
         })
         .collect();
     let mut model = model::build(net, hm, junctions, &apart_of(graph))?;
-    let mut x = model::solve_x(&model, solver, 'A')?;
-    if model::add_clearances(&mut model, net, &x, &crossings) {
-        x = model::solve_x(&model, solver, 'B')?;
-    }
+    model::add_clearances(&mut model, net, &crossings);
+    let x = model::solve_x(&model, solver)?;
     let (mut profiles, out) = model::read(&model, net, junctions, side, &x)?;
     profiles.clearances = measure_clearances(net, &profiles.strips, graph, thickness);
     Ok((profiles, out))
@@ -821,6 +817,48 @@ pub fn nearby_pairs(
     graph: &RoadGraph,
 ) -> Result<NearbyPairs, ProfileError> {
     Ok(model::build(net, hm, junctions, &apart_of(graph))?.pairs)
+}
+
+/// The grade ceilings of one chain of the problem [`solve_clearing`] builds (for measuring).
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainCeilings {
+    /// The roads of the chain, as indices into [`PlacedNetwork::roads`]: the `slots` of its [`RoadStrip`].
+    pub roads: Vec<usize>,
+    /// One entry per segment between two variables of the chain that the rows (G) hold: the joint of the strip
+    /// where it starts and the one where it ends, its run (the grade is the difference of their heights over
+    /// it) and its grade ceiling.
+    pub segments: Vec<SegmentCeiling>,
+}
+
+/// The grade ceiling of one segment of a chain (see [`ChainCeilings`]).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SegmentCeiling {
+    /// The joint of the strip at the start of the segment.
+    pub from: usize,
+    /// The joint of the strip at its end.
+    pub to: usize,
+    /// The length the grade is measured over, in metres.
+    pub run: f64,
+    /// The grade ceiling.
+    pub ceiling: f64,
+}
+
+/// The [`ChainCeilings`] of the problem [`solve_clearing`] builds for `net`: what a measured grade is held to.
+///
+/// For measuring (the `road-analysis` tool); not part of the library's interface.
+///
+/// # Errors
+///
+/// As [`solve_clearing`], without the solver.
+#[doc(hidden)]
+pub fn segment_ceilings(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+) -> Result<Vec<ChainCeilings>, ProfileError> {
+    Ok(model::build(net, hm, junctions, &[])?.ceilings())
 }
 
 /// How far from its line the placed road of a crossing may lie beyond its half width and still be the road

@@ -1564,6 +1564,9 @@ because it is no gap).
 crossings and tunnels are out of scope (railroad design); the visual underside of an arch is not read (the Geometry
 LOD is a collision body).
 
+(2026-11-16: superseded by the height solve, section 10. The road below is no longer held at its height: the bridge's
+road rises and the road below may be lowered, each within its grade limits, in one solve.)
+
 ### 9.8 What makes the humps on steep roads (2026-11-15)
 
 **Question.** Spec 2.5: `road_grade` (1729 at the start of the plan) and `road_not_drivable` (250) on steep stretches,
@@ -1798,9 +1801,9 @@ Rows: (G) the grade of each segment within the aim plus a slack `e`, `e` within 
 vehicles manage) plus a slack `f`; (B) the change of grade within `run / R` (`R` the family's minimum vertical radius)
 plus a slack, at every bend and at both ends of a deck, between the approach and the level deck; (T) the tilt of a
 junction within its cap (nine tenths of the ceiling of its through road, at most 8 %), no slack; (C) the deck of a
-bridge over a road at least 4.5 m and its thickness above the road below, a slack that costs as the other hard ones,
-and the two variables of the road below that bracket the crossing and the height and tilt of every junction that holds
-the road below held at their values of the solve without (C) (phase B: the road below keeps its height); (N) a pair of spots (every 3 m) of two roads whose footprints share terrain
+bridge over a road at least 4.5 m and its thickness above the road below at the crossing (between the road below's
+two variables there), a slack that costs as the other hard ones, in the same solve: both roads are free, the bridge's
+road may rise and the road below may be lowered, each within its own rows; (N) a pair of spots (every 3 m) of two roads whose footprints share terrain
 cells within `0.1 m` (a cell and the fill slope beyond) of each other. Of the close pairs only the mutually nearest are
 kept (roads side by side, not at other places on a slope), a run of them is tied only if the original ground lets it
 (at every pair within the allowance and 1 m). Roads that meet at a junction are not excluded: roads that part at an
@@ -1819,54 +1822,66 @@ allowance and a metre are no longer pulled together.
 
 ### 10.2 Berchtesgaden, `terrain_size = 2048`
 
-Release build, the whole run of `road-analysis` at `982f1d6` (log `/var/tmp/naves-fixwave/ra-2048.log`; the junctions
-that hold the road below a bridge keep their height), against the same tool on the old pipeline at `e82cc74` (log
+Release build, the whole run of `road-analysis` with the clearance in the same solve and both roads free (log
+`/var/tmp/naves-oneclear/ra-2048.log`), against the same tool on the old pipeline at `e82cc74` (log
 `/var/tmp/naves-tune/logs/old.log`):
 
 | Finding | Before | The height solve |
 |---|---|---|
-| `road_grade` | 1079 (751 bends, 328 grades) | **8** (8 bends, no grade; grades are measured against the ceiling) |
-| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.37 m) | **4324** (1208 over 0.5 m, 174 over 2 m, 11 over 5 m, largest 7.49 m) |
-| `road_conflict` | 1025 | 893 |
-| `road_not_drivable` | 208 | 189 |
+| `road_grade` | 1079 (751 bends, 328 grades) | **10** (5 bends, 5 grades; grades are measured against the ceiling) |
+| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.37 m) | **4322** (1209 over 0.5 m, 168 over 2 m, 11 over 5 m, largest 7.49 m) |
+| `road_conflict` | 1025 | 896 |
+| `road_not_drivable` | 208 | 190 |
 | `road_gap` | 343 | 342 |
 | `join_without_junction` | 65 | 65 |
 | `junction_too_steep` | 8 | 0 |
-| `bridge_clearance` | 1 | 2 |
+| `bridge_clearance` | 1 | 1 |
 
-The clearances of the four bridges over roads (reached, of 4.5 m; the old pipeline in brackets): (4689, 7321) 0.93 m
-(0.50 m), (7995, 7320) 4.50 m (5.16 m), (2347, 6546) 4.50 m (4.50 m), (5101, 7913) 3.98 m (4.50 m). The first is the
-Silbergstrasse crossing: the bridge's road and the road below share junction 384, which keeps its phase A height
-(322.80 m on 320.86 m of ground), so the deck stays where phase A put it. At the fourth a junction that holds the road
-below keeps its height too. Before the junctions of the road below were held, the deck at Silbergstrasse reached
-4.11 m because junction 384 rose to 325.78 m and lifted the road below 4.9 m (all ten `road_grade` findings of that
-run were on it). Other numbers: `path_too_steep` 170 (168), `road_in_water` 29 (29), `earthworks_capped` 68 (82),
-`road_over_water` 2 (3).
+The clearances of the four bridges over roads (reached, of 4.5 m; the old pipeline in brackets), with how far the deck
+stands above its ground (the mean of its abutments) and the road below under its ground at the crossing, and the
+steepest grade of each road within 100 m against its ceiling there:
 
-The pieces that miss the terrain by more than 0.5 m fall (1208 against 1285), as do the total and the largest miss
-(7.49 m against 10.37 m); only those by more than 2 m rise (174 against 142). Roads that are not tied any more (the
+| crossing | clearance | deck | road below | bridge's road | road below |
+|---|---|---|---|---|---|
+| (4689, 7321) Silbergstrasse | 4.12 m (0.50 m) | +3.39 m | −1.35 m | 7.7 % (27 %) | 15.8 % (13.5 %) |
+| (7995, 7320) | 4.50 m (5.16 m) | −0.82 m | −8.69 m | 22.9 % (25.1 %) | 13.6 % (27 %) |
+| (2347, 6546) | 4.50 m (4.50 m) | +0.01 m | −4.40 m | 13.9 % (27 %) | 8.9 % (45 %) |
+| (5101, 7913) | 4.50 m (4.50 m) | +2.07 m | −4.75 m | 4.9 % (23.8 %) | 14.4 % (45 %) |
+
+At Silbergstrasse the bridge's road and the road below share junction 384 next to the crossing. It rises to 323.40 m
+(320.86 m of ground), and the road below falls from it under the deck over its ceiling: 15.8 % against 13.5 %, and
+14.8 % against the 6 % next to the junction; those are the 5 grade findings, and 2 of the bends are there too. The
+shortfall is shared between the clearance (0.38 m) and the grade ceiling: a metre of either costs the same. With the
+road below pinned to its height (`982f1d6`, log `/var/tmp/naves-fixwave/ra-2048.log`) the clearances were 0.93 m here
+and 3.98 m at (5101, 7913), with 8 `road_grade` findings, all bends; with only the two joints at the crossing pinned
+(`55bcdd0`, `/var/tmp/naves-t5/ra-2048.log`) 4.11 m here, the junction at 325.78 m and 10 findings. The deepest cut of a
+road below its original ground within 100 m of a crossing is 8.81 m, at (7995, 7320), where the road below is lowered
+8.69 m under a deck that stays at its ground. Other numbers: `path_too_steep` 169 (168), `road_in_water` 29 (29),
+`earthworks_capped` 68 (82), `road_over_water` 2 (3).
+
+The pieces that miss the terrain by more than 0.5 m fall (1209 against 1285), as do the total and the largest miss
+(7.49 m against 10.37 m); only those by more than 2 m rise (168 against 142). Roads that are not tied any more (the
 ground does not let them, see 10.3) are a candidate cause; this is not analysed here.
 
 Time and size, the same machine:
 
 | | Before (old pipeline at `e82cc74`) | The height solve |
 |---|---|---|
-| placement of the roads (`plan_roads`) | 1793.3 s, 2 rounds | **824.6 s, 1 round** |
-| the whole run | 1828.2 s | 862.0 s |
-| the height solve (model, both solves, reading), once | not measured (a part of 1793 s) | **4.2 s** |
-| peak memory | 1.38 GB | 1.33 GB |
+| placement of the roads (`plan_roads`) | 1793.3 s, 2 rounds | **862.2 s, 1 round** |
+| the whole run | 1828.2 s | 902.0 s |
+| the height solve (model, solve, reading), once | not measured (a part of 1793 s) | **3.0 s** |
+| peak memory | 1.38 GB | 1.28 GB |
 
-The second placement round is gone because the dips are different: 349 found in the first round, none to bridge, where
+The second placement round is gone because the dips are different: 338 found in the first round, none to bridge, where
 545 were found and 3 (all asphalt 3, 9.1 to 9.4 m deep) were bridged in the first round. The roads now follow the
 ground, so fewer stand more than 3 m above it. Whether the 3 are filled well where they were bridged is for the game
 to show.
 
 The problem (the same run, the final network):
 
-| phase | unknowns | rows | status | iterations | solve |
+| solve | unknowns | rows | status | iterations | solve |
 |---|---|---|---|---|---|
-| A (without the clearance) | 97 615 | 200 117 | Solved | 17 | 0.95 s |
-| B (with the 4 rows (C) and the pins) | 97 619 | 200 146 | Solved | 19 | 1.02 s |
+| one, with the 4 rows (C) | 97 619 | 200 125 | Solved | 17 | 0.85 s |
 
 Of rows (N): 1 004 518 close pairs, 6 795 of them mutually nearest, 4 133 rows made. The solve is exactly the one the
 build made (the example runs it again with a solver that reports; the profiles are equal).

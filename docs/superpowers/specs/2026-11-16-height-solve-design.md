@@ -125,24 +125,24 @@ The cost on `b_i` is `HARD · REFERENCE_M · b_i` and its square (b is a grade, 
 grade_ceiling(through family), CROSS_FALL_AIM)` as today. No slack.
 
 **(C) Clearance under a bridge over a road**, per over-crossing `c` (`roadnet::over_crossings`) whose bridge model
-has a known deck thickness `d_c`. The road below keeps its height (decided in road-look), so the solve has two
-phases:
+has a known deck thickness `d_c`, in the same problem as every other row (one solve):
 
-- Phase A: the problem without (C). `low_c` is the height of the road below at the crossing in its result.
-- Phase B: the same problem plus, per crossing,
-  ```
-  h_deck(c) ≥ low_c + BRIDGE_CLEARANCE_M + d_c − q_c             q_c ≥ 0
-  h_w = h_w(A)
-  ```
-  the second for the two variables `w` of the road below that bracket the crossing (an equality without slack; a
-  variable that is a constant, or one that another pin already fixes in the same way, gets no row). The height and
-  tilt unknowns of every junction that holds a variable of the road below's chain are held to their phase A values
-  the same way (once each), so that the bridge's road cannot lift the road below through a junction they share. Phase
-  B is still feasible: phase A's point satisfies every row of it with its slacks, and `q_c` absorbs any shortfall of the deck.
-  No crossing: phase A is the result.
+```
+h_deck(c) − h_low(c) ≥ BRIDGE_CLEARANCE_M + d_c − q_c             q_c ≥ 0
+```
 
-A deck and the road below held by one junction (Silbergstraße) cannot both be kept: `q_c > 0`, the
-`bridge_clearance` finding, as today.
+`h_deck(c)` is the height of the deck's variable at the crossing. `h_low(c)` is the height of the road below at the
+crossing, `(1 − t) · h_from + t · h_to` of its two variables that bracket the crossing (the place `place_near` finds,
+on the same segment that `measure_clearances` measures). Both are affine expressions in the unknowns, with held, ring
+and meeting variables as everywhere else. Both roads are free: the bridge's road may rise and the road below may be
+lowered, each inside its own rows (G), (B), (T) and costs, so the solve shares the lift between them. `q_c` costs
+`HARD · q_c + HARD · q_c²`. A row whose two heights share all their unknowns (one junction holds the deck and the
+road below, or both are constants) has only `q_c`. No crossing with a known thickness: no rows (C), and the problem is
+that of `solve_profiles` with the same exclusions of (N).
+
+A deck and the road below held by one junction cannot be parted: `q_c > 0`, the `bridge_clearance` finding. Where
+the geometry asks more than the limits of both roads allow, the shortfall is shared between `q_c` and the other hard
+slacks (a metre of `q_c` costs as much as a metre over a grade ceiling).
 
 **(N) Roads that share terrain cells** (replaces settling). The spots (every 3 m on non-bridge segments) and the
 close pairs are found as today (`spots`, `close_pairs`), from the positions and half widths of the placed roads
@@ -210,8 +210,9 @@ where they pin a mechanism that no longer exists; the commit says which.
 
 1. Synthetic tests per row type (the plan lists them).
 2. `road-analysis` at 2048 against e84cb2f: `road_grade` well below 1079, `road_not_drivable` not above 208 + 30,
-   `road_misses_terrain` not above 4625 + 30, the clearances of the four bridges over roads reached except
-   Silbergstraße, analysis time below today's.
+   `road_misses_terrain` not above 4625 + 30, the clearances of the four bridges over roads reached as far as the
+   grade limits of the bridge's road and the road below allow, analysis time below today's. The only goal is roads
+   that are drivable and usable: a bridge nobody can drive under is a failure, whichever road had to move.
 3. In the game (tools/ingame-check, the road-look sites): 23 (no ski jump), 50 and 51 (no wedge), 7, 11, 28, 29, 37
    (tilted junctions still right), 1, 2 (unchanged or better).
 
@@ -229,9 +230,10 @@ Rank-dependent weights (a more important road moving less where two are tied), t
 ## Changes during implementation (2026-11-16)
 
 - Smoothness at a deck counts both deck ends (two rows per deck variable, see (B)).
-- The pins of the road below at a crossing are equalities without slack (see (C)).
-- The junctions that hold the road below's chain are pinned too, height and tilt (see (C)): with only the two bracket
-  pins, junction 384 at Silbergstraße was lifted 4.9 m by the bridge's road and the road below with it (final review).
+- (C) is one solve with both roads free (see (C)). The two-phase form (phase A without (C), phase B with the road
+  below pinned at its phase A height: two pins at the crossing, then also the height and tilt of every junction that
+  holds the road below) is removed, with the pins, on the maintainer's word that the only goal is drivable and usable
+  roads; "the road below keeps its height" was not their rule.
 - The (N) pairs are the mutually nearest spots, chosen before the exclusions (see (N)).
 - The only exclusion of a chain's own pairs is its loop through one junction (see (N)); no other connection exclusion.
 - `AIM` was measured at 1, 4, 16 and 64 and stays 1. Over-aim length: 39.3 km old, 38.7 / 39.6 / 41.4 / 43.5 km.

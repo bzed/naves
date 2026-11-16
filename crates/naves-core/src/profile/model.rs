@@ -3,8 +3,8 @@
 
 //! The heights of the whole road network as one quadratic program
 //! (`docs/superpowers/specs/2026-11-16-height-solve-design.md`): the grades (G), the vertical bends (B), the
-//! junction tilts (T) and the rows (N) of roads that share terrain cells are the problem of phase A; the
-//! clearance under bridges over roads (C) is added to it in phase B ([`add_clearances`]).
+//! junction tilts (T), the rows (N) of roads that share terrain cells and the clearance under bridges over roads
+//! (C, [`add_clearances`]) are one problem, solved once.
 //!
 //! Every variable of every chain (see [`Chain`]) has a height that is an affine expression ([`Expr`]) in the
 //! unknowns: its own unknown (a free variable), the plane of the junction that holds it, the plane of a ring,
@@ -24,10 +24,10 @@ use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 use super::{
-    BRIDGE_CLEARANCE_M, Chain, ChainEnds, GradeExcess, GradeExcessKind, MIN_STENCIL_M, NearbyPairs,
-    ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins, holds,
-    joint_heights, meeting_bounds, nearest_segment, ring_of, road_on_stretch, segment_grades,
-    strip_of,
+    BRIDGE_CLEARANCE_M, Chain, ChainCeilings, ChainEnds, GradeExcess, GradeExcessKind,
+    MIN_STENCIL_M, NearbyPairs, ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS,
+    SegmentCeiling, chain_of, end_joins, holds, joint_heights, meeting_bounds, nearest_segment,
+    ring_of, road_on_stretch, segment_grades, strip_of,
 };
 
 mod nearby;
@@ -681,6 +681,33 @@ pub(crate) fn build(
     })
 }
 
+impl Model {
+    /// The grade ceiling of every segment the rows (G) hold, chain by chain.
+    pub(crate) fn ceilings(&self) -> Vec<ChainCeilings> {
+        self.chains
+            .iter()
+            .map(|mc| ChainCeilings {
+                roads: mc.roads.clone(),
+                segments: mc
+                    .over_ceiling
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.is_some())
+                    .filter_map(|(i, _)| {
+                        let joints = &mc.chain.joints;
+                        Some(SegmentCeiling {
+                            from: joints.iter().rposition(|j| j.2 == i)?,
+                            to: joints.iter().position(|j| j.2 == i + 1)?,
+                            run: run_of(&mc.chain, i),
+                            ceiling: *mc.ceiling.get(i)?,
+                        })
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
 /// The cost and the rows (G) and (B) of one chain that is not a ring.
 fn add_chain(
     builder: &mut Builder,
@@ -729,17 +756,16 @@ fn add_chain(
     }
 }
 
-/// The solution of the problem of `model` found by `solver`: one value per unknown. `phase` (A or B) and the size of
-/// the problem go into the error when the solver reports no solution.
+/// The solution of the problem of `model` found by `solver`: one value per unknown. The size of the problem goes
+/// into the error when the solver reports no solution.
 pub(crate) fn solve_x(
     model: &Model,
     solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
-    phase: char,
 ) -> Result<Vec<f64>, ProfileError> {
     let x = solver(&model.problem).map_err(|e| match e {
         QpError::NotSolved { status } => ProfileError::NotSolved {
             status: format!(
-                "phase {phase} ({} unknowns, {} rows): {status}",
+                "{} unknowns, {} rows: {status}",
                 model.problem.unknowns,
                 model.problem.rows.len()
             ),
@@ -913,89 +939,37 @@ fn height_at(model: &Model, place: &Place) -> Option<Expr> {
     ]))
 }
 
-/// Phase B: the rows (C) of every crossing in `crossings` that is placed, given the solution `x` of the problem
-/// without them. Returns whether any were added (the problem has more unknowns and rows then).
+/// The rows (C) of every crossing in `crossings` that is placed.
 ///
-/// The deck is held at least [`BRIDGE_CLEARANCE_M`] and its thickness above the surface of the road below as it
-/// is in `solved`, less a slack that costs as the other hard ones. The road below keeps its height: the height
-/// and tilt of every junction that holds a variable of its chain are held to their values in `solved` exactly,
-/// so that the bridge's road cannot lift it through a junction they share, and so are the two variables of the
-/// road below that bracket the crossing (a variable that is a constant has no unknown and no row; a variable two
-/// crossings share has one row; a variable whose unknowns are all held already has none). Phase B stays
-/// feasible: the solution of phase A satisfies every row of it, with its slacks, and the deck's slack has room.
-pub(crate) fn add_clearances(
-    model: &mut Model,
-    net: &PlacedNetwork,
-    solved: &[f64],
-    crossings: &[Crossing],
-) -> bool {
+/// The deck is held at least [`BRIDGE_CLEARANCE_M`] and its thickness above the surface of the road below at the
+/// crossing, less a slack that costs as the other hard ones: `h_deck − h_low ≥ BRIDGE_CLEARANCE_M + thickness − q`,
+/// `q ≥ 0`. Both heights are expressions in the unknowns (the surface of the road below between the two variables
+/// that bracket the crossing), so the bridge's road may rise and the road below may be lowered, each within its own
+/// rows and costs. Where the two heights share all their unknowns (one junction holds both), the row has only `q`.
+pub(crate) fn add_clearances(model: &mut Model, net: &PlacedNetwork, crossings: &[Crossing]) {
     let mut builder = Builder {
         next: model.problem.unknowns,
         problem: std::mem::replace(&mut model.problem, Problem::new(0)),
     };
-    let placed: Vec<(&Crossing, Place, Place)> = crossings
-        .iter()
-        .filter_map(|crossing| {
-            Some((
-                crossing,
-                place_near(model, net, crossing.at, &crossing.upper)?,
-                place_near(model, net, crossing.at, &crossing.lower)?,
-            ))
-        })
-        .collect();
-    // the height and tilt unknowns of the junctions that hold the chain of a road below, each once
-    let held: BTreeSet<usize> = placed
-        .iter()
-        .filter_map(|(_, _, lower)| model.chains.get(lower.chain))
-        .flat_map(|mc| mc.holders.iter().flatten())
-        .filter_map(|&j| model.junctions.get(j).copied().flatten())
-        .flat_map(|u| std::iter::once(u.height).chain(u.tilt))
-        .collect();
-    for &k in &held {
-        let keep = solved.get(k).copied().unwrap_or(0.0);
-        builder.row(vec![(k, 1.0)], keep, keep);
-    }
-    // the pins already made, by their terms: variables held by one junction in the same way are one row
-    let mut pinned: BTreeSet<Vec<(usize, u64)>> = BTreeSet::new();
-    let mut added = false;
-    for (crossing, upper, lower) in placed {
-        let (Some(deck), Some(low)) = (height_at(model, &upper), height_at(model, &lower)) else {
+    for crossing in crossings {
+        let place = |id: &str| place_near(model, net, crossing.at, id);
+        let heights = place(&crossing.upper)
+            .zip(place(&crossing.lower))
+            .and_then(|(upper, lower)| height_at(model, &upper).zip(height_at(model, &lower)));
+        let Some((deck, low)) = heights else {
             continue;
         };
-        let wanted = low.value(solved) + BRIDGE_CLEARANCE_M + crossing.thickness;
+        let gap = Expr::sum(&[(&deck, 1.0), (&low, -1.0)]);
         let short = builder.unknown();
         builder.row(
-            deck.terms_with(short, 1.0),
-            wanted - deck.constant,
+            gap.terms_with(short, 1.0),
+            BRIDGE_CLEARANCE_M + crossing.thickness - gap.constant,
             f64::INFINITY,
         );
         builder.row(vec![(short, 1.0)], 0.0, f64::INFINITY);
         builder.problem.add_linear(HARD, short);
         builder.problem.add_square(HARD, &[(short, 1.0)], 0.0);
-        for var in [lower.from, lower.to] {
-            let Some(height) = model
-                .chains
-                .get(lower.chain)
-                .and_then(|mc| mc.heights.get(var))
-                .filter(|height| height.terms.iter().any(|(k, _)| !held.contains(k)))
-            else {
-                continue;
-            };
-            let key = height
-                .terms
-                .iter()
-                .map(|&(k, c)| (k, c.to_bits()))
-                .collect();
-            if !pinned.insert(key) {
-                continue;
-            }
-            // held exactly: the whole shortfall is the slack of the deck
-            let keep = height.value(solved) - height.constant;
-            builder.row(height.terms.clone(), keep, keep);
-        }
-        added = true;
     }
     builder.problem.unknowns = builder.next;
     model.problem = builder.problem;
-    added
 }

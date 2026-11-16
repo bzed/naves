@@ -22,7 +22,7 @@ use naves_core::junctions::{Junction, JunctionKind, Junctions, Link, RingPlane, 
 use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use naves_core::profile::{
     BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, ProfileError, Profiles,
-    chain_holds, nearby_pairs, solve_clearing, solve_clearing_with,
+    chain_holds, nearby_pairs, segment_ceilings, solve_clearing, solve_clearing_with,
 };
 use naves_core::qp::QpError;
 use naves_core::roadfit::Pose;
@@ -228,6 +228,32 @@ fn a_road_steeper_than_its_ceiling_keeps_the_ceiling() {
     let off = offsets(&p, 0, &hm);
     let mean = off.iter().sum::<f64>() / f64::from(u32::try_from(off.len()).unwrap());
     assert!(mean.abs() < 0.5, "{off:?}");
+}
+
+#[test]
+fn the_segment_ceilings_are_what_the_grades_are_held_to() {
+    // a road steeper than its ceiling lies at its ceiling on every segment; a 25 m deck is one variable, so the
+    // chain of deck_chain has one segment less than joints less one
+    let (net, hm) = one_road_on(0.40);
+    let p = solve_alone(&net, &hm);
+    let ceilings = segment_ceilings(&net, &hm, &Junctions::default()).unwrap();
+    assert_eq!(ceilings.len(), 1);
+    assert_eq!(ceilings[0].roads, p.strips[0].slots);
+    let joints = &p.strips[0].joints;
+    assert_eq!(ceilings[0].segments.len(), joints.len() - 1);
+    for s in &ceilings[0].segments {
+        assert_eq!(s.to, s.from + 1);
+        assert!((s.ceiling - grade_ceiling(Family::Asf3)).abs() < 1e-12);
+        let grade = (joints[s.to].2 - joints[s.from].2) / s.run;
+        assert!((grade - s.ceiling).abs() < 1e-4, "{grade} {s:?}");
+    }
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let deck = network(vec![deck_chain()]);
+    let ceilings = segment_ceilings(&deck, &hm, &Junctions::default()).unwrap();
+    let joints = deck_chain().len() + 1;
+    assert_eq!(ceilings[0].segments.len(), joints - 2);
+    let across = ceilings[0].segments.iter().find(|s| s.to > s.from + 1);
+    assert!(across.is_none(), "{across:?}");
 }
 
 #[test]
@@ -680,8 +706,8 @@ fn a_solver_that_fails_is_an_error() {
 }
 
 #[test]
-fn a_failed_solve_names_its_phase_and_size() {
-    // phase A fails: the message names it and the size of the problem the solver was given
+fn a_failed_solve_names_its_size() {
+    // the message names the size of the problem the solver was given
     let (net, hm) = one_road_on(0.05);
     let size = std::cell::Cell::new((0, 0));
     let failing = |problem: &naves_core::qp::Problem| {
@@ -704,43 +730,49 @@ fn a_failed_solve_names_its_phase_and_size() {
     assert!(unknowns > 0 && rows > 0, "{unknowns} {rows}");
     assert_eq!(
         err.to_string(),
-        format!(
-            "the road heights are not solved: phase A ({unknowns} unknowns, {rows} rows): MaxIterations"
-        )
+        format!("the road heights are not solved: {unknowns} unknowns, {rows} rows: MaxIterations")
     );
-    // phase A is solved, phase B (the clearance under a bridge over a road) fails
+    // with a bridge over a road the clearance is in the same problem: one solve, with its rows
     let hm = terrain(250, 4.0, |_, _| 100.0);
     let (net, graph) = placed(&bridge_features());
     let junctions = find_junctions(&net, &graph, &hm);
+    let slopes = side_slopes(&net, &hm);
     let calls = std::cell::Cell::new(0);
-    let second_fails = |problem: &naves_core::qp::Problem| {
+    let fails = |problem: &naves_core::qp::Problem| {
         calls.set(calls.get() + 1);
         size.set((problem.unknowns, problem.rows.len()));
-        if calls.get() == 1 {
-            naves_core::qp::solve(problem)
-        } else {
-            Err(QpError::NotSolved {
-                status: "PrimalInfeasible".to_string(),
-            })
-        }
+        Err(QpError::NotSolved {
+            status: "PrimalInfeasible".to_string(),
+        })
     };
     let err = solve_clearing_with(
         &net,
         &hm,
         &junctions,
-        &side_slopes(&net, &hm),
+        &slopes,
         &graph,
         &|_| Some(DECK),
-        &second_fails,
+        &fails,
     )
     .unwrap_err();
-    assert_eq!(calls.get(), 2);
+    assert_eq!(calls.get(), 1);
     let (unknowns, rows) = size.get();
     assert_eq!(
         err.to_string(),
         format!(
-            "the road heights are not solved: phase B ({unknowns} unknowns, {rows} rows): PrimalInfeasible"
+            "the road heights are not solved: {unknowns} unknowns, {rows} rows: PrimalInfeasible"
         )
+    );
+    // the solver that fails is given the problem of the clearing solve: one slack and two rows more than without
+    let unchecked = std::cell::Cell::new((0, 0));
+    let count = |problem: &naves_core::qp::Problem| {
+        unchecked.set((problem.unknowns, problem.rows.len()));
+        naves_core::qp::solve(problem)
+    };
+    solve_clearing_with(&net, &hm, &junctions, &slopes, &graph, &|_| None, &count).unwrap();
+    assert_eq!(
+        (unchecked.get().0 + 1, unchecked.get().1 + 2),
+        (unknowns, rows)
     );
 }
 
@@ -994,7 +1026,7 @@ fn infinite_ground_under_a_road_is_an_error() {
     assert!(matches!(err, ProfileError::Invalid { .. }), "{err:?}");
 }
 
-// ---- the clearance under a bridge over a road (phase B) ----
+// ---- the clearance under a bridge over a road (rows C) ----
 
 /// The thickness of every deck in the tests, in metres.
 const DECK: f64 = 1.5;
@@ -1102,27 +1134,99 @@ fn a_bridge_over_a_road_clears_it() {
     );
 }
 
-#[test]
-fn the_road_below_keeps_its_height() {
-    let hm = terrain(250, 4.0, |_, _| 100.0);
-    let (net, graph) = placed(&bridge_features());
-    let junctions = find_junctions(&net, &graph, &hm);
-    let (flat, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
-    let (p, _) = clear(&net, &graph, &hm, &junctions, DECK);
-    let near_crossing = |p: &Profiles| -> Vec<f64> {
-        p.strips
-            .iter()
-            .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("1:"))
-            .flat_map(|s| s.joints.iter().filter(|j| (j.0 - 300.0).abs() <= 50.0))
-            .map(|j| j.2)
-            .collect()
+/// The thickness of the deck of [`short_approaches`], in metres.
+const THICK: f64 = 3.0;
+
+/// A road "1:1-2" east-west along y = 500 of 12.5 m pieces from x = `start` to `start + 500`, on the ground
+/// `f`, and a bridge "4:4-5" over it at x = 300 from y = 487.5 to 512.5. Its approaches are three 12.5 m pieces
+/// each, from and to a level ring at 100 m: their ends cannot rise, and in 37.5 m the vertical radius (250 m)
+/// lets the deck rise at most 12.5 · (0.175 + 0.125 + 0.075) = 4.69 m, much less than the 4.5 + [`THICK`] m it
+/// needs.
+fn short_approaches(start: f64) -> (PlacedNetwork, RoadGraph, Junctions) {
+    let low = pieces(
+        "1:1-2",
+        Family::Asf3,
+        (start, 500.0),
+        (start + 500.0, 500.0),
+        12.5,
+    );
+    let mut up = pieces("a", Family::Asf3, (300.0, 450.0), (300.0, 487.5), 12.5);
+    up.push(piece(
+        "4:4-5",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 487.5),
+        (300.0, 512.5),
+    ));
+    up.extend(pieces(
+        "c",
+        Family::Asf3,
+        (300.0, 512.5),
+        (300.0, 550.0),
+        12.5,
+    ));
+    let graph = build_graph(&[
+        way(1, &[1, 2], &[(start, 500.0), (start + 500.0, 500.0)], false),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+    ]);
+    let junctions = Junctions {
+        rings: vec![
+            level_ring("r1", (300.0, 440.0), 100.0),
+            level_ring("r2", (300.0, 560.0), 100.0),
+        ],
+        points: vec![ring_held(450.0, "a", "r1"), ring_held(550.0, "c", "r2")],
+        ..Junctions::default()
     };
-    let (before, after) = (near_crossing(&flat), near_crossing(&p));
-    assert!(after.len() > 2, "{after:?}");
-    assert_eq!(before.len(), after.len());
-    for (a, b) in before.iter().zip(&after) {
-        assert!((a - b).abs() < 0.05, "{a} {b}");
-    }
+    (network(vec![low, up]), graph, junctions)
+}
+
+#[test]
+fn a_bridge_and_the_road_below_share_the_lift() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph, junctions) = short_approaches(50.0);
+    let (p, _) = clear(&net, &graph, &hm, &junctions, THICK);
+    let at = (300.0, 500.0);
+    let deck = height_on(&p, &net, "4:", at, true);
+    let low = height_on(&p, &net, "1:", at, false);
+    assert_eq!(p.clearances.len(), 1);
+    // the deck alone cannot make it within the vertical radius: the road below dips under the bridge
+    assert!(
+        p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.05,
+        "reached {}, deck {deck}, road below {low}",
+        p.clearances[0].reached
+    );
+    assert!(deck > 100.5, "deck {deck}");
+    assert!(low < 99.5, "road below {low}");
+    // both stay inside their grade ceilings and vertical radii
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+}
+
+/// The clearance enforced where the crossing lies between two joints of the road below (t = 0.3, on a slope) is
+/// the one measured on the strips.
+#[test]
+fn the_clearance_between_two_joints_of_the_road_below_is_the_one_enforced() {
+    let hm = terrain(250, 4.0, |x, _| 100.0 + 0.08 * (x - 300.0));
+    // joints of the road below at x = 296.25 and 308.75: the crossing at x = 300 is 0.3 of the way
+    let (net, graph, junctions) = short_approaches(46.25);
+    let (p, _) = clear(&net, &graph, &hm, &junctions, THICK);
+    assert_eq!(p.clearances.len(), 1);
+    let reached = p.clearances[0].reached;
+    // the row is active (the solve lifts and lowers no more than it must), so what is measured is what it holds
+    assert!(
+        (reached - BRIDGE_CLEARANCE_M).abs() < 0.05,
+        "reached {reached}"
+    );
+    let low = |x: f64| height_on(&p, &net, "1:", (x, 500.0), false);
+    let between = 0.7 * low(296.25) + 0.3 * low(308.75);
+    let deck = height_on(&p, &net, "4:", (300.0, 500.0), true);
+    assert!(
+        (deck - THICK - between - reached).abs() < 1e-6,
+        "{deck} {between} {reached}"
+    );
+    // the road below is not flat there: the joint itself would be another number
+    assert!((low(296.25) - between).abs() > 0.1);
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
 
 #[test]
@@ -1205,26 +1309,24 @@ fn a_deck_and_the_road_below_on_one_junction_is_a_finding() {
     };
     let (p, _) = clear(&net, &graph, &hm, &junctions, DECK);
     assert_eq!(p.clearances.len(), 1);
-    assert!(p.clearances[0].reached < 4.45, "{:?}", p.clearances);
-    // the road below keeps its height exactly: the whole shortfall is the finding
-    let (flat, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
-    let near_crossing = |p: &Profiles| -> Vec<f64> {
-        p.strips
-            .iter()
-            .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("1:"))
-            .flat_map(|s| s.joints.iter().filter(|j| (j.0 - 300.0).abs() <= 30.0))
-            .map(|j| j.2)
-            .collect()
-    };
-    let (before, after) = (near_crossing(&flat), near_crossing(&p));
-    assert!(after.len() > 2 && before.len() == after.len(), "{after:?}");
-    for (a, b) in before.iter().zip(&after) {
-        assert!((a - b).abs() < 0.05, "{a} {b}");
+    // the deck and the road below are one height there: no lift of either makes room, the whole clearance and
+    // the thickness of the deck are short, and the roads stay drivable
+    let reached = p.clearances[0].reached;
+    assert!((reached + DECK).abs() < 1e-6, "{:?}", p.clearances);
+    assert!(
+        p.excesses.iter().all(|e| e.kind != GradeExcessKind::Grade),
+        "{:?}",
+        p.excesses
+    );
+    for strip in 0..p.strips.len() {
+        for g in grades(&p, strip) {
+            assert!(g.abs() <= grade_ceiling(Family::Asf3) + 1e-4, "{g}");
+        }
     }
 }
 
 #[test]
-fn a_deck_that_a_ring_holds_cannot_rise() {
+fn a_deck_that_a_ring_holds_is_cleared_by_lowering_the_road_below() {
     let hm = terrain(250, 4.0, |_, _| 100.0);
     let (net, graph) = crossing_network();
     let junctions = Junctions {
@@ -1233,7 +1335,12 @@ fn a_deck_that_a_ring_holds_cannot_rise() {
     };
     let (p, _) = clear(&net, &graph, &hm, &junctions, DECK);
     assert_eq!(p.clearances.len(), 1);
-    assert!(p.clearances[0].reached < 4.45, "{:?}", p.clearances);
+    // the deck cannot rise; the road below is free, and dips the whole 6 m within its limits
+    let at = (300.0, 500.0);
+    assert!((height_on(&p, &net, "4:", at, true) - 100.0).abs() < 1e-6);
+    assert!(p.clearances[0].reached >= 4.45, "{:?}", p.clearances);
+    assert!(height_on(&p, &net, "1:", at, false) < 100.0 - 5.9);
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
 
 #[test]
@@ -1259,6 +1366,22 @@ fn an_unknown_thickness_is_not_checked() {
     let plain = solve_plain(&net, &hm, &junctions, &side).unwrap();
     let unchecked = solve_clearing(&net, &hm, &junctions, &side, &graph, &|_| None).unwrap();
     assert_eq!(plain, unchecked);
+}
+
+#[test]
+fn a_crossing_whose_road_below_is_not_placed_is_not_checked() {
+    // the graph has the bridge over a road, the network only the bridge's road: no row, no clearance
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph, junctions) = short_approaches(50.0);
+    let upper_only = PlacedNetwork {
+        roads: net.roads.clone(),
+        chains: net.chains[1..].to_vec(),
+        ..net.clone()
+    };
+    let (p, _) = clear(&upper_only, &graph, &hm, &junctions, THICK);
+    assert!(p.clearances.is_empty(), "{:?}", p.clearances);
+    let (plain, _) = solve_plain(&upper_only, &hm, &junctions, &[]).unwrap();
+    assert_eq!(p.strips, plain.strips);
 }
 
 #[test]

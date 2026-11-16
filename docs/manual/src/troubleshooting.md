@@ -142,10 +142,10 @@ size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 20
 a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
 [the grid](project-file.md#grid).
 
-**`the road heights are not solved: phase A (<n> unknowns, <m> rows): <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
-The build stops. The heights of all roads are one calculation; the first message means the solver found no solution
-(the message names the phase, A for the roads alone or B with the clearance under bridges over roads, the size of the
-problem and the solver's status), the second that the input is malformed, for example a road with no ground data under it.
+**`the road heights are not solved: <n> unknowns, <m> rows: <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
+The build stops. The heights of all roads, with the clearance under bridges over roads, are one calculation; the
+first message means the solver found no solution (the message names the size of the problem and the solver's
+status), the second that the input is malformed, for example a road with no ground data under it.
 There is no setting that changes this. A project with roads should always have a solution, so this is a fault of the
 program: report it with the project (`naves.toml`, the edits and the OSM extract) and the message.
 
@@ -174,13 +174,14 @@ is how far the road stands above the ground. Look at it in the game or the map: 
 `edits/overrides.toml`, move the OSM line, or accept it. Dips without water are filled and not reported.
 
 **`bridge_clearance`: "A bridge clears the road below by only 1.6 m, the minimum is 4.5 m"**
-A bridge crosses another road without a shared node and its deck could not be lifted to 4.5 m above that road
-(measured from the road's surface to the underside of the deck). The usual cause: the bridge's road and the road below
-meet at a junction (next to the crossing, or further along the road below), so lifting the junction would lift the road
-below with it; the build never lifts the road below nor a junction that holds it, so the bridge's road can rise from
-that junction only as far as its grade limits allow. Another cause: the grade limits and the vertical radius stop the
-approaches from rising as far as the deck needs. The position is where the two lines cross. Move the junction away
-from the crossing in the data, or accept it.
+A bridge crosses another road without a shared node and there are not 4.5 m between that road and the deck
+(measured from the road's surface to the underside of the deck). To make the room, the build lifts the bridge's road
+and lowers the road below, each as far as its grade limits and its vertical radius allow; the finding means that the
+two together could not make 4.5 m. The usual cause: the bridge's road and the road below meet at a junction close to
+the crossing (or one junction holds both), so the one cannot rise without the other, and the short road between
+them would have to be steeper than its limit. Another cause: approaches too short for the deck to rise and a road
+below that cannot dip far enough within its own limits. The position is where the two lines cross. Move the junction
+away from the crossing in the data, or accept it.
 
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type
