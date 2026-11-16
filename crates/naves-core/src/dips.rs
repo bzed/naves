@@ -34,6 +34,14 @@ pub const BRIDGE_STRAIGHT_M: f64 = 2.0;
 /// At each end of a dip bridge span the line, over 4 m outside the span and over 4 m inside it, runs within this
 /// of the chord of the model at that end.
 pub const SPAN_END_STRAIGHT_DEG: f64 = 20.0;
+/// The line within this many metres outside a span end is measured: at least 4 m of it
+/// must exist.
+pub const SPAN_APPROACH_M: f64 = 12.5;
+/// Every point of the line within [`SPAN_APPROACH_M`] outside a span end is seen from the end within this
+/// of the chord of the model at that end.
+pub const SPAN_APPROACH_DEG: f64 = 10.0;
+/// Less line than this outside a span end fails the end rule.
+const SPAN_MEASURE_MIN_M: f64 = 4.0;
 /// A span that fails [`SPAN_END_STRAIGHT_DEG`] is moved along the run in steps of this.
 const SPAN_SHIFT_STEP_M: f64 = 0.5;
 
@@ -327,8 +335,8 @@ fn heading_gap_deg(a: f64, b: f64) -> f64 {
 }
 
 /// Whether the `count` models of `length` from `from_m` each stay within [`BRIDGE_STRAIGHT_M`] of their
-/// chord and the line runs along the chord at both ends of the span (see [`SPAN_END_STRAIGHT_DEG`]).
-fn span_fits(points: &[(f64, f64)], from_m: f64, length: f64, count: f64) -> bool {
+/// chord.
+fn models_straight(points: &[(f64, f64)], from_m: f64, length: f64, count: f64) -> bool {
     let mut k = 0.0;
     while k < count {
         let part = slice_points(points, from_m + k * length, from_m + (k + 1.0) * length);
@@ -343,14 +351,21 @@ fn span_fits(points: &[(f64, f64)], from_m: f64, length: f64, count: f64) -> boo
         }
         k += 1.0;
     }
+    true
+}
+
+/// Whether the line leaves both ends of the span along the chords of the models there: see
+/// [`SPAN_APPROACH_M`] and [`SPAN_END_STRAIGHT_DEG`].
+fn ends_straight(points: &[(f64, f64)], from_m: f64, length: f64, count: f64) -> bool {
     let first_model = (from_m, from_m + length);
     let last_model = (from_m + (count - 1.0) * length, from_m + count * length);
     end_runs_along_chord(points, first_model, true)
         && end_runs_along_chord(points, last_model, false)
 }
 
-/// Whether the line runs along the chord of the model `(from, to)` over 4 m on both sides of its start
-/// (`at_start`) or end.
+/// Whether the line runs along the chord of the model `(from, to)` at its start (`at_start`) or end: every
+/// point within [`SPAN_APPROACH_M`] outside, seen from the end, within [`SPAN_APPROACH_DEG`] of the chord
+/// and the line over 4 m inside within [`SPAN_END_STRAIGHT_DEG`].
 fn end_runs_along_chord(points: &[(f64, f64)], (from, to): (f64, f64), at_start: bool) -> bool {
     let part = slice_points(points, from, to);
     let (Some(first), Some(last)) = (part.first().copied(), part.last().copied()) else {
@@ -358,15 +373,74 @@ fn end_runs_along_chord(points: &[(f64, f64)], (from, to): (f64, f64), at_start:
     };
     let chord = (last.0 - first.0).atan2(last.1 - first.1);
     let (at, d) = if at_start { (first, from) } else { (last, to) };
-    let behind = slice_points(points, 0.0, d);
-    let ahead = slice_points(points, d, f64::MAX);
-    // the direction of travel on each side of the end
-    let travel_before = heading_towards(behind.iter().rev().copied(), at).map(|h| h + PI);
-    let travel_after = heading_towards(ahead.iter().copied(), at);
-    [travel_before, travel_after]
-        .into_iter()
-        .flatten()
-        .all(|h| heading_gap_deg(h, chord) <= SPAN_END_STRAIGHT_DEG)
+    let total = polyline_length(points);
+    let (outside, inside) = if at_start {
+        (
+            slice_points(points, (d - SPAN_APPROACH_M).max(0.0), d),
+            slice_points(points, d, total),
+        )
+    } else {
+        (
+            slice_points(points, d, (d + SPAN_APPROACH_M).min(total)),
+            slice_points(points, 0.0, d),
+        )
+    };
+    let reach = if at_start { d } else { total - d };
+    if reach < SPAN_MEASURE_MIN_M {
+        return false;
+    }
+    // the direction of travel between a point outside and the end
+    let outside_ok = outside
+        .iter()
+        .filter(|p| (p.0 - at.0).hypot(p.1 - at.1) > 1e-9)
+        .all(|p| {
+            let h = if at_start {
+                (at.0 - p.0).atan2(at.1 - p.1)
+            } else {
+                (p.0 - at.0).atan2(p.1 - at.1)
+            };
+            heading_gap_deg(h, chord) <= SPAN_APPROACH_DEG
+        });
+    let inside_h = if at_start {
+        heading_towards(inside.iter().skip(1).copied(), at)
+    } else {
+        heading_towards(inside.iter().rev().skip(1).copied(), at).map(|h| h + PI)
+    };
+    outside_ok && inside_h.is_none_or(|h| heading_gap_deg(h, chord) <= SPAN_END_STRAIGHT_DEG)
+}
+
+/// The line of stretch `i` with the stretch before it and the one after it, where the stretch ends at a
+/// through node (a node of exactly two stretches), and the length of the part added before it.
+fn run_line(graph: &RoadGraph, i: usize) -> Option<(Vec<(f64, f64)>, f64)> {
+    let stretch = graph.stretches.get(i)?;
+    let other = |node: i64| {
+        let crossing = graph
+            .crossings
+            .iter()
+            .find(|c| c.node == node && c.stretches.len() == 2 && c.stretches.contains(&i))?;
+        let j = *crossing.stretches.iter().find(|j| **j != i)?;
+        graph.stretches.get(j)
+    };
+    let mut points = Vec::new();
+    let mut offset = 0.0;
+    if let Some(before) = other(stretch.start) {
+        let mut line = before.points.clone();
+        if before.start == stretch.start {
+            line.reverse();
+        }
+        offset = polyline_length(&line);
+        points = line;
+    }
+    points.extend(stretch.points.iter().copied());
+    if let Some(after) = other(stretch.end) {
+        let mut line = after.points.clone();
+        if after.end == stretch.end {
+            line.reverse();
+        }
+        points.extend(line);
+    }
+    points.dedup();
+    Some((points, offset))
 }
 
 /// What to do about `dip`; `model_length` is the scaled length of the bridge model the road would get, if
@@ -393,7 +467,7 @@ pub fn decide(
         }
         let length =
             model_length.filter(|l| l.is_finite() && *l >= crate::roadplace::MIN_BRIDGE_M)?;
-        let stretch = graph.stretches.get(dip.stretch)?;
+        let (line, offset) = run_line(graph, dip.stretch)?;
         let run = dip.to_m - dip.from_m;
         if !run.is_finite() || run * 2.0 + SLACK_M < length {
             return None;
@@ -401,14 +475,17 @@ pub fn decide(
         let count = (run / length - SLACK_M).ceil().max(1.0);
         let middle = f64::midpoint(dip.from_m, dip.to_m);
         let (lo, hi) = bridge_room(graph, dip.stretch)?;
-        // no room for the centred span: no bridge, shifting does not help
+        // no room for the centred span, or it is not straight over every model: no bridge, and
+        // shifting does not help
         if middle - count * length / 2.0 < lo - SLACK_M
             || middle + count * length / 2.0 > hi + SLACK_M
+            || !models_straight(&line, offset + middle - count * length / 2.0, length, count)
         {
             return None;
         }
-        // The span may move along the run as far as it still covers the run, in steps of
-        // `SPAN_SHIFT_STEP_M`: the shorter shift first, the earlier position on a tie.
+        // Where the centred span leaves its ends in a bend it may move along the run as far as it still
+        // covers the run, in steps of `SPAN_SHIFT_STEP_M`: the shorter shift first, the earlier position
+        // on a tie. Every candidate passes both tests.
         let slack = (count * length - run) / 2.0;
         let mut steps = 0.0_f64;
         loop {
@@ -424,7 +501,10 @@ pub fn decide(
                 if from_m < lo - SLACK_M || to_m > hi + SLACK_M {
                     continue;
                 }
-                if span_fits(&stretch.points, from_m, length, count) {
+                let at = offset + from_m;
+                if models_straight(&line, at, length, count)
+                    && ends_straight(&line, at, length, count)
+                {
                     return Some(BridgeSpan {
                         stretch: dip.stretch,
                         from_m,

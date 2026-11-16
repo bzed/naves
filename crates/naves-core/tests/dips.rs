@@ -13,8 +13,8 @@
 
 use naves_core::catalog::Family;
 use naves_core::dips::{
-    BRIDGE_DIP_M, BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, SPAN_END_STRAIGHT_DEG, decide,
-    find_dips,
+    BRIDGE_DIP_M, BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, SPAN_APPROACH_DEG, SPAN_APPROACH_M,
+    SPAN_END_STRAIGHT_DEG, decide, find_dips,
 };
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::{Heightmap, MapGeo};
@@ -543,34 +543,143 @@ fn on_hairpin_line() -> RoadGraph {
     build_graph(&[feature(1, &points, &nodes, Family::Asf3)])
 }
 
+/// The line between `from` and `to` metres along `points`: both ends interpolated, the vertices between.
+fn line_between(points: &[(f64, f64)], from: f64, to: f64) -> Vec<(f64, f64)> {
+    let mut out = vec![along(points, from)];
+    let mut at = 0.0;
+    for w in points.windows(2) {
+        at += (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if at > from && at < to {
+            out.push(w[1]);
+        }
+    }
+    out.push(along(points, to));
+    out
+}
+
+/// The same measure as the code: (the largest deviation in degrees of any point within `SPAN_APPROACH_M`
+/// outside the span end from the model's chord, the deviation of the line over 4 m inside), for the start
+/// (`at_start`) or the end of the model `(from, to)`.
+fn end_measures(points: &[(f64, f64)], (from, to): (f64, f64), at_start: bool) -> (f64, f64) {
+    let total: f64 = points
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    let chord = heading_deg(along(points, from), along(points, to));
+    let d = if at_start { from } else { to };
+    let at = along(points, d);
+    let (outside, inside) = if at_start {
+        (
+            line_between(points, (d - SPAN_APPROACH_M).max(0.0), d),
+            line_between(points, d, total),
+        )
+    } else {
+        (
+            line_between(points, d, (d + SPAN_APPROACH_M).min(total)),
+            line_between(points, 0.0, d),
+        )
+    };
+    let reach = if at_start {
+        d.min(SPAN_APPROACH_M)
+    } else {
+        (total - d).min(SPAN_APPROACH_M)
+    };
+    assert!(reach >= 4.0, "no room to measure");
+    let travel = |p: (f64, f64), outward: bool| {
+        // the direction of travel along the span's direction, seen between `p` and the end
+        if outward == at_start {
+            heading_deg(p, at)
+        } else {
+            heading_deg(at, p)
+        }
+    };
+    let out_max = outside
+        .iter()
+        .filter(|p| (p.0 - at.0).hypot(p.1 - at.1) > 1e-9)
+        .map(|p| gap_deg(travel(*p, true), chord))
+        .fold(0.0, f64::max);
+    // first vertex at least 4 m from the end, else the last (the inside runs away from the end)
+    let inside: Vec<(f64, f64)> = if at_start {
+        inside.into_iter().skip(1).collect()
+    } else {
+        inside.into_iter().rev().skip(1).collect()
+    };
+    let target = inside
+        .iter()
+        .copied()
+        .find(|p| (p.0 - at.0).hypot(p.1 - at.1) >= 4.0)
+        .or_else(|| inside.last().copied())
+        .unwrap();
+    let inner = if at_start {
+        heading_deg(at, target)
+    } else {
+        heading_deg(target, at)
+    };
+    (out_max, gap_deg(inner, chord))
+}
+
 #[test]
 fn a_bridge_span_does_not_start_in_a_hairpin() {
     let graph = on_hairpin_line();
-    let stretch = &graph.stretches[0];
-    // the centred span of the 28 m run (29.85 to 57.85 m) is 50 m long and starts where the U ends
+    let points = &graph.stretches[0].points;
     let u_end = 18.85;
+    // 30 m models, a 31 m run: two models, 14.5 m of slack. The centred span (from 11.5 m before the
+    // run's middle less 30 m: u_end - 3 m to u_end + 57 m) starts in the bend.
     let (action, span) = decide(
-        &dip(0, u_end + 8.0, u_end + 36.0, false),
+        &dip(0, u_end + 11.5, u_end + 42.5, false),
+        &graph,
+        Some(30.0),
+    );
+    assert_eq!(action, DipAction::Bridge, "{span:?}");
+    let span = span.unwrap();
+    assert!(span.from_m > u_end + 3.0, "{span:?}");
+    let (first, last) = (
+        (span.from_m, span.from_m + 30.0),
+        (span.to_m - 30.0, span.to_m),
+    );
+    for (model, at_start) in [(first, true), (last, false)] {
+        let (outside, inside) = end_measures(points, model, at_start);
+        assert!(
+            outside <= SPAN_APPROACH_DEG,
+            "outside {outside} at {model:?}"
+        );
+        assert!(
+            inside <= SPAN_END_STRAIGHT_DEG,
+            "inside {inside} at {model:?}"
+        );
+    }
+    // 25 m models, a 28 m run: 11 m of slack are not enough to leave the bend: filled
+    let (action, span) = decide(
+        &dip(0, u_end + 6.0, u_end + 34.0, false),
         &graph,
         Some(25.0),
     );
-    if action == DipAction::Bridge {
-        let span = span.unwrap();
-        let at = |d: f64| along(&stretch.points, d);
-        let chord = heading_deg(at(span.from_m), at(span.from_m + 25.0));
-        let back = heading_deg(at(span.from_m - 4.0), at(span.from_m));
-        let ahead = heading_deg(at(span.from_m), at(span.from_m + 4.0));
-        assert!(
-            gap_deg(back, chord) <= SPAN_END_STRAIGHT_DEG + 1.0,
-            "{back} {chord}"
-        );
-        assert!(
-            gap_deg(ahead, chord) <= SPAN_END_STRAIGHT_DEG + 1.0,
-            "{ahead} {chord}"
-        );
-    } else {
-        assert_eq!(action, DipAction::Fill);
-    }
+    assert_eq!((action, span), (DipAction::Fill, None));
+}
+
+#[test]
+fn a_span_after_a_change_of_surface_is_measured_across_the_node() {
+    // a hairpin of radius 4 m on an Asf3 way that ends at the node where an Asf2 way goes on straight
+    let mut points: Vec<(f64, f64)> = (0..=18)
+        .map(|i| {
+            let t = f64::from(i) * 10.0_f64.to_radians();
+            (4.0 * t.sin(), 204.0 - 4.0 * t.cos())
+        })
+        .collect();
+    let nodes: Vec<i64> = (1..).take(points.len()).collect();
+    let first = feature(1, &points, &nodes, Family::Asf3);
+    let node = *nodes.last().unwrap();
+    points = (0..=16).map(|i| (-10.0 * f64::from(i), 208.0)).collect();
+    let mut second_nodes = vec![node];
+    second_nodes.extend(1000..1016);
+    let second = feature(2, &points, &second_nodes, Family::Asf2);
+    let graph = build_graph(&[first, second]);
+    let straight = index_of(&graph, "2:");
+    // two models cover the 49.5 m run from 0.5 m, with 0.25 m of slack: the span would start at the node
+    assert_eq!(
+        decide(&dip(straight, 0.5, 50.0, false), &graph, Some(25.0)),
+        (DipAction::Fill, None)
+    );
 }
 
 #[test]

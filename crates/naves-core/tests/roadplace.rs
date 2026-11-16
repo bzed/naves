@@ -1522,31 +1522,56 @@ fn a_deck_on_a_curve_keeps_its_place_and_follows_its_road() {
     assert!(kink.to_degrees().abs() <= 1.0, "kink {kink}");
 }
 
-/// A U-turn of radius 10 m, then a straight to the west, as one way.
+/// A U-turn of radius 6 m, then a straight to the west, as one way.
+const R: f64 = 6.0;
+
 fn hairpin_way() -> Vec<Feature> {
     let mut points: Vec<(f64, f64)> = (0..=18)
         .map(|i| {
             let t = f64::from(i) * 10.0_f64.to_radians();
-            (300.0 + 10.0 * t.sin(), 310.0 - 10.0 * t.cos())
+            (300.0 + R * t.sin(), 300.0 + R - R * t.cos())
         })
         .collect();
-    points.extend((1..=16).map(|i| (300.0 - 10.0 * f64::from(i), 320.0)));
+    points.extend((1..=16).map(|i| (300.0 - 10.0 * f64::from(i), 300.0 + 2.0 * R)));
     let nodes: Vec<i64> = (1..).take(points.len()).collect();
     vec![feature(1, Family::Asf3, &nodes, &points)]
 }
 
 #[test]
 fn a_dip_bridge_after_a_hairpin_closes_on_its_approach() {
+    // What broke the Kehlsteinstrasse loop was a deck not joined to its road. A U tighter than any piece
+    // of the catalog can follow leaves the road itself off its line for a while, so the decks may not be
+    // held to the line more strictly than the road that arrives at them: close to the road's end (gap and
+    // kink), and no further from the line than that end plus 1 m. Far enough past the U the road is back
+    // on the line and the decks must lie on it.
+    let u_end = R * std::f64::consts::PI;
+    // 12 m of slack move a span that starts 2 m before the U ends clear of it: decks
+    assert_ne!(
+        hairpin_dip_placed(u_end + 10.4, u_end + 35.6, None),
+        0,
+        "the deck branch must run"
+    );
+    // a span about 80 m past the U
+    assert_ne!(
+        hairpin_dip_placed(u_end + 80.4, u_end + 105.6, Some(1.0)),
+        0
+    );
+    // 11 m of slack do not leave the bend: filled
+    assert_eq!(hairpin_dip_placed(u_end + 6.0, u_end + 34.0, None), 0);
+}
+
+/// Places the hairpin way with the decision for a dip from `from_m` to `to_m`, checks the decks and what
+/// is before them, and returns the number of decks.
+fn hairpin_dip_placed(from_m: f64, to_m: f64, joint_limit: Option<f64>) -> usize {
     let catalog = catalog();
     let graph = build_graph(&hairpin_way());
-    let u_end = 10.0 * std::f64::consts::PI;
     let dip = Dip {
         stretch: 0,
-        from_m: u_end - 3.0,
-        to_m: u_end + 43.0,
+        from_m,
+        to_m,
         depth_m: 12.0,
         over_water: false,
-        at: (300.0 - 30.0, 320.0),
+        at: (270.0, 300.0 + 2.0 * R),
     };
     let (action, span) = decide(&dip, &graph, Some(25.0));
     let graph = if let Some(span) = &span {
@@ -1556,22 +1581,20 @@ fn a_dip_bridge_after_a_hairpin_closes_on_its_approach() {
         graph
     };
     let net = place_network(&graph, &catalog).unwrap();
-    let line = &hairpin_way()[0].points;
+    let ways = hairpin_way();
+    let line = &ways.first().unwrap().points;
     let off_line = |p: (f64, f64)| {
         line.windows(2)
-            .map(|w| {
-                let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
-                let t = (((p.0 - w[0].0) * dx + (p.1 - w[0].1) * dy) / (dx * dx + dy * dy))
-                    .clamp(0.0, 1.0);
-                (p.0 - w[0].0 - t * dx).hypot(p.1 - w[0].1 - t * dy)
+            .filter_map(|w| {
+                let &[a, b] = w else { return None };
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let t =
+                    (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                Some((p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy))
             })
             .fold(f64::MAX, f64::min)
     };
     let bridges = of_kind(&net, PlacedKind::Bridge);
-    for b in &bridges {
-        assert!(off_line((b.start.x, b.start.y)) <= 1.0, "{:?}", b.start);
-        assert!(off_line((b.end.x, b.end.y)) <= 1.0, "{:?}", b.end);
-    }
     if let Some(first) = bridges.first() {
         let before = net
             .roads
@@ -1585,5 +1608,11 @@ fn a_dip_bridge_after_a_hairpin_closes_on_its_approach() {
             .to_degrees()
             .rem_euclid(360.0);
         assert!(turn.min(360.0 - turn) <= KINK_TOLERATED_DEG, "kink {turn}");
+        let limit = joint_limit.unwrap_or_else(|| off_line((before.1.end.x, before.1.end.y)) + 1.0);
+        for b in &bridges {
+            assert!(off_line((b.start.x, b.start.y)) <= limit, "{:?}", b.start);
+            assert!(off_line((b.end.x, b.end.y)) <= limit, "{:?}", b.end);
+        }
     }
+    bridges.len()
 }
