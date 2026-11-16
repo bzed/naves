@@ -21,6 +21,9 @@ use clarabel::solver::{
 const TOLERANCE: f64 = 1e-7;
 /// The iteration limit of the solver.
 const MAX_ITER: u32 = 200;
+/// The largest finite bound a row may have: the solver silently drops bounds from `1e20` on, so a bound
+/// this large is rejected rather than lost.
+const MAX_BOUND: f64 = 1e15;
 
 /// One linear row `lo ≤ Σ c_k x_k ≤ hi`.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +164,17 @@ impl Problem {
                     r.hi
                 ));
             }
+            if [r.lo, r.hi]
+                .iter()
+                .any(|b| b.is_finite() && b.abs() >= MAX_BOUND)
+            {
+                return invalid(format!(
+                    "{}: bounds {} ..= {}: a finite bound must be below {MAX_BOUND:e} in size",
+                    place(),
+                    r.lo,
+                    r.hi
+                ));
+            }
             terms_ok(&r.terms, &place)?;
         }
         Ok(())
@@ -269,10 +283,15 @@ fn row_matrices(problem: &Problem) -> (Triplets, Vec<f64>, Vec<SupportedConeT<f6
 
 /// Solves `problem`: the unknowns at the minimum of the cost that keep every row.
 ///
+/// The solution keeps the rows only within the solver's tolerance (`1e-7`, absolute and relative): a value
+/// can lie slightly outside a bound, and a slack bounded by `≥ 0` can come back a few `1e-9` below zero.
+/// Callers clamp such values and never test a row for exact equality.
+///
 /// # Errors
 ///
 /// [`QpError::Invalid`] for an unknown index out of range, a non-finite coefficient, constant, weight or
-/// bound, `lo > hi`, a row that keeps no value (`lo = +∞` or `hi = −∞`) or a negative weight;
+/// NaN bound, a finite bound of `1e15` or more in size (the solver would drop it), `lo > hi`, a row that
+/// keeps no value (`lo = +∞` or `hi = −∞`) or a negative weight;
 /// [`QpError::NotSolved`] when the solver does not report a solution (rows that contradict each other,
 /// an unbounded cost, the iteration limit or a numerical failure).
 pub fn solve(problem: &Problem) -> Result<Vec<f64>, QpError> {

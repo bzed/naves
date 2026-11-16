@@ -193,3 +193,37 @@ fn the_cost_adds_squares_and_linear_terms() {
     assert!(close(p.cost(&[1.0, 2.0]), 6.0, 1e-12));
     assert!(close(p.cost(&[0.0, 0.0]), 2.0, 1e-12));
 }
+
+#[test]
+fn a_bound_the_solver_would_drop_is_invalid() {
+    let invalid = |p: &Problem| matches!(solve(p), Err(QpError::Invalid { .. }));
+    for bound in [1e15, -1e15, 1e20, -3e19] {
+        let mut p = Problem::new(1);
+        p.add_square(1.0, &[(0, 1.0)], 0.0);
+        let (lo, hi) = if bound > 0.0 {
+            (f64::NEG_INFINITY, bound)
+        } else {
+            (bound, f64::INFINITY)
+        };
+        p.rows.push(row(&[(0, 1.0)], lo, hi));
+        assert!(invalid(&p), "bound {bound}");
+    }
+    // a large bound below the limit is kept
+    let mut p = Problem::new(1);
+    p.add_square(1.0, &[(0, 1.0)], 0.0);
+    p.rows.push(row(&[(0, 1.0)], -1e14, 1e14));
+    assert!(solve(&p).is_ok());
+}
+
+#[test]
+fn an_unknown_listed_twice_adds_up() {
+    // (x + x − 4)² is (2x − 4)²: the minimum at 2, cut by the row x + x ≤ 3
+    let mut p = Problem::new(1);
+    p.add_square(1.0, &[(0, 1.0), (0, 1.0)], -4.0);
+    let x = solve(&p).unwrap();
+    assert!(close(x[0], 2.0, 1e-6), "{x:?}");
+    p.rows
+        .push(row(&[(0, 1.0), (0, 1.0)], f64::NEG_INFINITY, 3.0));
+    let x = solve(&p).unwrap();
+    assert!(close(x[0], 1.5, 1e-6), "{x:?}");
+}
