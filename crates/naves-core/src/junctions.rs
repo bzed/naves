@@ -108,6 +108,12 @@ pub struct Junction {
     /// along the road that runs through, `(0, 0)` for a join, a ring and a junction without one. `height` is
     /// the height at `at`.
     pub gradient: (f64, f64),
+    /// The unit vector along the road that runs through the junction, which its plane tilts along; `None`
+    /// for a level junction (a join, a junction on a ring, a junction without a through road).
+    pub tilt_axis: Option<(f64, f64)>,
+    /// The steepest tilt of the plane along `tilt_axis`, rise per metre: [`JUNCTION_TILT_SHARE`] of the grade
+    /// ceiling of the through road, at most [`CROSS_FALL_AIM`]; 0 where there is no axis.
+    pub tilt_cap: f64,
 }
 
 impl Junction {
@@ -255,7 +261,9 @@ pub struct Junctions {
     pub points: Vec<Junction>,
     /// The links, sorted by their ends and length.
     pub links: Vec<Link>,
-    /// Links still over their ceiling after `repair`, by index into `links`.
+    /// Links still over their ceiling after `repair`, by index into `links`. From
+    /// [`crate::profile::solve_network`]: the links of the junctions that hold an end of a segment the solve could
+    /// not keep under its ceiling.
     pub unresolved: Vec<usize>,
 }
 
@@ -908,9 +916,15 @@ fn junction_gradient(
     let Some(slope) = ground_slope_along(base, line, station, radius.max(MIN_TILT_REACH_M)) else {
         return (0.0, 0.0);
     };
-    let limit = (JUNCTION_TILT_SHARE * grade_ceiling(line.family)).min(CROSS_FALL_AIM);
+    let limit = tilt_cap(line.family);
     let s = slope.clamp(-limit, limit);
     (s * t.0, s * t.1)
+}
+
+/// The steepest tilt of a junction whose through road is of `family`: [`JUNCTION_TILT_SHARE`] of its grade
+/// ceiling, at most [`CROSS_FALL_AIM`].
+fn tilt_cap(family: Family) -> f64 {
+    (JUNCTION_TILT_SHARE * grade_ceiling(family)).min(CROSS_FALL_AIM)
 }
 
 /// The junction that the raw junctions `members` make: at the mean of their points, the first kind, the
@@ -968,18 +982,22 @@ fn one_junction(
     );
     // the tilt follows the through road of the first member of the merged kind that has one; a junction on a
     // ring is held by the ring's plane
-    let gradient = if ring.is_some() {
-        (0.0, 0.0)
+    let through = if ring.is_some() {
+        None
     } else {
         members
             .iter()
             .filter_map(|m| raw.get(*m))
             .filter(|r| r.kind == kind)
             .find_map(|r| through_road(lines, r))
-            .map_or((0.0, 0.0), |through| {
-                junction_gradient(base, patch, through)
-            })
     };
+    let (gradient, tilt_axis, cap) = through.map_or(((0.0, 0.0), None, 0.0), |through| {
+        (
+            junction_gradient(base, patch, through),
+            Some(through.2),
+            tilt_cap(through.0.family),
+        )
+    });
     Junction {
         at,
         kind,
@@ -994,6 +1012,8 @@ fn one_junction(
             BTreeSet::new()
         },
         gradient,
+        tilt_axis,
+        tilt_cap: cap,
     }
 }
 

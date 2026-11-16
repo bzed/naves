@@ -19,6 +19,8 @@ fn junction(kind: JunctionKind, at: (f64, f64), height: f64) -> Junction {
         stretches: BTreeSet::new(),
         lower: BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     }
 }
 

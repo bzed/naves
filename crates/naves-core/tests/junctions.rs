@@ -202,6 +202,8 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     }
 }
 
@@ -691,6 +693,8 @@ fn one_junction_of(at: (f64, f64), patch_m: f64, names: &[&str], kind: JunctionK
             stretches: names.iter().map(|n| (*n).to_string()).collect(),
             lower: std::collections::BTreeSet::new(),
             gradient: (0.0, 0.0),
+            tilt_axis: None,
+            tilt_cap: 0.0,
         }],
         ..Junctions::default()
     }

@@ -480,6 +480,8 @@ fn a_steep_ramp_between_fixed_ends_reports_an_excess() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![junction(280.0, 100.0), junction(320.0, 160.0)],
@@ -799,6 +801,8 @@ fn a_side_road_ends_at_the_junction_port_height() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![piece_junction],
@@ -1335,6 +1339,8 @@ fn a_span_between_two_junctions_at_its_ceiling_has_the_same_grade_everywhere() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![
@@ -1412,6 +1418,8 @@ fn a_free_joint_between_two_junction_heights_is_not_held_to_the_meeting_grade() 
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![
@@ -1449,6 +1457,8 @@ fn free_span_then_a_short_piece_then_a_held_joint() -> (PlacedNetwork, Heightmap
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![junction(100.0, 100.0), junction(504.4, 107.0)],
@@ -1506,6 +1516,8 @@ fn tight_bend_chain(family: Family) -> (PlacedNetwork, Heightmap, Junctions) {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![junction((100.0, 100.0)), junction((560.0, 560.0))],
@@ -1559,6 +1571,8 @@ fn a_profile_that_left_the_ground_for_a_straight_ramp_is_tried_again_at_a_looser
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![junction(100.0), junction(1000.0)],
@@ -2097,6 +2111,8 @@ fn two_junctions_14_m_apart_on_a_slope_leave_the_road_drivable() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.10, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![tilted(300.0), tilted(314.0)],
@@ -2206,6 +2222,8 @@ fn a_merge_does_not_cross_a_held_joint() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         points: vec![junction(112.5, 100.5), junction(112.8, 101.5)],

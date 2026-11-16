@@ -515,6 +515,8 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         stretches: std::collections::BTreeSet::new(),
         lower: std::collections::BTreeSet::new(),
         gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
     };
     let junctions = Junctions {
         rings: Vec::new(),

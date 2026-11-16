@@ -22,6 +22,10 @@
 //! Then roads that run closer together than the terrain grid can tell apart are brought to one height (the step
 //! called settling): without that, the terrain under one of them is wrong however it is shaped. Settling
 //! moves heights and solves again with the grade limits, so it cannot break them.
+//!
+//! [`solve_network`] is the replacement that is being built: every joint height and every junction's height
+//! and tilt of the whole network out of one quadratic program
+//! (`docs/superpowers/specs/2026-11-16-height-solve-design.md`). It is not used by the build yet.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,10 +35,12 @@ use crate::heightmap::Heightmap;
 use crate::junctions::{GROUND_RADIUS_M, Junctions, RingPlane, ground_median, raise_floors};
 use crate::limits::grade_ceiling as ceiling_of;
 use crate::limits::{drive_grade, grade_aim, grade_ceiling, min_vertical_radius};
+use crate::qp::{Problem, QpError};
 use crate::roadnet::{OverCrossing, RoadGraph, Stretch, over_crossings};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
 mod holds;
+mod model;
 
 use holds::fixed_heights;
 #[doc(hidden)]
@@ -1225,6 +1231,64 @@ fn excesses_of(chain: &Solved) -> Vec<GradeExcess> {
         }
     }
     excesses
+}
+
+/// Why [`solve_network`] has no heights.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProfileError {
+    /// The solver did not report a solution.
+    #[error("the road heights are not solved: {status}")]
+    NotSolved {
+        /// The solver's status.
+        status: String,
+    },
+    /// The input cannot be solved (no ground data under a road, a malformed problem).
+    #[error("the road heights cannot be solved: {what}")]
+    Invalid {
+        /// What is wrong, and where.
+        what: String,
+    },
+}
+
+/// The heights of every chain of `net` and of its junctions, as one quadratic program
+/// (`docs/superpowers/specs/2026-11-16-height-solve-design.md`, phase A: grades, vertical bends and junction
+/// tilts; no clearance under bridges and no nearby roads yet).
+///
+/// Every joint height and every junction's height and tilt is an unknown; the junctions start from
+/// [`crate::junctions::Junction::ground`] (what `repair` did to their heights is not used). A road is pulled to
+/// the ground and kept smooth; it is steeper than its grade aim only at a cost, steeper than its grade ceiling
+/// or bent sharper than its vertical radius only where nothing else is possible, and that is reported in
+/// [`Profiles::excesses`]. The returned junctions have the solved heights and tilts; `unresolved` lists the
+/// links of junctions that hold a segment over its ceiling. `side` is as in [`solve_profiles`].
+///
+/// # Errors
+///
+/// [`ProfileError::Invalid`] where the ground under a road is not a number, and [`ProfileError::NotSolved`]
+/// when the solver reports no solution.
+pub fn solve_network(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+) -> Result<(Profiles, Junctions), ProfileError> {
+    solve_network_with(net, hm, junctions, side, &crate::qp::solve)
+}
+
+/// [`solve_network`] with another solver (for tests).
+///
+/// # Errors
+///
+/// As [`solve_network`], and whatever `solver` returns.
+#[doc(hidden)]
+pub fn solve_network_with(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+    solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
+) -> Result<(Profiles, Junctions), ProfileError> {
+    let model = model::build(net, hm, junctions)?;
+    model::solve(&model, net, junctions, side, solver)
 }
 
 /// Computes the profile of every chain of `net`, in placement order, on the terrain `hm`, with the heights
