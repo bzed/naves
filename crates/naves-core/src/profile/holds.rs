@@ -5,11 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::heightmap::Heightmap;
 use crate::junctions::{ARM_REACH_M, HOLD_M, Junction, JunctionKind, Junctions};
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
-use super::{Chain, Index, Meeting, RoadStrip, chain_of, end_joins, point_segment_distance};
+use super::{Chain, chain_of, point_segment_distance};
 
 /// Which rule holds a variable of a chain to a junction (for measuring, see [`chain_holds`]).
 #[doc(hidden)]
@@ -70,7 +69,7 @@ pub(super) fn overlay_drop(junction: &Junction, ids: &BTreeSet<String>) -> f64 {
     }
 }
 
-/// The holds of the joints of the chain `roads`, one per joint of the strip as `solve_profiles` builds it (the
+/// The holds of the joints of the chain `roads`, one per joint of the strip as the height solve builds it (the
 /// joints of a bridge deck share one variable), with the position of each joint.
 ///
 /// For measuring (the `road-analysis` tool and the tests); not part of the library's interface.
@@ -365,30 +364,3 @@ fn hold_beside(
         }
     }
 }
-
-/// What a chain's variables are held to: the heights of the junctions, the heights of the roads its ends meet
-/// (a junction beats a meeting), and the meetings.
-pub(super) fn fixed_heights(
-    net: &PlacedNetwork,
-    chain: &Chain,
-    roads: &[usize],
-    hm: &Heightmap,
-    strips: &[RoadStrip],
-    index: &Index,
-    junctions: &Junctions,
-) -> Option<FixedHeights> {
-    let cell = f64::from(hm.cell_m);
-    let half_width = net.roads.get(*roads.first()?)?.width / 2.0;
-    let holds = junction_heights(net, chain, roads, half_width, cell, junctions, true);
-    let held: Vec<Option<f64>> = holds.iter().map(|h| h.map(|h| h.height)).collect();
-    let (mut fixed, meetings) = end_joins(chain, strips, &index.strips, cell, &held);
-    for (slot, height) in fixed.iter_mut().zip(&held) {
-        if height.is_some() {
-            *slot = *height;
-        }
-    }
-    Some((held, fixed, meetings))
-}
-
-/// The junction heights, all fixed heights, and the meetings of a chain's variables.
-pub(super) type FixedHeights = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<(usize, Meeting)>);

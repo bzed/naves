@@ -4,11 +4,11 @@
 //! The rows (N) of `docs/superpowers/specs/2026-11-16-height-solve-design.md`: roads whose footprints share
 //! terrain cells share a height, as far as the ground lets them.
 //!
-//! The spots every [`SAMPLE_M`] and the pairs of close spots are those of the old settling (`spots` and
-//! `close_pairs`), found from the positions and the half widths of the roads alone. Of those pairs only the mutually
-//! nearest are kept (a spot's nearest spot of the other chain, seen from both sides), chosen before the exclusions
-//! for bridges and for the junction a loop leaves and re-enters. Roads that part at an angle keep about one pair, so
-//! they are left untied beyond their first spot; that is intended: rows (N) are for roads side by side. The pairs of
+//! The spots every [`SAMPLE_M`] and the pairs of close spots (`spots` and `close_pairs`) are found from the
+//! positions and the half widths of the roads alone. Of those pairs only the mutually nearest are kept (a spot's
+//! nearest spot of the other chain, seen from both sides), chosen before the exclusions for bridges and for the
+//! junction a loop leaves and re-enters. Roads that part at an angle keep few pairs, and fewer the wider the angle,
+//! so they are left untied beyond their first spots; that is intended: rows (N) are for roads side by side. The pairs of
 //! two chains are grouped into runs; a run is tied only if the original ground allows it at every pair of the run,
 //! else it gets no rows at all (roads side by side on a hillside stay apart).
 
@@ -20,10 +20,9 @@ use crate::junctions::Junctions;
 use crate::roadplace::PlacedNetwork;
 
 use super::{Builder, Draft, Expr};
-use crate::profile::Pair;
 use crate::profile::{
-    KEEP_APART_M, MATCH_M, RoadStrip, SAMPLE_M, Spot, close_pairs, joint_heights, road_on_stretch,
-    spots, strip_of,
+    KEEP_APART_M, MATCH_M, NearbyPairs, Pair, RoadStrip, SAMPLE_M, Spot, close_pairs,
+    joint_heights, road_on_stretch, spots, strip_of,
 };
 
 /// Weight of the slack of a pair of spots.
@@ -152,6 +151,23 @@ fn mutual_nearest(pairs: &[Pair], spots: &[Spot]) -> BTreeSet<usize> {
         .collect()
 }
 
+/// The strips of the chains `drafts` at height 0: the positions and half widths the spots are found from.
+fn strips_of(net: &PlacedNetwork, drafts: &[Draft]) -> Option<Vec<RoadStrip>> {
+    drafts
+        .iter()
+        .map(|d| {
+            let first = net.roads.get(d.first)?;
+            Some(strip_of(
+                net,
+                &d.roads,
+                joint_heights(&d.chain, &[]),
+                &[],
+                first,
+            ))
+        })
+        .collect()
+}
+
 /// Adds the rows (N) and their cost, for the chains `drafts` whose heights are `heights`, for the pairs of spots
 /// that are mutually nearest (chosen from all close pairs, before the exclusions); no rows for the pairs of
 /// a bridge's road and the road below within [`KEEP_APART_M`] of a crossing in `apart`, and none for two spots within
@@ -164,23 +180,14 @@ pub(super) fn add(
     heights: &[Vec<Expr>],
     junctions: &Junctions,
     apart: &[Apart],
-) {
+) -> NearbyPairs {
     let cell = f64::from(hm.cell_m);
-    let Some(strips) = drafts
-        .iter()
-        .map(|d| {
-            let first = net.roads.get(d.first)?;
-            Some(strip_of(
-                net,
-                &d.roads,
-                joint_heights(&d.chain, &[]),
-                &[],
-                first,
-            ))
-        })
-        .collect::<Option<Vec<RoadStrip>>>()
-    else {
-        return;
+    let Some(strips) = strips_of(net, drafts) else {
+        return NearbyPairs {
+            close: 0,
+            mutual: 0,
+            rows: 0,
+        };
     };
     let spots = spots(&strips);
     let pairs = close_pairs(&spots, &strips, cell);
@@ -203,6 +210,11 @@ pub(super) fn add(
     let looping = loops(drafts, junctions);
     let near = |s: &Spot, at: (f64, f64)| (s.x - at.0).hypot(s.y - at.1) <= KEEP_APART_M;
     let mutual = mutual_nearest(&pairs, &spots);
+    let mut counts = NearbyPairs {
+        close: pairs.len(),
+        mutual: mutual.len(),
+        rows: 0,
+    };
     // the runs: the pairs of two chains, in the order along the first, split where the first jumps
     let mut kept_pairs: Vec<usize> = Vec::new();
     for (k, pair) in pairs.iter().enumerate() {
@@ -255,48 +267,51 @@ pub(super) fn add(
             last = here;
         }
         for run in &runs {
-            tie_run(builder, hm, drafts, heights, &spots, &pairs, run);
+            counts.rows += tie_run(builder, hm, drafts, heights, &spots, &pairs, run);
         }
     }
+    counts
 }
 
-/// The rows of one run, if the ground lets it be tied.
+/// The rows of one run, if the ground lets it be tied: how many were made.
 fn tie_run(
     builder: &mut Builder,
     hm: &Heightmap,
     drafts: &[Draft],
     heights: &[Vec<Expr>],
     spots: &[Spot],
-    pairs: &[crate::profile::Pair],
+    pairs: &[Pair],
     run: &[usize],
-) {
+) -> usize {
     let cell = f64::from(hm.cell_m);
     let ground = |s: &Spot| f64::from(hm.sample(s.x, s.y).height);
     let mut rows: Vec<(Expr, f64)> = Vec::new();
     for &k in run {
-        let Some(pair) = pairs.get(k) else { return };
+        let Some(pair) = pairs.get(k) else { return 0 };
         let (Some(a), Some(b)) = (spots.get(pair.first), spots.get(pair.second)) else {
-            return;
+            return 0;
         };
         let limit = allowed(pair.distance, pair.gap, cell);
         let step = (ground(a) - ground(b)).abs();
         // not a number is not a tie either
         if step.is_nan() || step > limit + TIE_STEP_M {
-            return;
+            return 0;
         }
         let (Some(ha), Some(hb)) = (
             spot_height(drafts, heights, a),
             spot_height(drafts, heights, b),
         ) else {
-            return;
+            return 0;
         };
         let d = Expr::sum(&[(&ha, 1.0), (&hb, -1.0)]);
         if !d.terms.is_empty() {
             rows.push((d, limit));
         }
     }
+    let made = rows.len();
     for (d, limit) in rows {
         let n = builder.band(&d, limit);
         builder.problem.add_square(NEAR, &[(n, 1.0)], 0.0);
     }
+    made
 }

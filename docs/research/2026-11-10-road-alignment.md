@@ -1760,3 +1760,117 @@ equal heights at the merged joints. Measured at 2048 (`/var/tmp/naves-roadlook/t
 `road_grade` falls by 410, more than the 280 expected (the overlap class and a share of the free-joint class F1); the
 others stay within the noise of about 30. What is left of 9.8: H1 to H3 (a hold on one side), the free joints F1 and F3,
 and the bridge decks (class D); the joint height solve plan takes them.
+
+## 10. The height solve (2026-11-16)
+
+`docs/superpowers/specs/2026-11-16-height-solve-design.md`. The four steps of 9 (the junction repair, the solve of
+each chain in turn, the settling of roads that share terrain cells, the lifts for bridges over roads) are replaced by
+one quadratic program over the whole network, solved by `clarabel` (interior point, `QDLDL`, one thread, no time
+limit, at most 200 iterations, tolerance `1e-7`) behind `qp::solve`. The same input gives the same heights bit for
+bit. What is removed: `solve_chain`, `smooth`, `bands`, `clip`, `ramp_targets` and the three grade bases tried in
+turn, `RELAX_OFF_M`; `settle`, `resolve`, `wanted_shifts`, `bound_spans`, `MAX_SETTLE_M`, `SETTLE_ROUNDS`,
+`LOWER_APART_M`; `DeckFloor`, `deck_lifts`, `lifted_decks`, `junction_floors`, `lower_road_junctions`,
+`lower_baseline`, `CLEARANCE_ROUNDS`; `junctions::repair`, `repair_above`, `raise_floors`, `MAX_RAISE_M`,
+`MAX_MOVE_M`, `REPAIR_ROUNDS`.
+
+### 10.1 The model
+
+Unknowns: the height of every free joint variable of every chain (joints less than 1 m apart are one variable, the
+joints of a bridge deck are one), the height `z` and the tilt `s` of every junction that holds a variable and does not
+lie on a ring (each as the offset from its ground fit), and the slacks. A variable held by a junction has the height
+`z + s · a - drop` (`a` the distance along the through road, `drop` 5 cm for the road under the top road of an
+overlay); a variable on a ring, or held by a junction on a ring, is the ring plane's height (a constant); the end of a
+chain that lies on another road is linear between that road's two variables.
+
+Cost, with the values of the first version (to be looked at in the game):
+
+| term | weight |
+|---|---|
+| ground: every variable not on a ring, `(h - ground)²` (a deck: the mean of the ground at its two abutments) | 1 |
+| smoothness: the change of grade per metre at every bend, scaled to 12.5 m, squared (a deck end counts as a bend) | `SMOOTHNESS` 30 |
+| junction height against its ground fit, `(z - ground)²` | `JUNCTION_GROUND` 2 |
+| junction tilt against the ground's slope, `(25 m · (s - s0))²` | `JUNCTION_TILT` 2 |
+| grade above the family's aim, squared (G) | `AIM` 1 |
+| roads that share terrain cells: the slack of a pair, squared (N) | `NEAR` 10 |
+| every other slack, linear and squared (the exact penalty: zero unless the rows cannot all be kept) | `HARD` 10⁴ |
+
+Rows: (G) the grade of each segment within the aim plus a slack `e`, `e` within the ceiling (nine tenths of what
+vehicles manage) plus a slack `f`; (B) the change of grade within `run / R` (`R` the family's minimum vertical radius)
+plus a slack, at every bend and at both ends of a deck, between the approach and the level deck; (T) the tilt of a
+junction within its cap (nine tenths of the ceiling of its through road, at most 8 %), no slack; (C) the deck of a
+bridge over a road at least 4.5 m and its thickness above the road below, a slack that costs as the other hard ones,
+and the two variables of the road below that bracket the crossing held at their height of the solve without (C)
+(phase B: the road below keeps its height); (N) a pair of spots (every 3 m) of two roads whose footprints share terrain
+cells within `0.1 m` (a cell and the fill slope beyond) of each other. Of the close pairs only the mutually nearest are
+kept (roads side by side, not at other places on a slope), a run of them is tied only if the original ground lets it
+(at every pair within the allowance and 1 m), and none is made between roads that meet at a junction, within 50 m of a
+crossing of a bridge and the road below, or between two spots of one road near the junction it leaves and re-enters.
+A finding is the slack: `road_grade` where a grade is over the ceiling or a change of grade over `1 / R` by more than
+`1e-4`, `junction_too_steep` for the links of the junctions that hold an end of a segment over its ceiling,
+`bridge_clearance` for a deck that is short.
+
+What is different from before, beyond the numbers: a junction is not capped to 3 m from its ground, and not to 10 m
+above it for a bridge; a road is steeper than its aim where the ground asks for it, at a cost, and not by a rule that
+gives way after 4 m; a deck has a bend at each end (the ski jump of site 23 was the two approaches compared with
+each other as if the deck had no length); roads side by side on a flank whose ground is further apart than the
+allowance and a metre are no longer pulled together.
+
+### 10.2 Berchtesgaden, `terrain_size = 2048`
+
+Release build, the whole run of `road-analysis` (log `/var/tmp/naves-t5/ra-2048.log`), against the numbers at
+`e84cb2f`:
+
+| Finding | Before | The height solve |
+|---|---|---|
+| `road_grade` | 1079 (751 bends, 328 grades) | **10** (5 grades, 5 bends; all within 40 m of the crossing at (4689, 7321)) |
+| `road_misses_terrain` | 4625 (1158 over 0.5 m, 136 over 2 m, largest 10.4 m) | **4323** (1210 over 0.5 m, 174 over 2 m, 12 over 5 m, largest 7.49 m) |
+| `road_conflict` | 1025 | 896 |
+| `road_not_drivable` | 208 | 190 |
+| `road_gap` | 343 | 342 |
+| `join_without_junction` | 65 | 65 |
+| `junction_too_steep` | 8 | 0 |
+| `bridge_clearance` | 1 | 1 |
+
+The clearances of the four bridges over roads (reached, of 4.5 m): (4689, 7321) 4.11 m (before the clearance solve
+0.93 m), (7995, 7320) 4.50 m (-6.15 m), (2347, 6546) 4.50 m (-1.66 m), (5101, 7913) 4.50 m (-2.07 m). The first is the
+Silbergstrasse crossing, where a deck and the road below are held by one junction, and the one finding of
+`bridge_clearance`. Other numbers: `path_too_steep` 170 (169), `road_in_water` 29 (31), `earthworks_capped` 68 (83),
+`road_over_water` 2 (3).
+
+Where the count is worse: the pieces that miss the terrain by more than 0.5 m are 1210 against 1158 and those by more
+than 2 m 174 against 136, while the total and the largest miss (7.49 m against 10.4 m) fall. Roads that are not tied
+any more (the ground does not let them, see 10.3) are a candidate cause; this is not analysed here.
+
+Time and size, the same machine:
+
+| | Before (`ra.log` of fix 2) | The height solve |
+|---|---|---|
+| placement of the roads (`plan_roads`) | 1875.8 s, 2 rounds | **823.5 s, 1 round** |
+| the whole run | 1919.4 s | 860.6 s |
+| the height solve (model, both solves, reading), once | not measured (a part of 1876 s) | **4.0 s** |
+| peak memory | 1.30 GB | 1.31 GB |
+
+The second placement round is gone because the dips are different: 357 found in the first round, none to bridge, where
+545 were found and 8 (6 asphalt 3, 2 streets; 8.1 to 16.2 m deep) were bridged. The roads now follow the ground, so
+fewer stand more than 3 m above it. Whether the 8 are filled where they were bridged is for the game to show.
+
+The problem (the same run, the final network):
+
+| phase | unknowns | rows | status | iterations | solve |
+|---|---|---|---|---|---|
+| A (without the clearance) | 97 615 | 200 117 | Solved | 17 | 0.85 s |
+| B (with the 4 rows (C) and the pins) | 97 619 | 200 133 | Solved | 19 | 0.96 s |
+
+Of rows (N): 1 004 518 close pairs, 6 795 of them mutually nearest, 4 133 rows made. The solve is exactly the one the
+build made (the example runs it again with a solver that reports; the profiles are equal).
+
+### 10.3 What the old tests showed
+
+Per old test the scenario was kept, ported or dropped (the commit lists them). Two scenarios come out worse than they
+did and are by design of the spec: two legs 20 m apart on a 20 degree flank (7.3 m of ground between them) were pulled
+to within 0.5 m of each other by settling, and now keep their own heights (7.28 m apart) because the ground is further
+apart than a cell can hold; two legs 30 m apart on a 35 degree flank were within 10.6 m (and 0.5), now 21 m, the
+ground's. And a side road that ends on a through road in a dip its vertical radius cannot follow: the side road ended
+within 1 m of the ground when the junction's height was given and the through road broke its radius to reach it; now
+the radius is kept and the end is 1.92 m off the ground (the through road would be 2.77 m). The terrain shaping and the
+`road_misses_terrain` finding show what those cost.

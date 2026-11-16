@@ -122,8 +122,9 @@ Every line names the rule and a position in map metres. The same findings, with 
 asphalt and streets; 40 % on gravel tracks, a car at the top of its range; 50 % on dirt tracks, a 4WD; estimates, not
 driven in the game)
 or more than 20 % tilted across. Between the family's aim and that limit it is amber: steep or tilted, but still
-drivable. A road gives way to a steeper grade where holding its aim would put it more than 4 m above or below the
-ground; that is why a road on a steep hillside can be amber for a long stretch. A road can be too steep because the real road is
+drivable. A road is steeper than its family's aim where the ground is steeper (it follows the ground within the limit
+of its family, nine tenths of what vehicles manage); that is why a road on a steep hillside can be amber for a long
+stretch. A road can be too steep because the real road is
 steep and the map is small (a horizontal scale below 1 steepens everything): raise `[scale] horizontal`, or accept the
 finding. `road_misses_terrain` and a road
 that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
@@ -141,7 +142,8 @@ a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 need
 
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
-each other (which the build does) was not enough, for instance because a third junction holds one of them. The
+each other (which the build does, as far as it takes) was not enough, for instance because a roundabout's plane holds
+one of them, or a bridge deck that has to clear a road holds the other. The
 position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
 the finding: the road between them is then steeper than its limit and shows as `road_grade`.
 
@@ -166,8 +168,8 @@ is how far the road stands above the ground. Look at it in the game or the map: 
 A bridge crosses another road without a shared node and its deck could not be lifted to 4.5 m above that road
 (measured from the road's surface to the underside of the deck). The usual cause: the bridge starts at a junction that
 also holds the road below (the crossing lies within a few metres of the junction), so lifting the junction would lift
-the road below with it; the build never lifts the road below, so the bridge stays. Others: the junctions on the
-bridge's road may rise at most 10 m above the ground for a bridge, or the grade limits stop the approaches. The
+the road below with it; the build never lifts the road below, so the bridge stays. Another cause: the grade limits
+and the vertical radius stop the approaches from rising as far as the deck needs. The
 position is where the two lines cross. Move the junction away from the crossing in the data, or accept it.
 
 **`bridge model ...: its Geometry LOD cannot be read ...`**

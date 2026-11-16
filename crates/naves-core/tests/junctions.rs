@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The junctions of a placed network, their heights from the ground, and the repair.
+//! The junctions of a placed network, their heights from the ground, and the links between them.
 
 #![expect(
     clippy::unwrap_used,
@@ -16,8 +16,7 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{
-    JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, MAX_MOVE_M, find_junctions,
-    ground_median, raise_floors, repair,
+    JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, find_junctions, ground_median,
 };
 use naves_core::limits::{CROSS_FALL_AIM, grade_ceiling};
 use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
@@ -227,30 +226,6 @@ fn two_junctions(length: f64, ceiling: f64, g0: f64, g1: f64, r0: u8, r1: u8) ->
     }
 }
 
-/// Three city junctions in a ring of links of `length` metres.
-fn ring_of_three(length: f64, ceiling: f64, grounds: [f64; 3]) -> Junctions {
-    Junctions {
-        rings: Vec::new(),
-        points: grounds
-            .iter()
-            .zip([0.0, 1.0, 2.0])
-            .map(|(ground, i)| junction((i * length, 0.0), *ground, 4))
-            .collect(),
-        links: [(0, 1), (1, 2), (0, 2)]
-            .into_iter()
-            .map(|(a, b)| Link {
-                a,
-                b,
-                length,
-                ceiling,
-                a_at: (0.0, 0.0),
-                b_at: (length, 0.0),
-            })
-            .collect(),
-        unresolved: Vec::new(),
-    }
-}
-
 #[test]
 fn the_median_ignores_one_wild_sample() {
     // flat at 100 with one vertex at 500 inside the circle
@@ -379,28 +354,6 @@ fn a_chain_end_on_another_road_without_a_crossing_is_a_junction() {
 }
 
 #[test]
-fn two_junctions_too_close_for_their_ground_move_toward_each_other() {
-    // two junctions 10 m of city road apart (ceiling 0.27), ground 100 and 108
-    let mut j = two_junctions(10.0, 0.27, 100.0, 108.0, /* ranks */ 4, 4);
-    repair(&mut j);
-    let rise = (j.points[1].height - j.points[0].height).abs();
-    assert!(rise <= 0.27 * 10.0 + 0.01);
-    assert_eq!(j.unresolved.len(), 0);
-    // equal rank: both moved by the same amount
-    assert!(((j.points[0].height - 100.0) - (108.0 - j.points[1].height)).abs() < 0.01);
-}
-
-#[test]
-fn the_junction_on_the_more_important_road_moves_less() {
-    // 4 m of ground over 10 m of road (the cap of 3 m is not reached)
-    let mut j = two_junctions(
-        10.0, 0.27, 100.0, 104.0, /* asf1 */ 6, /* mud */ 1,
-    );
-    repair(&mut j);
-    assert!((j.points[0].height - 100.0).abs() < (104.0 - j.points[1].height).abs() / 16.0);
-}
-
-#[test]
 fn junctions_three_metres_apart_are_one() {
     let (net, graph) = two_side_roads_meeting_a_road_at(/* stations */ 50.0, 52.5);
     let hm = terrain(128, 3.125, |_, _| 100.0);
@@ -431,35 +384,6 @@ fn the_result_does_not_depend_on_the_order_of_the_roads() {
 }
 
 #[test]
-fn a_link_that_cannot_be_repaired_is_reported() {
-    // three junctions in a ring of 1 m links with grounds 100, 120, 140: cannot converge to within the ceiling
-    // on all three unless they meet; after 50 rounds either all are legal or the rest is listed
-    let mut j = ring_of_three(1.0, 0.27, [100.0, 120.0, 140.0]);
-    repair(&mut j);
-    for (i, link) in j.links.iter().enumerate() {
-        let rise = (j.points[link.a].height - j.points[link.b].height).abs();
-        assert!(rise <= link.ceiling * link.length + 0.01 || j.unresolved.contains(&i));
-    }
-}
-
-#[test]
-fn a_link_that_is_still_over_after_the_rounds_is_listed() {
-    // a long ring edge has no room: 3 junctions, 20 m links would be fine, a 0 m ceiling never is
-    let mut j = ring_of_three(10.0, 0.0, [100.0, 120.0, 140.0]);
-    repair(&mut j);
-    let over: Vec<usize> = j
-        .links
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| {
-            (j.points[l.a].height - j.points[l.b].height).abs() > l.ceiling * l.length + 0.01
-        })
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(j.unresolved, over);
-}
-
-#[test]
 fn at_finds_the_nearest_junction_whose_patch_holds_the_point() {
     let mut j = two_junctions(6.0, 0.27, 100.0, 100.0, 4, 4);
     j.points[0].patch_m = 5.0;
@@ -470,53 +394,10 @@ fn at_finds_the_nearest_junction_whose_patch_holds_the_point() {
 }
 
 #[test]
-fn a_link_with_a_negative_ceiling_is_unresolved_and_named() {
-    // no height difference satisfies a ceiling below zero; the sound link next to it is not blamed
-    let mut j = Junctions {
-        rings: Vec::new(),
-        points: vec![
-            junction((0.0, 0.0), 100.0, 4),
-            junction((10.0, 0.0), 100.0, 4),
-            junction((100.0, 0.0), 100.0, 4),
-            junction((110.0, 0.0), 100.0, 4),
-        ],
-        links: vec![
-            Link {
-                a: 0,
-                b: 1,
-                length: 10.0,
-                ceiling: 0.27,
-                a_at: (0.0, 0.0),
-                b_at: (0.0, 0.0),
-            },
-            Link {
-                a: 2,
-                b: 3,
-                length: 10.0,
-                ceiling: -1.0,
-                a_at: (0.0, 0.0),
-                b_at: (0.0, 0.0),
-            },
-        ],
-        unresolved: Vec::new(),
-    };
-    repair(&mut j);
-    assert_eq!(j.unresolved, vec![1]);
-}
-
-#[test]
 fn no_roads_have_no_junctions() {
     let hm = terrain(16, 2.0, |_, _| 100.0);
     let j = find_junctions(&PlacedNetwork::default(), &RoadGraph::default(), &hm);
     assert_eq!(j, Junctions::default());
-}
-
-#[test]
-fn a_link_of_no_length_repairs_without_nan() {
-    let mut j = two_junctions(0.0, 0.27, 100.0, 105.0, 4, 4);
-    repair(&mut j);
-    assert!(j.points.iter().all(|p| p.height.is_finite()), "{j:?}");
-    assert!((j.points[0].height - j.points[1].height).abs() < 0.01);
 }
 
 #[test]
@@ -623,29 +504,6 @@ fn a_junction_between_two_joints_holds_the_nearer_one() {
     let spans: Vec<f64> = j.links.iter().map(|l| l.length).collect();
     assert!(spans.iter().any(|s| (s - 100.0).abs() < 1e-6), "{spans:?}");
     assert_links_are_the_spans(&net, &j);
-}
-
-#[test]
-fn a_junction_never_moves_more_than_three_metres_from_its_ground() {
-    // 10 m of road between grounds 20 m apart: 3 m each is not enough, so both stop at 3 m and the link is
-    // reported
-    let mut j = two_junctions(10.0, 0.27, 100.0, 120.0, 4, 4);
-    repair(&mut j);
-    assert!((j.points[0].height - 103.0).abs() < 1e-9, "{:?}", j.points);
-    assert!((j.points[1].height - 117.0).abs() < 1e-9, "{:?}", j.points);
-    assert_eq!(j.unresolved, vec![0]);
-}
-
-#[test]
-fn a_link_that_needs_less_than_the_cap_is_still_repaired() {
-    let mut j = two_junctions(10.0, 0.27, 100.0, 106.0, 4, 4);
-    repair(&mut j);
-    assert_eq!(j.unresolved.len(), 0);
-    assert!(
-        j.points
-            .iter()
-            .all(|p| (p.height - p.ground).abs() <= MAX_MOVE_M)
-    );
 }
 
 /// A chain of `count` pieces of `length` metres from `from` along `direction` (a unit vector), as one stretch.
@@ -938,7 +796,7 @@ fn joining_roads_end_on_the_ring_at_the_plane_height() {
     let want = plane.height_at(node.at);
     assert!((node.height - want).abs() < 1e-6, "{} {want}", node.height);
     let side = naves_core::sideslope::side_slopes(&net, &base);
-    let profiles = naves_core::profile::solve_profiles(&net, &base, &junctions, &side);
+    let profiles = naves_core::profile::solve_profiles(&net, &base, &junctions, &side).unwrap();
     // the ring follows the plane
     let ring_strip = profiles
         .strips
@@ -963,7 +821,15 @@ fn joining_roads_end_on_the_ring_at_the_plane_height() {
         d(a).total_cmp(&d(b))
     });
     let end = end.unwrap();
-    assert!((end.2 - (want - 0.05)).abs() < 0.02, "{} {want}", end.2);
+    // on the plane at the place where the street ends (the solve puts the joint on the plane there; the plane's
+    // height at the junction's point, 0.01 m away on this slope, was the reference when the junction's height held
+    // the joint)
+    let want_end = plane.height_at((end.0, end.1));
+    assert!(
+        (end.2 - (want_end - 0.05)).abs() < 0.02,
+        "{} {want_end}",
+        end.2
+    );
 }
 
 #[test]
@@ -999,64 +865,6 @@ fn a_large_ring_has_a_plane_over_its_band_only() {
     );
     // fitted over the band only, on ground that is itself a plane
     assert!((plane.gradient.0 - 0.04).abs() < 1e-3 && (plane.gradient.1 - 0.02).abs() < 1e-3);
-}
-
-#[test]
-fn a_floor_lifts_a_junction_past_the_repair_limit_and_its_neighbour_follows() {
-    // 100 m of road at a ceiling of 8 %: a junction raised to 110 m needs its neighbour at 102 m
-    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut j, &[(0, 110.0)], &[]);
-    assert!(
-        (j.points[0].height - 110.0).abs() < 1e-9,
-        "{}",
-        j.points[0].height
-    );
-    assert!(j.points[1].height >= 102.0 - 1e-6, "{}", j.points[1].height);
-    assert!(j.points[1].height <= 102.0 + 0.01, "{}", j.points[1].height);
-    assert_eq!(j.unresolved.len(), 0);
-}
-
-#[test]
-fn a_floor_below_the_height_changes_nothing_and_a_neighbour_is_never_lowered() {
-    let mut j = two_junctions(100.0, 0.08, 100.0, 105.0, 4, 4);
-    let before = j.clone();
-    raise_floors(&mut j, &[(0, 90.0)], &[]);
-    assert_eq!(j.points, before.points);
-}
-
-#[test]
-fn a_floor_that_finds_no_junction_is_ignored() {
-    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    let before = j.clone();
-    raise_floors(&mut j, &[(7, 200.0)], &[]);
-    assert_eq!(j, before);
-}
-
-#[test]
-fn a_floor_never_lifts_a_junction_more_than_ten_metres_above_its_ground() {
-    use naves_core::junctions::MAX_RAISE_M;
-    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut j, &[(0, 150.0)], &[]);
-    assert!((j.points[0].height - (100.0 + MAX_RAISE_M)).abs() < 1e-9);
-    // and its neighbour needs only what the capped height asks of it
-    assert!(j.points[1].height <= 100.0 + MAX_RAISE_M);
-}
-
-#[test]
-fn a_frozen_junction_gets_no_floor_and_carries_none_on() {
-    // three junctions in a row: a floor at 0 would carry through 1 to 2; with 1 frozen it stops
-    let mut j = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut j, &[(0, 110.0)], &[1]);
-    assert!((j.points[0].height - 110.0).abs() < 1e-9);
-    assert!(
-        (j.points[1].height - 100.0).abs() < 1e-9,
-        "{}",
-        j.points[1].height
-    );
-    // a floor on the frozen junction itself is ignored
-    let mut k = two_junctions(100.0, 0.08, 100.0, 100.0, 4, 4);
-    raise_floors(&mut k, &[(1, 110.0)], &[1]);
-    assert!((k.points[1].height - 100.0).abs() < 1e-9);
 }
 
 /// A through road of `family` east-west (`vertical` false) or north-south at 200 m, with a side road of the same
@@ -1208,23 +1016,6 @@ fn a_join_of_ending_roads_stays_level() {
 }
 
 #[test]
-fn a_link_measures_the_rise_between_its_held_joints() {
-    // both centres are level at 100 m, but the first is tilted 0.2 along x and its joint lies 5 m east of its
-    // centre: the joints are 1 m apart in height over 5 m of road, 0.5 m over a ceiling of 0.1
-    let mut j = two_junctions(5.0, 0.1, 100.0, 100.0, 4, 4);
-    j.points[0].gradient = (0.2, 0.0);
-    j.links[0].a_at = (5.0, 0.0);
-    j.links[0].b_at = (5.0, 0.0);
-    repair(&mut j);
-    assert!(j.unresolved.is_empty(), "{j:?}");
-    let rise = (j.points[0].height_at((5.0, 0.0)) - j.points[1].height_at((5.0, 0.0))).abs();
-    assert!((rise - 0.5).abs() < 2e-3, "rise {rise}");
-    // the tilt did not change: only the height moved
-    assert_eq!(j.points[0].gradient, (0.2, 0.0));
-    assert!(j.points[0].height < 100.0 && j.points[1].height > 100.0 - 1e-9);
-}
-
-#[test]
 fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() {
     // the Grav road runs east-west and lies on top; the Mud road ends under it
     let plane = terrain(256, 3.125, |x, _| 100.0 + 0.05 * x);
@@ -1238,49 +1029,4 @@ fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() 
     let small = terrain(66, 3.125, |x, _| 100.0 + 0.05 * x);
     let j = find_junctions(&net, &graph, &small);
     assert_eq!(j.points[0].gradient, (0.0, 0.0));
-}
-
-/// Two junctions on a 100 m link; the first lies on a roundabout.
-fn ring_and_plain(ring_height: f64, plain_ground: f64) -> Junctions {
-    let mut j = two_junctions(100.0, 0.08, ring_height, plain_ground, 4, 4);
-    j.points[0].stretches.insert("ring".to_string());
-    j.rings.push(naves_core::junctions::RingPlane {
-        at: (0.0, 0.0),
-        radius: 20.0,
-        inner_radius: 15.0,
-        height: ring_height,
-        gradient: (0.0, 0.0),
-        rank: 4,
-        stretches: ["ring".to_string()].into_iter().collect(),
-    });
-    j
-}
-
-#[test]
-fn a_junction_on_a_roundabout_is_not_lifted_by_a_floor() {
-    let mut j = ring_and_plain(100.0, 100.0);
-    raise_floors(&mut j, &[(0, 110.0)], &[]);
-    assert!(
-        (j.points[0].height - 100.0).abs() < 1e-9,
-        "{}",
-        j.points[0].height
-    );
-    assert!(
-        (j.points[1].height - 100.0).abs() < 1e-9,
-        "no floor is carried on from the ring: {}",
-        j.points[1].height
-    );
-}
-
-#[test]
-fn a_junction_on_a_roundabout_is_not_moved_by_the_repair() {
-    // 100 m at 8 % allow 8 m; the ground differs by 12 m
-    let mut j = ring_and_plain(100.0, 112.0);
-    repair(&mut j);
-    assert!(
-        (j.points[0].height - 100.0).abs() < 1e-9,
-        "{}",
-        j.points[0].height
-    );
-    assert!(j.points[1].height < 112.0, "the other end takes it all");
 }

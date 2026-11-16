@@ -295,10 +295,32 @@ fn row_matrices(problem: &Problem) -> (Triplets, Vec<f64>, Vec<SupportedConeT<f6
 /// [`QpError::NotSolved`] when the solver does not report a solution (rows that contradict each other,
 /// an unbounded cost, the iteration limit or a numerical failure).
 pub fn solve(problem: &Problem) -> Result<Vec<f64>, QpError> {
+    solve_reported(problem).map(|(x, _)| x)
+}
+
+/// What the solver reported for a solution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolveReport {
+    /// The solver's status.
+    pub status: String,
+    /// The iterations it took.
+    pub iterations: u32,
+}
+
+/// [`solve`], with what the solver reported (for measuring).
+///
+/// # Errors
+///
+/// As [`solve`].
+pub fn solve_reported(problem: &Problem) -> Result<(Vec<f64>, SolveReport), QpError> {
     problem.validate()?;
     let unknowns = problem.unknowns;
     if unknowns == 0 {
-        return Ok(Vec::new());
+        let report = SolveReport {
+            status: format!("{:?}", SolverStatus::Solved),
+            iterations: 0,
+        };
+        return Ok((Vec::new(), report));
     }
     let (quadratic, linear) = cost_matrices(problem);
     let (rows, bounds, cones) = row_matrices(problem);
@@ -331,7 +353,13 @@ pub fn solve(problem: &Problem) -> Result<Vec<f64>, QpError> {
         })?;
     solver.solve();
     match solver.solution.status {
-        SolverStatus::Solved | SolverStatus::AlmostSolved => Ok(solver.solution.x),
+        status @ (SolverStatus::Solved | SolverStatus::AlmostSolved) => {
+            let report = SolveReport {
+                status: format!("{status:?}"),
+                iterations: solver.solution.iterations,
+            };
+            Ok((solver.solution.x, report))
+        }
         status => Err(QpError::NotSolved {
             status: format!("{status:?}"),
         }),

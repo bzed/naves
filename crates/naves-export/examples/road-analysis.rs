@@ -277,7 +277,7 @@ fn main() {
         mut profiles,
     } = plan.placed;
     if std::env::var("NO_JUNCTIONS").is_ok() {
-        profiles = solve_profiles(&net, &base, &Junctions::default(), &side);
+        profiles = solve_profiles(&net, &base, &Junctions::default(), &side).expect("solve");
     }
     let t_place = t0.elapsed();
     let t_profiles = t_place;
@@ -293,20 +293,69 @@ fn main() {
         naves_core::roadnet::over_crossings(&graph).len(),
         profiles.clearances.len()
     );
+    // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
+    let thickness = |s: &naves_core::roadnet::Stretch| {
+        naves_core::roadplace::bridge_for(&catalog, s.family).and_then(|(m, scale, _)| {
+            (m.thickness_source != naves_core::catalog::ThicknessSource::Unknown)
+                .then_some(m.deck_thickness * scale)
+        })
+    };
     {
         // the same placement with the junctions at the ground, as it was without the clearance
         let plain = naves_core::junctions::find_junctions(&net, &graph, &base);
-        let before = solve_profiles(&net, &base, &plain, &side);
-        let thickness = |s: &naves_core::roadnet::Stretch| {
-            naves_core::roadplace::bridge_for(&catalog, s.family)
-                .map(|(m, scale, _)| m.deck_thickness * scale)
-        };
+        let before = solve_profiles(&net, &base, &plain, &side).expect("profiles");
         for c in naves_core::profile::measure_clearances(&net, &before.strips, &graph, &thickness) {
             println!(
                 "CLEARANCE_BEFORE at ({:.0}, {:.0}) reached {:.2} m",
                 c.at.0, c.at.1, c.reached
             );
         }
+    }
+    {
+        // the height solve once more on the final network with a solver that reports each phase: the same
+        // problem as the build's, so the same result
+        let reports = std::cell::RefCell::new(Vec::new());
+        let solver = |p: &naves_core::qp::Problem| {
+            let started = Instant::now();
+            let out = naves_core::qp::solve_reported(p);
+            let (status, iterations) = match &out {
+                Ok((_, r)) => (r.status.clone(), r.iterations),
+                Err(e) => (e.to_string(), 0),
+            };
+            reports.borrow_mut().push((
+                p.unknowns,
+                p.rows.len(),
+                status,
+                iterations,
+                started.elapsed().as_secs_f64(),
+            ));
+            out.map(|(x, _)| x)
+        };
+        let found = naves_core::junctions::find_junctions(&net, &graph, &base);
+        let started = Instant::now();
+        let again = naves_core::profile::solve_clearing_with(
+            &net, &base, &found, &side, &graph, &thickness, &solver,
+        )
+        .expect("the height solve");
+        println!(
+            "HEIGHTSOLVE total {:.1} s (model, solves and reading); same profiles as the build's: {}",
+            started.elapsed().as_secs_f64(),
+            again.0 == profiles
+        );
+        for (phase, (unknowns, rows, status, iterations, seconds)) in
+            reports.borrow().iter().enumerate()
+        {
+            println!(
+                "HEIGHTSOLVE phase {} unknowns {unknowns} rows {rows} status {status} iterations {iterations} solve {seconds:.2} s",
+                ["A", "B"].get(phase).copied().unwrap_or("?")
+            );
+        }
+        let pairs =
+            naves_core::profile::nearby_pairs(&net, &base, &found, &graph).expect("the model");
+        println!(
+            "HEIGHTSOLVE nearby pairs: close {}, mutually nearest {}, rows {}",
+            pairs.close, pairs.mutual, pairs.rows
+        );
     }
     // for each bridge over a road: the stretches, and the joints of the chains of both within 60 m of the
     // crossing with the junction that holds them and its height before and after the clearance
@@ -2260,7 +2309,7 @@ fn main() {
         }
     }
 
-    // spans between two held joints that `ramp_targets` turns into a straight ramp at the first (aim) grade
+    // spans between two held joints that the per-chain solve of before the height solve turned into a straight ramp at the first (aim) grade
     // limit: by the lowest limit of the span (the rule before 2026-11-13's fix) and by the mean by length
     {
         let (mut old_n, mut old_len, mut new_n, mut new_len) = (0, 0.0, 0, 0.0);
@@ -2403,7 +2452,7 @@ fn main() {
                     w.map(|w| &w.tags)
                 );
             }
-            // the spans between two held joints: what the solver sees (profile.rs `ramp_targets`)
+            // the spans between two held joints (the per-chain solve of before the height solve treated each as a ramp)
             let held: Vec<usize> = holds
                 .iter()
                 .enumerate()

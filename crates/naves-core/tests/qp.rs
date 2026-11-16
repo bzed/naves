@@ -3,7 +3,7 @@
 
 //! The sparse quadratic program solver behind `qp::solve`.
 
-use naves_core::qp::{Problem, QpError, Row, solve};
+use naves_core::qp::{Problem, QpError, Row, solve, solve_reported};
 
 fn row(terms: &[(usize, f64)], lo: f64, hi: f64) -> Row {
     Row {
@@ -226,4 +226,22 @@ fn an_unknown_listed_twice_adds_up() {
         .push(row(&[(0, 1.0), (0, 1.0)], f64::NEG_INFINITY, 3.0));
     let x = solve(&p).unwrap();
     assert!(close(x[0], 1.5, 1e-6), "{x:?}");
+}
+
+#[test]
+fn a_solve_reports_its_status_and_iterations() {
+    let mut p = Problem::new(1);
+    p.add_square(1.0, &[(0, 1.0)], -3.0);
+    p.rows.push(row(&[(0, 1.0)], f64::NEG_INFINITY, 1.0));
+    let (x, report) = solve_reported(&p).unwrap();
+    assert_eq!(x, solve(&p).unwrap());
+    assert_eq!(report.status, "Solved");
+    assert!(
+        report.iterations > 0 && report.iterations < 200,
+        "{report:?}"
+    );
+    // nothing to solve is solved in no iteration
+    let (x, report) = solve_reported(&Problem::new(0)).unwrap();
+    assert_eq!(x, Vec::<f64>::new());
+    assert_eq!((report.status.as_str(), report.iterations), ("Solved", 0));
 }

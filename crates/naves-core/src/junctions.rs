@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Junctions, their heights from the ground, the links between them, and the repair.
+//! Junctions, their ground fit, and the links between them.
 //!
 //! A junction is a place where roads meet: a junction piece, a crossing where roads meet without a junction
-//! piece, or a chain end that lies on another road. Each gets one height, the median of the original ground
-//! around it, and a plane through that height that tilts along the through road with the slope of the ground
-//! ([`Junction::gradient`]); a link is the road between two neighbouring junctions, from the joint that holds one to the joint
-//! that holds the other. Where the ground of two junctions needs
-//! a steeper grade between them than their road may have, [`repair`] moves both toward each other by just
-//! enough, the one on the more important road less. The design is
-//! `docs/superpowers/specs/2026-11-13-road-heights-design.md`, section 4.
+//! piece, or a chain end that lies on another road. Each starts at the median of the original ground around it
+//! and a plane through that height that tilts along the through road with the slope of the ground
+//! ([`Junction::gradient`]): the ground fit, which is what the height solve ([`crate::profile::solve_clearing`])
+//! pulls the junction's height and tilt toward, and the height and tilt of a junction that holds no joint or lies
+//! on a ring. A link is the road between two neighbouring junctions, from the joint that holds one to the joint
+//! that holds the other; the solve reports the links it could not keep under their ceiling in
+//! [`Junctions::unresolved`]. The design is `docs/superpowers/specs/2026-11-13-road-heights-design.md`,
+//! section 4, and `docs/superpowers/specs/2026-11-16-height-solve-design.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,13 +36,6 @@ const TILT_STEP_M: f64 = 1.0;
 pub const JUNCTION_TILT_SHARE: f64 = 0.9;
 /// Junctions this close along a road are one.
 pub const MERGE_M: f64 = 3.0;
-/// Rounds of [`repair`].
-pub const REPAIR_ROUNDS: usize = 50;
-/// The most [`raise_floors`] lifts a junction above its ground median, in metres, however high the floor.
-pub const MAX_RAISE_M: f64 = 10.0;
-/// The most [`repair`] moves a junction from its ground median, in metres. A link that is still over its
-/// ceiling then is unresolved.
-pub const MAX_MOVE_M: f64 = 3.0;
 
 /// How far beyond a junction's patch a chain end or a junction piece may lie and still belong to the junction:
 /// the side ports of a junction piece lie as far from its centre as the patch reaches, and the centre of the
@@ -60,10 +54,6 @@ const PIECE_STATION_M: f64 = 4.0;
 const NEAR_CROSSING_M: f64 = 12.0;
 /// Chain ends on another road this close together share a junction.
 const END_CLUSTER_M: f64 = 6.0;
-/// What [`repair`] moves a link beyond its excess, so that it ends up under its ceiling.
-const REPAIR_MARGIN_M: f64 = 0.001;
-/// A link over its ceiling by no more than this counts as repaired.
-const REPAIR_TOLERANCE_M: f64 = 0.01;
 /// The shortest link, in metres.
 const MIN_LINK_M: f64 = 1.0;
 
@@ -90,7 +80,7 @@ pub struct Junction {
     pub kind: JunctionKind,
     /// Median of the original ground.
     pub ground: f64,
-    /// The height the roads get; `ground` until `repair` moves it.
+    /// The height the roads get: `ground` as found, the solved height after [`crate::profile::solve_clearing`].
     pub height: f64,
     /// Rank of the most important road meeting here.
     pub rank: u8,
@@ -261,8 +251,8 @@ pub struct Junctions {
     pub points: Vec<Junction>,
     /// The links, sorted by their ends and length.
     pub links: Vec<Link>,
-    /// Links still over their ceiling after `repair`, by index into `links`. From
-    /// [`crate::profile::solve_network`]: the links of the junctions that hold an end of a segment the solve could
+    /// Links still over their ceiling after the height solve, by index into `links`. From
+    /// [`crate::profile::solve_clearing`]: the links of the junctions that hold an end of a segment the solve could
     /// not keep under its ceiling.
     pub unresolved: Vec<usize>,
 }
@@ -762,8 +752,7 @@ fn find_root(parent: &[usize], mut i: usize) -> usize {
     i
 }
 
-/// The junctions of the network, each at the median of the original ground, with the links between them,
-/// repaired. Junctions are sorted by position (x, then y) and links by their ends and length, so the result
+/// The junctions of the network, each at the median of the original ground, with the links between them. Junctions are sorted by position (x, then y) and links by their ends and length, so the result
 /// does not depend on the order of the roads.
 #[must_use]
 pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) -> Junctions {
@@ -779,14 +768,13 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
         .collect();
     let mut junctions = merged(&lines, &raw, &raw_links(&lines, &raw), base, &rings);
     junctions.links = held_links(net, f64::from(base.cell_m), &junctions);
-    repair(&mut junctions);
     junctions
 }
 
 /// The links of the junctions as the roads hold them: along every chain, the road between two consecutive
-/// joints that are held (by [`chain_holds`], the rules `solve_profiles` uses) to different junctions. Its
-/// length is the length along the chain between the two joints, at least 1 m, so that a link that `repair`
-/// made climbable is climbable between the places where the heights are actually held. Sorted by ends and
+/// joints that are held (by [`chain_holds`], the rules the height solve uses) to different junctions. Its
+/// length is the length along the chain between the two joints, at least 1 m, so that the grade of a link
+/// is the grade between the places where the heights are actually held. Sorted by ends and
 /// length, which does not depend on the order of the roads.
 fn held_links(net: &PlacedNetwork, cell: f64, junctions: &Junctions) -> Vec<Link> {
     let mut out = Vec::new();
@@ -1098,153 +1086,6 @@ fn merged(
         links: out_links,
         unresolved: Vec::new(),
     }
-}
-
-/// Moves junctions toward each other where the grade between their ground heights is over the ceiling of
-/// the link between them.
-///
-/// [`REPAIR_ROUNDS`] rounds over the links in their stored order. A link over its ceiling by `excess` moves
-/// both ends by `excess` and a margin of 1 mm in all, shared by mobility `2^-rank`: the junction on the more
-/// important road moves less. No junction moves more than [`MAX_MOVE_M`] from its ground median. Links still over by more than 1 cm after the last round are listed in
-/// [`Junctions::unresolved`].
-pub fn repair(junctions: &mut Junctions) {
-    repair_above(junctions, &[], &[]);
-}
-
-/// `frozen` and the junctions on a roundabout: they lie on the ring's plane, which the ring's joints are
-/// pinned to, so they are never moved or lifted.
-fn with_rings(junctions: &Junctions, frozen: &[usize]) -> Vec<usize> {
-    let mut all = frozen.to_vec();
-    all.extend(
-        junctions
-            .points
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                junctions
-                    .rings
-                    .iter()
-                    .any(|ring| !ring.stretches.is_disjoint(&p.stretches))
-            })
-            .map(|(i, _)| i),
-    );
-    all.sort_unstable();
-    all.dedup();
-    all
-}
-
-/// [`repair`] with a lower bound per junction (by index; a missing or `-inf` one is none) that a junction is
-/// never moved below, and that lets it go above its ground by more than [`MAX_MOVE_M`].
-fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
-    let frozen = &with_rings(junctions, frozen);
-    let floor = |i: usize| floors.get(i).copied().unwrap_or(f64::NEG_INFINITY);
-    let mobility = |j: &Junction| 0.5_f64.powi(i32::from(j.rank));
-    let excess = |points: &[Junction], link: &Link| {
-        let rise = points
-            .get(link.a)
-            .zip(points.get(link.b))
-            .map(|(a, b)| (a.height_at(link.a_at) - b.height_at(link.b_at)).abs());
-        rise.map(|rise| rise - link.ceiling * link.length)
-    };
-    for _ in 0..REPAIR_ROUNDS {
-        for link in &junctions.links {
-            let Some(over) = excess(&junctions.points, link).filter(|e| *e > 0.0) else {
-                continue;
-            };
-            let Some((a, b)) = junctions
-                .points
-                .get(link.a)
-                .zip(junctions.points.get(link.b))
-                .map(|(a, b)| (mobility(a), mobility(b)))
-            else {
-                continue;
-            };
-            let moved = over + REPAIR_MARGIN_M;
-            let (share_a, share_b) = (moved * a / (a + b), moved * b / (a + b));
-            let a_is_higher = junctions
-                .points
-                .get(link.a)
-                .zip(junctions.points.get(link.b))
-                .is_some_and(|(pa, pb)| pa.height_at(link.a_at) > pb.height_at(link.b_at));
-            // the higher end goes down by its share, the lower goes up by its share
-            let sign = if a_is_higher { 1.0 } else { -1.0 };
-            for (index, delta) in [(link.a, -sign * share_a), (link.b, sign * share_b)] {
-                if frozen.contains(&index) {
-                    continue;
-                }
-                if let Some(p) = junctions.points.get_mut(index) {
-                    let low = (p.ground - MAX_MOVE_M).max(floor(index));
-                    let high = (p.ground + MAX_MOVE_M).max(floor(index));
-                    p.height = (p.height + delta).clamp(low, high);
-                }
-            }
-        }
-    }
-    junctions.unresolved = junctions
-        .links
-        .iter()
-        .enumerate()
-        .filter(|(_, link)| excess(&junctions.points, link).is_some_and(|e| e > REPAIR_TOLERANCE_M))
-        .map(|(i, _)| i)
-        .collect();
-}
-
-/// Lifts junctions to lower bounds: `floors` are indices into [`Junctions::points`] with the least height of
-/// each (an index out of range is ignored). A junction never goes down for a floor. The `frozen` junctions
-/// get no floor, carry none on to their neighbours and are not moved.
-///
-/// The floor of a junction goes on along the links as the lower bound of its neighbours, `ceiling * length`
-/// lower per link, so that a junction raised for a bridge pulls the junctions near it up as far as the grade
-/// limits need, beyond [`MAX_MOVE_M`] if it must. Then [`repair`] runs again with the floors as the lower end
-/// of what a junction may be moved to; a floor is the one bound that goes over the [`MAX_MOVE_M`] one, but never
-/// lifts a junction more than [`MAX_RAISE_M`] above its ground.
-pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)], frozen: &[usize]) {
-    let frozen = &with_rings(junctions, frozen);
-    let mut bound = vec![f64::NEG_INFINITY; junctions.points.len()];
-    let cap: Vec<f64> = junctions
-        .points
-        .iter()
-        .map(|p| p.ground + MAX_RAISE_M)
-        .collect();
-    for &(index, floor) in floors.iter().filter(|(i, _)| !frozen.contains(i)) {
-        let top = cap.get(index).copied().unwrap_or(f64::NEG_INFINITY);
-        if let Some(slot) = bound.get_mut(index) {
-            *slot = slot.max(floor.min(top));
-        }
-    }
-    if bound.iter().all(|b| *b == f64::NEG_INFINITY) {
-        return;
-    }
-    // along the links, each pass goes one link further
-    for _ in 0..junctions.points.len() {
-        let mut changed = false;
-        for link in &junctions.links {
-            let reach = link.ceiling * link.length;
-            for (from, to) in [(link.a, link.b), (link.b, link.a)] {
-                if frozen.contains(&from) || frozen.contains(&to) {
-                    continue;
-                }
-                let Some(carried) = bound.get(from).map(|b| b - reach) else {
-                    continue;
-                };
-                let top = cap.get(to).copied().unwrap_or(f64::NEG_INFINITY);
-                let carried = carried.min(top);
-                if let Some(slot) = bound.get_mut(to)
-                    && carried > *slot + 1e-9
-                {
-                    *slot = carried;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    for (point, floor) in junctions.points.iter_mut().zip(&bound) {
-        point.height = point.height.max(*floor);
-    }
-    repair_above(junctions, &bound, frozen);
 }
 
 impl Junctions {

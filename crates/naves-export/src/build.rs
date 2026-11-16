@@ -26,6 +26,7 @@ use naves_core::dem::DemError;
 use naves_core::heightmap::{Heightmap, HeightmapError};
 use naves_core::imagery::{ImageryError, TileImagery, load_imagery};
 use naves_core::objects::{OverridesError, piece_transform};
+use naves_core::profile::ProfileError;
 use naves_core::project::{ImageryFile, Project, ProjectError};
 use naves_core::roadplace::PlaceError;
 use naves_core::surface::SurfaceError;
@@ -81,6 +82,9 @@ pub enum BuildError {
     /// The roads cannot be placed.
     #[error(transparent)]
     Place(#[from] PlaceError),
+    /// The heights of the roads cannot be solved.
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
     /// The terrain cannot be shaped to the roads.
     #[error(transparent)]
     Conform(#[from] ConformError),

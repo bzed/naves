@@ -180,7 +180,7 @@ pub fn place_once(
     let net = place_network(graph, catalog)?;
     let junctions = find_junctions(&net, graph, base);
     let side = side_slopes(&net, base);
-    // a bridge over a road keeps its clearance: the junctions it needs may be higher than the ground's
+    // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     let borrowed: RefCell<BTreeMap<String, (ThicknessSource, f64)>> = RefCell::new(BTreeMap::new());
     let thickness = |s: &Stretch| {
         bridge_for(catalog, s.family).and_then(|(m, scale, _)| {
@@ -192,7 +192,7 @@ pub fn place_once(
             (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness * scale)
         })
     };
-    let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness);
+    let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness)?;
     let mut net = net;
     for (model, (source, value)) in borrowed.into_inner() {
         net.warnings.push(match source {

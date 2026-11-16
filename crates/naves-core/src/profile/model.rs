@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The heights of the whole road network as one quadratic program: phase A of
-//! `docs/superpowers/specs/2026-11-16-height-solve-design.md` (no clearance yet), with the rows (N) of roads that share terrain cells.
+//! The heights of the whole road network as one quadratic program
+//! (`docs/superpowers/specs/2026-11-16-height-solve-design.md`): the grades (G), the vertical bends (B), the
+//! junction tilts (T) and the rows (N) of roads that share terrain cells are the problem of phase A; the
+//! clearance under bridges over roads (C) is added to it in phase B ([`add_clearances`]).
 //!
 //! Every variable of every chain (see [`Chain`]) has a height that is an affine expression ([`Expr`]) in the
 //! unknowns: its own unknown (a free variable), the plane of the junction that holds it, the plane of a ring,
@@ -22,9 +24,10 @@ use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 use super::{
-    BRIDGE_CLEARANCE_M, CROSSING_REACH_M, Chain, ChainEnds, GradeExcess, GradeExcessKind,
-    MIN_STENCIL_M, ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins,
-    holds, joint_heights, meeting_bounds, ring_of, road_on_stretch, segment_grades, strip_of,
+    BRIDGE_CLEARANCE_M, Chain, ChainEnds, GradeExcess, GradeExcessKind, MIN_STENCIL_M, NearbyPairs,
+    ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins, holds,
+    joint_heights, meeting_bounds, nearest_segment, ring_of, road_on_stretch, segment_grades,
+    strip_of,
 };
 
 mod nearby;
@@ -156,6 +159,8 @@ pub(crate) struct Model {
     pub(crate) chains: Vec<ModelChain>,
     junctions: Vec<Option<JunctionUnknowns>>,
     pub(crate) problem: Problem,
+    /// The pairs of spots the rows (N) were made from.
+    pub(crate) pairs: NearbyPairs,
 }
 
 fn invalid(what: String) -> ProfileError {
@@ -629,7 +634,7 @@ pub(crate) fn build(
     }
     let unknowns = junction_unknowns(&mut builder, &drafts, junctions)?;
     let heights = height_exprs(&drafts, &free, &unknowns, junctions)?;
-    nearby::add(&mut builder, net, hm, &drafts, &heights, junctions, apart);
+    let pairs = nearby::add(&mut builder, net, hm, &drafts, &heights, junctions, apart);
     // the cost and the rows of each chain
     let mut chains = Vec::with_capacity(drafts.len());
     for (draft, chain_heights) in drafts.into_iter().zip(heights) {
@@ -672,6 +677,7 @@ pub(crate) fn build(
         chains,
         junctions: unknowns,
         problem: builder.problem,
+        pairs,
     })
 }
 
@@ -721,18 +727,6 @@ fn add_chain(
     for (_, _, change, run) in &bends {
         builder.bend(change, run / draft.radius);
     }
-}
-
-/// Solves the model with `solver` and reads the profiles and the junctions from the solution.
-pub(crate) fn solve(
-    model: &Model,
-    net: &PlacedNetwork,
-    junctions: &Junctions,
-    side: &[f64],
-    solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
-) -> Result<(Profiles, Junctions), ProfileError> {
-    let x = solve_x(model, solver)?;
-    read(model, net, junctions, side, &x)
 }
 
 /// The solution of the problem of `model` found by `solver`: one value per unknown.
@@ -886,42 +880,20 @@ struct Place {
     t: f64,
 }
 
-/// The place of the stretch `id` nearest `at`, within the half width of its road and [`CROSSING_REACH_M`]: what
-/// `surface_near` finds on the strips, so that the rows are made for what the clearance is measured on.
+/// The place of the stretch `id` nearest `at`: what `surface_near` finds on the strips (both go through
+/// [`nearest_segment`]), so that the rows are made for what the clearance is measured on.
 fn place_near(model: &Model, net: &PlacedNetwork, at: (f64, f64), id: &str) -> Option<Place> {
-    let mut best: Option<(f64, Place)> = None;
-    for (ci, mc) in model.chains.iter().enumerate() {
+    let segments = model.chains.iter().enumerate().flat_map(|(ci, mc)| {
         let half = net.roads.get(mc.first).map_or(0.0, |r| r.width / 2.0);
-        for (k, road) in mc.roads.iter().enumerate() {
+        mc.roads.iter().enumerate().filter_map(move |(k, road)| {
             if !net.roads.get(*road).is_some_and(|r| road_on_stretch(r, id)) {
-                continue;
+                return None;
             }
-            let (Some(from), Some(to)) = (mc.chain.joints.get(k), mc.chain.joints.get(k + 1))
-            else {
-                continue;
-            };
-            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-            let length2 = dx * dx + dy * dy;
-            let t = if length2 > 1e-12 {
-                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let off = (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy);
-            if off <= half + CROSSING_REACH_M && best.as_ref().is_none_or(|b| off < b.0) {
-                best = Some((
-                    off,
-                    Place {
-                        chain: ci,
-                        from: from.2,
-                        to: to.2,
-                        t,
-                    },
-                ));
-            }
-        }
-    }
-    best.map(|(_, place)| place)
+            let (from, to) = (mc.chain.joints.get(k)?, mc.chain.joints.get(k + 1)?);
+            Some(((ci, from.2, to.2), (from.0, from.1), (to.0, to.1), half))
+        })
+    });
+    nearest_segment(at, segments).map(|((chain, from, to), t)| Place { chain, from, to, t })
 }
 
 /// The height of the surface at `place`.

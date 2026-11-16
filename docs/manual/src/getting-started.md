@@ -148,30 +148,45 @@ heights overlap is it a conflict (`road_conflict`). The earthworks reach only as
 drive, a piece that hangs in the air or is buried, a path that is too steep to walk, a road in a lake. Every finding
 is a line in the build warnings and an entry in `build/report.json`, with the numbers of the network.
 
-**Where roads meet, they meet at one plane.** Every junction (a junction piece, a crossing without a junction
-piece, a road that ends on another) gets one height at its point: the median of the original ground within 10 m of it. Every
-road that reaches the junction is held to that height, the through road at the junction piece as much as the side
-road at its end, so a road no longer inherits the height error of the road it meets. Where two junctions are too close
-together for the difference of their ground heights (the steepest grade the road between them may have is nine tenths
-of what vehicles manage), they are moved toward each other by just enough, the one on the more important road less, but no junction moves more than 3 m from the ground. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece lies on its plane, which leans along the through road (below) and is level where there is none; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. Joints of a road less than a metre apart (the overlapped straights of a long road put two a few centimetres apart) are one height. What cannot be repaired within 3 m is the `junction_too_steep` finding.
+**The heights of all roads are solved as one problem.** Every height of every road, and the height and tilt of every
+junction, are found together, not road by road: the build looks for the heights that keep the roads close to the
+original ground and smooth, and keep every rule below. A rule that cannot be kept everywhere is broken as little as
+possible, and where it is broken it is a finding (see [troubleshooting](troubleshooting.md)). The result does not
+depend on the order of the roads, and a build gives the same heights every time.
 
-**Junctions on a slope lean with the road.** A junction is not level on a hillside: its plane tilts along the road that runs through it (a junction piece's own axis, the road on top at a crossing without a junction piece, the road a chain ends on) by the slope of the original ground under that road (measured along the road over 25 m either side), at most 8 percent, and has no fall across the road. The limit is the fall across that a road is aimed at: the junction's tilt is the fall across every road that meets the through road there, and those roads have no fall across of their own. The joints of a junction piece, the end of a side road and the ground patch under a crossing lie on that plane, so two junctions only a few metres apart on a slope are connected by a road that climbs instead of a step. A crossing where all roads end, and a junction on a roundabout, stay level (a roundabout has its own plane).
+**Where roads meet, they meet at one plane.** Every junction (a junction piece, a crossing without a junction
+piece, a road that ends on another) has one plane: its height at its point starts as the median of the original
+ground within 10 m of it, and it tilts along the road that runs through it (below). Every road that reaches the
+junction is held to that plane, the through road at the junction piece as much as the side road at its end, so a road
+no longer inherits the height error of the road it meets. A junction is pulled to the ground, not fixed to it: where
+two junctions are too close together for the difference of their ground heights (the steepest grade the road between
+them may have is nine tenths of what vehicles manage), they move toward each other, as far as it takes, and the roads
+around them with them. A road is held at one joint where it passes a junction, at its end where it ends there, and a junction piece lies on its plane, which leans along the through road (below) and is level where there is none; roads that merely pass near a junction (a parallel street, a road on a bridge above) are not held to it. The road between two junctions is measured from the joint that holds one height to the joint that holds the other. Joints of a road less than a metre apart (the overlapped straights of a long road put two a few centimetres apart) are one height. What cannot be kept at all is the `junction_too_steep` finding.
+
+**Junctions on a slope lean with the road.** A junction is not level on a hillside: its plane tilts along the road that runs through it (a junction piece's own axis, the road on top at a crossing without a junction piece, the road a chain ends on) by the slope of the original ground under that road (measured along the road over 25 m either side), at most 8 percent, and has no fall across the road. The limit is the fall across that a road is aimed at: the junction's tilt is the fall across every road that meets the through road there, and those roads have no fall across of their own. The tilt, like the height, is pulled toward the ground's and not fixed: where the roads around a junction need it, it is flatter. The joints of a junction piece, the end of a side road and the ground patch under a crossing lie on that plane, so two junctions only a few metres apart on a slope are connected by a road that climbs instead of a step. A crossing where all roads end, and a junction on a roundabout, stay level (a roundabout has its own plane, which the solve does not change).
 
 Between a free end and a junction a road is at most **6 % steep** (asphalt and streets; gravel and dirt tracks keep their
 own limit, so a steep track is not lifted out of the ground, and between two junction heights the road's own grade limits
 apply), and gentler in a tight bend: the inner edge of a bend is
 steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
 
-A road keeps to its family's grade where it can. Where holding it would put the road more than **4 m above or below
-the ground**, the road gives way and becomes steeper, up to nine tenths of what vehicles manage; it is then amber in
-the Drivable layer, not red.
+**A road follows the ground, smoothly, within its limits.** A road keeps to its family's grade (its aim) where the
+ground lets it. Where the ground asks for more, the road becomes steeper than its aim, the more the steeper the ground
+is, but not steeper than the limit of its family, nine tenths of what vehicles manage, unless nothing else is possible;
+it is then amber in the Drivable layer, not red. The grade of a road may not change faster than the vertical radius
+of its family allows (600 m on asphalt 1 down to 60 m on a dirt track), and a bridge deck is level, so the road
+before and after it bends into it within the same radius. Where nothing else is possible, the limit is broken as
+little as possible and `road_grade` says where.
 
 The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map at `terrain_size = 1024`, and never less than 4 m, see [the grid](project-file.md#grid)), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,
-streets side by side, the arms of a junction) cannot differ in height, so the build brings them to one height before
-it shapes the terrain, moving the less important road more and no road more than 5 m from the terrain. Where the
-ground between two roads is too steep for that, the terrain under one of them is still wrong; those places are the
-`road_misses_terrain` and `road_not_drivable` findings that remain.
+streets side by side) cannot differ in height, so the solve ties them to one height before the terrain is shaped,
+side by side: each spot of a road with the nearest spot of the other. Beyond that distance two roads may differ by the
+step one cell can hold. **Roads are tied only where the ground lets them:** where the original ground under two
+roads side by side differs by more than that step and a metre (a hairpin on a steep flank), they keep their own
+heights, and the terrain under one of them is still wrong; those places are the `road_misses_terrain` and
+`road_not_drivable` findings that remain. Roads that meet at a junction, or that cross as a bridge over a road, are
+not tied to each other there.
 
 **What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM
@@ -240,9 +255,7 @@ follows the road: it starts where the road ends, with the road's heading.
 
 **A bridge over a road keeps its clearance.** Where a road tagged as a bridge crosses another road without a shared
 node, the underside of the deck keeps **4.5 m** from the surface of the road below. The road below keeps its height
-and is never lowered; the terrain under the bridge is shaped for it. The deck's thickness is measured from the bridge model's Geometry LOD (the lowest vertex of the model within 4 m below the deck; what hangs lower, such as piers, is not the deck). Every bridge model has its own thickness (stone, wooden and metal bridges differ). A model whose Geometry LOD cannot be read takes the thickest deck measured among the models of its type (stone, wood, metal), else the thickest of all, and the build warns with the model's name; if no bridge model can be read, the clearance is not checked and the build says so. The bridge, its approaches and the junctions near it rise as far as needed: the bridge's ends and
-the junctions on the road beside it get a lower bound (a junction rises at most 10 m above the ground for it), and the
-profile solve respects the bound within the road's grade limits. Where 4.5 m cannot be reached within the limits, the
+and is never lowered; the terrain under the bridge is shaped for it. The deck's thickness is measured from the bridge model's Geometry LOD (the lowest vertex of the model within 4 m below the deck; what hangs lower, such as piers, is not the deck). Every bridge model has its own thickness (stone, wooden and metal bridges differ). A model whose Geometry LOD cannot be read takes the thickest deck measured among the models of its type (stone, wood, metal), else the thickest of all, and the build warns with the model's name; if no bridge model can be read, the clearance is not checked and the build says so. The bridge, its approaches and the junctions near it rise as far as needed: the solve holds the deck at least that high above the road below, and the approaches and the junctions on the road beside the bridge rise as far as the grade limits and the vertical radius ask. Where 4.5 m cannot be reached within the limits, the
 finding is `bridge_clearance`, with the clearance reached. Crossings that are not tagged as a bridge (and tunnels) are
 not treated like this.
 

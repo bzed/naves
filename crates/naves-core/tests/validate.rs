@@ -551,7 +551,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
         found[0].message,
         "Junctions too close for their heights: 12.0 m over 50 m"
     );
-    // a repaired junction set makes none
+    // a junction set without unresolved links makes none
     assert_eq!(
         only(
             Rule::JunctionTooSteep,
@@ -710,7 +710,7 @@ fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
         h: vec![100.0; 128 * 128],
     };
     let junctions = find_junctions(&n, &graph, &hm);
-    let profiles = solve_profiles(&n, &hm, &junctions, &side_slopes(&n, &hm));
+    let profiles = solve_profiles(&n, &hm, &junctions, &side_slopes(&n, &hm)).unwrap();
     let conformed = conform(&hm, &profiles.strips, &[]).unwrap();
     let v = check_roads(
         &n,
