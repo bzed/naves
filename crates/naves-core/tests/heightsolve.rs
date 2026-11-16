@@ -1358,3 +1358,96 @@ fn roads_that_meet_are_tied_again_further_out() {
         assert!((ha - hb).abs() <= 0.1 + 0.05, "y = {y}: {ha} {hb}");
     }
 }
+
+#[test]
+fn a_shallow_merge_does_not_flatten_the_road_it_joins() {
+    // no junction: a side road leaves the edge of a through road that descends 5.8 % and runs on beside it,
+    // slowly diverging, so that its first spots take the through road's height and lie within a footprint of
+    // through-road spots at other places on the slope
+    let hm = terrain(400, 2.0, |_, y| 100.0 - 0.058 * y);
+    let through = pieces("t", Family::Asf3, (300.0, 200.0), (300.0, 800.0), 25.0);
+    let side = pieces("s", Family::Mud, (303.5, 500.0), (316.0, 600.0), 10.0);
+    let net = network(vec![through, side]);
+    let p = solve_alone(&net, &hm);
+    // the pairs beyond 50 m still pull a little (0.6 m at most); tied near the meeting as well, the through road
+    // leaves the ground by 2 m
+    let worst = offsets(&p, 0, &hm)
+        .into_iter()
+        .fold(0.0_f64, |m, o| m.max(o.abs()));
+    assert!(worst <= 1.0, "the through road is {worst} m off the ground");
+}
+
+#[test]
+fn a_road_entering_a_tilted_roundabout_is_not_tied_to_its_plane() {
+    // a ring chain going north whose plane rises 3 % to the north, and a road that leaves it to the east on ground
+    // that falls 2 % in that direction: beside the ring, its spots lie within a footprint of ring spots at other
+    // places on the plane, and must not be tied to them
+    let hm = terrain(300, 4.0, |x, y| {
+        100.0 + 0.03 * (y - 150.0) - 0.02 * (x - 300.0)
+    });
+    let ring = pieces("r", Family::Asf3, (300.0, 100.0), (300.0, 200.0), 25.0);
+    let arm = pieces("a", Family::Asf3, (300.0, 150.0), (500.0, 150.0), 25.0);
+    let net = network(vec![ring, arm]);
+    let mut plane = level_ring("r", (300.0, 150.0), 100.0);
+    plane.gradient = (0.0, 0.03);
+    let mut join = ring_held(150.0, "a", "r");
+    join.at = (300.0, 150.0);
+    let junctions = Junctions {
+        points: vec![join],
+        rings: vec![plane],
+        ..Junctions::default()
+    };
+    let (p, _) = solve_network(&net, &hm, &junctions, &[]).unwrap();
+    for (joint, o) in p.strips[1].joints.iter().zip(offsets(&p, 1, &hm)) {
+        assert!(
+            o.abs() <= 0.1,
+            "the arm is {o} m off the ground at {joint:?}"
+        );
+    }
+}
+
+#[test]
+fn a_loop_that_leaves_and_re_enters_a_junction_is_not_tied_to_itself_there() {
+    // one chain that goes north, turns and comes back 10 m beside itself to the same junction: its two legs
+    // share cells, and the junction plane (held at both ends) tilts with the ground, 6 % to the east
+    let hm = terrain(300, 4.0, |x, _| 100.0 + 0.06 * (x - 300.0));
+    let mut chain = pieces("l", Family::Asf3, (300.0, 100.0), (300.0, 300.0), 25.0);
+    chain.extend(pieces(
+        "l",
+        Family::Asf3,
+        (300.0, 300.0),
+        (310.0, 300.0),
+        10.0,
+    ));
+    chain.extend(pieces(
+        "l",
+        Family::Asf3,
+        (310.0, 300.0),
+        (310.0, 100.0),
+        25.0,
+    ));
+    let net = network(vec![chain]);
+    let mut junction = ring_held(100.0, "l", "l");
+    junction.at = (305.0, 100.0);
+    junction.patch_m = 8.0;
+    junction.ground = 100.0 + 0.06 * 5.0;
+    junction.height = junction.ground;
+    junction.tilt_axis = Some((1.0, 0.0));
+    junction.tilt_cap = 0.08;
+    junction.gradient = (0.06, 0.0);
+    junction.stretches = std::iter::once("l".to_string()).collect();
+    let junctions = Junctions {
+        points: vec![junction],
+        ..Junctions::default()
+    };
+    let held = held_joints(
+        &net,
+        &solve_network(&net, &hm, &junctions, &[]).unwrap().0,
+        &hm,
+        &junctions,
+    );
+    assert_eq!(held.len(), 2, "{held:?}");
+    let (_, solved) = solve_network(&net, &hm, &junctions, &[]).unwrap();
+    let tilt = solved.points[0].gradient.0;
+    assert!((tilt - 0.06).abs() <= 0.01, "{tilt}");
+}
