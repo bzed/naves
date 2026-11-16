@@ -185,8 +185,10 @@ side by side: each spot of a road with the nearest spot of the other. Beyond tha
 step one cell can hold. **Roads are tied only where the ground lets them:** where the original ground under two
 roads side by side differs by more than that step and a metre (a hairpin on a steep flank), they keep their own
 heights, and the terrain under one of them is still wrong; those places are the `road_misses_terrain` and
-`road_not_drivable` findings that remain. Roads that meet at a junction, or that cross as a bridge over a road, are
-not tied to each other there.
+`road_not_drivable` findings that remain. Roads that meet at a junction at an angle are tied only near where they
+meet, and roads that leave a junction side by side are tied like any others. Only a bridge and the road it crosses
+(within 50 m of the crossing), and the two ends of a road that leaves and re-enters one junction, are never tied to
+each other.
 
 **What is not built:** tunnels (they need terrain holes; the road ends in end caps at the portals and the build
 says so), junctions at an angle other than 90° (the game has only right-angle junctions; the side road bends to the OSM

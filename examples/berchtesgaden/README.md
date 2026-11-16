@@ -105,42 +105,47 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 
 ## Results with roads on the 8.2 km map at 2048 (2026-11-16, height solve)
 
-The height solve (commit `55bcdd0`, release binary: all road heights and junctions are one quadratic program, see the
-manual's getting started) against the road-look results below (the old pipeline at `e82cc74`; both at
-`terrain_size = 2048`):
+The height solve (release binary: all road heights and junctions are one quadratic program, see the manual's getting
+started), measured with `road-analysis` against `road-analysis` of the old pipeline at `e82cc74` (both at
+`terrain_size = 2048`). The figures are of commit `982f1d6`, where a junction that holds the road below a bridge keeps
+its height; the time of `naves build` and the game check below were measured at `55bcdd0`, before that fix.
 
 | Finding | Before | Now |
 |---|---|---|
-| `road_grade` | 1079 (751 bends, 328 grades) | 10 (5 bends, 5 grades, all next to Silbergstraße; the grade is now measured against the hard ceiling of the road's family) |
-| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.4 m) | 4323 (1210, 174, largest 7.5 m) |
-| `road_conflict` | 1025 | 896 |
-| `road_not_drivable` | 208 | 190 |
+| `road_grade` | 1079 (751 bends, 328 grades) | 8 (8 bends, no grade; the grade is now measured against the hard ceiling of the road's family) |
+| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.4 m) | 4324 (1208, 174, largest 7.5 m) |
+| `road_conflict` | 1025 | 893 |
+| `road_not_drivable` | 208 | 189 |
 | `road_gap` | 343 | 342 |
 | `join_without_junction` | 65 | 65 |
 | `junction_too_steep` | 8 | 0 |
-| `bridge_clearance` | 1 | 1 (Silbergstraße: 4.11 m of 4.5 m; the other three bridges over roads reach 4.50 m) |
+| `bridge_clearance` | 1 | 2 (Silbergstraße: 0.93 m of 4.5 m, 0.50 m before; (5101, 7913): 3.98 m, 4.50 m before; the other two bridges over roads reach 4.50 m) |
 
-- **Time:** `naves build` 905 s (1775 s before; the roads are placed once, not twice). The road analysis
-  (`road-analysis`) takes 861 s (1919 s before). The height solve itself takes 4.0 s: 97 615 unknowns, 200 117 rows and
-  17 and 19 iterations for its two phases (the second adds the clearance under the bridges over roads).
-- **How well the road follows its grade aim and the ground:** 39.3 km of road is over its grade aim before, 38.7 km now.
-  Segments over the hard ceiling of their family: 413 before, 5 now. Road points more than 4 m off the original ground:
-  3070 before, 844 now.
+- **Time:** `naves build` 905 s at `55bcdd0` (1775 s before; the roads are placed once, not twice). The road analysis
+  (`road-analysis`) takes 862 s (1828 s before). The height solve itself takes 4.2 s: 97 615 unknowns, 200 117 rows and
+  17 iterations for the first phase, 97 619 unknowns, 200 146 rows and 19 iterations for the second (it adds the
+  clearance under the bridges over roads and holds the road below them).
+- **How well the road follows its grade aim and the ground** (measured at `55bcdd0`, before the fix): 39.3 km of road
+  is over its grade aim before, 38.7 km now. Segments over the hard ceiling of their family: 413 before, 5 now. Road
+  points more than 4 m off the original ground: 3070 before, 844 now.
 - **Bridges over dips:** 3 before, none now. The old profile held the aim and stood high over a dip; the new one is
   allowed to follow the ground into it within the limits of the road, so fewer places stand more than 3 m above the
-  ground and none is deep enough for a bridge (dips found: 545 before, 357 now).
-- **In the game** (DayZ 1.30.164289, headless client; the same 11 sites and camera as the previous check):
+  ground and none is deep enough for a bridge (dips found: 545 before, 349 now).
+- **In the game** (at `55bcdd0`, before the fix; DayZ 1.30.164289, headless client; the same 11 sites and camera as
+  the previous check):
   - Better: Silbergstraße (site 51; the steep ramp up to the bridge deck is gone and the road runs nearly level onto
     it) and the crossing that had a grade finding (site 37; the V-shaped notch where the dirt road dips into the main
-    road is gone).
+    road is gone). The Silbergstraße pictures show the state before the fix, where the junction and the road below
+    were lifted 4.9 m for the bridge; that junction now keeps its height and the bridge stays low.
   - Unchanged or slightly better: the Kehlsteinstraße bridge (50), the hairpin (7), the embankment (11), the
     junctions (28 and 29; at 29 the side arm runs further up the hill) and the slight-angle sites (1 and 2).
   - Unchanged: the wooden bridge (23): its deck end still sits slightly proud of the road.
   - At site 28 the truss bridge in the background is gone (a bridge over a dip that is not built any more); at site 14
     no bridge is seen in either picture, and the road follows the ground, with no hole and no wall.
 - **Still open:**
-  - Silbergstraße: the deck and the road below hang on one junction, so the clearance stays at 4.11 m, and the ten
-    `road_grade` findings (5 bends, 5 grades) are next to it.
+  - Silbergstraße: the bridge's road and the road below share junction 384, which keeps its height (322.80 m on
+    320.86 m of ground) with the road below, so the clearance stays at 0.93 m. The bridge at (5101, 7913) reaches
+    3.98 m: a junction that holds the road below there keeps its height too.
   - Larger terrain misses (more than 2 m: 142 before, 174 now): the legs of a hairpin on a steep flank are tied to one
     height only where their ground differs by less than the terrain cell allows plus 1 m, so they are not pulled
     together where it differs more.
