@@ -6242,8 +6242,8 @@ fn ring_report(
     }
 }
 
-/// For each bridge over a road: how far the deck rose above its ground and the road below sank below its ground at
-/// the crossing, the steepest grade of each of the two roads within 100 m of the crossing against its ceiling, the
+/// For each bridge over a road: the deck against the ground at each of its two ends, the road below against the
+/// ground at its own point at the crossing (the point the clearance is measured at), the steepest grade of each of the two roads within 100 m of the crossing against its ceiling, the
 /// `road_grade` excesses within 100 m and the deepest cut of either road below its original ground there.
 fn crossing_report(
     net: &naves_core::roadplace::PlacedNetwork,
@@ -6254,6 +6254,15 @@ fn crossing_report(
 ) {
     const NEAR_M: f64 = 100.0;
     let ceilings = naves_core::profile::segment_ceilings(net, base, junctions).expect("the model");
+    let at_meeting = ceilings
+        .iter()
+        .flat_map(|c| &c.segments)
+        .filter(|s| (s.ceiling - naves_core::profile::MEETING_GRADE).abs() < 1e-12)
+        .count();
+    println!(
+        "CEILINGS {} segments, {at_meeting} of them at the meeting grade",
+        ceilings.iter().map(|c| c.segments.len()).sum::<usize>()
+    );
     let ground = |x: f64, y: f64| f64::from(base.sample(x, y).height);
     let on = |strip: &RoadStrip, k: usize, id: &str| {
         strip
@@ -6261,7 +6270,8 @@ fn crossing_report(
             .get(k)
             .is_some_and(|r| net.roads[*r].slot.stretch.split('|').any(|p| p == id))
     };
-    // the strip, segment and fraction of the stretch `id` nearest `at`
+    // the strip, segment and fraction of the stretch `id` nearest `at`, within its half width and 5 m: the segment
+    // `measure_clearances` measures on
     let nearest = |id: &str, at: (f64, f64)| {
         let mut best: Option<(f64, usize, usize, f64)> = None;
         for (si, strip) in profiles.strips.iter().enumerate() {
@@ -6277,7 +6287,7 @@ fn crossing_report(
                     0.0
                 };
                 let off = (at.0 - w[0].0 - t * dx).hypot(at.1 - w[0].1 - t * dy);
-                if best.is_none_or(|b| off < b.0) {
+                if off <= strip.half_width + 5.0 && best.is_none_or(|b| off < b.0) {
                     best = Some((off, si, k, t));
                 }
             }
@@ -6295,11 +6305,16 @@ fn crossing_report(
             println!("CROSSING ({:.0}, {:.0}) not placed", c.at.0, c.at.1);
             continue;
         };
+        // the height of a strip at segment `k`, `t` of the way, and the ground under that point
         let surface = |si: usize, k: usize, t: f64| {
             let j = &profiles.strips[si].joints;
-            j[k].2 + t * (j[k + 1].2 - j[k].2)
+            let (x, y) = (
+                j[k].0 + t * (j[k + 1].0 - j[k].0),
+                j[k].1 + t * (j[k + 1].1 - j[k].1),
+            );
+            (j[k].2 + t * (j[k + 1].2 - j[k].2), ground(x, y), (x, y))
         };
-        // the deck's ground: the mean of the ground at the two ends of its run of bridge segments
+        // the deck's ends: the two ends of its run of bridge segments
         let strip = &profiles.strips[us];
         let (mut first, mut last) = (uk, uk);
         while first > 0 && strip.bridge.get(first - 1).copied().unwrap_or(false) {
@@ -6309,16 +6324,22 @@ fn crossing_report(
             last += 1;
         }
         let (a, b) = (strip.joints[first], strip.joints[last + 1]);
-        let deck_ground = (ground(a.0, a.1) + ground(b.0, b.1)) / 2.0;
-        let deck = surface(us, uk, ut);
-        let below = surface(ls, lk, lt);
+        let (ga, gb) = (ground(a.0, a.1), ground(b.0, b.1));
+        let (deck, _, _) = surface(us, uk, ut);
+        let (below, below_ground, at) = surface(ls, lk, lt);
         println!(
-            "CROSSING ({:.0}, {:.0}) deck {deck:.2} m on ground {deck_ground:.2} (rose {:.2} m), road below {below:.2} m on ground {:.2} (sank {:.2} m)",
+            "CROSSING ({:.0}, {:.0}) deck {deck:.2} m: {:+.2} m against the ground {ga:.2} at its end ({:.0}, {:.0}), {:+.2} m against {gb:.2} at ({:.0}, {:.0}); road below {below:.2} m at ({:.1}, {:.1}): {:+.2} m against its ground {below_ground:.2}",
             c.at.0,
             c.at.1,
-            deck - deck_ground,
-            ground(c.at.0, c.at.1),
-            ground(c.at.0, c.at.1) - below
+            deck - ga,
+            a.0,
+            a.1,
+            deck - gb,
+            b.0,
+            b.1,
+            at.0,
+            at.1,
+            below - below_ground
         );
         let near = |p: (f64, f64, f64)| (p.0 - c.at.0).hypot(p.1 - c.at.1) <= NEAR_M;
         for (role, si) in [("bridge's road", us), ("road below", ls)] {

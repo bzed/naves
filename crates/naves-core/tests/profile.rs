@@ -1760,7 +1760,7 @@ fn the_bridge_rises_and_the_road_below_is_lowered() {
     let (before, after) = (lower(&flat), lower(&p));
     assert!(after.len() > 10);
     assert_eq!(before.len(), after.len());
-    // (the smoothness lets the ends of the dip overshoot by about a decimetre)
+    // (the smoothness lets the ends of the dip overshoot: 0.051 m measured)
     for (a, b) in before.iter().zip(&after) {
         assert!(b - a < 0.15, "{a} {b}");
     }
@@ -1987,10 +1987,18 @@ fn a_junction_the_road_below_shares_with_the_approach_leaves_both_roads_drivable
 
 #[test]
 fn a_deck_too_thick_for_a_junction_the_roads_share_is_a_finding() {
-    // decks of 8 m and 16 m: 12.5 m and 20.5 m between the road below and the deck over a side road of 36 to
-    // 60 m cannot be had within the limits. The clearance is short, and the two roads stay drivable (the
-    // shortfall is shared between the clearance, the grade ceilings and the vertical radii, as their slacks cost)
-    for (jx, deck) in [(285.0, 8.0), (260.0, 8.0), (250.0, 16.0)] {
+    // This scenario cannot be solved inside the limits. The deck needs 4.5 m + 8 m (or + 16 m) over the road below,
+    // and the side road from the T junction on the road below to the junction on the approach (38 m long from
+    // x = 285, 53 m from x = 260, 61 m from x = 250) has to climb most of that: the approach has only 22.5 m to the
+    // deck and the road below 15 to 50 m to the crossing, and the vertical radius of 250 m keeps all three from
+    // bending into that much rise. So something gives: the clearance is short, and the side road is steeper than its
+    // ceiling (a `Grade` finding on it) and, from x = 285 and x = 260, steeper than a car can drive (30 %). The bridge's
+    // road and the road below stay within the drivable grade. These are the measured grades of the side road.
+    for (jx, deck, side) in [
+        (285.0, 8.0, 0.3976),
+        (260.0, 8.0, 0.3385),
+        (250.0, 16.0, 0.2748),
+    ] {
         let (p, net, reached, wanted) = a_t_junction_on_the_road_below_at(jx, deck);
         assert!(
             reached < wanted - 0.05,
@@ -2003,6 +2011,31 @@ fn a_deck_too_thick_for_a_junction_the_roads_share_is_a_finding() {
                 "x = {jx}, deck {deck} m: {id} at {steepest}"
             );
         }
+        let steepest = steepest_on(&p, &net, "6:");
+        assert!(
+            (steepest - side).abs() < 0.005,
+            "x = {jx}, deck {deck} m: the side road at {steepest}"
+        );
+        assert_eq!(
+            steepest > drive_grade(Family::Asf3),
+            jx > 255.0,
+            "{steepest}"
+        );
+        // and it is reported
+        let on_side = |at: (f64, f64)| {
+            p.strips
+                .iter()
+                .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("6:"))
+                .flat_map(|s| s.joints.iter())
+                .any(|j| (j.0 - at.0).hypot(j.1 - at.1) < 1e-6)
+        };
+        assert!(
+            p.excesses
+                .iter()
+                .any(|e| e.kind == GradeExcessKind::Grade && on_side(e.at)),
+            "x = {jx}, deck {deck} m: {:?}",
+            p.excesses
+        );
     }
 }
 

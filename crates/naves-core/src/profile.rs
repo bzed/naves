@@ -860,7 +860,8 @@ pub struct SegmentCeiling {
 
 /// The [`ChainCeilings`] of the problem [`solve_clearing`] builds for `net`: what a measured grade is held to.
 ///
-/// For measuring (the `road-analysis` tool); not part of the library's interface.
+/// For measuring (the `road-analysis` tool); not part of the library's interface. The model is built without the
+/// crossings that roads are not tied near (no road graph): those change only the rows (N), never a ceiling.
 ///
 /// # Errors
 ///
