@@ -167,7 +167,9 @@ around them with them. A road is held at one joint where it passes a junction, a
 
 Between a free end and a junction a road is at most **6 % steep** (asphalt and streets; gravel and dirt tracks keep their
 own limit, so a steep track is not lifted out of the ground, and between two junction heights the road's own grade limits
-apply), and gentler in a tight bend: the inner edge of a bend is
+apply). The same 6 % holds on the pieces of a road that pass within 12.5 m beyond its edge of where another road ends on it (that road's end lies on
+it, within a metre of its edge); a road that ends beside it without reaching it, such as a dead end a few metres up the
+slope or a road that ends at a junction the first road only passes near, does not count. A road is gentler in a tight bend: the inner edge of a bend is
 steeper than its centre line, so the bend's grade is lowered to keep that edge within the family's aim.
 
 **A road follows the ground, smoothly, within its limits.** A road keeps to its family's grade (its aim) where the

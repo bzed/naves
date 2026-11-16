@@ -308,20 +308,21 @@ impl ChainEnds {
         ChainEnds { cells }
     }
 
-    /// Whether an end of a chain other than `roads` lies within `reach` of the segment `a`-`b`.
+    /// Whether an end of a chain other than `roads` lies within `reach` of the segment `a`-`b` and `meets` it.
     fn any_near(
         &self,
         net: &PlacedNetwork,
         roads: &[usize],
-        a: (f64, f64),
-        b: (f64, f64),
+        (a, b): ((f64, f64), (f64, f64)),
         reach: f64,
+        meets: &dyn Fn((f64, f64)) -> bool,
     ) -> bool {
         let others = |(index, point): &ChainEnd| {
             net.chains
                 .get(*index)
                 .is_some_and(|c| c.as_slice() != roads)
                 && point_segment_distance(*point, a, b) <= reach
+                && meets(*point)
         };
         let (x0, x1) = (
             Self::cell(a.0.min(b.0) - reach),
@@ -346,20 +347,24 @@ impl ChainEnds {
     }
 }
 
-/// Whether the first or last point of another chain lies within the road's half width plus 12.5 m of it.
+/// Whether a road of the chain `roads` is where another chain ends on it: an end of another chain lies within the
+/// road's half width plus 12.5 m of it, and that end is on the chain's surface (`strip`), as a chain end that meets
+/// a road is found for the model ([`meeting_on`], within [`ON_ROAD_M`] of its edge). An end beside the road that does
+/// not reach it (a dead end up the slope beside it) is no meeting.
 fn meets_another_chain(
     net: &PlacedNetwork,
     ends: &ChainEnds,
     roads: &[usize],
     road: &PlacedRoad,
+    strip: &RoadStrip,
 ) -> bool {
     let reach = road.width / 2.0 + 12.5;
     ends.any_near(
         net,
         roads,
-        (road.start.x, road.start.y),
-        (road.end.x, road.end.y),
+        ((road.start.x, road.start.y), (road.end.x, road.end.y)),
         reach,
+        &|end| meeting_on(strip, 0, end, ON_ROAD_M, ON_ROAD_M).is_some(),
     )
 }
 
@@ -374,6 +379,11 @@ fn segment_grades(
     held: &[Option<f64>],
 ) -> Vec<f64> {
     let mut limits = Vec::new();
+    // the chain's surface, for the ends that meet it
+    let strip = roads
+        .first()
+        .and_then(|i| net.roads.get(*i))
+        .map(|first| strip_of(net, roads, joint_heights(chain, &[]), &[], first));
     let first_held = held.iter().position(Option::is_some);
     let last_held = held.iter().rposition(Option::is_some);
     for (k, &index) in roads.iter().enumerate() {
@@ -400,7 +410,10 @@ fn segment_grades(
         });
         if !track
             && !between_junctions
-            && (road.kind == PlacedKind::Junction || meets_another_chain(net, ends, roads, road))
+            && (road.kind == PlacedKind::Junction
+                || strip
+                    .as_ref()
+                    .is_some_and(|strip| meets_another_chain(net, ends, roads, road, strip)))
         {
             limit = limit.min(MEETING_GRADE);
         }

@@ -21,8 +21,8 @@ use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{Junction, JunctionKind, Junctions, Link, RingPlane, find_junctions};
 use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
 use naves_core::profile::{
-    BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, ProfileError, Profiles,
-    chain_holds, nearby_pairs, segment_ceilings, solve_clearing, solve_clearing_with,
+    BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, MEETING_GRADE, ProfileError,
+    Profiles, chain_holds, nearby_pairs, segment_ceilings, solve_clearing, solve_clearing_with,
 };
 use naves_core::qp::QpError;
 use naves_core::roadfit::Pose;
@@ -254,6 +254,43 @@ fn the_segment_ceilings_are_what_the_grades_are_held_to() {
     assert_eq!(ceilings[0].segments.len(), joints - 2);
     let across = ceilings[0].segments.iter().find(|s| s.to > s.from + 1);
     assert!(across.is_none(), "{across:?}");
+}
+
+/// An asf3 road north along x = 300 of 25 m pieces, and an asf3 side road from the east whose end lies at
+/// (`end_x`, 200), on ground that rises 0.8 m per metre to the east beyond x = 300: the ceilings of the road.
+fn ceilings_beside(end_x: f64) -> Vec<f64> {
+    let hm = terrain(128, 6.25, |x, _| 100.0 + 0.8 * (x - 300.0).max(0.0));
+    let road = pieces("a", Family::Asf3, (300.0, 100.0), (300.0, 300.0), 25.0);
+    let side = pieces("s", Family::Asf3, (450.0, 200.0), (end_x, 200.0), 25.0);
+    let net = network(vec![road, side]);
+    let ceilings = segment_ceilings(&net, &hm, &Junctions::default()).unwrap();
+    ceilings[0].segments.iter().map(|s| s.ceiling).collect()
+}
+
+#[test]
+fn a_dead_end_beside_a_road_is_no_meeting() {
+    // the side road ends 12.5 m from the road's centre line, 9 m beyond its edge and 10 m up the slope: it does
+    // not meet the road, so the road keeps its ceiling there
+    for c in ceilings_beside(312.5) {
+        assert!((c - grade_ceiling(Family::Asf3)).abs() < 1e-12, "{c}");
+    }
+}
+
+#[test]
+fn a_road_that_ends_on_another_gives_it_the_meeting_grade() {
+    // the side road ends on the road's edge at y = 200: the pieces it meets there have the meeting grade
+    let ceilings = ceilings_beside(303.5);
+    let meeting = ceilings
+        .iter()
+        .filter(|c| (**c - MEETING_GRADE).abs() < 1e-12)
+        .count();
+    assert!((1..=3).contains(&meeting), "{ceilings:?}");
+    assert!(
+        ceilings
+            .iter()
+            .any(|c| (c - grade_ceiling(Family::Asf3)).abs() < 1e-12),
+        "{ceilings:?}"
+    );
 }
 
 #[test]
