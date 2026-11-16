@@ -1083,10 +1083,21 @@ fn a_deck_and_the_road_below_on_one_junction_is_a_finding() {
     let (p, _) = clear(&net, &graph, &hm, &junctions, DECK);
     assert_eq!(p.clearances.len(), 1);
     assert!(p.clearances[0].reached < 4.45, "{:?}", p.clearances);
-    // the road below is held to its height as well as the deck is held to the clearance: the shortfall of 6 m
-    // is shared, and the road below does not rise by all of it
-    let low = height_on(&p, &net, "1:", (300.0, 500.0), false);
-    assert!(low < 104.0, "{low}");
+    // the road below keeps its height exactly: the whole shortfall is the finding
+    let (flat, _) = solve_network(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let near_crossing = |p: &Profiles| -> Vec<f64> {
+        p.strips
+            .iter()
+            .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("1:"))
+            .flat_map(|s| s.joints.iter().filter(|j| (j.0 - 300.0).abs() <= 30.0))
+            .map(|j| j.2)
+            .collect()
+    };
+    let (before, after) = (near_crossing(&flat), near_crossing(&p));
+    assert!(after.len() > 2 && before.len() == after.len(), "{after:?}");
+    for (a, b) in before.iter().zip(&after) {
+        assert!((a - b).abs() < 0.05, "{a} {b}");
+    }
 }
 
 #[test]

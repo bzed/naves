@@ -83,7 +83,7 @@ The unknown vector is `x = (free heights, z, s, slacks)`.
 + JUNCTION_TILT   · Σ_j (25 · (s_j − s⁰_j))²
 + AIM · Σ_i e_i²                             grade above the aim, see (G)
 + NEAR · Σ_n n_n²                            nearby roads, see (N)
-+ HARD · Σ (slack) + HARD · Σ (slack)²       every other slack: f (G), b (B), q and p (C)
++ HARD · Σ (slack) + HARD · Σ (slack)²       every other slack: f (G), b (B), q (C)
 ```
 
 - `g_v`: the original ground at `p_v` (for a deck variable the mean of the ground at its two abutments), as today.
@@ -132,10 +132,12 @@ phases:
 - Phase B: the same problem plus, per crossing,
   ```
   h_deck(c) ≥ low_c + BRIDGE_CLEARANCE_M + d_c − q_c             q_c ≥ 0
-  |h_w − h_w(A)| ≤ p_w                                           p_w ≥ 0
+  h_w = h_w(A)
   ```
-  the second for the two variables `w` of the road below that bracket the crossing. No crossing: phase A is the
-  result.
+  the second for the two variables `w` of the road below that bracket the crossing (an equality without slack; a
+  variable that is a constant, or one that another pin already fixes in the same way, gets no row). Phase B is still
+  feasible: phase A's point satisfies every row of it with its slacks, and `q_c` absorbs any shortfall of the deck.
+  No crossing: phase A is the result.
 
 A deck and the road below held by one junction (Silbergstraße) cannot both be kept: `q_c > 0`, the
 `bridge_clearance` finding, as today.

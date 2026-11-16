@@ -933,9 +933,10 @@ fn height_at(model: &Model, place: &Place) -> Option<Expr> {
 /// without them. Returns whether any were added (the problem has more unknowns and rows then).
 ///
 /// The deck is held at least [`BRIDGE_CLEARANCE_M`] and its thickness above the surface of the road below as it
-/// is in `x`, less a slack `q`; the two variables of the road below that bracket the crossing are held to their
-/// height in `x`, within a slack `p` each (a variable that is a constant has no unknown and no row). The slacks
-/// cost as the other hard ones.
+/// is in `solved`, less a slack that costs as the other hard ones; the two variables of the road below that
+/// bracket the crossing are held to their height in `solved` exactly (a variable that is a constant has no
+/// unknown and no row; a variable two crossings share has one row). Phase B stays feasible: the solution of
+/// phase A satisfies every row of it, with its slacks, and the deck's slack has room.
 pub(crate) fn add_clearances(
     model: &mut Model,
     net: &PlacedNetwork,
@@ -946,7 +947,8 @@ pub(crate) fn add_clearances(
         next: model.problem.unknowns,
         problem: std::mem::replace(&mut model.problem, Problem::new(0)),
     };
-    let mut pinned: BTreeSet<(usize, usize)> = BTreeSet::new();
+    // the pins already made, by their terms: variables held by one junction in the same way are one row
+    let mut pinned: BTreeSet<Vec<(usize, u64)>> = BTreeSet::new();
     let mut added = false;
     for crossing in crossings {
         let (Some(upper), Some(lower)) = (
@@ -969,9 +971,6 @@ pub(crate) fn add_clearances(
         builder.problem.add_linear(HARD, short);
         builder.problem.add_square(HARD, &[(short, 1.0)], 0.0);
         for var in [lower.from, lower.to] {
-            if !pinned.insert((lower.chain, var)) {
-                continue;
-            }
             let Some(height) = model
                 .chains
                 .get(lower.chain)
@@ -980,13 +979,17 @@ pub(crate) fn add_clearances(
             else {
                 continue;
             };
-            let offset = Expr {
-                terms: height.terms.clone(),
-                constant: height.constant - height.value(solved),
-            };
-            let moved = builder.band(&offset, 0.0);
-            builder.problem.add_linear(HARD, moved);
-            builder.problem.add_square(HARD, &[(moved, 1.0)], 0.0);
+            let key = height
+                .terms
+                .iter()
+                .map(|&(k, c)| (k, c.to_bits()))
+                .collect();
+            if !pinned.insert(key) {
+                continue;
+            }
+            // held exactly: the whole shortfall is the slack of the deck
+            let keep = height.value(solved) - height.constant;
+            builder.row(height.terms.clone(), keep, keep);
         }
         added = true;
     }
