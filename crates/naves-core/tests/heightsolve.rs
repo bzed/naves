@@ -344,17 +344,13 @@ fn a_junction_on_a_slope_tilts_with_its_through_road() {
     assert!(junctions.points[0].tilt_axis.is_some(), "{junctions:?}");
     let (p, solved) = solve_network(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
     let j = &solved.points[0];
-    // the arms of the junction share terrain cells with the through road (rows N), so the plane tilts with the
-    // slope only as far as they allow: the sign of the ground's tilt, a part of it
-    assert!(j.gradient.0 > 0.01 && j.gradient.0 < 0.06, "{j:?}");
+    assert!((j.gradient.0 - 0.06).abs() <= 1e-3, "{j:?}");
     assert!(j.gradient.1.abs() <= 1e-3, "{j:?}");
-    // and the held joints of the through road lie on that plane
-    let mut held = held_joints(&net, &p, &hm, &junctions);
-    held.retain(|q| (q.1 - 200.0).abs() < 1e-6);
-    assert_eq!(held.len(), 2, "{held:?}");
-    held.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let slope = (held[1].2 - held[0].2) / (held[1].0 - held[0].0);
-    assert!((slope - j.gradient.0).abs() <= 1e-4, "{slope} {j:?}");
+    let held = held_joints(&net, &p, &hm, &junctions);
+    assert!(held.len() > 1, "{held:?}");
+    for q in held {
+        assert!((q.2 - ground(&hm, q.0, q.1)).abs() <= 0.01, "{q:?}");
+    }
 }
 
 #[test]
@@ -1279,4 +1275,86 @@ fn a_bridge_of_unknown_thickness_is_not_tied_either() {
     let low = height_on(&p, &net, "1:", (300.0, 500.0), false);
     let approach = height_on(&p, &net, "3:", (300.0, 487.5), false);
     assert!(low - approach >= 0.4, "{low} {approach}");
+}
+
+#[test]
+fn a_side_road_end_is_not_tied_to_the_road_it_meets() {
+    // no junction: a side road starts on the edge of a through road that descends 5.8 %; the pairs of the two
+    // near the meeting must not flatten the through road
+    let hm = terrain(200, 6.25, |_, y| 100.0 - 0.058 * y);
+    let through = pieces("t", Family::Asf3, (300.0, 200.0), (300.0, 800.0), 25.0);
+    let side = pieces("s", Family::Mud, (303.5, 500.0), (500.0, 500.0), 25.0);
+    let net = network(vec![through, side]);
+    let p = solve_alone(&net, &hm);
+    for (k, g) in grades(&p, 0).iter().enumerate() {
+        let y = p.strips[0].joints[k].1;
+        if (440.0..=560.0).contains(&y) {
+            assert!((g + 0.058).abs() <= 0.005, "grade {g} at y = {y}");
+        }
+    }
+}
+
+/// The height of a strip at `y` (the strips run north), by linear interpolation between its joints.
+fn height_at_y(p: &Profiles, strip: usize, y: f64) -> f64 {
+    let w = p.strips[strip]
+        .joints
+        .windows(2)
+        .find(|w| w[0].1 <= y && y <= w[1].1)
+        .unwrap();
+    w[0].2 + (w[1].2 - w[0].2) * (y - w[0].1) / (w[1].1 - w[0].1)
+}
+
+#[test]
+fn roads_that_meet_are_tied_again_further_out() {
+    // a junction piece on a road going north, and a second road that leaves its port, turns north and runs on beside it,
+    // 12.5 m away, the ground 0.6 m higher at the second: tied beyond 50 m from the junction
+    let hm = terrain(200, 4.0, |x, _| 100.0 + 0.6 / 12.5 * (x - 300.0));
+    let mut north = vec![piece(
+        "t",
+        0,
+        PlacedKind::Junction,
+        Family::Asf3,
+        (300.0, 100.0),
+        (300.0, 112.5),
+    )];
+    north.extend(pieces(
+        "t",
+        Family::Asf3,
+        (300.0, 112.5),
+        (300.0, 400.0),
+        25.0,
+    ));
+    let mut side = vec![piece(
+        "s",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (306.25, 106.25),
+        (312.5, 106.25),
+    )];
+    side.extend(pieces(
+        "s",
+        Family::Asf3,
+        (312.5, 106.25),
+        (312.5, 400.0),
+        25.0,
+    ));
+    let net = network(vec![north, side]);
+    let mut junction = piece_junction(300.0, 100.0);
+    junction.at = (300.0, 106.25);
+    junction.tilt_axis = Some((0.0, 1.0));
+    junction.stretches = ["t", "s"].iter().map(|s| (*s).to_string()).collect();
+    let junctions = Junctions {
+        points: vec![junction],
+        ..Junctions::default()
+    };
+    let (p, _) = solve_network(&net, &hm, &junctions, &[]).unwrap();
+    let held = held_joints(&net, &p, &hm, &junctions);
+    assert!(held.len() >= 3, "{held:?}");
+    for k in 0..12 {
+        let y = 180.0 + 15.0 * f64::from(k);
+        let (ha, hb) = (height_at_y(&p, 0, y), height_at_y(&p, 1, y));
+        assert!(ha.is_finite());
+        assert!((ha - hb).abs() <= 0.1 + 0.05, "y = {y}: {ha} {hb}");
+    }
 }

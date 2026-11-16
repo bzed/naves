@@ -13,9 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::conform::FILL_SLOPE_MAX;
 use crate::heightmap::Heightmap;
+use crate::junctions::Junctions;
 use crate::roadplace::PlacedNetwork;
 
-use super::{Builder, Draft, Expr};
+use super::{Builder, Draft, Expr, Source};
 use crate::profile::{
     KEEP_APART_M, MATCH_M, RoadStrip, SAMPLE_M, Spot, close_pairs, joint_heights, road_on_stretch,
     spots, strip_of,
@@ -52,6 +53,46 @@ fn chains_on(net: &PlacedNetwork, drafts: &[Draft], id: &str) -> BTreeSet<usize>
         .collect()
 }
 
+/// The places where two chains are connected, by the pair of chains (the lower index first): the centre of every
+/// junction that holds a variable of both, and the position of every end of one that is a meeting on the other.
+/// Two spots of the two chains near such a place are not tied: where roads meet they are one surface (the plane of
+/// the junction, the height of the meeting) and legitimately differ in height on a slope. A junction that holds
+/// two separate stretches of one chain (a loop) is not looked for.
+fn connections(
+    drafts: &[Draft],
+    junctions: &Junctions,
+) -> BTreeMap<(usize, usize), Vec<(f64, f64)>> {
+    let mut out: BTreeMap<(usize, usize), Vec<(f64, f64)>> = BTreeMap::new();
+    let mut holding: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for (ci, draft) in drafts.iter().enumerate() {
+        for j in draft.holders.iter().flatten() {
+            holding.entry(*j).or_default().insert(ci);
+        }
+        let last = draft.sources.len().saturating_sub(1);
+        for end in [0, last] {
+            if let (Some(Source::Meets { owner, .. }), Some(at)) =
+                (draft.sources.get(end), draft.chain.at.get(end))
+                && *owner != ci
+            {
+                out.entry((ci.min(*owner), ci.max(*owner)))
+                    .or_default()
+                    .push(*at);
+            }
+        }
+    }
+    for (j, chains) in holding {
+        let Some(point) = junctions.points.get(j) else {
+            continue;
+        };
+        for &a in &chains {
+            for &b in chains.range(a + 1..) {
+                out.entry((a, b)).or_default().push(point.at);
+            }
+        }
+    }
+    out
+}
+
 /// The height of the spot `spot`: linear between the two variables of its segment.
 fn spot_height(drafts: &[Draft], heights: &[Vec<Expr>], spot: &Spot) -> Option<Expr> {
     let chain = &drafts.get(spot.strip)?.chain;
@@ -77,13 +118,15 @@ fn allowed(distance: f64, gap: f64, cell: f64) -> f64 {
 }
 
 /// Adds the rows (N) and their cost, for the chains `drafts` whose heights are `heights`; no rows for the pairs of
-/// a bridge's road and the road below within [`KEEP_APART_M`] of a crossing in `apart`.
+/// a bridge's road and the road below within [`KEEP_APART_M`] of a crossing in `apart`, and none for two spots within
+/// [`KEEP_APART_M`] of a place where their roads are connected (see [`connections`]).
 pub(super) fn add(
     builder: &mut Builder,
     net: &PlacedNetwork,
     hm: &Heightmap,
     drafts: &[Draft],
     heights: &[Vec<Expr>],
+    junctions: &Junctions,
     apart: &[Apart],
 ) {
     let cell = f64::from(hm.cell_m);
@@ -115,6 +158,7 @@ pub(super) fn add(
             )
         })
         .collect();
+    let connected = connections(drafts, junctions);
     let near = |s: &Spot, at: (f64, f64)| (s.x - at.0).hypot(s.y - at.1) <= KEEP_APART_M;
     // the runs: the pairs of two chains, in the order along the first, split where the first jumps
     let mut by_chains: BTreeMap<(usize, usize), Vec<usize>> = BTreeMap::new();
@@ -127,7 +171,11 @@ pub(super) fn add(
                 || (lower.contains(&a.strip) && upper.contains(&b.strip));
             !(across && (near(a, c.at) || near(b, c.at)))
         });
-        if kept {
+        // both spots near a place where the two roads are connected
+        let joined = connected
+            .get(&(a.strip.min(b.strip), a.strip.max(b.strip)))
+            .is_some_and(|places| places.iter().any(|at| near(a, *at) && near(b, *at)));
+        if kept && !joined {
             by_chains.entry((a.strip, b.strip)).or_default().push(k);
         }
     }

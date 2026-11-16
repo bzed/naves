@@ -631,7 +631,7 @@ pub(crate) fn build(
     }
     let unknowns = junction_unknowns(&mut builder, &drafts, junctions)?;
     let heights = height_exprs(&drafts, &free, &unknowns, junctions)?;
-    nearby::add(&mut builder, net, hm, &drafts, &heights, apart);
+    nearby::add(&mut builder, net, hm, &drafts, &heights, junctions, apart);
     // the cost and the rows of each chain
     let mut chains = Vec::with_capacity(drafts.len());
     for (draft, chain_heights) in drafts.into_iter().zip(heights) {
