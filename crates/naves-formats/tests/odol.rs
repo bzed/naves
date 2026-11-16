@@ -371,7 +371,22 @@ fn write_fuzz_seeds() {
     huge[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
     let mut v54 = valid.clone();
     v54[4..8].copy_from_slice(&54u32.to_le_bytes());
-    let seeds: [(&str, Vec<u8>); 5] = [
+    // a memory LOD with 100 points (1200 bytes: the array is stored LZO-compressed), whole and with the
+    // compressed stream cut short
+    let points = vec![[0.0f32; 3]; 100];
+    let lod = lod_bytes(&LodSpec {
+        points: &points,
+        selections: &[],
+        properties: &[],
+        ..LodSpec::default()
+    });
+    let lzo = file(56, &[(MEMORY, lod.clone())]);
+    let mut lzo_cut = lod;
+    lzo_cut.truncate(lzo_cut.len() - 20);
+    let lzo_cut = file(56, &[(MEMORY, lzo_cut)]);
+    let seeds: [(&str, Vec<u8>); 7] = [
+        ("lzo_array", lzo),
+        ("lzo_array_cut", lzo_cut),
         ("valid", valid.clone()),
         ("truncated_half", valid[..valid.len() / 2].to_vec()),
         ("truncated_header", valid[..40].to_vec()),
