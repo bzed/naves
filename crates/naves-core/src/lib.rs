@@ -21,6 +21,7 @@ pub mod prefs;
 pub mod profile;
 pub mod project;
 pub mod projection;
+pub mod qp;
 pub mod render;
 pub mod roadfit;
 pub mod roadnet;
