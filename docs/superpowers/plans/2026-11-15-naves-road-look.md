@@ -331,6 +331,11 @@ off the line. A dip bridge must be placed where the road runs straight.
 - `pub const SPAN_END_STRAIGHT_DEG: f64 = 20.0;` At each end of a dip bridge span, the line's heading over the 4 m
   outside the span (before the start, after the end; the first point at least 4 m away, as `arm_heading` measures)
   and over the 4 m inside it differ from the chord's heading by at most this.
+- **Amended after the Task 14 review (controller ruling):** 4 m outside is too short for the approach to align. Outside
+  the span, every point within `SPAN_APPROACH_M = 12.5` m (before the start, after the end; at least 4 m at a run end)
+  has a heading seen from the span end within `SPAN_APPROACH_DEG = 10.0` of that end's model chord; the 4 m inside keep
+  the 20°. Measured along the run across through nodes. Shifts are tried only when the centred span passes the old 2 m
+  straightness test and fails this rule; the placement test uses the 6 m U and must reach the deck branch.
 - If the centred span fails, shift it (both ends together) along the run within the slack `decide` already allows,
   in 0.5 m steps, the shorter shift first, the earlier position on a tie; take the first span that passes. If none
   passes, the dip is filled (`DipAction::Fill`). Spans of OSM bridges are not touched (only dip bridges).
