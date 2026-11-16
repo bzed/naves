@@ -1516,3 +1516,50 @@ fn a_road_is_not_tied_to_the_end_of_a_shorter_road_beside_it() {
         }
     }
 }
+
+#[test]
+fn the_grade_limit_of_a_junction_piece_survives_a_merged_joint_before_it() {
+    // an asf3 road up a slope of 8 %, a piece of 0.5 m (its joint is merged into the one before: one variable
+    // fewer than roads from there on), then a junction piece whose plane tilts with the ground at 8 %, more than
+    // the meeting grade of 6 % that a piece next to a side road has outside two junction heights. The piece
+    // lies between its own two held joints, so its limit is the ceiling of the road, and nothing is exceeded.
+    let slope = 0.08;
+    let hm = terrain(160, 6.25, move |x, _| 100.0 + slope * x);
+    let mut through = pieces("t", Family::Asf3, (100.0, 100.0), (300.0, 100.0), 25.0);
+    through.push(piece(
+        "t",
+        20,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (300.0, 100.0),
+        (300.5, 100.0),
+    ));
+    through.push(piece(
+        "t|a",
+        0,
+        PlacedKind::Junction,
+        Family::Asf3,
+        (300.5, 100.0),
+        (312.5, 100.0),
+    ));
+    through.extend(pieces(
+        "t",
+        Family::Asf3,
+        (312.5, 100.0),
+        (512.5, 100.0),
+        25.0,
+    ));
+    let net = network(vec![through]);
+    let at = 306.5;
+    let mut junction = piece_junction(at, 100.0 + slope * at);
+    junction.gradient = (slope, 0.0);
+    let junctions = Junctions {
+        points: vec![junction],
+        ..Junctions::default()
+    };
+    let (p, solved) = solve_network(&net, &hm, &junctions, &[]).unwrap();
+    assert!(p.excesses.is_empty(), "{:?}", p.excesses);
+    // the solve would rather lower the tilt than exceed a limit: with the meeting grade as the limit it ends
+    // under 6 % (5.8 %), with the ceiling as the limit near the ground's 8 %
+    assert!(solved.points[0].gradient.0 > 0.07, "{:?}", solved.points[0]);
+}

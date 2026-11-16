@@ -421,6 +421,7 @@ fn meets_another_chain(
 fn segment_grades(
     net: &PlacedNetwork,
     ends: &ChainEnds,
+    chain: &Chain,
     roads: &[usize],
     base: f64,
     held: &[Option<f64>],
@@ -428,7 +429,7 @@ fn segment_grades(
     let mut limits = Vec::new();
     let first_held = held.iter().position(Option::is_some);
     let last_held = held.iter().rposition(Option::is_some);
-    for &index in roads {
+    for (k, &index) in roads.iter().enumerate() {
         let Some(road) = net.roads.get(index) else {
             continue;
         };
@@ -440,11 +441,16 @@ fn segment_grades(
         // steep track out of the ground
         let track = matches!(road.family, Family::Grav | Family::Mud);
         // and a piece between the first and the last junction height of the chain has the grades those heights
-        // make (`repair` kept the links under the ceiling, and a free joint between two held ones is part of
-        // the span): the meeting grade is for the approach from a free end to a junction
-        let between_junctions = first_held
-            .zip(last_held)
-            .is_some_and(|(first, last)| first <= limits.len() && limits.len() < last);
+        // make (a free joint between two held ones is part of the span): the meeting grade is for the approach
+        // from a free end to a junction. `held` is per variable, and joints less than a metre apart are one
+        // variable, so the piece is found by the variable it ends at: the segment before that one
+        let between_junctions = first_held.zip(last_held).is_some_and(|(first, last)| {
+            chain
+                .joints
+                .get(k + 1)
+                .and_then(|joint| joint.2.checked_sub(1))
+                .is_some_and(|segment| first <= segment && segment < last)
+        });
         if !track
             && !between_junctions
             && (road.kind == PlacedKind::Junction || meets_another_chain(net, ends, roads, road))
@@ -1130,7 +1136,7 @@ fn profile_chain(
         let mut solved: Option<(Vec<f64>, Limits)> = None;
         for &base in &bases {
             let limits = Limits {
-                grade: segment_grades(net, &index.ends, roads, base, &held),
+                grade: segment_grades(net, &index.ends, &chain, roads, base, &held),
                 radius,
             };
             let mut targets = ground_targets.clone();

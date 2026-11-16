@@ -368,21 +368,19 @@ fn drafts(
         } else {
             flags
         };
-        // the limits come from `segment_grades` unchanged (its test for a piece between two junction heights
-        // counts roads, not variables; that is left for the task that removes the old path)
         let (aim_base, ceiling_base) = (grade_aim(family), grade_ceiling(family));
         let aim = limits_per_segment(
             &chain,
             roads,
             net,
-            &segment_grades(net, &ends, roads, aim_base, &held),
+            &segment_grades(net, &ends, &chain, roads, aim_base, &held),
             aim_base,
         );
         let ceiling = limits_per_segment(
             &chain,
             roads,
             net,
-            &segment_grades(net, &ends, roads, ceiling_base, &held),
+            &segment_grades(net, &ends, &chain, roads, ceiling_base, &held),
             ceiling_base,
         );
         let ground = if ring.is_some() {
