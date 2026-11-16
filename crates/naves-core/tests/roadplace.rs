@@ -1640,3 +1640,34 @@ fn a_gap_in_a_later_run_names_its_own_stretch() {
         );
     }
 }
+
+#[test]
+fn two_higher_roads_leaving_on_one_side_do_not_cut_the_lower_road() {
+    // a Mud road along y = 500 with two Grav roads that leave its node to the same side (a fork)
+    let net = place(&[
+        feature(
+            1,
+            Family::Mud,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(2, Family::Grav, &[2, 4], &[(500.0, 500.0), (700.0, 900.0)]),
+        feature(3, Family::Grav, &[2, 5], &[(500.0, 500.0), (300.0, 900.0)]),
+    ]);
+    let mud_chains = net
+        .chains
+        .iter()
+        .filter(|c| c.iter().any(|i| net.roads[*i].family == Family::Mud))
+        .count();
+    assert_eq!(mud_chains, 1, "the Mud road is not cut");
+    let pieces = south_north(&net, Family::Mud);
+    for pair in pieces.windows(2) {
+        assert!(
+            dist(
+                (pair[0].end.x, pair[0].end.y),
+                (pair[1].start.x, pair[1].start.y)
+            ) < 1e-6,
+            "a hole in the Mud road"
+        );
+    }
+}

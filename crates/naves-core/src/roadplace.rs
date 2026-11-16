@@ -793,7 +793,15 @@ impl<'a> Placer<'a> {
                 .is_some_and(|s| !s.bridge && !s.tunnel)
         };
         let mut lower: Vec<String> = Vec::new();
+        // the higher roads cross only when they leave on opposite sides; two on one side are a fork,
+        // and cutting the chain there would leave a hole on the far side
+        let through = self.leaving_heading(entry);
+        let side_of = |this: &Self, arm: Arm| (this.leaving_heading(arm) - through).sin() > 0.0;
         let crossing = sides.len() == 2
+            && sides
+                .first()
+                .zip(sides.get(1))
+                .is_some_and(|(p, q)| side_of(self, *p) != side_of(self, *q))
             && sides.iter().all(|arm| outranks(self, *arm))
             && plain(self, a.stretch)
             && plain(self, b.stretch);

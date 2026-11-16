@@ -181,8 +181,8 @@ line after the junction), railways, houses and trees.
 gravel), one road lies on top of the other. The higher road is the one of the better surface (asphalt 1, asphalt 2,
 street, asphalt 3, gravel, dirt track); of two of the same surface the longer one. It runs on unchanged. A lower road
 that ends on it stops just under its edge (it reaches under the edge by up to 2 m, but never past the centre line)
-and has no end cap there. A lower road that crosses it is interrupted: it ends under one edge and starts again under
-the other. A higher road that ends on a lower one lies on top of it, again without an end cap. At the cut the lower
+and has no end cap there. A lower road that crosses it (two higher roads that leave it on opposite sides) is interrupted: it ends under one edge and starts again under
+the other; two higher roads that leave it on the same side (a fork) do not interrupt it, they end on it. A higher road that ends on a lower one lies on top of it, again without an end cap. At the cut the lower
 road is 5 cm below the surface of the higher one, so the two surfaces do not flicker; the ground there is levelled
 like under any junction. A piece of road between two such cuts that is shorter than half its width is left out, and the
 build says so. These overlaps are intended; they are not `road_conflict` findings and not `join_without_junction`.
