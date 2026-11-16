@@ -246,7 +246,7 @@ Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than 
 A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
 least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
 dead ends, and the road is straight within 2 m over each model) it gets a bridge, or a chain of bridges end to end over
-a long dip; the ground below is left alone. Otherwise (a dip less than 8 m deep, or no model fits) a dip without water is
+a long dip; the ground below is left alone. A bridge of a dip does not start or end in a bend: over 4 m outside and 4 m inside each end the road's line must run within 20 degrees of that end's model, and when the centred bridge fails this, it is moved along the dip, in 0.5 m steps (the shorter move first, the earlier position on a tie), as far as it still covers the dip; if no position passes, the dip is filled instead. Otherwise (a dip less than 8 m deep, or no model fits) a dip without water is
 filled, as before, and one with a stream
 (`waterway=stream`, `river` or `canal` crossing the road), a river or a lake under it is left as it is and reported as
 `road_over_water` for you to look at. Only after the heights are solved is the dips' bridging decided, so **when a dip gets a

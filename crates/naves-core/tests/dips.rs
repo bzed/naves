@@ -12,7 +12,10 @@
 )]
 
 use naves_core::catalog::Family;
-use naves_core::dips::{BRIDGE_DIP_M, BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, decide, find_dips};
+use naves_core::dips::{
+    BRIDGE_DIP_M, BRIDGE_STRAIGHT_M, DIP_M, Dip, DipAction, SPAN_END_STRAIGHT_DEG, decide,
+    find_dips,
+};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::osm::LandPolygon;
@@ -492,4 +495,92 @@ fn a_road_far_from_its_stretch_is_not_measured() {
         &frame(),
     );
     assert!(found.is_empty(), "{found:?}");
+}
+
+/// A U-turn of radius 6 m (a hairpin) from (0, 200) that ends heading west at (0, 212), then a straight to the
+/// west, 160 m long. The U is about 18.85 m long.
+fn hairpin_then_straight() -> Vec<(f64, f64)> {
+    let mut points: Vec<(f64, f64)> = (0..=18)
+        .map(|i| {
+            let t = f64::from(i) * 10.0_f64.to_radians();
+            (6.0 * t.sin(), 206.0 - 6.0 * t.cos())
+        })
+        .collect();
+    points.extend((1..=16).map(|i| (-10.0 * f64::from(i), 212.0)));
+    points
+}
+
+/// The heading in degrees of the line from `a` to `b`.
+fn heading_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (b.0 - a.0).atan2(b.1 - a.1).to_degrees()
+}
+
+/// The point `d` metres along `points`.
+fn along(points: &[(f64, f64)], d: f64) -> (f64, f64) {
+    let mut left = d;
+    for w in points.windows(2) {
+        let seg = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        if left <= seg {
+            let f = left / seg;
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * f,
+                w[0].1 + (w[1].1 - w[0].1) * f,
+            );
+        }
+        left -= seg;
+    }
+    *points.last().unwrap()
+}
+
+fn gap_deg(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(360.0);
+    d.min(360.0 - d)
+}
+
+fn on_hairpin_line() -> RoadGraph {
+    let points = hairpin_then_straight();
+    let nodes: Vec<i64> = (1..).take(points.len()).collect();
+    build_graph(&[feature(1, &points, &nodes, Family::Asf3)])
+}
+
+#[test]
+fn a_bridge_span_does_not_start_in_a_hairpin() {
+    let graph = on_hairpin_line();
+    let stretch = &graph.stretches[0];
+    // the centred span of the 28 m run (29.85 to 57.85 m) is 50 m long and starts where the U ends
+    let u_end = 18.85;
+    let (action, span) = decide(
+        &dip(0, u_end + 8.0, u_end + 36.0, false),
+        &graph,
+        Some(25.0),
+    );
+    if action == DipAction::Bridge {
+        let span = span.unwrap();
+        let at = |d: f64| along(&stretch.points, d);
+        let chord = heading_deg(at(span.from_m), at(span.from_m + 25.0));
+        let back = heading_deg(at(span.from_m - 4.0), at(span.from_m));
+        let ahead = heading_deg(at(span.from_m), at(span.from_m + 4.0));
+        assert!(
+            gap_deg(back, chord) <= SPAN_END_STRAIGHT_DEG + 1.0,
+            "{back} {chord}"
+        );
+        assert!(
+            gap_deg(ahead, chord) <= SPAN_END_STRAIGHT_DEG + 1.0,
+            "{ahead} {chord}"
+        );
+    } else {
+        assert_eq!(action, DipAction::Fill);
+    }
+}
+
+#[test]
+fn a_span_on_a_straight_is_unchanged() {
+    let graph = straight_road(Family::Asf3);
+    let (action, span) = decide(&dip(0, 186.0, 214.0, false), &graph, Some(25.0));
+    assert_eq!(action, DipAction::Bridge);
+    let span = span.unwrap();
+    assert!(
+        (span.from_m - 175.0).abs() < 1e-9 && (span.to_m - 225.0).abs() < 1e-9,
+        "{span:?}"
+    );
 }

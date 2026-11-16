@@ -13,8 +13,10 @@ use std::collections::BTreeSet;
 
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_bridges, width};
 use naves_core::catalog::{Family, PieceCatalog};
+use naves_core::dips::{Dip, DipAction, decide};
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::roadnet::{build_graph, collapse_small_rings, widen_bridges};
+use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
+use naves_core::roadnet::{build_graph, collapse_small_rings, widen_bridges, with_bridge_spans};
 use naves_core::roadplace::{
     MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network,
 };
@@ -1518,4 +1520,70 @@ fn a_deck_on_a_curve_keeps_its_place_and_follows_its_road() {
         - std::f64::consts::PI;
     assert!(gap <= 0.10, "gap {gap}");
     assert!(kink.to_degrees().abs() <= 1.0, "kink {kink}");
+}
+
+/// A U-turn of radius 10 m, then a straight to the west, as one way.
+fn hairpin_way() -> Vec<Feature> {
+    let mut points: Vec<(f64, f64)> = (0..=18)
+        .map(|i| {
+            let t = f64::from(i) * 10.0_f64.to_radians();
+            (300.0 + 10.0 * t.sin(), 310.0 - 10.0 * t.cos())
+        })
+        .collect();
+    points.extend((1..=16).map(|i| (300.0 - 10.0 * f64::from(i), 320.0)));
+    let nodes: Vec<i64> = (1..).take(points.len()).collect();
+    vec![feature(1, Family::Asf3, &nodes, &points)]
+}
+
+#[test]
+fn a_dip_bridge_after_a_hairpin_closes_on_its_approach() {
+    let catalog = catalog();
+    let graph = build_graph(&hairpin_way());
+    let u_end = 10.0 * std::f64::consts::PI;
+    let dip = Dip {
+        stretch: 0,
+        from_m: u_end - 3.0,
+        to_m: u_end + 43.0,
+        depth_m: 12.0,
+        over_water: false,
+        at: (300.0 - 30.0, 320.0),
+    };
+    let (action, span) = decide(&dip, &graph, Some(25.0));
+    let graph = if let Some(span) = &span {
+        with_bridge_spans(&graph, std::slice::from_ref(span))
+    } else {
+        assert_eq!(action, DipAction::Fill);
+        graph
+    };
+    let net = place_network(&graph, &catalog).unwrap();
+    let line = &hairpin_way()[0].points;
+    let off_line = |p: (f64, f64)| {
+        line.windows(2)
+            .map(|w| {
+                let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                let t = (((p.0 - w[0].0) * dx + (p.1 - w[0].1) * dy) / (dx * dx + dy * dy))
+                    .clamp(0.0, 1.0);
+                (p.0 - w[0].0 - t * dx).hypot(p.1 - w[0].1 - t * dy)
+            })
+            .fold(f64::MAX, f64::min)
+    };
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    for b in &bridges {
+        assert!(off_line((b.start.x, b.start.y)) <= 1.0, "{:?}", b.start);
+        assert!(off_line((b.end.x, b.end.y)) <= 1.0, "{:?}", b.end);
+    }
+    if let Some(first) = bridges.first() {
+        let before = net
+            .roads
+            .iter()
+            .filter(|r| r.kind == PlacedKind::Piece)
+            .map(|r| (dist((r.end.x, r.end.y), (first.start.x, first.start.y)), r))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        assert!(before.0 <= GAP_CLOSED_M, "gap {} m", before.0);
+        let turn = (before.1.end.heading - first.start.heading)
+            .to_degrees()
+            .rem_euclid(360.0);
+        assert!(turn.min(360.0 - turn) <= KINK_TOLERATED_DEG, "kink {turn}");
+    }
 }

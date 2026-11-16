@@ -4,6 +4,7 @@
 //! Dips: where a planned road stands high above the original ground.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::f64::consts::{PI, TAU};
 
 use crate::heightmap::{Heightmap, MapGeo};
 use crate::osm::LandPolygon;
@@ -29,6 +30,12 @@ pub const DIP_M: f64 = 3.0;
 pub const BRIDGE_DIP_M: f64 = 8.0;
 /// The road may leave the straight line of a bridge model by this much.
 pub const BRIDGE_STRAIGHT_M: f64 = 2.0;
+
+/// At each end of a dip bridge span the line, over 4 m outside the span and over 4 m inside it, runs within this
+/// of the chord of the model at that end.
+pub const SPAN_END_STRAIGHT_DEG: f64 = 20.0;
+/// A span that fails [`SPAN_END_STRAIGHT_DEG`] is moved along the run in steps of this.
+const SPAN_SHIFT_STEP_M: f64 = 0.5;
 
 /// A run of a stretch where the road stands more than [`DIP_M`] above the original ground.
 #[derive(Debug, Clone, PartialEq)]
@@ -299,6 +306,69 @@ fn off_chord(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
 }
 
+/// The heading in radians of the line from `from` to the first of `along` at least 4 m away, or the last.
+fn heading_towards(along: impl Iterator<Item = (f64, f64)>, from: (f64, f64)) -> Option<f64> {
+    let mut last = None;
+    for p in along {
+        last = Some(p);
+        if (p.0 - from.0).hypot(p.1 - from.1) >= 4.0 {
+            break;
+        }
+    }
+    let p = last?;
+    let (dx, dy) = (p.0 - from.0, p.1 - from.1);
+    (dx.hypot(dy) > 0.0).then(|| dx.atan2(dy))
+}
+
+/// The angle in degrees between two headings in radians.
+fn heading_gap_deg(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(TAU);
+    d.min(TAU - d).to_degrees()
+}
+
+/// Whether the `count` models of `length` from `from_m` each stay within [`BRIDGE_STRAIGHT_M`] of their
+/// chord and the line runs along the chord at both ends of the span (see [`SPAN_END_STRAIGHT_DEG`]).
+fn span_fits(points: &[(f64, f64)], from_m: f64, length: f64, count: f64) -> bool {
+    let mut k = 0.0;
+    while k < count {
+        let part = slice_points(points, from_m + k * length, from_m + (k + 1.0) * length);
+        let (Some(first), Some(last)) = (part.first(), part.last()) else {
+            return false;
+        };
+        if part
+            .iter()
+            .any(|p| off_chord(*p, *first, *last) > BRIDGE_STRAIGHT_M)
+        {
+            return false;
+        }
+        k += 1.0;
+    }
+    let first_model = (from_m, from_m + length);
+    let last_model = (from_m + (count - 1.0) * length, from_m + count * length);
+    end_runs_along_chord(points, first_model, true)
+        && end_runs_along_chord(points, last_model, false)
+}
+
+/// Whether the line runs along the chord of the model `(from, to)` over 4 m on both sides of its start
+/// (`at_start`) or end.
+fn end_runs_along_chord(points: &[(f64, f64)], (from, to): (f64, f64), at_start: bool) -> bool {
+    let part = slice_points(points, from, to);
+    let (Some(first), Some(last)) = (part.first().copied(), part.last().copied()) else {
+        return false;
+    };
+    let chord = (last.0 - first.0).atan2(last.1 - first.1);
+    let (at, d) = if at_start { (first, from) } else { (last, to) };
+    let behind = slice_points(points, 0.0, d);
+    let ahead = slice_points(points, d, f64::MAX);
+    // the direction of travel on each side of the end
+    let travel_before = heading_towards(behind.iter().rev().copied(), at).map(|h| h + PI);
+    let travel_after = heading_towards(ahead.iter().copied(), at);
+    [travel_before, travel_after]
+        .into_iter()
+        .flatten()
+        .all(|h| heading_gap_deg(h, chord) <= SPAN_END_STRAIGHT_DEG)
+}
+
 /// What to do about `dip`; `model_length` is the scaled length of the bridge model the road would get, if
 /// any.
 ///
@@ -330,32 +400,40 @@ pub fn decide(
         }
         let count = (run / length - SLACK_M).ceil().max(1.0);
         let middle = f64::midpoint(dip.from_m, dip.to_m);
-        let (from_m, to_m) = (middle - count * length / 2.0, middle + count * length / 2.0);
         let (lo, hi) = bridge_room(graph, dip.stretch)?;
-        if from_m < lo - SLACK_M || to_m > hi + SLACK_M {
+        // no room for the centred span: no bridge, shifting does not help
+        if middle - count * length / 2.0 < lo - SLACK_M
+            || middle + count * length / 2.0 > hi + SLACK_M
+        {
             return None;
         }
-        let mut k = 0.0;
-        while k < count {
-            let part = slice_points(
-                &stretch.points,
-                from_m + k * length,
-                from_m + (k + 1.0) * length,
-            );
-            let (first, last) = (part.first()?, part.last()?);
-            if part
-                .iter()
-                .any(|p| off_chord(*p, *first, *last) > BRIDGE_STRAIGHT_M)
-            {
+        // The span may move along the run as far as it still covers the run, in steps of
+        // `SPAN_SHIFT_STEP_M`: the shorter shift first, the earlier position on a tie.
+        let slack = (count * length - run) / 2.0;
+        let mut steps = 0.0_f64;
+        loop {
+            let shift = steps * SPAN_SHIFT_STEP_M;
+            if shift > slack + SLACK_M {
                 return None;
             }
-            k += 1.0;
+            for signed in [-shift, shift] {
+                let (from_m, to_m) = (
+                    middle + signed - count * length / 2.0,
+                    middle + signed + count * length / 2.0,
+                );
+                if from_m < lo - SLACK_M || to_m > hi + SLACK_M {
+                    continue;
+                }
+                if span_fits(&stretch.points, from_m, length, count) {
+                    return Some(BridgeSpan {
+                        stretch: dip.stretch,
+                        from_m,
+                        to_m,
+                    });
+                }
+            }
+            steps += 1.0;
         }
-        Some(BridgeSpan {
-            stretch: dip.stretch,
-            from_m,
-            to_m,
-        })
     })();
     match span {
         Some(span) => (DipAction::Bridge, Some(span)),
