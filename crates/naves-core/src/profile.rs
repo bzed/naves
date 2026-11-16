@@ -1295,6 +1295,57 @@ pub fn solve_network_with(
     model::solve(&model, net, junctions, side, solver)
 }
 
+/// [`solve_network`] with the clearance under bridges over roads (see [`over_crossings`]): the deck of a bridge
+/// whose thickness `thickness` knows stays [`BRIDGE_CLEARANCE_M`] above the surface of the road below it, plus
+/// its thickness, as far as the rest of the problem allows.
+///
+/// The road below keeps its height, so there are two solves. Phase A is [`solve_network`]'s problem; the height of
+/// the road below at each crossing is read from its result. Phase B adds, for each crossing, the row that holds
+/// the deck at least that high (the shortfall is a slack, kept only where nothing else is possible) and two rows
+/// that hold the two joints of the road below that bracket the crossing to their height of phase A (their
+/// slacks are as dear). The approaches of the bridge and the junctions on its road rise as far as the grade
+/// limits and the vertical radius ask; a deck and the road below that one junction holds cannot both be kept, and
+/// what is short is in [`Profiles::clearances`] (measured on the result with [`measure_clearances`]). A bridge
+/// whose thickness is `None`, or whose crossing is not placed, is not checked; with no bridge to check the
+/// result is that of [`solve_network`].
+///
+/// # Errors
+///
+/// As [`solve_network`].
+pub fn solve_network_clearing(
+    net: &PlacedNetwork,
+    hm: &Heightmap,
+    junctions: &Junctions,
+    side: &[f64],
+    graph: &RoadGraph,
+    thickness: &dyn Fn(&Stretch) -> Option<f64>,
+) -> Result<(Profiles, Junctions), ProfileError> {
+    let crossings: Vec<model::Crossing> = over_crossings(graph)
+        .iter()
+        .filter_map(|c| {
+            let upper = graph.stretches.get(c.upper)?;
+            Some(model::Crossing {
+                at: c.at,
+                upper: upper.id.clone(),
+                lower: graph.stretches.get(c.lower)?.id.clone(),
+                thickness: thickness(upper)?,
+            })
+        })
+        .collect();
+    if crossings.is_empty() {
+        return solve_network(net, hm, junctions, side);
+    }
+    let solver = &crate::qp::solve;
+    let mut model = model::build(net, hm, junctions)?;
+    let mut x = model::solve_x(&model, solver)?;
+    if model::add_clearances(&mut model, net, &x, &crossings) {
+        x = model::solve_x(&model, solver)?;
+    }
+    let (mut profiles, out) = model::read(&model, net, junctions, side, &x)?;
+    profiles.clearances = measure_clearances(net, &profiles.strips, graph, thickness);
+    Ok((profiles, out))
+}
+
 /// Computes the profile of every chain of `net`, in placement order, on the terrain `hm`, with the heights
 /// of `junctions` where roads meet. `side` is the side slope of the original ground at each road of `net`
 /// (see [`crate::sideslope::side_slopes`]); it is kept in the strips for the terrain shaping.

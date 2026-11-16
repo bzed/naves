@@ -22,9 +22,9 @@ use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 use super::{
-    Chain, ChainEnds, GradeExcess, GradeExcessKind, MIN_STENCIL_M, ProfileError, Profiles,
-    REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins, holds, joint_heights, meeting_bounds,
-    ring_of, segment_grades, strip_of,
+    BRIDGE_CLEARANCE_M, CROSSING_REACH_M, Chain, ChainEnds, GradeExcess, GradeExcessKind,
+    MIN_STENCIL_M, ProfileError, Profiles, REFERENCE_M, RoadStrip, SMOOTHNESS, chain_of, end_joins,
+    holds, joint_heights, meeting_bounds, ring_of, road_on_stretch, segment_grades, strip_of,
 };
 
 /// Weight of a junction's height against the ground's.
@@ -727,6 +727,15 @@ pub(crate) fn solve(
     side: &[f64],
     solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
 ) -> Result<(Profiles, Junctions), ProfileError> {
+    let x = solve_x(model, solver)?;
+    read(model, net, junctions, side, &x)
+}
+
+/// The solution of the problem of `model` found by `solver`: one value per unknown.
+pub(crate) fn solve_x(
+    model: &Model,
+    solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
+) -> Result<Vec<f64>, ProfileError> {
     let x = solver(&model.problem).map_err(|e| match e {
         QpError::NotSolved { status } => ProfileError::NotSolved { status },
         QpError::Invalid { what } => ProfileError::Invalid { what },
@@ -738,9 +747,20 @@ pub(crate) fn solve(
             model.problem.unknowns
         )));
     }
+    Ok(x)
+}
+
+/// The profiles and the junctions that the solution `x` of the problem of `model` stands for.
+pub(crate) fn read(
+    model: &Model,
+    net: &PlacedNetwork,
+    junctions: &Junctions,
+    side: &[f64],
+    x: &[f64],
+) -> Result<(Profiles, Junctions), ProfileError> {
     let mut profiles = Profiles::default();
     for mc in &model.chains {
-        let heights: Vec<f64> = mc.heights.iter().map(|h| h.value(&x)).collect();
+        let heights: Vec<f64> = mc.heights.iter().map(|h| h.value(x)).collect();
         if heights.iter().any(|h| !h.is_finite()) {
             return Err(ProfileError::NotSolved {
                 status: "a height is not a number".to_string(),
@@ -770,7 +790,7 @@ pub(crate) fn solve(
             _ => (0.0, 0.0),
         };
     }
-    out.unresolved = unresolved(model, &x, junctions);
+    out.unresolved = unresolved(model, x, junctions);
     Ok((profiles, out))
 }
 
@@ -840,4 +860,137 @@ fn excesses_of(mc: &ModelChain, heights: &[f64]) -> Vec<GradeExcess> {
         }
     }
     excesses
+}
+
+/// A bridge over a road whose deck thickness is known: what the rows (C) are made from.
+pub(crate) struct Crossing {
+    /// Where the lines of the two roads cross.
+    pub at: (f64, f64),
+    /// The id of the stretch of the bridge.
+    pub upper: String,
+    /// The id of the stretch of the road below.
+    pub lower: String,
+    /// The distance from the surface of the deck to its underside.
+    pub thickness: f64,
+}
+
+/// A place on a chain: `t` of the way from its variable `from` to its variable `to`.
+struct Place {
+    chain: usize,
+    from: usize,
+    to: usize,
+    t: f64,
+}
+
+/// The place of the stretch `id` nearest `at`, within the half width of its road and [`CROSSING_REACH_M`]: what
+/// `surface_near` finds on the strips, so that the rows are made for what the clearance is measured on.
+fn place_near(model: &Model, net: &PlacedNetwork, at: (f64, f64), id: &str) -> Option<Place> {
+    let mut best: Option<(f64, Place)> = None;
+    for (ci, mc) in model.chains.iter().enumerate() {
+        let half = net.roads.get(mc.first).map_or(0.0, |r| r.width / 2.0);
+        for (k, road) in mc.roads.iter().enumerate() {
+            if !net.roads.get(*road).is_some_and(|r| road_on_stretch(r, id)) {
+                continue;
+            }
+            let (Some(from), Some(to)) = (mc.chain.joints.get(k), mc.chain.joints.get(k + 1))
+            else {
+                continue;
+            };
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 1e-12 {
+                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let off = (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy);
+            if off <= half + CROSSING_REACH_M && best.as_ref().is_none_or(|b| off < b.0) {
+                best = Some((
+                    off,
+                    Place {
+                        chain: ci,
+                        from: from.2,
+                        to: to.2,
+                        t,
+                    },
+                ));
+            }
+        }
+    }
+    best.map(|(_, place)| place)
+}
+
+/// The height of the surface at `place`.
+fn height_at(model: &Model, place: &Place) -> Option<Expr> {
+    let heights = &model.chains.get(place.chain)?.heights;
+    Some(Expr::sum(&[
+        (heights.get(place.from)?, 1.0 - place.t),
+        (heights.get(place.to)?, place.t),
+    ]))
+}
+
+/// Phase B: the rows (C) of every crossing in `crossings` that is placed, given the solution `x` of the problem
+/// without them. Returns whether any were added (the problem has more unknowns and rows then).
+///
+/// The deck is held at least [`BRIDGE_CLEARANCE_M`] and its thickness above the surface of the road below as it
+/// is in `x`, less a slack `q`; the two variables of the road below that bracket the crossing are held to their
+/// height in `x`, within a slack `p` each (a variable that is a constant has no unknown and no row). The slacks
+/// cost as the other hard ones.
+pub(crate) fn add_clearances(
+    model: &mut Model,
+    net: &PlacedNetwork,
+    solved: &[f64],
+    crossings: &[Crossing],
+) -> bool {
+    let mut builder = Builder {
+        next: model.problem.unknowns,
+        problem: std::mem::replace(&mut model.problem, Problem::new(0)),
+    };
+    let mut pinned: BTreeSet<(usize, usize)> = BTreeSet::new();
+    let mut added = false;
+    for crossing in crossings {
+        let (Some(upper), Some(lower)) = (
+            place_near(model, net, crossing.at, &crossing.upper),
+            place_near(model, net, crossing.at, &crossing.lower),
+        ) else {
+            continue;
+        };
+        let (Some(deck), Some(low)) = (height_at(model, &upper), height_at(model, &lower)) else {
+            continue;
+        };
+        let wanted = low.value(solved) + BRIDGE_CLEARANCE_M + crossing.thickness;
+        let short = builder.unknown();
+        builder.row(
+            deck.terms_with(short, 1.0),
+            wanted - deck.constant,
+            f64::INFINITY,
+        );
+        builder.row(vec![(short, 1.0)], 0.0, f64::INFINITY);
+        builder.problem.add_linear(HARD, short);
+        builder.problem.add_square(HARD, &[(short, 1.0)], 0.0);
+        for var in [lower.from, lower.to] {
+            if !pinned.insert((lower.chain, var)) {
+                continue;
+            }
+            let Some(height) = model
+                .chains
+                .get(lower.chain)
+                .and_then(|mc| mc.heights.get(var))
+                .filter(|height| !height.terms.is_empty())
+            else {
+                continue;
+            };
+            let offset = Expr {
+                terms: height.terms.clone(),
+                constant: height.constant - height.value(solved),
+            };
+            let moved = builder.band(&offset, 0.0);
+            builder.problem.add_linear(HARD, moved);
+            builder.problem.add_square(HARD, &[(moved, 1.0)], 0.0);
+        }
+        added = true;
+    }
+    builder.problem.unknowns = builder.next;
+    model.problem = builder.problem;
+    added
 }
