@@ -1254,17 +1254,21 @@ pub enum ProfileError {
 /// (`docs/superpowers/specs/2026-11-16-height-solve-design.md`, phase A: grades, vertical bends and junction
 /// tilts; no clearance under bridges and no nearby roads yet).
 ///
-/// Every joint height and every junction's height and tilt is an unknown; the junctions start from
-/// [`crate::junctions::Junction::ground`] (what `repair` did to their heights is not used). A road is pulled to
-/// the ground and kept smooth; it is steeper than its grade aim only at a cost, steeper than its grade ceiling
-/// or bent sharper than its vertical radius only where nothing else is possible, and that is reported in
-/// [`Profiles::excesses`]. The returned junctions have the solved heights and tilts; `unresolved` lists the
-/// links of junctions that hold a segment over its ceiling. `side` is as in [`solve_profiles`].
+/// Every free joint height, and the height and tilt of every junction that holds a joint, is an unknown; those
+/// junctions are pulled to [`crate::junctions::Junction::ground`] and the tilt of the ground (what `repair` did
+/// to their heights is not used). A junction that holds no joint keeps its input height and tilt. A road is
+/// pulled to the ground and kept smooth; it is steeper than its grade aim only at a cost, steeper than its grade
+/// ceiling or bent sharper than its vertical radius only where nothing else is possible, and that is reported in
+/// [`Profiles::excesses`]. The returned junctions have the solved heights and tilts. `unresolved` lists the links
+/// between the nearest junction-held joints on both sides of a segment over its ceiling that has a held end; a
+/// segment over its ceiling whose other end is a ring's constant or a meeting with another road, or whose two
+/// ends one junction holds, is a [`GradeExcessKind::Grade`] excess without an entry. `side` is as in
+/// [`solve_profiles`].
 ///
 /// # Errors
 ///
-/// [`ProfileError::Invalid`] where the ground under a road is not a number, and [`ProfileError::NotSolved`]
-/// when the solver reports no solution.
+/// [`ProfileError::Invalid`] where the ground under a road, a junction's ground or tilt or a ring's plane is not
+/// a number, and [`ProfileError::NotSolved`] when the solver reports no solution.
 pub fn solve_network(
     net: &PlacedNetwork,
     hm: &Heightmap,

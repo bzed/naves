@@ -233,6 +233,19 @@ struct Draft {
     radius: f64,
 }
 
+/// The height of a ring's plane at `at`; an error that says where if it is not a number.
+fn ring_height(plane: &RingPlane, at: (f64, f64)) -> Result<f64, ProfileError> {
+    let height = plane.height_at(at);
+    if height.is_finite() {
+        Ok(height)
+    } else {
+        Err(invalid(format!(
+            "the plane of the ring at ({:.1}, {:.1}) has no height at ({:.1}, {:.1})",
+            plane.at.0, plane.at.1, at.0, at.1
+        )))
+    }
+}
+
 /// Sets the source of every variable that a junction holds: the junction's plane, or a constant where the
 /// junction lies on a ring.
 fn hold_sources(
@@ -241,7 +254,7 @@ fn hold_sources(
     chain: &Chain,
     junctions: &Junctions,
     ids: &BTreeSet<String>,
-) {
+) -> Result<(), ProfileError> {
     for ((slot, hold), at) in sources.iter_mut().zip(holds).zip(&chain.at) {
         let Some(hold) = hold else { continue };
         let Some(j) = junctions.points.get(hold.junction) else {
@@ -249,7 +262,7 @@ fn hold_sources(
         };
         let drop = holds::overlay_drop(j, ids);
         *slot = match ring_of_junction(junctions, j) {
-            Some(plane) => Source::Constant(plane.height_at(*at) - drop),
+            Some(plane) => Source::Constant(ring_height(plane, *at)? - drop),
             None => Source::Held {
                 junction: hold.junction,
                 lever: j
@@ -259,6 +272,7 @@ fn hold_sources(
             },
         };
     }
+    Ok(())
 }
 
 /// The ground target of each variable of a chain; a deck is held to the ground at its abutments, not to the
@@ -337,10 +351,10 @@ fn drafts(
             &chain,
             junctions,
             &holds::stretch_ids(net, roads),
-        );
+        )?;
         if let Some(plane) = ring {
             for (slot, at) in sources.iter_mut().zip(&chain.at) {
-                *slot = Source::Constant(plane.height_at(*at));
+                *slot = Source::Constant(ring_height(plane, *at)?);
             }
         }
         let holders: Vec<Option<usize>> = holds.iter().map(|h| h.map(|h| h.junction)).collect();
@@ -350,6 +364,8 @@ fn drafts(
         } else {
             flags
         };
+        // the limits come from `segment_grades` unchanged (its test for a piece between two junction heights
+        // counts roads, not variables; that is left for the task that removes the old path)
         let (aim_base, ceiling_base) = (grade_aim(family), grade_ceiling(family));
         let aim = limits_per_segment(
             &chain,
@@ -671,21 +687,13 @@ fn add_chain(
                 .add_square(1.0, &h.terms, h.constant - ground);
         }
     }
-    // the smoothness: the change of grade per metre at every interior variable, scaled to REFERENCE_M
-    for i in 1..heights.len().saturating_sub(1) {
-        let (Some(before), Some(here), Some(after)) =
-            (heights.get(i - 1), heights.get(i), heights.get(i + 1))
-        else {
-            continue;
-        };
-        let (l0, l1) = (run_of(chain, i - 1), run_of(chain, i));
-        let run = f64::midpoint(l0, l1);
-        let scale = REFERENCE_M * REFERENCE_M / run;
-        let kappa = Expr::sum(&[
-            (before, scale / l0),
-            (here, -scale / l0 - scale / l1),
-            (after, scale / l1),
-        ]);
+    // the smoothness: the change of grade per metre at every bend, scaled to REFERENCE_M. A bend is an interior
+    // variable, or a deck end (between the grade of its approach and the level deck, with the run of the rows (B)):
+    // one stencil across a deck would reward equal grades on both sides, the jump off one end the rows forbid
+    let grade = |i: usize| grade_expr(chain, heights, i);
+    let bends = bends_of(chain, &grade);
+    for (_, _, change, run) in &bends {
+        let kappa = Expr::sum(&[(change, REFERENCE_M * REFERENCE_M / run)]);
         if !kappa.terms.is_empty() {
             builder
                 .problem
@@ -706,9 +714,8 @@ fn add_chain(
         *slot = Some(builder.grade(&d, run_of(chain, i), aim, ceiling));
     }
     // (B)
-    let grade = |i: usize| grade_expr(chain, heights, i);
-    for (_, _, change, run) in bends_of(chain, &grade) {
-        builder.bend(&change, run / draft.radius);
+    for (_, _, change, run) in &bends {
+        builder.bend(change, run / draft.radius);
     }
 }
 

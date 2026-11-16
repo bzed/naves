@@ -89,6 +89,8 @@ The unknown vector is `x = (free heights, z, s, slacks)`.
 - `g_v`: the original ground at `p_v` (for a deck variable the mean of the ground at its two abutments), as today.
 - `κ_i = (γ_i − γ_{i−1}) / run_i` with `γ_i = (h_{i+1} − h_i) / L_i`, `L_i = max(spacing_i, MIN_STENCIL_M)` and
   `run_i = (L_{i−1} + L_i) / 2`: the change of grade per metre. `SMOOTHNESS = 30`, `REFERENCE_M = 12.5` as today.
+  A deck variable stands for a level deck of length `D`, as in (B): it gets **two** terms, one per deck end, each
+  with the change between the grade of the approach and 0 over `run = (L_approach + D) / 2`.
 - `ground_j`: `Junction::ground`; `s⁰_j`: the ground's slope along the through road as `junction_gradient` fits
   it today (already cut to its cap). `JUNCTION_GROUND = 2`, `JUNCTION_TILT = 2`.
 - `AIM = 1`, `NEAR = 10`, `HARD = 10⁴`. The linear term makes the hard slacks exact: they are zero unless the rows
