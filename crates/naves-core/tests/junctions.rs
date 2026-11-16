@@ -1235,3 +1235,48 @@ fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() 
     let j = find_junctions(&net, &graph, &small);
     assert_eq!(j.points[0].gradient, (0.0, 0.0));
 }
+
+/// Two junctions on a 100 m link; the first lies on a roundabout.
+fn ring_and_plain(ring_height: f64, plain_ground: f64) -> Junctions {
+    let mut j = two_junctions(100.0, 0.08, ring_height, plain_ground, 4, 4);
+    j.points[0].stretches.insert("ring".to_string());
+    j.rings.push(naves_core::junctions::RingPlane {
+        at: (0.0, 0.0),
+        radius: 20.0,
+        inner_radius: 15.0,
+        height: ring_height,
+        gradient: (0.0, 0.0),
+        rank: 4,
+        stretches: ["ring".to_string()].into_iter().collect(),
+    });
+    j
+}
+
+#[test]
+fn a_junction_on_a_roundabout_is_not_lifted_by_a_floor() {
+    let mut j = ring_and_plain(100.0, 100.0);
+    raise_floors(&mut j, &[(0, 110.0)], &[]);
+    assert!(
+        (j.points[0].height - 100.0).abs() < 1e-9,
+        "{}",
+        j.points[0].height
+    );
+    assert!(
+        (j.points[1].height - 100.0).abs() < 1e-9,
+        "no floor is carried on from the ring: {}",
+        j.points[1].height
+    );
+}
+
+#[test]
+fn a_junction_on_a_roundabout_is_not_moved_by_the_repair() {
+    // 100 m at 8 % allow 8 m; the ground differs by 12 m
+    let mut j = ring_and_plain(100.0, 112.0);
+    repair(&mut j);
+    assert!(
+        (j.points[0].height - 100.0).abs() < 1e-9,
+        "{}",
+        j.points[0].height
+    );
+    assert!(j.points[1].height < 112.0, "the other end takes it all");
+}

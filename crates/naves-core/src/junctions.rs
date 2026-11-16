@@ -1091,9 +1091,32 @@ pub fn repair(junctions: &mut Junctions) {
     repair_above(junctions, &[], &[]);
 }
 
+/// `frozen` and the junctions on a roundabout: they lie on the ring's plane, which the ring's joints are
+/// pinned to, so they are never moved or lifted.
+fn with_rings(junctions: &Junctions, frozen: &[usize]) -> Vec<usize> {
+    let mut all = frozen.to_vec();
+    all.extend(
+        junctions
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                junctions
+                    .rings
+                    .iter()
+                    .any(|ring| !ring.stretches.is_disjoint(&p.stretches))
+            })
+            .map(|(i, _)| i),
+    );
+    all.sort_unstable();
+    all.dedup();
+    all
+}
+
 /// [`repair`] with a lower bound per junction (by index; a missing or `-inf` one is none) that a junction is
 /// never moved below, and that lets it go above its ground by more than [`MAX_MOVE_M`].
 fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
+    let frozen = &with_rings(junctions, frozen);
     let floor = |i: usize| floors.get(i).copied().unwrap_or(f64::NEG_INFINITY);
     let mobility = |j: &Junction| 0.5_f64.powi(i32::from(j.rank));
     let excess = |points: &[Junction], link: &Link| {
@@ -1156,6 +1179,7 @@ fn repair_above(junctions: &mut Junctions, floors: &[f64], frozen: &[usize]) {
 /// of what a junction may be moved to; a floor is the one bound that goes over the [`MAX_MOVE_M`] one, but never
 /// lifts a junction more than [`MAX_RAISE_M`] above its ground.
 pub fn raise_floors(junctions: &mut Junctions, floors: &[(usize, f64)], frozen: &[usize]) {
+    let frozen = &with_rings(junctions, frozen);
     let mut bound = vec![f64::NEG_INFINITY; junctions.points.len()];
     let cap: Vec<f64> = junctions
         .points
