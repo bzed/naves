@@ -210,11 +210,12 @@ where they pin a mechanism that no longer exists; the commit says which.
 
 1. Synthetic tests per row type (the plan lists them).
 2. `road-analysis` at 2048 against e84cb2f: `road_grade` well below 1079, `road_not_drivable` not above 208 + 30,
-   `road_misses_terrain` not above 4625 + 30, the clearances of the four bridges over roads reached as far as the
-   grade limits of the bridge's road and the road below allow, analysis time below today's. The only goal is roads
-   that are drivable and usable: a bridge nobody can drive under is a failure, whichever road had to move.
+   `road_misses_terrain` not above 4625 + 30, analysis time below today's. Each of the four bridges over roads reaches
+   4.5 m or is a `bridge_clearance` finding, and there is no `road_grade` finding within 100 m of a crossing. The only
+   goal is roads that are drivable and usable, whichever road had to move.
 3. In the game (tools/ingame-check, the road-look sites): 23 (no ski jump), 50 and 51 (no wedge), 7, 11, 28, 29, 37
-   (tilted junctions still right), 1, 2 (unchanged or better).
+   (tilted junctions still right), 1, 2 (unchanged or better); the road below each bridge over a road passable, with
+   room under the deck.
 
 ## Left to the builder
 

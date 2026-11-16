@@ -107,55 +107,59 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 
 The height solve (release binary: all road heights and junctions are one quadratic program, see the manual's getting
 started), measured with `road-analysis` against `road-analysis` of the old pipeline at `e82cc74` (both at
-`terrain_size = 2048`). The figures are of the commit that solves the clearance under a bridge over a road in the same
-solve, with the bridge's road and the road below both free; the time of `naves build` and the game check below were
-measured at `55bcdd0`, before that change, and the game check has not been repeated since.
+`terrain_size = 2048`). The figures are of the commit that applies the meeting grade only where a road really ends on
+another, after the clearance under a bridge over a road was put into the same solve with both roads free. The time of
+`naves build` and the second game check were measured at `98cfcf4`, before the meeting fix, the first game check at
+`55bcdd0`.
 
 | Finding | Before | Now |
 |---|---|---|
-| `road_grade` | 1079 (751 bends, 328 grades) | 10 (5 bends, 5 grades, all 5 grades on the road below the Silbergstraße bridge; the grade is now measured against the hard ceiling of the road's family) |
-| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.4 m) | 4322 (1209, 168, largest 7.5 m) |
-| `road_conflict` | 1025 | 896 |
-| `road_not_drivable` | 208 | 190 |
+| `road_grade` | 1079 (751 bends, 328 grades) | 3 (3 bends at held joints, no grade; the grade is now measured against the hard ceiling of the road's family) |
+| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.4 m) | 4317 (1204, 163, largest 7.5 m) |
+| `road_conflict` | 1025 | 900 |
+| `road_not_drivable` | 208 | 189 |
 | `road_gap` | 343 | 342 |
 | `join_without_junction` | 65 | 65 |
 | `junction_too_steep` | 8 | 0 |
-| `bridge_clearance` | 1 | 1 (Silbergstraße: 4.12 m of 4.5 m, 0.50 m before; the other three bridges over roads reach 4.50 m) |
+| `bridge_clearance` | 1 | 0 (all four bridges over roads reach 4.50 m; Silbergstraße 0.50 m before) |
 
-- **Time:** `naves build` 905 s at `55bcdd0`, before this change (1775 s before; the roads are placed once, not twice). The road analysis
-  (`road-analysis`) takes 902 s (1828 s before). The height solve itself takes 3.0 s, one solve of 0.85 s: 97 619
-  unknowns, 200 125 rows (with the four rows of the clearance under bridges over roads), 17 iterations.
-- **Under the bridges over roads** the lift is shared: at Silbergstraße the deck stands 3.39 m above its ground and the
-  road below 1.35 m below its ground; at (7995, 7320) the deck stays at its ground (0.82 m below the mean of its
-  abutments) and the road below is lowered 8.69 m; at (2347, 6546) 0.01 m and 4.40 m; at (5101, 7913) 2.07 m and
-  4.75 m. The roads stay within their grade ceilings within 100 m of these crossings except the road below at
-  Silbergstraße (below).
+- **Time:** `naves build` 897 s at `98cfcf4`, before the meeting fix (1775 s before; the roads are placed once, not
+  twice). The road analysis (`road-analysis`) takes 921 s (1828 s before). The height solve itself takes 3.0 s, one
+  solve of 0.86 s: 97 619 unknowns, 200 125 rows (with the four rows of the clearance under bridges over roads), 17
+  iterations.
+- **Under the bridges over roads** the lift is shared. The deck against the ground at its two ends, and the road below
+  against its ground at the crossing: Silbergstraße +4.78 / +2.12 m and +1.34 m; (7995, 7320) −5.00 / +3.35 m (the deck
+  lies across a slope) and −8.52 m; (2347, 6546) +0.24 / −0.62 m and −7.60 m (5.6 m in the old pipeline already);
+  (5101, 7913) +3.43 / +0.71 m and −4.75 m. Both roads stay within their grade ceilings within 100 m of every
+  crossing, and there is no `road_grade` finding there.
 - **How well the road follows its grade aim and the ground** (measured at `55bcdd0`, before this change): 39.3 km of road
   is over its grade aim before, 38.7 km now. Segments over the hard ceiling of their family: 413 before, 5 now. Road
   points more than 4 m off the original ground: 3070 before, 844 now.
 - **Bridges over dips:** 3 before, none now. The old profile held the aim and stood high over a dip; the new one is
   allowed to follow the ground into it within the limits of the road, so fewer places stand more than 3 m above the
-  ground and none is deep enough for a bridge (dips found: 545 before, 338 now).
-- **In the game** (at `55bcdd0`, before this change, not repeated since; DayZ 1.30.164289, headless client; the same 11 sites and camera as
-  the previous check):
+  ground and none is deep enough for a bridge (dips found: 545 before, 336 now).
+- **In the game, second check** (at `98cfcf4`, before the meeting fix): all four roads below the bridges over roads
+  are passable, with room under the deck (the bridge at (7995, 7320) is a stone arch and the road passes through it);
+  the banks of the cuttings look plausible, the cut edge at (2347, 6546) is a little blocky, and Silbergstraße's
+  headroom cannot be seen from the camera. Sites 23, 37 and 14 are unchanged.
+- **In the game, first check** (at `55bcdd0`, before the clearance was put into the same solve; DayZ 1.30.164289,
+  headless client; the same 11 sites and camera as the previous check):
   - Better: Silbergstraße (site 51; the steep ramp up to the bridge deck is gone and the road runs nearly level onto
     it) and the crossing that had a grade finding (site 37; the V-shaped notch where the dirt road dips into the main
     road is gone). The Silbergstraße pictures show the state at `55bcdd0`, where junction 384 and the road below were
-    lifted 4.9 m for the bridge; now the junction is 2.54 m above its ground and the road below dips under the
-    bridge. Not checked in the game since.
+    lifted 4.9 m for the bridge; now the junction is lower and the road below dips under the bridge.
   - Unchanged or slightly better: the Kehlsteinstraße bridge (50), the hairpin (7), the embankment (11), the
     junctions (28 and 29; at 29 the side arm runs further up the hill) and the slight-angle sites (1 and 2).
   - Unchanged: the wooden bridge (23): its deck end still sits slightly proud of the road.
   - At site 28 the truss bridge in the background is gone (a bridge over a dip that is not built any more); at site 14
     no bridge is seen in either picture, and the road follows the ground, with no hole and no wall.
 - **Still open:**
-  - Silbergstraße: the bridge's road and the road below share junction 384, next to the crossing. The junction rises
-    to 323.40 m (320.86 m of ground) and the road below falls from it to the crossing at up to 15.8 % (its ceiling
-    there is 13.5 %, and 6 % next to the junction, where it reaches 14.8 %): 5 `road_grade` grades and 2 bends, and
-    the clearance stops at 4.12 m. The deepest cut of the road below within 100 m is 8.76 m (on a 21 degree flank).
-  - Deep cuttings under bridges: the road below at (7995, 7320) is lowered 8.69 m at the crossing (within its grade
-    limits; no `road_far_from_ground`). Whether that looks right is for the game to show.
-  - Larger terrain misses (more than 2 m: 142 before, 168 now): the legs of a hairpin on a steep flank are tied to one
+  - Deep cuttings under bridges: the road below at (7995, 7320) lies 8.52 m under its ground at the crossing, at
+    (2347, 6546) 7.60 m (within their grade limits; no `road_far_from_ground`). The game check found them passable.
+  - The thickness of an arch bridge's deck is taken as the lowest vertex of its Geometry LOD within 4 m below the deck,
+    anywhere along the span (3.96 m for the stone arch at (7995, 7320)), not at the crown, so the clearance asked for
+    under an arch is larger than a vehicle needs.
+  - Larger terrain misses (more than 2 m: 142 before, 163 now): the legs of a hairpin on a steep flank are tied to one
     height only where their ground differs by less than the terrain cell allows plus 1 m, so they are not pulled
     together where it differs more.
   - No bridges over dips (above); whether the old bridge sites are now acceptable fills was looked at only at sites 14
