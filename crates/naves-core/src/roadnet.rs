@@ -502,6 +502,10 @@ fn deviation(a: f64, b: f64) -> f64 {
     PI - angle_between(a, b)
 }
 
+/// The sharpest bend, in degrees, at which the two arms of a node with no other arm continue each other
+/// (three or more arms: a quarter turn, see [`chains`]).
+pub const TWO_ARM_PAIR_MAX_DEG: f64 = 150.0;
+
 /// At each crossing, the two arms that continue each other (see [`chains`]), both ways round.
 fn through_pairs(graph: &RoadGraph, rings: &[Ring]) -> BTreeMap<Arm, Arm> {
     let mut partner: BTreeMap<Arm, Arm> = BTreeMap::new();
@@ -536,6 +540,13 @@ fn through_pairs(graph: &RoadGraph, rings: &[Ring]) -> BTreeMap<Arm, Arm> {
             continue;
         }
         let family = |arm: Arm| graph.stretches.get(arm.0).map(|s| s.family);
+        // a node with only two arms is no choice of a through road: the road goes on, round any bend
+        // short of a turn back
+        let limit = if arms.len() == 2 {
+            TWO_ARM_PAIR_MAX_DEG.to_radians()
+        } else {
+            FRAC_PI_4
+        };
         let mut best: Option<(f64, Arm, Arm)> = None;
         for (i, &a) in arms.iter().enumerate() {
             for &b in arms.iter().skip(i + 1) {
@@ -543,7 +554,7 @@ fn through_pairs(graph: &RoadGraph, rings: &[Ring]) -> BTreeMap<Arm, Arm> {
                     continue;
                 }
                 let d = deviation(heading(a), heading(b));
-                if d < FRAC_PI_4 && best.is_none_or(|(bd, _, _)| d < bd) {
+                if d < limit && best.is_none_or(|(bd, _, _)| d < bd) {
                     best = Some((d, a, b));
                 }
             }
@@ -791,7 +802,8 @@ pub fn overlay_rank(a: &Chain, b: &Chain, graph: &RoadGraph) -> std::cmp::Orderi
 /// The chains of through roads, in placement order: by family rank (Asf1, Asf2, City, Asf3, Grav, Mud),
 /// then longest first, then by id.
 ///
-/// At each crossing the two arms of the same family whose way through turns least, if less than 45°, are one
+/// At each crossing the two arms of the same family whose way through turns least, if less than 45° (at a node
+/// with only two arms: at most [`TWO_ARM_PAIR_MAX_DEG`]), are one
 /// through road. The other arms start or end there.
 #[must_use]
 pub fn chains(graph: &RoadGraph) -> Vec<Chain> {

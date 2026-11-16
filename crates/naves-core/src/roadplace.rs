@@ -1115,7 +1115,7 @@ impl<'a> Placer<'a> {
                 Event::Bridge(k) => {
                     let placed = self.place_bridge(
                         &line,
-                        c,
+                        (c, first),
                         k - first,
                         family,
                         drivable,
@@ -1358,12 +1358,12 @@ impl<'a> Placer<'a> {
         Some((model, scale))
     }
 
-    /// Fits the road up to link `k` of the run and lays the bridge models along its chord.
+    /// Fits the road up to link `k` of the run (which starts at link `first` of chain `c`) and lays the bridge models along its chord.
     #[expect(clippy::too_many_arguments, reason = "the state of one run, passed on")]
     fn place_bridge(
         &mut self,
         line: &Polyline,
-        c: usize,
+        (c, first): (usize, usize),
         k: usize,
         family: Family,
         drivable: bool,
@@ -1387,7 +1387,7 @@ impl<'a> Placer<'a> {
         let id = self
             .chains
             .get(c)
-            .and_then(|ch| ch.links.get(k))
+            .and_then(|ch| ch.links.get(first + k))
             .and_then(|l| self.graph.stretches.get(l.stretch))
             .map(|s| s.id.clone())
             .unwrap_or_default();

@@ -1616,3 +1616,27 @@ fn hairpin_dip_placed(from_m: f64, to_m: f64, joint_limit: Option<f64>) -> usize
     }
     bridges.len()
 }
+
+#[test]
+fn a_gap_in_a_later_run_names_its_own_stretch() {
+    // a road, a tunnel, a road with a sharp bend and a bridge: the approach to the bridge is the
+    // second run of the chain, its link number there is not the one in the chain
+    let mut tunnel = feature(2, Family::Asf3, &[2, 3], &[(400.0, 500.0), (450.0, 500.0)]);
+    if let FeatureKind::Road { tunnel: t, .. } = &mut tunnel.kind {
+        *t = true;
+    }
+    let net = place(&[
+        feature(1, Family::Asf3, &[1, 2], &[(100.0, 500.0), (400.0, 500.0)]),
+        tunnel,
+        feature(3, Family::Asf3, &[3, 4], &[(450.0, 500.0), (500.0, 500.0)]),
+        bridge_feature(4, &[4, 5], &[(500.0, 500.0), (500.0, 560.0)]),
+        feature(5, Family::Asf3, &[5, 6], &[(500.0, 560.0), (700.0, 560.0)]),
+    ]);
+    assert!(!net.gaps.is_empty(), "{:?}", net.warnings);
+    for gap in &net.gaps {
+        assert!(
+            gap.stretch.starts_with("3:") || gap.stretch.starts_with("4:"),
+            "{gap:?}"
+        );
+    }
+}

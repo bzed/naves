@@ -1080,3 +1080,56 @@ fn of_two_bridges_the_higher_layer_is_the_upper() {
     assert_eq!(found.len(), 1);
     assert_eq!(g.stretches[found[0].upper].layer, 2);
 }
+
+/// One way: 100 m east, a U-turn of radius 4 m to the north, 100 m west. Its nodes are 1 to the number
+/// of points.
+fn u_turn_way() -> Feature {
+    let mut points: Vec<(f64, f64)> = (0..=10)
+        .map(|i| (-100.0 + 10.0 * f64::from(i), 0.0))
+        .collect();
+    points.extend((1..30).map(|i| {
+        let t = std::f64::consts::PI * f64::from(i) / 30.0;
+        (4.0 * t.sin(), 4.0 - 4.0 * t.cos())
+    }));
+    points.extend((0..=10).map(|i| (-10.0 * f64::from(i), 8.0)));
+    let nodes: Vec<i64> = (1..=i64::try_from(points.len()).unwrap()).collect();
+    road(1, &nodes, &points)
+}
+
+#[test]
+fn a_bridge_span_that_starts_in_a_bend_keeps_the_road_one_chain() {
+    let g = build_graph(&[u_turn_way()]);
+    assert_eq!(g.stretches.len(), 1);
+    // the middle of the bend: the road turns by 57 degrees on each side within 4 m
+    let apex = 100.0 + 2.0 * std::f64::consts::PI;
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: 0,
+            from_m: apex,
+            to_m: apex + 40.0,
+        }],
+    );
+    assert_eq!(out.stretches.len(), 3, "{:?}", ids(&out));
+    let c = chain_ids(&out);
+    assert_eq!(c.len(), 1, "{c:?}");
+    assert_eq!(c[0].len(), 3, "{c:?}");
+}
+
+#[test]
+fn two_dead_ends_drawn_into_one_node_stay_apart() {
+    // two arms of one family that leave the node 10 degrees apart: a bend of 170 degrees
+    // (the second one is a bridge, so that the way is not simply one stretch)
+    let g = build_graph(&[
+        feature(
+            1,
+            Family::Asf3,
+            false,
+            &[0, 10],
+            &[(0.0, 0.0), (0.0, 100.0)],
+        ),
+        feature(2, Family::Asf3, true, &[0, 20], &[(0.0, 0.0), (17.4, 98.5)]),
+    ]);
+    let c = chain_ids(&g);
+    assert_eq!(c.len(), 2, "{c:?}");
+}
