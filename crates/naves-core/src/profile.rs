@@ -1419,20 +1419,32 @@ fn junction_floors(
     decks: &[DeckFloor],
 ) -> Vec<(usize, f64)> {
     let mut floors: Vec<(usize, f64)> = Vec::new();
-    for deck in decks {
-        for roads in &net.chains {
-            let Some(chain) = chain_of(net, roads, f64::from(hm.cell_m), junctions) else {
-                continue;
-            };
-            let is_deck = |k: usize| {
-                roads
-                    .get(k)
-                    .and_then(|r| net.roads.get(*r))
-                    .is_some_and(|r| r.kind == PlacedKind::Bridge)
-            };
-            let Some(on) = deck_road(net, roads, deck.at, &deck.stretch) else {
-                continue;
-            };
+    for roads in &net.chains {
+        // the cheap test first: most chains carry none of the decks
+        let carried: Vec<(&DeckFloor, usize)> = decks
+            .iter()
+            .filter_map(|deck| Some((deck, deck_road(net, roads, deck.at, &deck.stretch)?)))
+            .collect();
+        if carried.is_empty() {
+            continue;
+        }
+        let Some(chain) = chain_of(net, roads, f64::from(hm.cell_m), junctions) else {
+            continue;
+        };
+        let is_deck = |k: usize| {
+            roads
+                .get(k)
+                .and_then(|r| net.roads.get(*r))
+                .is_some_and(|r| r.kind == PlacedKind::Bridge)
+        };
+        let family = roads
+            .first()
+            .and_then(|r| net.roads.get(*r))
+            .map_or(Family::Asf3, |r| r.family);
+        let limit = ceiling_of(family);
+        let holds = holds::chain_holds(net, roads, f64::from(hm.cell_m), junctions);
+        let at = |k: usize| chain.joints.get(k).map(|j| (j.0, j.1));
+        for (deck, on) in carried {
             let (mut first, mut last) = (on, on);
             while first > 0 && is_deck(first - 1) {
                 first -= 1;
@@ -1440,13 +1452,6 @@ fn junction_floors(
             while is_deck(last + 1) {
                 last += 1;
             }
-            let family = roads
-                .first()
-                .and_then(|r| net.roads.get(*r))
-                .map_or(Family::Asf3, |r| r.family);
-            let limit = ceiling_of(family);
-            let holds = holds::chain_holds(net, roads, f64::from(hm.cell_m), junctions);
-            let at = |k: usize| chain.joints.get(k).map(|j| (j.0, j.1));
             // outward from the deck's first joint and from its last
             for (start, step_back) in [(first, true), (last + 1, false)] {
                 let mut along = 0.0;
