@@ -1302,8 +1302,8 @@ pub fn solve_network_with(
 /// The road below keeps its height, so there are two solves. Phase A is [`solve_network`]'s problem; the height of
 /// the road below at each crossing is read from its result. Phase B adds, for each crossing, the row that holds
 /// the deck at least that high (the shortfall is a slack, kept only where nothing else is possible) and two rows
-/// that hold the two joints of the road below that bracket the crossing to their height of phase A (their
-/// slacks are as dear). The approaches of the bridge and the junctions on its road rise as far as the grade
+/// that hold the two joints of the road below that bracket the crossing to their height of phase A (equalities,
+/// without slack). The approaches of the bridge and the junctions on its road rise as far as the grade
 /// limits and the vertical radius ask; a deck and the road below that one junction holds cannot both be kept, and
 /// what is short is in [`Profiles::clearances`] (measured on the result with [`measure_clearances`]). A bridge
 /// whose thickness is `None`, or whose crossing is not placed, is not checked; with no bridge to check the
