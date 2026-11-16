@@ -316,6 +316,68 @@ F1/F3 on free joints and the bridge-deck class D (site 23's ski jump; measuring 
 joint height solve plan that follows: the QP removes H3/H1/F1 and holds the deck as variables. The junction plane of
 Task 12 becomes a variable there (height and tilt along the through road, bounded by the same share).
 
+### Task 14: A bridge span does not start or end in a bend (Checkpoint B, site 11)
+
+Cause (diagnosis `checkpoint-b-diagnosis.md`): after Task 12 the first-round profile gives the Kehlsteinstraße loop
+(way 451269592) a dip bridge whose span starts at 75 m, at the end of a hairpin. There the line turns 50° within 4 m,
+`through_pairs` (45°) splits the road into two chains, and the approach ends free 5.1 m and 63° short of the deck,
+with no finding. Even kept as one chain, the approach cannot reach the chord's heading and the decks are laid 35 m
+off the line. A dip bridge must be placed where the road runs straight.
+
+**Files:** Modify `crates/naves-core/src/dips.rs` (`decide`); Test `crates/naves-core/tests/dips.rs`,
+`crates/naves-core/tests/roadplace.rs`; Docs: the manual's bridge/dip section, `CHANGELOG.md`
+
+**The exact rule:**
+- `pub const SPAN_END_STRAIGHT_DEG: f64 = 20.0;` At each end of a dip bridge span, the line's heading over the 4 m
+  outside the span (before the start, after the end; the first point at least 4 m away, as `arm_heading` measures)
+  and over the 4 m inside it differ from the chord's heading by at most this.
+- If the centred span fails, shift it (both ends together) along the run within the slack `decide` already allows,
+  in 0.5 m steps, the shorter shift first, the earlier position on a tie; take the first span that passes. If none
+  passes, the dip is filled (`DipAction::Fill`). Spans of OSM bridges are not touched (only dip bridges).
+
+- [ ] **Step 1: Failing tests:**
+  - `dips.rs` `a_bridge_span_does_not_start_in_a_hairpin`: a synthetic stretch with a U-turn of radius 6 m followed by
+    a straight, and a dip whose centred span starts at the end of the U (run 28 m, a 25 m model). `decide` returns
+    either Fill or a span whose two ends satisfy the rule above (assert both measures ≤ 20°). RED today.
+  - `dips.rs` `a_span_on_a_straight_is_unchanged`: the same dip on a plain straight → the same span as today.
+  - `roadplace.rs` `a_dip_bridge_after_a_hairpin_closes_on_its_approach`: the U-turn line placed with that decision;
+    the piece before the first deck ends within `GAP_CLOSED_M` and `KINK_TOLERATED_DEG` of the deck's start and every
+    deck joint lies within 1 m of the line (or there is no deck, when filled).
+- [ ] **Step 2–4:** RED captured, implement, PASS, `make check`, `road-analysis` at 2048 once. Check that the
+  Kehlsteinstraße loop near (7705, 6027) has no dip span starting in the hairpin and that its run closes. Other counts
+  within noise (±30 grade); report the counts.
+- [ ] **Step 5: Commit** `fix: a dip bridge is placed where the road runs straight`.
+
+### Task 15: A road stays one chain at a two-arm node in a bend (Checkpoint B, site 11, part 2)
+
+Cause: `roadnet::through_pairs` pairs two arms only if they bend less than 45°. That rule picks the through road among
+three or more arms, but it also splits a road at a node with only its own two arms (a bridge boundary from
+`with_bridge_spans`, or an OSM way that only changes bridge/tunnel/layer). The part before the split then ends free
+and silently overlaps the next. Lands after Task 14 and is measured on its own.
+
+**Files:** Modify `crates/naves-core/src/roadnet.rs` (`through_pairs`), `crates/naves-core/src/roadplace.rs` (stretch
+id lookup); Test `crates/naves-core/tests/roadnet.rs`, `crates/naves-core/tests/roadplace.rs`; `CHANGELOG.md`
+
+**The exact rule:**
+- A node with exactly two arms, both of one family, pairs them if they bend at most `TWO_ARM_PAIR_MAX_DEG = 150.0`
+  (measured as now). Nodes with three or more arms keep the 45° rule.
+- Side fix: `place_bridge` and `fit_approach` look up the stretch id with the link index within the chain, not within
+  the run (today, runs that do not start at the chain's first link label warnings and `road_gap` with another
+  stretch's id).
+
+- [ ] **Step 1: Failing tests:**
+  - `roadnet.rs` `a_bridge_span_that_starts_in_a_bend_keeps_the_road_one_chain`: a synthetic U of radius 6 m,
+    `with_bridge_spans` from the end of the bend → one chain holding the three stretches. RED today (two chains).
+  - `roadnet.rs` `two_dead_ends_drawn_into_one_node_stay_apart`: two arms of one family meeting at 170° → two chains.
+  - `roadplace.rs` `a_gap_in_a_later_run_names_its_own_stretch`: a chain whose second run (after a tunnel) has a
+    `road_gap` → the finding carries that run's stretch id. RED today.
+- [ ] **Step 2–4:** RED captured, implement, PASS, `make check`, `road-analysis` at 2048 once; report the counts and
+  every new `road_gap` above 2 m with its position (these were silent overlaps before).
+- [ ] **Step 5: Commit** `fix: a road keeps one chain through a bend at a bridge end`.
+
+**Site 7 needs no code fix:** the baseline was the broken one (a dip bridge made the road loop 340° and cross
+itself). The game check regenerates its site with `road-sites` for way 113546394.
+
 ### Checkpoint B (controller): the stage 2 game check and the figures
 
-Build the example, run the tool with `/var/tmp/naves-roadlook/baseline/sites.json`, put before and after side by side (contact sheets). Update `examples/berchtesgaden/README.md` (figures and the in-game results) and the CHANGELOG. The maintainer looks at the sheets.
+After Tasks 14 and 15: a second game run for sites 7 (regenerated), 11, 14 and 28 with the memory caps. Build the example, run the tool with `/var/tmp/naves-roadlook/baseline/sites.json`, put before and after side by side (contact sheets). Update `examples/berchtesgaden/README.md` (figures and the in-game results) and the CHANGELOG. The maintainer looks at the sheets.
