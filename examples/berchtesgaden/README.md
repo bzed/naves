@@ -81,9 +81,9 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 |---|---|---|---|---|---|---|---|
 | 6.4 km | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
 | 6.4 km | 2048 (crashes the client) | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
-| 8.2 km | 2048 | | | | 396 s (1775 s, see below) | 3.5 GiB | 233 MB |
+| 8.2 km | 2048 | | | | 897 s (2026-11-16, height solve at `98cfcf4`; 1775 s road look; 396 s 2026-11-15) | 3.5 GiB (2026-11-15, not measured since) | 233 MB (2026-11-15) |
 
-The figures with roads are from 2026-11-14 to 2026-11-16 (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
+The figures with roads are from 2026-11-14 to 2026-11-16, each row as dated (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
 gives terrain cells of 3.1 m, and the DayZ client crashes on cells under 4 m (see the grid in
 `docs/manual/src/project-file.md`); the 8.2 km map has cells of 4 m. Placing the roads takes most of the time, and
 they are placed twice when a dip gets a bridge: on the 6.4 km map at 2048 the two rounds took 152 s and 148 s,
@@ -102,6 +102,68 @@ naves build examples/berchtesgaden
 
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
+
+## Results with roads on the 8.2 km map at 2048 (2026-11-16, height solve)
+
+The height solve (release binary: all road heights and junctions are one quadratic program, see the manual's getting
+started), measured with `road-analysis` against `road-analysis` of the old pipeline at `e82cc74` (both at
+`terrain_size = 2048`). The figures are of the commit that applies the meeting grade only where a road really ends on
+another, after the clearance under a bridge over a road was put into the same solve with both roads free. The time of
+`naves build` and the second game check were measured at `98cfcf4`, before the meeting fix, the first game check at
+`55bcdd0`.
+
+| Finding | Before | Now |
+|---|---|---|
+| `road_grade` | 1079 (751 bends, 328 grades) | 3 (3 bends at held joints, no grade; the grade is now measured against the hard ceiling of the road's family) |
+| `road_misses_terrain` | 4625 (1285 over 0.5 m, 142 over 2 m, largest 10.4 m) | 4317 (1204, 163, largest 7.5 m) |
+| `road_conflict` | 1025 | 900 |
+| `road_not_drivable` | 208 | 189 |
+| `road_gap` | 343 | 342 |
+| `join_without_junction` | 65 | 65 |
+| `junction_too_steep` | 8 | 0 |
+| `bridge_clearance` | 1 | 0 (all four bridges over roads reach 4.50 m; Silbergstraße 0.50 m before) |
+
+- **Time:** `naves build` 897 s at `98cfcf4`, before the meeting fix (1775 s before; the roads are placed once, not
+  twice). The road analysis (`road-analysis`) takes 921 s (1828 s before). The height solve itself takes 3.0 s, one
+  solve of 0.86 s: 97 619 unknowns, 200 125 rows (with the four rows of the clearance under bridges over roads), 17
+  iterations.
+- **Under the bridges over roads** the lift is shared. The deck against the ground at its two ends, and the road below
+  against its ground at the crossing: Silbergstraße +4.78 / +2.12 m and +1.34 m; (7995, 7320) −5.00 / +3.35 m (the deck
+  lies across a slope) and −8.52 m; (2347, 6546) +0.24 / −0.62 m and −7.60 m (5.6 m in the old pipeline already);
+  (5101, 7913) +3.43 / +0.71 m and −4.75 m. Both roads stay within their grade ceilings within 100 m of every
+  crossing, and there is no `road_grade` finding there.
+- **How well the road follows its grade aim and the ground** (measured at `55bcdd0`, before this change): 39.3 km of road
+  is over its grade aim before, 38.7 km now. Segments over the hard ceiling of their family: 413 before, 5 now. Road
+  points more than 4 m off the original ground: 3070 before, 844 now.
+- **Bridges over dips:** 3 before, none now. The old profile held the aim and stood high over a dip; the new one is
+  allowed to follow the ground into it within the limits of the road, so fewer places stand more than 3 m above the
+  ground and none is deep enough for a bridge (dips found: 545 before, 336 now).
+- **In the game, second check** (at `98cfcf4`, before the meeting fix): all four roads below the bridges over roads
+  are passable, with room under the deck (the bridge at (7995, 7320) is a stone arch and the road passes through it);
+  the banks of the cuttings look plausible, the cut edge at (2347, 6546) is a little blocky, and Silbergstraße's
+  headroom cannot be seen from the camera. Sites 23, 37 and 14 are unchanged.
+- **In the game, first check** (at `55bcdd0`, before the clearance was put into the same solve; DayZ 1.30.164289,
+  headless client; the same 11 sites and camera as the previous check):
+  - Better: Silbergstraße (site 51; the steep ramp up to the bridge deck is gone and the road runs nearly level onto
+    it) and the crossing that had a grade finding (site 37; the V-shaped notch where the dirt road dips into the main
+    road is gone). The Silbergstraße pictures show the state at `55bcdd0`, where junction 384 and the road below were
+    lifted 4.9 m for the bridge; now the junction is lower and the road below dips under the bridge.
+  - Unchanged or slightly better: the Kehlsteinstraße bridge (50), the hairpin (7), the embankment (11), the
+    junctions (28 and 29; at 29 the side arm runs further up the hill) and the slight-angle sites (1 and 2).
+  - Unchanged: the wooden bridge (23): its deck end still sits slightly proud of the road.
+  - At site 28 the truss bridge in the background is gone (a bridge over a dip that is not built any more); at site 14
+    no bridge is seen in either picture, and the road follows the ground, with no hole and no wall.
+- **Still open:**
+  - Deep cuttings under bridges: the road below at (7995, 7320) lies 8.52 m under its ground at the crossing, at
+    (2347, 6546) 7.60 m (within their grade limits; no `road_far_from_ground`). The game check found them passable.
+  - The thickness of an arch bridge's deck is taken as the lowest vertex of its Geometry LOD within 4 m below the deck,
+    anywhere in the model (3.96 m for the stone arch at (7995, 7320)), not at the crown, so the clearance asked for
+    under an arch is larger than a vehicle needs.
+  - Larger terrain misses (more than 2 m: 142 before, 163 now): the legs of a hairpin on a steep flank are tied to one
+    height only where their ground differs by less than the terrain cell allows plus 1 m, so they are not pulled
+    together where it differs more.
+  - No bridges over dips (above); whether the old bridge sites are now acceptable fills was looked at only at sites 14
+    and 28.
 
 ## Results with roads on the 8.2 km map at 2048 (2026-11-16, road look)
 

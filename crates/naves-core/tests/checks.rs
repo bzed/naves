@@ -330,6 +330,10 @@ fn a_bump_shows_as_grade_change() {
 }
 
 /// The profiles with the junctions that `find_junctions` finds (chain ends on roads; no graph).
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: a network that cannot be solved fails loudly"
+)]
 fn solve(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
     solve_profiles(
         net,
@@ -337,6 +341,7 @@ fn solve(net: &PlacedNetwork, hm: &Heightmap) -> Profiles {
         &find_junctions(net, &RoadGraph::default(), hm),
         &side_slopes(net, hm),
     )
+    .unwrap()
 }
 
 #[test]

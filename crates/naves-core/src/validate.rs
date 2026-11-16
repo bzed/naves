@@ -276,7 +276,7 @@ fn capped_violations(capped: &[(f64, f64)]) -> Vec<Violation> {
         .collect()
 }
 
-/// One violation for each link that is still over its ceiling after the repair, at the middle of the two
+/// One violation for each link that is still over its ceiling after the height solve, at the middle of the two
 /// junctions.
 fn junction_violations(junctions: &Junctions) -> Vec<Violation> {
     junctions

@@ -277,7 +277,7 @@ fn main() {
         mut profiles,
     } = plan.placed;
     if std::env::var("NO_JUNCTIONS").is_ok() {
-        profiles = solve_profiles(&net, &base, &Junctions::default(), &side);
+        profiles = solve_profiles(&net, &base, &Junctions::default(), &side).expect("solve");
     }
     let t_place = t0.elapsed();
     let t_profiles = t_place;
@@ -293,20 +293,66 @@ fn main() {
         naves_core::roadnet::over_crossings(&graph).len(),
         profiles.clearances.len()
     );
+    // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
+    let thickness = |s: &naves_core::roadnet::Stretch| {
+        naves_core::roadplace::bridge_for(&catalog, s.family).and_then(|(m, scale, _)| {
+            (m.thickness_source != naves_core::catalog::ThicknessSource::Unknown)
+                .then_some(m.deck_thickness * scale)
+        })
+    };
     {
         // the same placement with the junctions at the ground, as it was without the clearance
         let plain = naves_core::junctions::find_junctions(&net, &graph, &base);
-        let before = solve_profiles(&net, &base, &plain, &side);
-        let thickness = |s: &naves_core::roadnet::Stretch| {
-            naves_core::roadplace::bridge_for(&catalog, s.family)
-                .map(|(m, scale, _)| m.deck_thickness * scale)
-        };
+        let before = solve_profiles(&net, &base, &plain, &side).expect("profiles");
         for c in naves_core::profile::measure_clearances(&net, &before.strips, &graph, &thickness) {
             println!(
                 "CLEARANCE_BEFORE at ({:.0}, {:.0}) reached {:.2} m",
                 c.at.0, c.at.1, c.reached
             );
         }
+    }
+    {
+        // the height solve once more on the final network with a solver that reports: the same problem as the
+        // build's, so the same result
+        let reports = std::cell::RefCell::new(Vec::new());
+        let solver = |p: &naves_core::qp::Problem| {
+            let started = Instant::now();
+            let out = naves_core::qp::solve_reported(p);
+            let (status, iterations) = match &out {
+                Ok((_, r)) => (r.status.clone(), r.iterations),
+                Err(e) => (e.to_string(), 0),
+            };
+            reports.borrow_mut().push((
+                p.unknowns,
+                p.rows.len(),
+                status,
+                iterations,
+                started.elapsed().as_secs_f64(),
+            ));
+            out.map(|(x, _)| x)
+        };
+        let found = naves_core::junctions::find_junctions(&net, &graph, &base);
+        let started = Instant::now();
+        let again = naves_core::profile::solve_clearing_with(
+            &net, &base, &found, &side, &graph, &thickness, &solver,
+        )
+        .expect("the height solve");
+        println!(
+            "HEIGHTSOLVE total {:.1} s (model, solve and reading); same profiles as the build's: {}",
+            started.elapsed().as_secs_f64(),
+            again.0 == profiles
+        );
+        for (unknowns, rows, status, iterations, seconds) in reports.borrow().iter() {
+            println!(
+                "HEIGHTSOLVE solve unknowns {unknowns} rows {rows} status {status} iterations {iterations} solve {seconds:.2} s"
+            );
+        }
+        let pairs =
+            naves_core::profile::nearby_pairs(&net, &base, &found, &graph).expect("the model");
+        println!(
+            "HEIGHTSOLVE nearby pairs: close {}, mutually nearest {}, rows {}",
+            pairs.close, pairs.mutual, pairs.rows
+        );
     }
     // for each bridge over a road: the stretches, and the joints of the chains of both within 60 m of the
     // crossing with the junction that holds them and its height before and after the clearance
@@ -375,6 +421,7 @@ fn main() {
             c.at.0, c.at.1, c.reached, c.wanted
         );
     }
+    crossing_report(&net, &profiles, &graph, &base, &junctions);
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
     let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
     let t_conform = t0.elapsed();
@@ -2260,7 +2307,7 @@ fn main() {
         }
     }
 
-    // spans between two held joints that `ramp_targets` turns into a straight ramp at the first (aim) grade
+    // spans between two held joints that the per-chain solve of before the height solve turned into a straight ramp at the first (aim) grade
     // limit: by the lowest limit of the span (the rule before 2026-11-13's fix) and by the mean by length
     {
         let (mut old_n, mut old_len, mut new_n, mut new_len) = (0, 0.0, 0, 0.0);
@@ -2403,7 +2450,7 @@ fn main() {
                     w.map(|w| &w.tags)
                 );
             }
-            // the spans between two held joints: what the solver sees (profile.rs `ramp_targets`)
+            // the spans between two held joints (the per-chain solve of before the height solve treated each as a ramp)
             let held: Vec<usize> = holds
                 .iter()
                 .enumerate()
@@ -6191,6 +6238,169 @@ fn ring_report(
                 Ok(()) => println!("RING picture {file}"),
                 Err(e) => println!("RING picture {file} failed: {e}"),
             }
+        }
+    }
+}
+
+/// For each bridge over a road: the deck against the ground at each of its two ends, the road below against the
+/// ground at its own point at the crossing (the point the clearance is measured at), the steepest grade of each of the two roads within 100 m of the crossing against its ceiling, the
+/// `road_grade` excesses within 100 m and the deepest cut of either road below its original ground there.
+fn crossing_report(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    graph: &naves_core::roadnet::RoadGraph,
+    base: &Heightmap,
+    junctions: &Junctions,
+) {
+    const NEAR_M: f64 = 100.0;
+    let ceilings = naves_core::profile::segment_ceilings(net, base, junctions).expect("the model");
+    let at_meeting = ceilings
+        .iter()
+        .flat_map(|c| &c.segments)
+        .filter(|s| (s.ceiling - naves_core::profile::MEETING_GRADE).abs() < 1e-12)
+        .count();
+    println!(
+        "CEILINGS {} segments, {at_meeting} of them at the meeting grade",
+        ceilings.iter().map(|c| c.segments.len()).sum::<usize>()
+    );
+    let ground = |x: f64, y: f64| f64::from(base.sample(x, y).height);
+    let on = |strip: &RoadStrip, k: usize, id: &str| {
+        strip
+            .slots
+            .get(k)
+            .is_some_and(|r| net.roads[*r].slot.stretch.split('|').any(|p| p == id))
+    };
+    // the strip, segment and fraction of the stretch `id` nearest `at`, within its half width and 5 m: the segment
+    // `measure_clearances` measures on
+    let nearest = |id: &str, at: (f64, f64)| {
+        let mut best: Option<(f64, usize, usize, f64)> = None;
+        for (si, strip) in profiles.strips.iter().enumerate() {
+            for (k, w) in strip.joints.windows(2).enumerate() {
+                if !on(strip, k, id) {
+                    continue;
+                }
+                let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                let l2 = dx * dx + dy * dy;
+                let t = if l2 > 1e-12 {
+                    (((at.0 - w[0].0) * dx + (at.1 - w[0].1) * dy) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let off = (at.0 - w[0].0 - t * dx).hypot(at.1 - w[0].1 - t * dy);
+                if off <= strip.half_width + 5.0 && best.is_none_or(|b| off < b.0) {
+                    best = Some((off, si, k, t));
+                }
+            }
+        }
+        best
+    };
+    for c in naves_core::roadnet::over_crossings(graph) {
+        let (Some(up), Some(low)) = (graph.stretches.get(c.upper), graph.stretches.get(c.lower))
+        else {
+            continue;
+        };
+        let (Some((_, us, uk, ut)), Some((_, ls, lk, lt))) =
+            (nearest(&up.id, c.at), nearest(&low.id, c.at))
+        else {
+            println!("CROSSING ({:.0}, {:.0}) not placed", c.at.0, c.at.1);
+            continue;
+        };
+        // the height of a strip at segment `k`, `t` of the way, and the ground under that point
+        let surface = |si: usize, k: usize, t: f64| {
+            let j = &profiles.strips[si].joints;
+            let (x, y) = (
+                j[k].0 + t * (j[k + 1].0 - j[k].0),
+                j[k].1 + t * (j[k + 1].1 - j[k].1),
+            );
+            (j[k].2 + t * (j[k + 1].2 - j[k].2), ground(x, y), (x, y))
+        };
+        // the deck's ends: the two ends of its run of bridge segments
+        let strip = &profiles.strips[us];
+        let (mut first, mut last) = (uk, uk);
+        while first > 0 && strip.bridge.get(first - 1).copied().unwrap_or(false) {
+            first -= 1;
+        }
+        while strip.bridge.get(last + 1).copied().unwrap_or(false) {
+            last += 1;
+        }
+        let (a, b) = (strip.joints[first], strip.joints[last + 1]);
+        let (ga, gb) = (ground(a.0, a.1), ground(b.0, b.1));
+        let (deck, _, _) = surface(us, uk, ut);
+        let (below, below_ground, at) = surface(ls, lk, lt);
+        println!(
+            "CROSSING ({:.0}, {:.0}) deck {deck:.2} m: {:+.2} m against the ground {ga:.2} at its end ({:.0}, {:.0}), {:+.2} m against {gb:.2} at ({:.0}, {:.0}); road below {below:.2} m at ({:.1}, {:.1}): {:+.2} m against its ground {below_ground:.2}",
+            c.at.0,
+            c.at.1,
+            deck - ga,
+            a.0,
+            a.1,
+            deck - gb,
+            b.0,
+            b.1,
+            at.0,
+            at.1,
+            below - below_ground
+        );
+        let near = |p: (f64, f64, f64)| (p.0 - c.at.0).hypot(p.1 - c.at.1) <= NEAR_M;
+        for (role, si) in [("bridge's road", us), ("road below", ls)] {
+            let strip = &profiles.strips[si];
+            let Some(chain) = ceilings.iter().find(|ch| ch.roads == strip.slots) else {
+                println!("CROSSING   {role}: no ceilings");
+                continue;
+            };
+            // the steepest grade and the one nearest its ceiling
+            let mut steepest: Option<(f64, f64, (f64, f64))> = None;
+            let mut tightest: Option<(f64, f64, (f64, f64))> = None;
+            for seg in &chain.segments {
+                let (from, to) = (strip.joints[seg.from], strip.joints[seg.to]);
+                if !near(from) && !near(to) {
+                    continue;
+                }
+                let grade = (to.2 - from.2) / seg.run;
+                let entry = (grade.abs(), seg.ceiling, (from.0, from.1));
+                if steepest.is_none_or(|s| entry.0 > s.0) {
+                    steepest = Some(entry);
+                }
+                if tightest.is_none_or(|s| entry.0 - entry.1 > s.0 - s.1) {
+                    tightest = Some(entry);
+                }
+            }
+            let cut = strip
+                .joints
+                .iter()
+                .filter(|j| near(**j))
+                .map(|j| (ground(j.0, j.1) - j.2, (j.0, j.1)))
+                .max_by(|a, b| a.0.total_cmp(&b.0));
+            if let (Some(s), Some(t)) = (steepest, tightest) {
+                println!(
+                    "CROSSING   {role}: steepest {:.1} % (ceiling {:.1} %) at ({:.0}, {:.0}); nearest its ceiling {:.1} % of {:.1} % at ({:.0}, {:.0}); deepest cut {:.2} m at ({:.0}, {:.0})",
+                    s.0 * 100.0,
+                    s.1 * 100.0,
+                    s.2.0,
+                    s.2.1,
+                    t.0 * 100.0,
+                    t.1 * 100.0,
+                    t.2.0,
+                    t.2.1,
+                    cut.map_or(f64::NAN, |c| c.0),
+                    cut.map_or(f64::NAN, |c| c.1.0),
+                    cut.map_or(f64::NAN, |c| c.1.1),
+                );
+            }
+        }
+        for e in profiles
+            .excesses
+            .iter()
+            .filter(|e| (e.at.0 - c.at.0).hypot(e.at.1 - c.at.1) <= NEAR_M)
+        {
+            println!(
+                "CROSSING   road_grade {:?} at ({:.0}, {:.0}): {:.2} % against {:.2} %",
+                e.kind,
+                e.at.0,
+                e.at.1,
+                e.grade * 100.0,
+                e.limit * 100.0
+            );
         }
     }
 }

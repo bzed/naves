@@ -5,11 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::heightmap::Heightmap;
-use crate::junctions::{ARM_REACH_M, HOLD_M, JunctionKind, Junctions};
+use crate::junctions::{ARM_REACH_M, HOLD_M, Junction, JunctionKind, Junctions};
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
-use super::{Chain, Index, Meeting, RoadStrip, chain_of, end_joins, point_segment_distance};
+use super::{Chain, chain_of, point_segment_distance};
 
 /// Which rule holds a variable of a chain to a junction (for measuring, see [`chain_holds`]).
 #[doc(hidden)]
@@ -52,20 +51,25 @@ fn hold(
     rule: HoldRule,
 ) {
     if let (Some(slot), Some(j)) = (held.get_mut(var), junctions.points.get(junction)) {
-        let lowered = j.kind == JunctionKind::Overlay && !j.lower.is_disjoint(ids);
         *slot = Some(Hold {
             rule,
             junction,
-            height: if lowered {
-                j.height_at(at) - OVERLAY_DROP_M
-            } else {
-                j.height_at(at)
-            },
+            height: j.height_at(at) - overlay_drop(j, ids),
         });
     }
 }
 
-/// The holds of the joints of the chain `roads`, one per joint of the strip as `solve_profiles` builds it (the
+/// How far below the junction's plane a chain of the stretches `ids` is held: [`OVERLAY_DROP_M`] for a road
+/// under the top road of an overlay, else 0.
+pub(super) fn overlay_drop(junction: &Junction, ids: &BTreeSet<String>) -> f64 {
+    if junction.kind == JunctionKind::Overlay && !junction.lower.is_disjoint(ids) {
+        OVERLAY_DROP_M
+    } else {
+        0.0
+    }
+}
+
+/// The holds of the joints of the chain `roads`, one per joint of the strip as the height solve builds it (the
 /// joints of a bridge deck share one variable), with the position of each joint.
 ///
 /// For measuring (the `road-analysis` tool and the tests); not part of the library's interface.
@@ -135,7 +139,7 @@ pub(super) fn joint_junctions(
 }
 
 /// The stretch ids of the roads of a chain, junction pieces' `a|b` ids split.
-fn stretch_ids(net: &PlacedNetwork, roads: &[usize]) -> BTreeSet<String> {
+pub(super) fn stretch_ids(net: &PlacedNetwork, roads: &[usize]) -> BTreeSet<String> {
     roads
         .iter()
         .filter_map(|i| net.roads.get(*i))
@@ -181,7 +185,7 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
     clippy::too_many_lines,
     reason = "the rules that hold a chain to a junction, in the order they apply"
 )]
-fn junction_heights(
+pub(super) fn junction_heights(
     net: &PlacedNetwork,
     chain: &Chain,
     roads: &[usize],
@@ -360,30 +364,3 @@ fn hold_beside(
         }
     }
 }
-
-/// What a chain's variables are held to: the heights of the junctions, the heights of the roads its ends meet
-/// (a junction beats a meeting), and the meetings.
-pub(super) fn fixed_heights(
-    net: &PlacedNetwork,
-    chain: &Chain,
-    roads: &[usize],
-    hm: &Heightmap,
-    strips: &[RoadStrip],
-    index: &Index,
-    junctions: &Junctions,
-) -> Option<FixedHeights> {
-    let cell = f64::from(hm.cell_m);
-    let half_width = net.roads.get(*roads.first()?)?.width / 2.0;
-    let holds = junction_heights(net, chain, roads, half_width, cell, junctions, true);
-    let held: Vec<Option<f64>> = holds.iter().map(|h| h.map(|h| h.height)).collect();
-    let (mut fixed, meetings) = end_joins(chain, strips, &index.strips, cell, &held);
-    for (slot, height) in fixed.iter_mut().zip(&held) {
-        if height.is_some() {
-            *slot = *height;
-        }
-    }
-    Some((held, fixed, meetings))
-}
-
-/// The junction heights, all fixed heights, and the meetings of a chain's variables.
-pub(super) type FixedHeights = (Vec<Option<f64>>, Vec<Option<f64>>, Vec<(usize, Meeting)>);

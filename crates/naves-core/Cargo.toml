@@ -26,6 +26,7 @@ image = { version = "0.25.10", default-features = false }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 osmpbf = "0.3.8"
 naves-formats = { version = "0.1.0", path = "../naves-formats" }
+clarabel = { version = "0.11.1", default-features = false, features = ["serde"] }
 
 [features]
 # Test-only constructors (Dem::from_fn); used by the tests of the other crates too.

@@ -122,14 +122,17 @@ Every line names the rule and a position in map metres. The same findings, with 
 asphalt and streets; 40 % on gravel tracks, a car at the top of its range; 50 % on dirt tracks, a 4WD; estimates, not
 driven in the game)
 or more than 20 % tilted across. Between the family's aim and that limit it is amber: steep or tilted, but still
-drivable. A road gives way to a steeper grade where holding its aim would put it more than 4 m above or below the
-ground; that is why a road on a steep hillside can be amber for a long stretch. A road can be too steep because the real road is
+drivable. A road is steeper than its family's aim where the ground is steeper (it follows the ground within the limit
+of its family, nine tenths of what vehicles manage); that is why a road on a steep hillside can be amber for a long
+stretch. A road can be too steep because the real road is
 steep and the map is small (a horizontal scale below 1 steepens everything): raise `[scale] horizontal`, or accept the
 finding. `road_misses_terrain` and a road
 that is not drivable because it leans sideways usually mean two roads closer than about 25 m at different heights
 (a hairpin on a steep flank, parallel streets): the terrain grid cannot follow both. A larger `[scale] horizontal`
-moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 20 % exceeds
-the limit of 12 %" (a stretch that is steeper than its limit, usually between two fixed ends) or "Crest or dip too
+moves roads further apart in map metres; otherwise accept the finding. `road_grade` says either "Grade 31 % exceeds
+the limit of 27 %" (a stretch that is steeper than the hard limit of its family, the ceiling, not its aim; usually where
+a bridge deck, a junction that cannot give way or two roads at very different heights ask for more than the road can
+climb) or "Crest or dip too
 sharp: vertical radius 40 m, the minimum is 60 m" (the grade changes faster than a vehicle's suspension and view
 allow over a crest or a dip). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
@@ -139,9 +142,17 @@ size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 20
 a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
 [the grid](project-file.md#grid).
 
+**`the road heights are not solved: <n> unknowns, <m> rows: <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
+The build stops. The heights of all roads, with the clearance under bridges over roads, are one calculation; the
+first message means the solver found no solution (the message names the size of the problem and the solver's
+status), the second that the input is malformed, for example a road with no ground data under it.
+There is no setting that changes this. A project with roads should always have a solution, so this is a fault of the
+program: report it with the project (`naves.toml`, the edits and the OSM extract) and the message.
+
 **`junction_too_steep`: "Junctions too close for their heights: 12.0 m over 50 m"**
 Two junctions have ground heights that differ by more than the road between them may climb, and moving them toward
-each other (which the build does) was not enough, for instance because a third junction holds one of them. The
+each other (which the build does, as far as it takes) was not enough, for instance because a roundabout's plane holds
+one of them, or a bridge deck that has to clear a road holds the other. The
 position is the middle between the two. Move one of the roads (a different OSM node for the side road), or accept
 the finding: the road between them is then steeper than its limit and shows as `road_grade`.
 
@@ -163,12 +174,14 @@ is how far the road stands above the ground. Look at it in the game or the map: 
 `edits/overrides.toml`, move the OSM line, or accept it. Dips without water are filled and not reported.
 
 **`bridge_clearance`: "A bridge clears the road below by only 1.6 m, the minimum is 4.5 m"**
-A bridge crosses another road without a shared node and its deck could not be lifted to 4.5 m above that road
-(measured from the road's surface to the underside of the deck). The usual cause: the bridge starts at a junction that
-also holds the road below (the crossing lies within a few metres of the junction), so lifting the junction would lift
-the road below with it; the build never lifts the road below, so the bridge stays. Others: the junctions on the
-bridge's road may rise at most 10 m above the ground for a bridge, or the grade limits stop the approaches. The
-position is where the two lines cross. Move the junction away from the crossing in the data, or accept it.
+A bridge crosses another road without a shared node and there are not 4.5 m between that road and the deck
+(measured from the road's surface to the underside of the deck). To make the room, the build lifts the bridge's road
+and lowers the road below, each as far as its grade limits and its vertical radius allow; the finding means that the
+two together could not make 4.5 m. The usual cause: the bridge's road and the road below meet at a junction close to
+the crossing (or one junction holds both), so the one cannot rise without the other, and the short road between
+them would have to be steeper than its limit. Another cause: approaches too short for the deck to rise and a road
+below that cannot dip far enough within its own limits. The position is where the two lines cross. Move the junction
+away from the crossing in the data, or accept it.
 
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type
