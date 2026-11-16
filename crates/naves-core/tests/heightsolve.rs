@@ -788,7 +788,9 @@ fn a_chain_end_on_held_joints_takes_their_height() {
     ));
     let side = pieces("s", Family::Asf3, (306.25, 106.25), (306.25, 300.0), 25.0);
     let net = network(vec![through, side]);
-    let mut j = piece_junction(306.25, 100.0 + 0.05 * 306.25);
+    // the junction's ground lies 2 m above the terrain, so that its plane differs from the ground and a free
+    // side end (which follows the ground) would not land on it
+    let mut j = piece_junction(306.25, 100.0 + 0.05 * 306.25 + 2.0);
     j.stretches = std::iter::once("t".to_string()).collect();
     j.gradient = (0.05, 0.0);
     let junctions = Junctions {
@@ -803,6 +805,11 @@ fn a_chain_end_on_held_joints_takes_their_height() {
     let middle = f64::midpoint(held[0].2, held[1].2);
     let start = p.strips[1].joints[0].2;
     assert!((start - middle).abs() < 1e-6, "{start} against {middle}");
+    let terrain_at_start = ground(&hm, p.strips[1].joints[0].0, p.strips[1].joints[0].1);
+    assert!(
+        (middle - terrain_at_start).abs() > 0.3,
+        "the plane must differ from the ground: {middle} against {terrain_at_start}"
+    );
     assert!((middle - solved.points[0].height).abs() < 1e-6);
 }
 

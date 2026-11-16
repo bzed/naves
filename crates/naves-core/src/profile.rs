@@ -1254,8 +1254,8 @@ pub enum ProfileError {
 /// (`docs/superpowers/specs/2026-11-16-height-solve-design.md`, phase A: grades, vertical bends and junction
 /// tilts; no clearance under bridges and no nearby roads yet).
 ///
-/// Every free joint height, and the height and tilt of every junction that holds a joint, is an unknown; those
-/// junctions are pulled to [`crate::junctions::Junction::ground`] and the tilt of the ground (what `repair` did
+/// Every free joint height, and the height and tilt of every junction that holds a joint and is not on a ring,
+/// is an unknown; those junctions are pulled to [`crate::junctions::Junction::ground`] and the tilt of the ground (what `repair` did
 /// to their heights is not used). A junction that holds no joint keeps its input height and tilt. A road is
 /// pulled to the ground and kept smooth; it is steeper than its grade aim only at a cost, steeper than its grade
 /// ceiling or bent sharper than its vertical radius only where nothing else is possible, and that is reported in
