@@ -142,9 +142,10 @@ size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 20
 a grid the game client cannot show (cells of 3.1 m); a finer grid than 1024 needs a map of at least 8 192 m, see
 [the grid](project-file.md#grid).
 
-**`the road heights are not solved: <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
+**`the road heights are not solved: phase A (<n> unknowns, <m> rows): <status>` or `the road heights cannot be solved: no ground data under the road at (x, y)`**
 The build stops. The heights of all roads are one calculation; the first message means the solver found no solution
-(its status is in the message), the second that the input is malformed, for example a road with no ground data under it.
+(the message names the phase, A for the roads alone or B with the clearance under bridges over roads, the size of the
+problem and the solver's status), the second that the input is malformed, for example a road with no ground data under it.
 There is no setting that changes this. A project with roads should always have a solution, so this is a fault of the
 program: report it with the project (`naves.toml`, the edits and the OSM extract) and the message.
 

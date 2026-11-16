@@ -661,7 +661,8 @@ pub enum ProfileError {
     /// The solver did not report a solution.
     #[error("the road heights are not solved: {status}")]
     NotSolved {
-        /// The solver's status.
+        /// The phase (A without the clearance under bridges over roads, B with it), the size of the problem
+        /// and the solver's status.
         status: String,
     },
     /// The input cannot be solved (no ground data under a road, a malformed problem).
@@ -770,9 +771,9 @@ pub fn solve_clearing_with(
         })
         .collect();
     let mut model = model::build(net, hm, junctions, &apart_of(graph))?;
-    let mut x = model::solve_x(&model, solver)?;
+    let mut x = model::solve_x(&model, solver, 'A')?;
     if model::add_clearances(&mut model, net, &x, &crossings) {
-        x = model::solve_x(&model, solver)?;
+        x = model::solve_x(&model, solver, 'B')?;
     }
     let (mut profiles, out) = model::read(&model, net, junctions, side, &x)?;
     profiles.clearances = measure_clearances(net, &profiles.strips, graph, thickness);

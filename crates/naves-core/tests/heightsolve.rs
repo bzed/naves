@@ -324,11 +324,13 @@ fn two_junctions_too_steep_for_each_other_both_move() {
 }
 
 #[test]
-fn a_junction_stays_near_its_ground() {
+fn a_junction_is_pulled_to_its_ground() {
     // a junction piece on ground that falls 4 % along the through road, with nothing forcing it (no bridge, no
-    // ring, no second junction). The ground under the side road's arm is 4 m higher than under the through road:
-    // a pull on the junction's joints that its own tie to its ground has to resist. Measured: the junction ends
-    // 0.23 m from its ground (0.32 m if `JUNCTION_GROUND` were 0), so the bound sits between
+    // ring, no second junction). The ground under the side road's arm is 4 m higher than under the through road,
+    // a pull on the junction's joints. The junction's own ground is 4 m above the terrain under it, so that its tie
+    // to that ground (`JUNCTION_GROUND`) has a metre-sized offset to decide: measured, the junction ends 1.31 m above
+    // the terrain (0.32 m, where the roads alone put it, if `JUNCTION_GROUND` were 0). The bound sits a factor of
+    // two from both
     let ground_at =
         |x: f64, y: f64| 100.0 - 0.04 * (x - 306.25) + if y > 108.0 { 4.0 } else { 0.0 };
     let hm = terrain(160, 6.25, ground_at);
@@ -351,12 +353,16 @@ fn a_junction_stays_near_its_ground() {
     let side = pieces("a", Family::Asf3, (306.25, 300.0), (306.25, 106.25), 25.0);
     let net = network(vec![through, side]);
     let junctions = Junctions {
-        points: vec![piece_junction(306.25, ground_at(306.25, 100.0))],
+        points: vec![piece_junction(306.25, ground_at(306.25, 100.0) + 4.0)],
         ..Junctions::default()
     };
     let (_, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
-    let off = solved.points[0].height - junctions.points[0].ground;
-    assert!(off.abs() <= 0.27, "{off}");
+    let lift = solved.points[0].height - ground_at(306.25, 100.0);
+    assert!(lift >= 0.65, "{lift}");
+    assert!(
+        solved.points[0].height < junctions.points[0].ground,
+        "{lift}"
+    );
 }
 
 /// The held joints of every strip and their heights.
@@ -666,13 +672,76 @@ fn a_solver_that_fails_is_an_error() {
         &failing,
     )
     .unwrap_err();
-    assert_eq!(
-        err,
-        ProfileError::NotSolved {
-            status: "MaxIterations".to_string()
-        }
-    );
+    let ProfileError::NotSolved { status } = &err else {
+        panic!("{err:?}");
+    };
+    assert!(status.ends_with("MaxIterations"), "{status}");
     assert!(err.to_string().contains("MaxIterations"), "{err}");
+}
+
+#[test]
+fn a_failed_solve_names_its_phase_and_size() {
+    // phase A fails: the message names it and the size of the problem the solver was given
+    let (net, hm) = one_road_on(0.05);
+    let size = std::cell::Cell::new((0, 0));
+    let failing = |problem: &naves_core::qp::Problem| {
+        size.set((problem.unknowns, problem.rows.len()));
+        Err(QpError::NotSolved {
+            status: "MaxIterations".to_string(),
+        })
+    };
+    let err = solve_clearing_with(
+        &net,
+        &hm,
+        &Junctions::default(),
+        &[],
+        &RoadGraph::default(),
+        &|_| None,
+        &failing,
+    )
+    .unwrap_err();
+    let (unknowns, rows) = size.get();
+    assert!(unknowns > 0 && rows > 0, "{unknowns} {rows}");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "the road heights are not solved: phase A ({unknowns} unknowns, {rows} rows): MaxIterations"
+        )
+    );
+    // phase A is solved, phase B (the clearance under a bridge over a road) fails
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, graph) = placed(&bridge_features());
+    let junctions = find_junctions(&net, &graph, &hm);
+    let calls = std::cell::Cell::new(0);
+    let second_fails = |problem: &naves_core::qp::Problem| {
+        calls.set(calls.get() + 1);
+        size.set((problem.unknowns, problem.rows.len()));
+        if calls.get() == 1 {
+            naves_core::qp::solve(problem)
+        } else {
+            Err(QpError::NotSolved {
+                status: "PrimalInfeasible".to_string(),
+            })
+        }
+    };
+    let err = solve_clearing_with(
+        &net,
+        &hm,
+        &junctions,
+        &side_slopes(&net, &hm),
+        &graph,
+        &|_| Some(DECK),
+        &second_fails,
+    )
+    .unwrap_err();
+    assert_eq!(calls.get(), 2);
+    let (unknowns, rows) = size.get();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "the road heights are not solved: phase B ({unknowns} unknowns, {rows} rows): PrimalInfeasible"
+        )
+    );
 }
 
 #[test]

@@ -729,13 +729,21 @@ fn add_chain(
     }
 }
 
-/// The solution of the problem of `model` found by `solver`: one value per unknown.
+/// The solution of the problem of `model` found by `solver`: one value per unknown. `phase` (A or B) and the size of
+/// the problem go into the error when the solver reports no solution.
 pub(crate) fn solve_x(
     model: &Model,
     solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
+    phase: char,
 ) -> Result<Vec<f64>, ProfileError> {
     let x = solver(&model.problem).map_err(|e| match e {
-        QpError::NotSolved { status } => ProfileError::NotSolved { status },
+        QpError::NotSolved { status } => ProfileError::NotSolved {
+            status: format!(
+                "phase {phase} ({} unknowns, {} rows): {status}",
+                model.problem.unknowns,
+                model.problem.rows.len()
+            ),
+        },
         QpError::Invalid { what } => ProfileError::Invalid { what },
     })?;
     if x.len() != model.problem.unknowns {
