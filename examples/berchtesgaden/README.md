@@ -81,9 +81,9 @@ and of the whole build with roads (OpenStreetMap, bridges over dips, `binarize` 
 |---|---|---|---|---|---|---|---|
 | 6.4 km | 1024 | 16 s (15 s) | 1.7 GiB (1.2 GiB) | 75 MB (51 MB) | 325 s | 1.7 GiB | 78 MB |
 | 6.4 km | 2048 (crashes the client) | 38 s (32 s) | 1.7 GiB (1.2 GiB) | 220 MB (118 MB) | 350 s | 1.8 GiB | 223 MB |
-| 8.2 km | 2048 | | | | 396 s | 3.5 GiB | 233 MB |
+| 8.2 km | 2048 | | | | 396 s (1775 s, see below) | 3.5 GiB | 233 MB |
 
-The figures with roads are from 2026-11-14 and 2026-11-15 (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
+The figures with roads are from 2026-11-14 to 2026-11-16 (AMD Ryzen 9 9900X, 24 threads). On the 6.4 km map 2048
 gives terrain cells of 3.1 m, and the DayZ client crashes on cells under 4 m (see the grid in
 `docs/manual/src/project-file.md`); the 8.2 km map has cells of 4 m. Placing the roads takes most of the time, and
 they are placed twice when a dip gets a bridge: on the 6.4 km map at 2048 the two rounds took 152 s and 148 s,
@@ -102,6 +102,31 @@ naves build examples/berchtesgaden
 
 The mesh is too large for the repository (21 MB). See [Navigation mesh](../../docs/manual/src/navmesh.md) in the manual
 for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were made with one.
+
+## Results with roads on the 8.2 km map at 2048 (2026-11-16, road look)
+
+The road-look work (commit `1363758`, release binary) against the 2026-11-15 results below:
+
+- `naves build`: exit 0, **1775 s** (396 s before; the road height solve, the junction and bridge fits and the second
+  placement round cost the time). 24 623 road pieces in 2965 stretches (asf1 12.5 km, asf2 11.0 km, asf3 32.6 km,
+  city 75.7 km, grav 66.7 km, mud 59.3 km); 343 open ends. Peak memory was not measured. There are 3 bridges over
+  dips: a dip bridge needs about 12.5 m of road within 10 degrees of straight at each end, which is a curve radius of
+  roughly 107 m on this map.
+- Findings, 2026-11-15 in brackets: 4625 `road_misses_terrain` (4806; 1158 above 0.5 m, 136 above 2 m, largest
+  10.4 m), 1079 `road_grade` (1729; 751 bends, 328 grades), 1026 `road_conflict` (1089), 343 `road_gap` (388), 208
+  `road_not_drivable` (250; 4.73 km), 65 `join_without_junction` (877), 8 `junction_too_steep` (2), 168
+  `path_too_steep`, 82 `earthworks_capped`, 29 `road_in_water`, 21 `tunnel_omitted`, 9 `road_duplicate_dropped`, 3
+  `road_over_water`, 1 `bridge_clearance`. Largest cut 43.0 m, highest fill 30.6 m.
+- **In the game (DayZ 1.30.164289, headless client):** 51 road sites photographed before the work and at Checkpoint B
+  (commit `075198b`), and sites 7, 11, 14 and 28 again at `1363758`.
+  - Better at Checkpoint B: 3 (the doubled road is gone), 6 (a stray loop is gone), 14 (the bridge over a dip is
+    gone, the road follows the ground), 17 (a smoother diagonal junction) and 43 (the bridge spans the dip).
+  - The hairpins at 7 and 11 (Kehlsteinstraße) were lost at Checkpoint B and are back at `1363758`: the roads now
+    follow their OpenStreetMap line, and the sites moved to the OSM apex of each hairpin. Site 14 and site 28 are
+    unchanged (at 28 a distant bridge looks different).
+  - Still open: gaps between pieces at sites 1, 2, 21 and 34, the ski jump at the wooden bridge at 23, and the
+    wedges where the road climbs to the lifted decks of the two bridges over another road, at 50 (Kehlsteinstraße)
+    and 51 (Silbergstraße). They wait for the joint height solve (`docs/superpowers/plans/2026-11-15-naves-road-look.md`).
 
 ## Results with roads on the 8.2 km map at 2048 (2026-11-15)
 
