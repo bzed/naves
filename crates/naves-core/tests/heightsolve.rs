@@ -1305,9 +1305,9 @@ fn height_at_y(p: &Profiles, strip: usize, y: f64) -> f64 {
 }
 
 #[test]
-fn roads_that_meet_are_tied_again_further_out() {
+fn roads_from_a_junction_running_side_by_side_are_tied_abreast() {
     // a junction piece on a road going north, and a second road that leaves its port, turns north and runs on beside it,
-    // 12.5 m away, the ground 0.6 m higher at the second: tied beyond 50 m from the junction
+    // 12.5 m away, the ground 0.6 m higher at the second: tied abreast from the junction on
     let hm = terrain(200, 4.0, |x, _| 100.0 + 0.6 / 12.5 * (x - 300.0));
     let mut north = vec![piece(
         "t",
@@ -1352,7 +1352,7 @@ fn roads_that_meet_are_tied_again_further_out() {
     let held = held_joints(&net, &p, &hm, &junctions);
     assert!(held.len() >= 3, "{held:?}");
     for k in 0..12 {
-        let y = 180.0 + 15.0 * f64::from(k);
+        let y = 130.0 + 15.0 * f64::from(k);
         let (ha, hb) = (height_at_y(&p, 0, y), height_at_y(&p, 1, y));
         assert!(ha.is_finite());
         assert!((ha - hb).abs() <= 0.1 + 0.05, "y = {y}: {ha} {hb}");
@@ -1369,8 +1369,7 @@ fn a_shallow_merge_does_not_flatten_the_road_it_joins() {
     let side = pieces("s", Family::Mud, (303.5, 500.0), (316.0, 600.0), 10.0);
     let net = network(vec![through, side]);
     let p = solve_alone(&net, &hm);
-    // the pairs beyond 50 m still pull a little (0.04 m at most, 0.6 m before the nearest-spot rule); tied near the meeting as well, the through road
-    // leaves the ground by 0.33 m
+    // only abreast pairs pull, a little (0.04 m at most; diagonal pairs left it 0.6 m off the ground)
     let worst = offsets(&p, 0, &hm)
         .into_iter()
         .fold(0.0_f64, |m, o| m.max(o.abs()));
@@ -1379,8 +1378,8 @@ fn a_shallow_merge_does_not_flatten_the_road_it_joins() {
 
 #[test]
 fn a_road_entering_a_tilted_roundabout_is_not_tied_to_its_plane() {
-    // a scenario check: with only mutually nearest spots paired no spot of the arm beyond the entry is paired
-    // with the ring; the junction connection code is pinned by `a_junction_on_a_slope_tilts_with_its_through_road`
+    // a scenario check: with only mutually nearest spots paired, no spot of the arm beyond the entry is paired
+    // with the ring
     // a ring chain going north whose plane rises 3 % to the north, and a road that leaves it to the east on ground
     // that falls 2 % in that direction: beside the ring, its spots lie within a footprint of ring spots at other
     // places on the plane, and must not be tied to them

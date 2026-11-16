@@ -7,8 +7,10 @@
 //! The spots every [`SAMPLE_M`] and the pairs of close spots are those of the old settling (`spots` and
 //! `close_pairs`), found from the positions and the half widths of the roads alone. Of those pairs only the mutually
 //! nearest are kept (a spot's nearest spot of the other chain, seen from both sides), chosen before the exclusions
-//! for bridges and for places where the roads are connected. The pairs of two chains are grouped into runs; a run is tied only if the original ground allows it at every pair of the run, else it gets no
-//! rows at all (roads side by side on a hillside stay apart).
+//! for bridges and for the junction a loop leaves and re-enters. Roads that part at an angle keep about one pair, so
+//! they are left untied beyond their first spot; that is intended: rows (N) are for roads side by side. The pairs of
+//! two chains are grouped into runs; a run is tied only if the original ground allows it at every pair of the run,
+//! else it gets no rows at all (roads side by side on a hillside stay apart).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,7 +19,7 @@ use crate::heightmap::Heightmap;
 use crate::junctions::Junctions;
 use crate::roadplace::PlacedNetwork;
 
-use super::{Builder, Draft, Expr, Source};
+use super::{Builder, Draft, Expr};
 use crate::profile::Pair;
 use crate::profile::{
     KEEP_APART_M, MATCH_M, RoadStrip, SAMPLE_M, Spot, close_pairs, joint_heights, road_on_stretch,
@@ -55,27 +57,20 @@ fn chains_on(net: &PlacedNetwork, drafts: &[Draft], id: &str) -> BTreeSet<usize>
         .collect()
 }
 
-/// The places where two chains are connected, by the pair of chains (the lower index first): the centre of every
-/// junction that holds a variable of both, and the position of every end of one that is a meeting on the other.
-/// Two spots of the two chains near such a place are not tied: where roads meet they are one surface (the plane of
-/// the junction, the height of the meeting) and legitimately differ in height on a slope. One chain is connected to itself where a
-/// junction holds two separate stretches of it (a loop that leaves and re-enters the junction: its held variables
-/// are not contiguous, a through road's are).
-fn connections(
-    drafts: &[Draft],
-    junctions: &Junctions,
-) -> BTreeMap<(usize, usize), Vec<(f64, f64)>> {
-    let mut out: BTreeMap<(usize, usize), Vec<(f64, f64)>> = BTreeMap::new();
-    let mut holding: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+/// The places where a chain is connected to itself: the centre of every junction that holds two separate stretches
+/// of it (a loop that leaves and re-enters the junction; its held variables are not contiguous, a through road's
+/// are), by chain. Two spots of the chain near such a place are not tied: there the legs are one surface (the plane
+/// of the junction) and legitimately differ in height on a slope.
+fn loops(drafts: &[Draft], junctions: &Junctions) -> BTreeMap<usize, Vec<(f64, f64)>> {
+    let mut out: BTreeMap<usize, Vec<(f64, f64)>> = BTreeMap::new();
     for (ci, draft) in drafts.iter().enumerate() {
         let mut runs: BTreeMap<usize, usize> = BTreeMap::new();
         let mut before = None;
         for holder in &draft.holders {
-            if let Some(j) = holder {
-                holding.entry(*j).or_default().insert(ci);
-                if before != Some(*j) {
-                    *runs.entry(*j).or_insert(0) += 1;
-                }
+            if let Some(j) = holder
+                && before != Some(*j)
+            {
+                *runs.entry(*j).or_insert(0) += 1;
             }
             before = *holder;
         }
@@ -83,27 +78,7 @@ fn connections(
             if count > 1
                 && let Some(point) = junctions.points.get(j)
             {
-                out.entry((ci, ci)).or_default().push(point.at);
-            }
-        }
-        let last = draft.sources.len().saturating_sub(1);
-        for end in [0, last] {
-            if let (Some(Source::Meets { owner, .. }), Some(at)) =
-                (draft.sources.get(end), draft.chain.at.get(end))
-            {
-                out.entry((ci.min(*owner), ci.max(*owner)))
-                    .or_default()
-                    .push(*at);
-            }
-        }
-    }
-    for (j, chains) in holding {
-        let Some(point) = junctions.points.get(j) else {
-            continue;
-        };
-        for &a in &chains {
-            for &b in chains.range(a + 1..) {
-                out.entry((a, b)).or_default().push(point.at);
+                out.entry(ci).or_default().push(point.at);
             }
         }
     }
@@ -180,7 +155,7 @@ fn mutual_nearest(pairs: &[Pair], spots: &[Spot]) -> BTreeSet<usize> {
 /// Adds the rows (N) and their cost, for the chains `drafts` whose heights are `heights`, for the pairs of spots
 /// that are mutually nearest (chosen from all close pairs, before the exclusions); no rows for the pairs of
 /// a bridge's road and the road below within [`KEEP_APART_M`] of a crossing in `apart`, and none for two spots within
-/// [`KEEP_APART_M`] of a place where their roads are connected (see [`connections`]).
+/// [`KEEP_APART_M`] of a junction that their chain leaves and re-enters (see [`loops`]).
 pub(super) fn add(
     builder: &mut Builder,
     net: &PlacedNetwork,
@@ -225,7 +200,7 @@ pub(super) fn add(
             }
         }
     }
-    let connected = connections(drafts, junctions);
+    let looping = loops(drafts, junctions);
     let near = |s: &Spot, at: (f64, f64)| (s.x - at.0).hypot(s.y - at.1) <= KEEP_APART_M;
     let mutual = mutual_nearest(&pairs, &spots);
     // the runs: the pairs of two chains, in the order along the first, split where the first jumps
@@ -238,10 +213,11 @@ pub(super) fn add(
         let kept = !crossings
             .get(&key)
             .is_some_and(|places| places.iter().any(|at| near(a, *at) || near(b, *at)));
-        // both spots near a place where the two roads are connected
-        let joined = connected
-            .get(&key)
-            .is_some_and(|places| places.iter().any(|at| near(a, *at) && near(b, *at)));
+        // both spots of one chain near a junction that it leaves and re-enters
+        let joined = a.strip == b.strip
+            && looping
+                .get(&a.strip)
+                .is_some_and(|places| places.iter().any(|at| near(a, *at) && near(b, *at)));
         if kept && !joined && mutual.contains(&k) {
             kept_pairs.push(k);
         }

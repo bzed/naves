@@ -162,10 +162,12 @@ runs (consecutive spots of the first chain, at most `2 · SAMPLE_M` apart). **A 
 it:** at every pair of the run `|ground(a) − ground(b)| ≤ allowed + TIE_STEP_M` (`TIE_STEP_M = 1.0`). A run that
 fails gets no rows: roads side by side on a hillside at really different heights stay apart (the maintainer's
 caveat; a wall or a conflict finding is the terrain shaping's business). No rows either for pairs of the bridge road
-and the road below within `KEEP_APART_M` (50 m) of their crossing. No rows either for a pair of spots of two chains that both lie within `KEEP_APART_M` of a place where the
-two are connected (the centre of a junction that holds a variable of each, or, for a chain with itself, a junction it leaves and
-re-enters; the position of a chain end that is a meeting on the other): there the roads are one surface (the junction plane, the meeting), and two spots at different
-places on a slope legitimately differ in height. Such pairs are not pairs: they do not count in the run's ground test.
+and the road below within `KEEP_APART_M` (50 m) of their crossing. No rows either for a pair of spots of one chain that both lie within `KEEP_APART_M` of a junction that the chain leaves
+and re-enters (a loop: the junction holds two separate runs of its variables): there the legs are one surface, and two
+spots at different places on a slope legitimately differ in height. Such pairs are not pairs: they do not count in the
+run's ground test. Because only mutually nearest pairs are kept, roads that part at an angle (forks, merges, crossings)
+keep about one pair and stay untied beyond their first spot; that is intended: rows (N) are for roads running side by
+side.
 
 ### What comes out
 

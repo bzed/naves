@@ -1252,8 +1252,7 @@ pub enum ProfileError {
 
 /// The heights of every chain of `net` and of its junctions, as one quadratic program
 /// (`docs/superpowers/specs/2026-11-16-height-solve-design.md`, phase A: grades, vertical bends and junction
-/// tilts, and the rows of roads whose footprints share terrain cells; no clearance under bridges). Pairs of roads
-/// near a place where they are connected (a junction, a meeting) are left out of those rows. Without a road graph
+/// tilts, and the rows of roads whose footprints share terrain cells; no clearance under bridges). Without a road graph
 /// there are no bridges over roads, so no pair is left out for one; see [`solve_network_clearing`] for that.
 ///
 /// Every free joint height, and the height and tilt of every junction that holds a joint and is not on a ring,
