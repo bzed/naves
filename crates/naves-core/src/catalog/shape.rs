@@ -917,6 +917,42 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_part_answers_every_query_without_slices() {
+        let empty = PartShape::level(0.0, 1.0, 3.0);
+        assert_eq!(empty.ceiling(1.0, 0.0), Ceiling::Hang(0.0));
+        assert_eq!(empty.passable(10.0, 4.5), Vec::new());
+        assert_eq!(empty.stands().count(), 0);
+        assert!((empty.thickness(0.0, 1.0)).abs() < 1e-12);
+        assert_eq!(empty.opening(), (0.0, 0.0));
+        let slab = PartShape::level(5.0, 1.0, 3.0);
+        assert_eq!(slab.passable(f64::NAN, 4.5), Vec::new());
+        assert_eq!(slab.passable(5.5, 4.5), vec![(0.0, 5.0)]);
+        assert_eq!(slab.ceiling(-3.0, 9.0), Ceiling::Hang(1.0));
+        let open = PartShape::level(f64::NAN, f64::NAN, f64::INFINITY);
+        assert_eq!(open.underside.depth.len(), 0);
+    }
+
+    #[test]
+    fn spans_are_merged_where_they_touch() {
+        assert_eq!(
+            merged(vec![(2.0, 3.0), (-1.0, 0.5), (0.5, 1.0)]),
+            vec![(-1.0, 1.0), (2.0, 3.0)]
+        );
+        assert_eq!(merged(Vec::new()), Vec::new());
+    }
+
+    #[test]
+    fn a_face_across_the_span_on_a_whole_metre_belongs_to_no_slice() {
+        assert_eq!(slices_of(3.0, 3.0, 25, 25.0), None);
+        assert_eq!(slices_of(0.0, 0.0, 25, 25.0), Some(0..=0));
+        assert_eq!(slices_of(25.0, 25.0, 25, 25.0), Some(24..=24));
+        assert_eq!(slices_of(3.5, 3.5, 25, 25.0), Some(3..=3));
+        assert_eq!(slices_of(0.0, 3.0, 25, 25.0), Some(0..=2));
+        assert_eq!(slices_of(-5.0, -1.0, 25, 25.0), None);
+        assert_eq!(slices_of(0.0, 1.0, 0, 0.0), None);
+    }
+
+    #[test]
     fn slices_are_capped() {
         assert_eq!(slice_count(25.0), 25);
         assert_eq!(slice_count(25.000_002), 25);

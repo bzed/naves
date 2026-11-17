@@ -407,3 +407,26 @@ fn geometry_far_below_the_deck_is_a_pier_not_the_deck() {
         stone.deck_thickness
     );
 }
+
+#[test]
+fn a_geometry_lod_with_nothing_near_the_deck_is_not_called_unreadable() {
+    let mut models = synthetic_models();
+    let m = models.get_mut(STONE_25).unwrap();
+    let deck = m.memory["lb"][0][1];
+    // a pier only, 10 m below the deck, and no faces
+    m.geometry = Some(vec![[0.0, deck - 10.0, 0.0]]);
+    m.geometry_faces = Vec::new();
+    let c = PieceCatalog::from_models(&models).unwrap();
+    assert!(
+        c.warnings()
+            .iter()
+            .any(|w| w.contains("bridge_stone_25") && w.contains("no vertex within 4 m")),
+        "{:?}",
+        c.warnings()
+    );
+    assert!(
+        !c.warnings()
+            .iter()
+            .any(|w| w.contains("bridge_stone_25") && w.contains("cannot be read"))
+    );
+}
