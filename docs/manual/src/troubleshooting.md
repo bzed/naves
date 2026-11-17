@@ -183,6 +183,12 @@ them would have to be steeper than its limit. Another cause: approaches too shor
 below that cannot dip far enough within its own limits. The position is where the two lines cross. Move the junction
 away from the crossing in the data, or accept it.
 
+**`road_kink`: "Road ... meets its bridge 17.5 degrees off the deck's heading"**
+The road reaches the end of an OpenStreetMap bridge, but its heading there differs from the deck's by more than
+5 degrees, so a vehicle meets a corner at the bridge. The bridge's line turns at its node and the road before it had
+no room for the straight lead that normally takes the turn (a junction, another bridge or a short road at the node).
+Move the junction away from the bridge's end in the data, or accept it. Only the ends of bridges are checked.
+
 **`bridge_not_built`: "Bridge ... (12 m) is plain road: the install has no concrete panels and no bridge model that fits it"**
 An OpenStreetMap bridge longer than 3 m is built from a bridge model or a grid of concrete panels (see
 [what a bridge is built from](getting-started.md#roads)). The DayZ Server install has no panels

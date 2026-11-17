@@ -266,6 +266,9 @@ the work in `conform`, the wording of findings and report lines, and the order o
   is `BridgeFit::lead` per end (`Lead::Laid`, `Straight`, `NoRoom`, `Beyond` a junction or a node of bridges). The
   clamp is the neighbour's length, not the straight room of the growth (that room is 0 exactly where the road turns
   at once). With no room, or at a junction or node of bridges, nothing is moved and the placement reports the miss.
-  `report_gap` now also reports a fit that ends more than `HEADING_MISS_DEG` (5 degrees) off its goal's heading, and
-  a grid that starts where the chain is (after a junction exit, or after another grid) reports the same way.
+  Fix round 3: where there is no lead, the approach is fitted to the grid's start position on the approach path's own
+  heading (it closes in position), and a heading that is then more than `HEADING_MISS_DEG` (5 degrees) off the deck's is
+  the finding `road_kink`, reported only at bridge ends (grid and model ports, and a grid that starts where the chain
+  is: after a junction exit, or after another grid). Kinks are not in `PlacedNetwork::gaps`, so `road_gap` and the
+  moving of junctions count positions only, as before.
 

@@ -552,25 +552,31 @@ fn main() {
         gaps.iter().filter(|g| **g > 0.5).count()
     );
     {
-        // the findings that are a heading miss alone (the position is within the tolerance), and which are at a bridge
+        // the road_kink findings, worst first, and the position gaps at a bridge
+        let mut kinks: Vec<_> = net.kinks.iter().collect();
+        kinks.sort_by(|a, b| b.heading_error_deg.total_cmp(&a.heading_error_deg));
+        println!(
+            "ROADKINKS {} max {:.1} deg",
+            kinks.len(),
+            kinks.first().map_or(0.0, |k| k.heading_error_deg)
+        );
+        for k in kinks.iter().take(8) {
+            println!(
+                "ROADKINKAT {} ({:.0}, {:.0}) {:.1} deg",
+                k.stretch, k.at.0, k.at.1, k.heading_error_deg
+            );
+        }
         let near_bridge = |at: (f64, f64)| {
             bridges
                 .iter()
                 .any(|b| (b.at.0 - at.0).hypot(b.at.1 - at.1) <= b.length / 2.0 + 30.0)
         };
-        let heading_only: Vec<_> = net
-            .gaps
-            .iter()
-            .filter(|g| g.gap_m <= naves_core::roadfit::GAP_TOLERATED_M)
-            .collect();
-        println!(
-            "HEADINGMISS {} (at a bridge: {})",
-            heading_only.len(),
-            heading_only.iter().filter(|g| near_bridge(g.at)).count()
-        );
-        for g in heading_only.iter().filter(|g| near_bridge(g.at)) {
+        let mut big: Vec<_> = net.gaps.iter().filter(|g| near_bridge(g.at)).collect();
+        big.sort_by(|a, b| b.gap_m.total_cmp(&a.gap_m));
+        println!("BRIDGEGAPS {}", big.len());
+        for g in big.iter().take(8) {
             println!(
-                "HEADINGMISSAT {} ({:.0}, {:.0}) gap {:.2} m heading {:.1} deg",
+                "BRIDGEGAPAT {} ({:.0}, {:.0}) gap {:.2} m heading {:.1} deg",
                 g.stretch, g.at.0, g.at.1, g.gap_m, g.heading_error_deg
             );
         }

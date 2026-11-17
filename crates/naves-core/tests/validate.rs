@@ -20,7 +20,7 @@ use naves_core::osm::LandPolygon;
 use naves_core::profile::{GradeExcess, GradeExcessKind, Profiles};
 use naves_core::project::Project;
 use naves_core::roadfit::Pose;
-use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, Slot};
+use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, RoadKink, Slot};
 use naves_core::surface::SurfaceClass;
 use naves_core::validate::{Rule, Violation, check_roads};
 
@@ -266,6 +266,11 @@ fn the_other_rules_each_give_a_violation() {
         gap_m: 1.5,
         heading_error_deg: 3.0,
     });
+    n.kinks.push(RoadKink {
+        stretch: "7:1-2".to_string(),
+        at: (12.0, 22.0),
+        heading_error_deg: 17.5,
+    });
     n.joins_without_junction.push((30.0, 40.0));
     n.tunnels_omitted.push(("9:3-4".to_string(), (50.0, 60.0)));
     let mut c = conformed();
@@ -286,6 +291,7 @@ fn the_other_rules_each_give_a_violation() {
     for rule in [
         Rule::RoadGrade,
         Rule::RoadGap,
+        Rule::RoadKink,
         Rule::JoinWithoutJunction,
         Rule::TunnelOmitted,
         Rule::RoadConflict,
@@ -296,6 +302,14 @@ fn the_other_rules_each_give_a_violation() {
     // the capped places are reported once per region of 50 m
     assert_eq!(only(Rule::EarthworksCapped, &v).len(), 2);
     assert!(only(Rule::RoadGap, &v)[0].message.contains("7:1-2"));
+    // a kink is its own finding, with the angle and the site, and no gap
+    let kink = only(Rule::RoadKink, &v)[0];
+    assert!(
+        kink.message.contains("17.5") && kink.message.contains("7:1-2"),
+        "{}",
+        kink.message
+    );
+    assert_eq!(kink.at, (12.0, 22.0));
     assert!(
         only(Rule::OrphanedEdit, &v)[0]
             .message
@@ -460,6 +474,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::PathTooSteep,
         Rule::RoadGrade,
         Rule::RoadGap,
+        Rule::RoadKink,
         Rule::RoadInWater,
         Rule::RoadConflict,
         Rule::EarthworksCapped,
@@ -486,6 +501,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
     assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
     assert_eq!(Rule::BridgeNotBuilt.id(), "bridge_not_built");
+    assert_eq!(Rule::RoadKink.id(), "road_kink");
 }
 
 #[test]

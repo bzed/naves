@@ -23,8 +23,8 @@ use crate::roadfit::{
 use crate::roadnet::{Chain, Ring, RoadGraph, Stretch, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
-/// A fit that ends turned away from its goal by more than this, in degrees, is a miss even where its position is
-/// right (a kink in the road).
+/// A road that meets a bridge's end turned away from the deck's heading by more than this, in degrees, is a kink
+/// (a finding) even where its position is right.
 pub const HEADING_MISS_DEG: f64 = 5.0;
 const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
@@ -205,6 +205,17 @@ pub struct Overlay {
     pub lower: Vec<String>,
 }
 
+/// A road that meets the end of a bridge turned away from the deck's heading, at the deck's port.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoadKink {
+    /// The id of the bridge stretch.
+    pub stretch: String,
+    /// The port, in map metres.
+    pub at: (f64, f64),
+    /// How far the road's heading is from the deck's, in degrees.
+    pub heading_error_deg: f64,
+}
+
 /// Everything that is placed, and what could not be.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PlacedNetwork {
@@ -212,6 +223,8 @@ pub struct PlacedNetwork {
     pub roads: Vec<PlacedRoad>,
     /// Stretches that miss what they had to meet.
     pub gaps: Vec<RoadGap>,
+    /// Roads that meet the end of a bridge turned away from its deck (a kink, apart from the position gaps).
+    pub kinks: Vec<RoadKink>,
     /// Crossings where roads meet without a junction piece and no road can lie on top of the others (no
     /// through road passes: the roads all end there).
     pub joins_without_junction: Vec<(f64, f64)>,
@@ -985,13 +998,24 @@ impl<'a> Placer<'a> {
 
     fn report_gap(&mut self, stretch: &str, goal: Pose, end: Pose) {
         let gap = (end.x - goal.x).hypot(end.y - goal.y);
-        let heading_error = wrap(end.heading - goal.heading).abs().to_degrees();
-        // a road that arrives close to its goal but turned is a kink: a finding as well
-        if gap > GAP_TOLERATED_M || heading_error > HEADING_MISS_DEG {
+        if gap > GAP_TOLERATED_M {
             self.out.gaps.push(RoadGap {
                 stretch: stretch.to_string(),
                 at: (goal.x, goal.y),
                 gap_m: gap,
+                heading_error_deg: wrap(end.heading - goal.heading).abs().to_degrees(),
+            });
+        }
+    }
+
+    /// Reports a road that meets a bridge's end more than [`HEADING_MISS_DEG`] off the deck's heading, at the
+    /// bridge `stretch`'s port `goal`: a kink (not a gap, not counted when junctions are moved).
+    fn report_kink(&mut self, stretch: &str, goal: Pose, end: Pose) {
+        let heading_error = wrap(end.heading - goal.heading).abs().to_degrees();
+        if heading_error > HEADING_MISS_DEG {
+            self.out.kinks.push(RoadKink {
+                stretch: stretch.to_string(),
+                at: (goal.x, goal.y),
                 heading_error_deg: heading_error,
             });
         }
@@ -1482,7 +1506,9 @@ impl<'a> Placer<'a> {
             )?;
             out.fit = pieces;
             *pose = port.unwrap_or(end);
+            self.report_kink(&id, p0, *pose);
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
+            self.report_kink(&id, p0, *pose);
             pose.heading = heading;
         }
         out.items = Self::lay_models(model, count, (entry, exit), (family, drivable), (pose, s0));
@@ -1591,18 +1617,24 @@ impl<'a> Placer<'a> {
         let first_step = chord(0).0;
         let last_step = chord(count.max(1) - 1).1;
         if s0 - *s_cur > 1.0 {
-            let (pieces, end) = self.fit_part(
-                &line.slice(*s_cur, s0),
-                *pose,
-                EndGoal::Fixed(first_step),
-                family,
-                id,
-            )?;
+            // the approach is fitted to the grid's start on its own heading (with a lead that is the deck's axis),
+            // so that it closes in position; what turn is left is a kink
+            let path = line.slice(*s_cur, s0);
+            let arrive = match path.as_slice() {
+                [.., a, b] if a != b => Pose {
+                    heading: (b.0 - a.0).atan2(b.1 - a.1),
+                    ..first_step
+                },
+                _ => first_step,
+            };
+            let (pieces, end) = self.fit_part(&path, *pose, EndGoal::Fixed(arrive), family, id)?;
+            self.report_kink(id, first_step, end);
             out.fit = pieces;
             *pose = end;
         } else {
             // no approach: the road is where the chain is, and the grid starts on the line; say so if they differ
             self.report_gap(id, first_step, *pose);
+            self.report_kink(id, first_step, *pose);
         }
         let turn = if slab.along_x { PI / 2.0 } else { 0.0 };
         let width =

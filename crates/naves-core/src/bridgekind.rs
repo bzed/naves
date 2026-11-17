@@ -893,7 +893,8 @@ pub enum Lead {
     /// There is no neighbour to move (a junction, a node of bridges, a dead end): the road meets the deck as it
     /// is, and a miss is reported by the placement.
     Beyond(RoomEnd),
-    /// The road beyond leaves within [`LEAD_MIN_TURN_DEG`] of the deck's heading: nothing is moved.
+    /// The road beyond leaves within [`LEAD_MIN_TURN_DEG`] of the deck's heading (or, with no room for a lead,
+    /// within [`LEAD_BLEND_DEG`]): it needs none, nothing is moved.
     Straight,
     /// The neighbour's first `replaced` metres are replaced by a straight of `straight` metres on the deck's
     /// axis from the node, and a line from its end to the neighbour's own path.
@@ -1059,6 +1060,10 @@ fn lead_beyond(
     let wanted = straight * (turn.to_radians().sin() / blend.tan() + turn.to_radians().cos());
     let replaced = wanted.min(room);
     if !(straight.is_finite() && replaced >= straight + LEAD_MIN_M) {
+        // a turn the pieces take within the tolerated heading miss needs no lead, room or none
+        if turn <= LEAD_BLEND_DEG {
+            return Some(Lead::Straight);
+        }
         return Some(Lead::NoRoom {
             turn_deg: turn,
             room,

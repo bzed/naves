@@ -622,9 +622,9 @@ fn a_grid_joins_the_road_before_and_after_it_whatever_the_turn_at_its_ends() {
     }
 }
 
-#[test]
-fn a_neighbour_with_no_room_for_a_lead_is_reported_and_left_as_it_was() {
-    // the road before the bridge is 3 m long and ends in a dead end: nowhere to turn
+/// An 8 m road, then a bridge leaving it at 30 degrees, then the road going on at that heading: the road before
+/// the bridge has no room for a lead.
+fn bridge_after_a_stub() -> (Vec<Feature>, (f64, f64)) {
     let (dx, dy) = (30.0_f64.to_radians().cos(), 30.0_f64.to_radians().sin());
     let end = (400.0 + 9.0 * dx, 500.0 + 9.0 * dy);
     let features = vec![
@@ -633,7 +633,7 @@ fn a_neighbour_with_no_room_for_a_lead_is_reported_and_left_as_it_was() {
             Family::Grav,
             false,
             &[1, 2],
-            &[(397.0, 500.0), (400.0, 500.0)],
+            &[(392.0, 500.0), (400.0, 500.0)],
         ),
         feature(2, Family::Grav, true, &[2, 3], &[(400.0, 500.0), end]),
         feature(
@@ -644,32 +644,45 @@ fn a_neighbour_with_no_room_for_a_lead_is_reported_and_left_as_it_was() {
             &[end, (400.0 + 300.0 * dx, 500.0 + 300.0 * dy)],
         ),
     ];
+    (features, end)
+}
+
+#[test]
+fn a_neighbour_with_no_room_for_a_lead_is_left_as_it_was_and_still_reaches_the_grid() {
+    use naves_core::roadfit::GAP_CLOSED_M;
+    let (features, _) = bridge_after_a_stub();
     let catalog = synthetic_catalog();
     let built = build_graph(&features);
     let (graph, _) = fit_bridges(&built, &|site| choose(&catalog, site), &flat);
-    let short = graph
-        .stretches
-        .iter()
-        .find(|s| s.id.starts_with("1:"))
-        .unwrap();
-    let original = built
-        .stretches
-        .iter()
-        .find(|s| s.id.starts_with("1:"))
-        .unwrap();
-    assert_eq!(short.points, original.points, "nothing is moved");
-    let net = place_network(&graph, &catalog).unwrap();
-    assert!(
-        net.gaps
+    let find = |g: &naves_core::roadnet::RoadGraph| {
+        g.stretches
             .iter()
-            .any(|g| (g.at.0 - 400.0).hypot(g.at.1 - 500.0) < 3.0),
-        "the miss is reported: {:?}",
-        net.gaps
+            .find(|s| s.id.starts_with("1:"))
+            .unwrap()
+            .points
+            .clone()
+    };
+    assert_eq!(find(&graph), find(&built), "nothing is moved");
+    let net = place_network(&graph, &catalog).unwrap();
+    // it arrives where the grid starts, on its own heading
+    let (before, first, _, _) = neighbours(&net);
+    assert!(
+        gap_between(&before.end, &first.start) <= GAP_CLOSED_M,
+        "{before:?}"
+    );
+    // the turn that is left is a kink finding at the bridge, not a gap
+    assert!(net.gaps.is_empty(), "{:?}", net.gaps);
+    assert!(
+        net.kinks
+            .iter()
+            .any(|k| (k.at.0 - 400.0).hypot(k.at.1 - 500.0) < 1.0 && k.heading_error_deg > 5.0),
+        "{:?}",
+        net.kinks
     );
 }
 
 #[test]
-fn a_heading_miss_alone_is_reported() {
+fn a_heading_miss_alone_at_a_bridge_is_a_kink_and_no_gap() {
     // two grids meet at a fork of three bridges at 150 degrees: the pose after the first is not on the second
     let arm = |deg: f64| {
         (
@@ -696,12 +709,42 @@ fn a_heading_miss_alone_is_reported() {
     ];
     let (net, _, _) = fitted(&features, &flat);
     assert!(
-        net.gaps
-            .iter()
-            .any(|g| g.gap_m < 0.5 && g.heading_error_deg > 5.0),
+        net.kinks.iter().any(|k| k.heading_error_deg > 5.0),
         "a heading-only miss is a finding: {:?}",
-        net.gaps
+        net.kinks
     );
+    // a heading miss is not a position gap: `improves` and `road_gap` count positions only
+    assert!(net.gaps.iter().all(|g| g.gap_m > 0.5), "{:?}", net.gaps);
+}
+
+#[test]
+fn a_junction_port_away_from_a_bridge_reports_no_kink() {
+    // the same road network without a bridge: a fit to a junction port that ends turned is not a finding
+    let features = vec![
+        feature(
+            1,
+            Family::Asf3,
+            false,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(
+            2,
+            Family::Asf3,
+            false,
+            &[2, 4],
+            &[(500.0, 500.0), (560.0, 900.0)],
+        ),
+        feature(
+            3,
+            Family::Asf3,
+            false,
+            &[3, 5],
+            &[(900.0, 500.0), (905.0, 900.0)],
+        ),
+    ];
+    let net = place_network(&build_graph(&features), &synthetic_catalog()).unwrap();
+    assert!(net.kinks.is_empty(), "{:?}", net.kinks);
 }
 
 #[test]

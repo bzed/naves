@@ -39,6 +39,8 @@ pub enum Rule {
     RoadGrade,
     /// A road that does not meet what it has to meet.
     RoadGap,
+    /// A road that meets the end of a bridge turned away from the deck's heading.
+    RoadKink,
     /// A road piece standing in water.
     RoadInWater,
     /// Two roads that want different heights at one place.
@@ -70,12 +72,13 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 17] = [
+    pub const ALL: [Rule; 18] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
         Rule::RoadGrade,
         Rule::RoadGap,
+        Rule::RoadKink,
         Rule::RoadInWater,
         Rule::RoadConflict,
         Rule::EarthworksCapped,
@@ -99,6 +102,7 @@ impl Rule {
             Rule::PathTooSteep => "path_too_steep",
             Rule::RoadGrade => "road_grade",
             Rule::RoadGap => "road_gap",
+            Rule::RoadKink => "road_kink",
             Rule::RoadInWater => "road_in_water",
             Rule::RoadConflict => "road_conflict",
             Rule::EarthworksCapped => "earthworks_capped",
@@ -128,6 +132,32 @@ pub struct Violation {
 
 fn violation(rule: Rule, at: (f64, f64), message: String) -> Violation {
     Violation { rule, at, message }
+}
+
+/// The roads that miss what they have to meet (`road_gap`) and the ones that meet a bridge turned (`road_kink`).
+fn meeting_violations(net: &PlacedNetwork) -> Vec<Violation> {
+    let mut out = Vec::new();
+    out.extend(net.gaps.iter().map(|g| {
+        violation(
+            Rule::RoadGap,
+            g.at,
+            format!(
+                "Road {} misses what it has to meet by {:.1} m",
+                g.stretch, g.gap_m
+            ),
+        )
+    }));
+    out.extend(net.kinks.iter().map(|k| {
+        violation(
+            Rule::RoadKink,
+            k.at,
+            format!(
+                "Road {} meets its bridge {:.1} degrees off the deck's heading",
+                k.stretch, k.heading_error_deg
+            ),
+        )
+    }));
+    out
 }
 
 /// A bridge that clears the road below by less than it should.
@@ -443,16 +473,7 @@ pub fn check_roads(
         };
         violation(Rule::RoadGrade, e.at, message)
     }));
-    out.extend(net.gaps.iter().map(|g| {
-        violation(
-            Rule::RoadGap,
-            g.at,
-            format!(
-                "Road {} misses what it has to meet by {:.1} m",
-                g.stretch, g.gap_m
-            ),
-        )
-    }));
+    out.extend(meeting_violations(net));
     out.extend(water_violations(net, water, frame));
     out.extend(conformed.conflicts.iter().map(|c| {
         violation(
