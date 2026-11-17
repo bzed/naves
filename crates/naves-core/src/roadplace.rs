@@ -23,6 +23,9 @@ use crate::roadfit::{
 use crate::roadnet::{Chain, Ring, RoadGraph, Stretch, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
+/// A fit that ends turned away from its goal by more than this, in degrees, is a miss even where its position is
+/// right (a kink in the road).
+pub const HEADING_MISS_DEG: f64 = 5.0;
 const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
@@ -982,12 +985,14 @@ impl<'a> Placer<'a> {
 
     fn report_gap(&mut self, stretch: &str, goal: Pose, end: Pose) {
         let gap = (end.x - goal.x).hypot(end.y - goal.y);
-        if gap > GAP_TOLERATED_M {
+        let heading_error = wrap(end.heading - goal.heading).abs().to_degrees();
+        // a road that arrives close to its goal but turned is a kink: a finding as well
+        if gap > GAP_TOLERATED_M || heading_error > HEADING_MISS_DEG {
             self.out.gaps.push(RoadGap {
                 stretch: stretch.to_string(),
                 at: (goal.x, goal.y),
                 gap_m: gap,
-                heading_error_deg: wrap(end.heading - goal.heading).abs().to_degrees(),
+                heading_error_deg: heading_error,
             });
         }
     }
@@ -1559,10 +1564,6 @@ impl<'a> Placer<'a> {
             items: Vec::new(),
         };
         let Some(slab) = crate::bridgekind::panel_slab(self.catalog) else {
-            // `choose` gives panels only with a panel in the catalog; say so rather than lay no deck
-            self.out.warnings.push(format!(
-                "stretch {id} is a panel grid but the catalog has no panel"
-            ));
             return Ok(out);
         };
         let s0 = line.link_start.get(k).copied().unwrap_or(0.0);
@@ -1576,40 +1577,39 @@ impl<'a> Placer<'a> {
         if !(step.is_finite() && step > 0.0) {
             return Ok(out);
         }
-        // the grid's two ends are ports: on the line, with the heading of the first and of the last step
-        let heading_at = |s: f64| line.pose_at(s).heading;
-        let first_heading = heading_at(s0 + step / 2.0);
-        let last_heading = heading_at(s1 - step / 2.0);
+        // every step runs chord to chord: from the line's point at its start to the one at its end, on the
+        // heading of that chord; the grid's two ends are ports with the heading of the first and last step
+        let chord = |i: usize| {
+            let n = f64::from(u32::try_from(i).unwrap_or(u32::MAX));
+            let (from, to) = (
+                line.pose_at(s0 + n * step),
+                line.pose_at(s0 + (n + 1.0) * step),
+            );
+            let heading = (to.x - from.x).atan2(to.y - from.y);
+            (Pose { heading, ..from }, Pose { heading, ..to })
+        };
+        let first_step = chord(0).0;
+        let last_step = chord(count.max(1) - 1).1;
         if s0 - *s_cur > 1.0 {
-            let goal = Pose {
-                heading: first_heading,
-                ..line.pose_at(s0)
-            };
             let (pieces, end) = self.fit_part(
                 &line.slice(*s_cur, s0),
                 *pose,
-                EndGoal::Fixed(goal),
+                EndGoal::Fixed(first_step),
                 family,
                 id,
             )?;
             out.fit = pieces;
             *pose = end;
         } else {
-            pose.heading = first_heading;
+            // no approach: the road is where the chain is, and the grid starts on the line; say so if they differ
+            self.report_gap(id, first_step, *pose);
         }
         let turn = if slab.along_x { PI / 2.0 } else { 0.0 };
         let width =
             f64::from(u32::try_from(abreast.max(1)).unwrap_or(u32::MAX)) * slab.across * scale;
         for i in 0..count.max(1) {
+            let (from, to) = chord(i);
             let n = f64::from(u32::try_from(i).unwrap_or(u32::MAX));
-            let (a, b) = (s0 + n * step, s0 + (n + 1.0) * step);
-            let (from, to, middle) = (
-                line.pose_at(a),
-                line.pose_at(b),
-                line.pose_at(f64::midpoint(a, b)),
-            );
-            // the line's heading at the centre, for the steps's ends and the objects' sides
-            let heading = middle.heading;
             out.items.push(Item {
                 road: PlacedRoad {
                     slot: Slot {
@@ -1621,24 +1621,21 @@ impl<'a> Placer<'a> {
                     drivable,
                     model: slab.model.clone(),
                     origin: Pose {
-                        x: middle.x,
-                        y: middle.y,
-                        heading: wrap(heading + turn),
+                        x: f64::midpoint(from.x, to.x),
+                        y: f64::midpoint(from.y, to.y),
+                        heading: wrap(from.heading + turn),
                     },
-                    start: Pose { heading, ..from },
-                    end: Pose { heading, ..to },
+                    start: from,
+                    end: to,
                     width,
                     scale,
                     abreast: abreast.max(1),
                 },
-                s: f64::midpoint(a, b),
+                s: s0 + (n + 0.5) * step,
                 link: None,
             });
         }
-        *pose = Pose {
-            heading: last_heading,
-            ..line.pose_at(s1)
-        };
+        *pose = last_step;
         *s_cur = s1;
         Ok(out)
     }

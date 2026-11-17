@@ -490,7 +490,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
 
 #[test]
 fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
-    use naves_core::bridgekind::{BridgeFit, BridgeKind, Fallback, RoomEnd};
+    use naves_core::bridgekind::{BridgeFit, BridgeKind, Fallback, Lead, RoomEnd};
     let fit = |id: &str, fallback: Vec<Fallback>, at: (f64, f64)| BridgeFit {
         stretches: vec![id.to_string()],
         stretch: id.to_string(),
@@ -502,6 +502,7 @@ fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
         part_length: 0.0,
         grown: (0.0, 0.0),
         part_start: 0.0,
+        lead: (Lead::Unbuilt, Lead::Unbuilt),
         turn_deg: (0.0, 0.0),
         room: (0.0, 0.0),
         room_end: (RoomEnd::Junction, RoomEnd::Junction),

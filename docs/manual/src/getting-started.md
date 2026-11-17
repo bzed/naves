@@ -304,7 +304,12 @@ becomes a panel grid of the bridge's length. No bridge is dropped: the build kno
 it became and why (and why its room ends at each end). If the install has neither panels nor a model that fits, the
 bridge is plain road and the finding is `bridge_not_built`.
 
-**How a bridge is laid.** A panel grid is a real bridge: its panels lie crosswise (the long side across the road),
+**How a bridge is laid.** The deck lies node to node on its OpenStreetMap line. Where the road beyond a bridge's end
+leaves it turned away (by at least 1 degree), the last stretch of that road before the bridge is made straight on the
+bridge's axis, `2 R tan(turn / 2)` metres long (at least 4 m; R is the tightest curve of the road's pieces), so that the
+pieces can join the deck; the road before it leaves its OpenStreetMap line by a few metres. At a junction, a node of
+bridges or where the road is too short nothing is moved, and a road that still misses the deck by more than 0.5 m or
+by more than 5 degrees is a `road_gap` finding. A panel grid is a real bridge: its panels lie crosswise (the long side across the road),
 each on the heading of the bridge's line at its centre, so a grid follows a bend; the panels of a step are centred on
 the line. The grid is one level deck for the height solve (as a model is), as thick as one panel at its scale, with no
 road under it and no solid part; the origin of every panel is 0.12 m times its scale below the deck level (measured in

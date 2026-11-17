@@ -354,11 +354,13 @@ fn the_report_and_the_summary_say_what_every_bridge_was_built_from() {
     assert_eq!(bridges[0]["kind"]["count"], 1);
     assert_eq!(bridges[0]["stretches"][0], "11:2-3");
     assert_eq!(bridges[0]["fallback"].as_array().unwrap().len(), 0);
+    assert!(bridges[0]["part_start_m"].is_number());
+    assert_eq!(bridges[0]["lead"].as_array().unwrap().len(), 2);
 }
 
 #[test]
 fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
-    use naves_core::bridgekind::{BridgeFit, Fallback, RoomEnd};
+    use naves_core::bridgekind::{BridgeFit, Fallback, Lead, RoomEnd};
     use naves_core::catalog::Family;
     let fit = BridgeFit {
         stretches: vec!["1:1-2".into(), "2:2-3".into()],
@@ -375,6 +377,7 @@ fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
         part_length: 9.0,
         grown: (0.0, 0.0),
         part_start: 0.0,
+        lead: (Lead::Unbuilt, Lead::Unbuilt),
         turn_deg: (0.0, 0.0),
         room: (0.0, 0.0),
         room_end: (RoomEnd::Junction, RoomEnd::Junction),
@@ -387,4 +390,31 @@ fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
     assert!(line.contains("panels 3 x 2 at scale 0.98"), "{line}");
     assert!(line.contains("bridge_wood2 has no room"), "{line}");
     assert_eq!(BridgeKind::Fill.to_string(), "fill");
+}
+
+#[test]
+fn every_lead_is_told_in_words() {
+    use naves_core::bridgekind::{Lead, RoomEnd};
+    for (lead, text) in [
+        (Lead::Straight, "none needed"),
+        (Lead::Unbuilt, "plain road"),
+        (Lead::Beyond(RoomEnd::Junction), "junction"),
+        (
+            Lead::Laid {
+                turn_deg: 30.0,
+                straight: 8.0,
+                replaced: 40.0,
+            },
+            "lead of 8.0 m for a turn of 30.0 degrees",
+        ),
+        (
+            Lead::NoRoom {
+                turn_deg: 30.0,
+                room: 1.5,
+            },
+            "no room for a lead (1.5 m)",
+        ),
+    ] {
+        assert!(lead.to_string().contains(text), "{lead}");
+    }
 }

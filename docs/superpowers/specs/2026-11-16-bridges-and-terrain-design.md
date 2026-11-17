@@ -251,3 +251,21 @@ the work in `conform`, the wording of findings and report lines, and the order o
   match the road's width (it came out up to 6.6 m wider or 4.7 m narrower on the example); `k` panels side by side
   with one scale in `PANEL_SCALE_MIN..=PANEL_SCALE_MAX` give both. `BridgeKind::Panels { count, abreast, scale }`.
   The maintainer: panels are used for any length where no bridge fits (no length limit for rows).
+- **A straight lead on the deck's axis** (Task 5, fix round 2). A deck lies node to node on its OpenStreetMap line
+  (a model on its ports, a grid on its steps, each step from the line's point at its start to the one at its end, on
+  the heading of that chord). A road that leaves the node turned away from the deck cannot arrive on the deck's
+  heading at the node: the pieces would need an S-bend, and the fit gave up on the position (a 37 m gap on the
+  example) or left a kink. So `fit_bridges`, next to the growth, makes the last stretch of the neighbour before the
+  node straight on the deck's axis wherever the neighbour is plain road at a node of exactly two stretches and
+  leaves the deck's end by at least `LEAD_MIN_TURN_DEG` (1 degree): the neighbour's line from the node outwards
+  becomes `[node, a, q, ...]` with `a` on the axis `d = max(LEAD_MIN_M = 4, 2 R tan(turn / 2))` metres out
+  (`R` the tightest curve of the road family's pieces, `LEAD_RADIUS_M = 15` without an arc), and `q` the point of the
+  neighbour's own path far enough along that the line `a`-`q` turns away from the path by at most
+  `LEAD_BLEND_DEG` (5 degrees), at most half the neighbour long and `GROW_KEEP_M` short of its end; the path before
+  `q` is dropped. The corner is then at `a`, on plain road, where the pieces round it as at any vertex. The decision
+  is `BridgeFit::lead` per end (`Lead::Laid`, `Straight`, `NoRoom`, `Beyond` a junction or a node of bridges). The
+  clamp is the neighbour's length, not the straight room of the growth (that room is 0 exactly where the road turns
+  at once). With no room, or at a junction or node of bridges, nothing is moved and the placement reports the miss.
+  `report_gap` now also reports a fit that ends more than `HEADING_MISS_DEG` (5 degrees) off its goal's heading, and
+  a grid that starts where the chain is (after a junction exit, or after another grid) reports the same way.
+

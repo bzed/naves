@@ -555,11 +555,11 @@ fn neighbours(net: &PlacedNetwork) -> (&PlacedRoad, &PlacedRoad, &PlacedRoad, &P
     )
 }
 
-#[test]
-fn a_grid_joins_the_road_before_and_after_it_when_the_bridge_turns_away() {
-    use naves_core::roadfit::{GAP_TOLERATED_M, KINK_TOLERATED_DEG};
-    // the bridge leaves the road before it at 10 degrees and the road after it goes on at that heading
-    let (dx, dy) = (10.0_f64.to_radians().cos(), 10.0_f64.to_radians().sin());
+/// A road east along y = 500, a 9 m gravel bridge leaving it at `deg` degrees, and the road going on at that
+/// heading: the bridge's end points, in map metres.
+fn turned_bridge(deg: f64) -> (Vec<Feature>, [(f64, f64); 2]) {
+    let (dx, dy) = (deg.to_radians().cos(), deg.to_radians().sin());
+    let bridge_end = (400.0 + 9.0 * dx, 500.0 + 9.0 * dy);
     let features = vec![
         feature(
             1,
@@ -573,125 +573,224 @@ fn a_grid_joins_the_road_before_and_after_it_when_the_bridge_turns_away() {
             Family::Grav,
             true,
             &[2, 3],
-            &[(400.0, 500.0), (400.0 + 9.0 * dx, 500.0 + 9.0 * dy)],
+            &[(400.0, 500.0), bridge_end],
         ),
         feature(
             3,
             Family::Grav,
             false,
             &[3, 4],
-            &[
-                (400.0 + 9.0 * dx, 500.0 + 9.0 * dy),
-                (400.0 + 300.0 * dx, 500.0 + 300.0 * dy),
-            ],
+            &[bridge_end, (400.0 + 300.0 * dx, 500.0 + 300.0 * dy)],
         ),
     ];
-    let (net, _, catalog) = fitted(&features, &flat);
-    let panel = slab(&catalog).model;
-    let (before, first, last, after) = neighbours(&net);
-    assert_eq!(first.model, panel);
-    let turn = |a: f64, b: f64| wrap(a - b).abs().to_degrees();
-    let gap =
-        |a: &naves_core::roadfit::Pose, b: &naves_core::roadfit::Pose| (a.x - b.x).hypot(a.y - b.y);
-    assert!(
-        gap(&before.end, &first.start) <= GAP_TOLERATED_M,
-        "{before:?} {first:?}"
-    );
-    assert!(
-        turn(before.end.heading, first.start.heading) <= KINK_TOLERATED_DEG,
-        "{} against {}",
-        before.end.heading.to_degrees(),
-        first.start.heading.to_degrees()
-    );
-    assert!(
-        gap(&last.end, &after.start) <= GAP_TOLERATED_M,
-        "{last:?} {after:?}"
-    );
-    assert!(
-        turn(last.end.heading, after.start.heading) <= KINK_TOLERATED_DEG,
-        "{} against {}",
-        last.end.heading.to_degrees(),
-        after.start.heading.to_degrees()
-    );
+    (features, [(400.0, 500.0), bridge_end])
+}
+
+fn gap_between(a: &naves_core::roadfit::Pose, b: &naves_core::roadfit::Pose) -> f64 {
+    (a.x - b.x).hypot(a.y - b.y)
+}
+
+fn kink_between(a: &naves_core::roadfit::Pose, b: &naves_core::roadfit::Pose) -> f64 {
+    wrap(a.heading - b.heading).abs().to_degrees()
 }
 
 #[test]
-fn a_sharper_turn_is_closed_or_reported_never_a_silent_kink() {
-    use naves_core::roadfit::{GAP_TOLERATED_M, KINK_TOLERATED_DEG};
-    let (dx, dy) = (30.0_f64.to_radians().cos(), 30.0_f64.to_radians().sin());
-    let features = vec![
-        feature(
-            1,
-            Family::Grav,
-            false,
-            &[1, 2],
-            &[(100.0, 500.0), (400.0, 500.0)],
-        ),
-        feature(
-            2,
-            Family::Grav,
-            true,
-            &[2, 3],
-            &[(400.0, 500.0), (400.0 + 9.0 * dx, 500.0 + 9.0 * dy)],
-        ),
-        feature(
-            3,
-            Family::Grav,
-            false,
-            &[3, 4],
-            &[
-                (400.0 + 9.0 * dx, 500.0 + 9.0 * dy),
-                (400.0 + 300.0 * dx, 500.0 + 300.0 * dy),
-            ],
-        ),
-    ];
-    let (net, _, _) = fitted(&features, &flat);
-    let (before, first, last, after) = neighbours(&net);
-    let ends = [(400.0, 500.0), (400.0 + 9.0 * dx, 500.0 + 9.0 * dy)];
-    for (a, b, node) in [
-        (&before.end, &first.start, ends[0]),
-        (&last.end, &after.start, ends[1]),
-    ] {
-        let gap = (a.x - b.x).hypot(a.y - b.y);
-        let kink = wrap(a.heading - b.heading).abs().to_degrees();
-        assert!(
-            (gap <= GAP_TOLERATED_M && kink <= KINK_TOLERATED_DEG)
-                || net
-                    .gaps
-                    .iter()
-                    .any(|g| (g.at.0 - node.0).hypot(g.at.1 - node.1) < 3.0),
-            "{node:?}: gap {gap}, kink {kink}, reported {:?}",
-            net.gaps
-        );
+fn a_grid_joins_the_road_before_and_after_it_whatever_the_turn_at_its_ends() {
+    use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
+    for deg in [10.0, 30.0, 66.0] {
+        let (features, _) = turned_bridge(deg);
+        let (net, _, catalog) = fitted(&features, &flat);
+        let panel = slab(&catalog).model;
+        let (before, first, last, after) = neighbours(&net);
+        assert_eq!(first.model, panel);
+        for (a, b, what) in [
+            (before.end, first.start, "before"),
+            (last.end, after.start, "after"),
+        ] {
+            assert!(
+                gap_between(&a, &b) <= GAP_CLOSED_M,
+                "{deg} degrees, {what}: gap {}",
+                gap_between(&a, &b)
+            );
+            assert!(
+                kink_between(&a, &b) <= KINK_TOLERATED_DEG + 1e-3,
+                "{deg} degrees, {what}: kink {}",
+                kink_between(&a, &b)
+            );
+        }
+        assert!(net.gaps.is_empty(), "{deg} degrees: {:?}", net.gaps);
     }
 }
 
 #[test]
-fn a_corner_the_pieces_cannot_close_is_reported_as_a_gap() {
-    // the bridge leaves at a right angle with the road before it only 5 m long: the fit cannot close
+fn a_neighbour_with_no_room_for_a_lead_is_reported_and_left_as_it_was() {
+    // the road before the bridge is 3 m long and ends in a dead end: nowhere to turn
+    let (dx, dy) = (30.0_f64.to_radians().cos(), 30.0_f64.to_radians().sin());
+    let end = (400.0 + 9.0 * dx, 500.0 + 9.0 * dy);
     let features = vec![
         feature(
             1,
             Family::Grav,
             false,
             &[1, 2],
-            &[(395.0, 500.0), (400.0, 500.0)],
+            &[(397.0, 500.0), (400.0, 500.0)],
+        ),
+        feature(2, Family::Grav, true, &[2, 3], &[(400.0, 500.0), end]),
+        feature(
+            3,
+            Family::Grav,
+            false,
+            &[3, 4],
+            &[end, (400.0 + 300.0 * dx, 500.0 + 300.0 * dy)],
+        ),
+    ];
+    let catalog = synthetic_catalog();
+    let built = build_graph(&features);
+    let (graph, _) = fit_bridges(&built, &|site| choose(&catalog, site), &flat);
+    let short = graph
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("1:"))
+        .unwrap();
+    let original = built
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("1:"))
+        .unwrap();
+    assert_eq!(short.points, original.points, "nothing is moved");
+    let net = place_network(&graph, &catalog).unwrap();
+    assert!(
+        net.gaps
+            .iter()
+            .any(|g| (g.at.0 - 400.0).hypot(g.at.1 - 500.0) < 3.0),
+        "the miss is reported: {:?}",
+        net.gaps
+    );
+}
+
+#[test]
+fn a_heading_miss_alone_is_reported() {
+    // two grids meet at a fork of three bridges at 150 degrees: the pose after the first is not on the second
+    let arm = |deg: f64| {
+        (
+            400.0 + 9.0 * deg.to_radians().cos(),
+            500.0 + 9.0 * deg.to_radians().sin(),
+        )
+    };
+    let features = vec![
+        feature(1, Family::Grav, true, &[1, 2], &[(400.0, 500.0), arm(0.0)]),
+        feature(
+            2,
+            Family::Grav,
+            true,
+            &[1, 3],
+            &[(400.0, 500.0), arm(150.0)],
+        ),
+        feature(
+            3,
+            Family::Grav,
+            true,
+            &[1, 4],
+            &[(400.0, 500.0), arm(270.0)],
+        ),
+    ];
+    let (net, _, _) = fitted(&features, &flat);
+    assert!(
+        net.gaps
+            .iter()
+            .any(|g| g.gap_m < 0.5 && g.heading_error_deg > 5.0),
+        "a heading-only miss is a finding: {:?}",
+        net.gaps
+    );
+}
+
+#[test]
+fn the_steps_of_a_bent_grid_run_from_chord_end_to_chord_end() {
+    // a bridge of two segments: 9 m east, then 9 m north-east
+    let features = vec![
+        feature(
+            1,
+            Family::Grav,
+            false,
+            &[1, 2],
+            &[(100.0, 500.0), (400.0, 500.0)],
         ),
         feature(
             2,
             Family::Grav,
             true,
-            &[2, 3],
-            &[(400.0, 500.0), (400.0, 509.0)],
+            &[2, 5, 3],
+            &[(400.0, 500.0), (409.0, 500.0), (415.36, 506.36)],
         ),
         feature(
             3,
             Family::Grav,
             false,
             &[3, 4],
-            &[(400.0, 509.0), (400.0, 800.0)],
+            &[(415.36, 506.36), (700.0, 506.36 + 284.64)],
         ),
     ];
     let (net, _, _) = fitted(&features, &flat);
-    assert!(!net.gaps.is_empty(), "no silent kink: {:?}", net.warnings);
+    let steps: Vec<&PlacedRoad> = bridges(&net);
+    assert!(steps.len() >= 4, "{}", steps.len());
+    for step in &steps {
+        let chord = (step.end.x - step.start.x).atan2(step.end.y - step.start.y);
+        assert!(
+            close(wrap(chord - step.start.heading), 0.0, 1e-9),
+            "{step:?}"
+        );
+        assert!(close(wrap(chord - step.end.heading), 0.0, 1e-9), "{step:?}");
+        let mid = (
+            f64::midpoint(step.start.x, step.end.x),
+            f64::midpoint(step.start.y, step.end.y),
+        );
+        assert!(close(step.origin.x, mid.0, 1e-9) && close(step.origin.y, mid.1, 1e-9));
+    }
+}
+
+#[test]
+fn the_lead_changes_the_neighbour_only_within_what_it_replaces() {
+    use naves_core::bridgekind::Lead;
+    let (features, _) = turned_bridge(30.0);
+    let catalog = synthetic_catalog();
+    let built = build_graph(&features);
+    let (graph, fits) = fit_bridges(&built, &|site| choose(&catalog, site), &flat);
+    let Lead::Laid {
+        straight,
+        replaced,
+        turn_deg,
+    } = fits[0].lead.0
+    else {
+        panic!("{:?}", fits[0].lead);
+    };
+    assert!(close(turn_deg, 30.0, 1e-6) && straight >= 4.0 && replaced >= straight + 4.0);
+    let before = |g: &naves_core::roadnet::RoadGraph| {
+        g.stretches
+            .iter()
+            .find(|s| s.id.starts_with("1:"))
+            .unwrap()
+            .points
+            .clone()
+    };
+    let (old, new) = (before(&built), before(&graph));
+    // the node is where it was, the point before it is on the deck's axis, and the road beyond `replaced`
+    // metres from the node is the road it was
+    assert_eq!(old.last(), new.last());
+    let node = *new.last().unwrap();
+    let axis = new[new.len() - 2];
+    // the deck leaves the node at 30 degrees, so its axis extended backwards points south-west
+    let (sin, cos) = 30.0_f64.to_radians().sin_cos();
+    assert!(
+        close(axis.0, node.0 - straight * cos, 1e-6)
+            && close(axis.1, node.1 - straight * sin, 1e-6)
+    );
+    assert_eq!(old.first(), new.first());
+    assert!(
+        new.len() == 3
+            || new
+                .iter()
+                .rev()
+                .skip(2)
+                .all(|p| old.contains(p) || p.0 <= node.0 - replaced + 1e-6)
+    );
 }

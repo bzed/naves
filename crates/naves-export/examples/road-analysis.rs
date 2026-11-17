@@ -201,6 +201,50 @@ fn main() {
             bridges.len(),
             bridges.iter().map(|b| b.stretches.len()).sum::<usize>()
         );
+        let leads: Vec<f64> = bridges
+            .iter()
+            .flat_map(|b| [&b.lead.0, &b.lead.1])
+            .filter_map(|l| match l {
+                naves_core::bridgekind::Lead::Laid { straight, .. } => Some(*straight),
+                _ => None,
+            })
+            .collect();
+        let count_of = |f: &dyn Fn(&naves_core::bridgekind::Lead) -> bool| {
+            bridges
+                .iter()
+                .flat_map(|b| [&b.lead.0, &b.lead.1])
+                .filter(|l| f(l))
+                .count()
+        };
+        println!(
+            "OSMLEADS laid {} (straight min {:.1} max {:.1} m), no room {}, none needed {}, no neighbour {}",
+            leads.len(),
+            leads.iter().copied().fold(f64::INFINITY, f64::min),
+            leads.iter().copied().fold(0.0, f64::max),
+            count_of(&|l| matches!(l, naves_core::bridgekind::Lead::NoRoom { .. })),
+            count_of(&|l| matches!(l, naves_core::bridgekind::Lead::Straight)),
+            count_of(&|l| matches!(l, naves_core::bridgekind::Lead::Beyond(_)))
+        );
+        println!(
+            "OSMLEADS no room with a turn over 5 deg: {}",
+            count_of(
+                &|l| matches!(l, naves_core::bridgekind::Lead::NoRoom { turn_deg, .. } if *turn_deg > 5.0)
+            )
+        );
+        for b in &bridges {
+            if let naves_core::bridgekind::Lead::NoRoom { .. } = b.lead.0 {
+                println!(
+                    "LEADNOROOM {} start {} at ({:.0}, {:.0})",
+                    b.stretch, b.lead.0, b.at.0, b.at.1
+                );
+            }
+            if let naves_core::bridgekind::Lead::NoRoom { .. } = b.lead.1 {
+                println!(
+                    "LEADNOROOM {} end {} at ({:.0}, {:.0})",
+                    b.stretch, b.lead.1, b.at.0, b.at.1
+                );
+            }
+        }
         for b in &bridges {
             let (kind, count, abreast, scale) = match &b.kind {
                 naves_core::bridgekind::BridgeKind::Fill => ("fill".to_string(), 0, 0, 0.0),
@@ -469,9 +513,27 @@ fn main() {
     // ---- horizontal alignment
     println!("\n== horizontal: joins between consecutive pieces of a chain");
     let (mut gaps, mut kinks) = (Vec::new(), Vec::new());
+    // kinks over 5 degrees between two steps of one bridge, and at the other joins at a bridge
+    let (mut between_steps, mut at_bridge_ends) = (0_usize, 0_usize);
     for chain in &net.chains {
         for w in chain.windows(2) {
             let (a, b) = (&net.roads[w[0]], &net.roads[w[1]]);
+            let turned = (a.end.heading - b.start.heading).to_degrees().abs() % 360.0;
+            let turned = if turned > 180.0 {
+                360.0 - turned
+            } else {
+                turned
+            };
+            if turned > 5.0 {
+                if a.kind == PlacedKind::Bridge
+                    && b.kind == PlacedKind::Bridge
+                    && a.slot.stretch == b.slot.stretch
+                {
+                    between_steps += 1;
+                } else if a.kind == PlacedKind::Bridge || b.kind == PlacedKind::Bridge {
+                    at_bridge_ends += 1;
+                }
+            }
             gaps.push((a.end.x - b.start.x).hypot(a.end.y - b.start.y));
             let mut d = (a.end.heading - b.start.heading).to_degrees().abs() % 360.0;
             if d > 180.0 {
@@ -488,6 +550,33 @@ fn main() {
         pct(&mut gaps, 1.0),
         gaps.iter().filter(|g| **g > 0.1).count(),
         gaps.iter().filter(|g| **g > 0.5).count()
+    );
+    {
+        // the findings that are a heading miss alone (the position is within the tolerance), and which are at a bridge
+        let near_bridge = |at: (f64, f64)| {
+            bridges
+                .iter()
+                .any(|b| (b.at.0 - at.0).hypot(b.at.1 - at.1) <= b.length / 2.0 + 30.0)
+        };
+        let heading_only: Vec<_> = net
+            .gaps
+            .iter()
+            .filter(|g| g.gap_m <= naves_core::roadfit::GAP_TOLERATED_M)
+            .collect();
+        println!(
+            "HEADINGMISS {} (at a bridge: {})",
+            heading_only.len(),
+            heading_only.iter().filter(|g| near_bridge(g.at)).count()
+        );
+        for g in heading_only.iter().filter(|g| near_bridge(g.at)) {
+            println!(
+                "HEADINGMISSAT {} ({:.0}, {:.0}) gap {:.2} m heading {:.1} deg",
+                g.stretch, g.at.0, g.at.1, g.gap_m, g.heading_error_deg
+            );
+        }
+    }
+    println!(
+        "kinks over 5 deg: between steps of one bridge {between_steps}, at a bridge's end {at_bridge_ends}"
     );
     println!(
         "heading kink p50 {:.2} p99 {:.2} max {:.1} deg; >1 deg: {}, >5 deg: {}",

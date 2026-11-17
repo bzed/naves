@@ -49,6 +49,16 @@ pub const PANEL_SCALE_MIN: f64 = 0.75;
 /// A panel is scaled by at most this much.
 pub const PANEL_SCALE_MAX: f64 = 3.0;
 
+/// The radius, in metres, taken for the tightest curve a road can make where the family's pieces have no arc.
+pub const LEAD_RADIUS_M: f64 = 15.0;
+/// The shortest straight lead on a bridge's axis, in metres.
+pub const LEAD_MIN_M: f64 = 4.0;
+/// A neighbour that leaves a bridge's end within this many degrees of the bridge's own heading needs no lead.
+pub const LEAD_MIN_TURN_DEG: f64 = 1.0;
+/// How far, in degrees, the line from the end of the lead to the neighbour's own path may turn away from that
+/// path (the lead's far end is taken far enough along the path for that, as far as there is room).
+pub const LEAD_BLEND_DEG: f64 = 5.0;
+
 /// Lengths closer than this are equal.
 const EPS_M: f64 = 1e-6;
 /// The most ground samples along or across one post.
@@ -203,6 +213,9 @@ pub struct Choice {
     pub grown: (f64, f64),
     /// Why it is not the part the table gives first, in the order the steps were taken; empty if it is.
     pub fallback: Vec<Fallback>,
+    /// The radius of the tightest curve of the road's family, for the lead on the bridge's axis: the chord over
+    /// twice the sine of half the turn of its tightest arc piece, [`LEAD_RADIUS_M`] without one.
+    pub lead_radius: f64,
 }
 
 impl Choice {
@@ -212,6 +225,7 @@ impl Choice {
             length: 0.0,
             grown: (0.0, 0.0),
             fallback,
+            lead_radius: LEAD_RADIUS_M,
         }
     }
 }
@@ -476,6 +490,14 @@ pub fn panel_grid(length: f64, road_width: f64, slab: &Slab) -> (usize, usize, f
     (n, k, s)
 }
 
+/// The radius of the tightest curve of `family`'s pieces ([`LEAD_RADIUS_M`] without an arc).
+fn lead_radius(catalog: &PieceCatalog, family: Family) -> f64 {
+    catalog
+        .tightest_arc(family)
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .unwrap_or(LEAD_RADIUS_M)
+}
+
 /// A panel row over `site`, with `fallback` so far: it covers the bridge exactly (see [`panel_grid`]) and
 /// needs no room; without panels in the catalog a fill.
 fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallback>) -> Choice {
@@ -493,6 +515,7 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
         length: site.length,
         grown: (0.0, 0.0),
         fallback,
+        lead_radius: lead_radius(catalog, site.family),
     }
 }
 
@@ -574,6 +597,7 @@ pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
             length: part,
             grown,
             fallback: Vec::new(),
+            lead_radius: lead_radius(catalog, site.family),
         };
     }
     panel_row(catalog, site, Vec::new())
@@ -859,6 +883,61 @@ fn ground_beside(
     ground((point.0 + across * nx, point.1 + across * ny))
 }
 
+/// What was done at one end of a bridge so that the road meets it on its own axis.
+///
+/// A bridge's deck lies node to node on its OpenStreetMap line, as a model on its ports and a grid on its
+/// steps. A road that leaves the node turned away from the deck cannot arrive on the deck's heading at the node
+/// (it would need an S-bend), so its last stretch before the node is made straight on the deck's axis.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lead {
+    /// There is no neighbour to move (a junction, a node of bridges, a dead end): the road meets the deck as it
+    /// is, and a miss is reported by the placement.
+    Beyond(RoomEnd),
+    /// The road beyond leaves within [`LEAD_MIN_TURN_DEG`] of the deck's heading: nothing is moved.
+    Straight,
+    /// The neighbour's first `replaced` metres are replaced by a straight of `straight` metres on the deck's
+    /// axis from the node, and a line from its end to the neighbour's own path.
+    Laid {
+        /// The turn of the neighbour against the deck's heading, in degrees.
+        turn_deg: f64,
+        /// The length of the straight on the axis.
+        straight: f64,
+        /// How much of the neighbour's own line was replaced.
+        replaced: f64,
+    },
+    /// The neighbour is too short for a lead: nothing is moved.
+    NoRoom {
+        /// The turn of the neighbour against the deck's heading, in degrees.
+        turn_deg: f64,
+        /// The room there was, in metres.
+        room: f64,
+    },
+    /// The bridge is plain road: there is nothing to meet.
+    Unbuilt,
+}
+
+impl fmt::Display for Lead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Lead::Beyond(why) => write!(f, "no lead ({why})"),
+            Lead::Straight => write!(f, "none needed"),
+            Lead::Laid {
+                turn_deg,
+                straight,
+                replaced,
+            } => write!(
+                f,
+                "lead of {straight:.1} m for a turn of {turn_deg:.1} degrees ({replaced:.1} m replaced)"
+            ),
+            Lead::NoRoom { turn_deg, room } => write!(
+                f,
+                "no room for a lead ({room:.1} m) for a turn of {turn_deg:.1} degrees"
+            ),
+            Lead::Unbuilt => write!(f, "plain road"),
+        }
+    }
+}
+
 /// What an OpenStreetMap bridge became, for the build's report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeFit {
@@ -887,6 +966,8 @@ pub struct BridgeFit {
     /// positive where a short model is centred, or keeps to a node of bridges. The report, the post check and
     /// the placement all read this one place.
     pub part_start: f64,
+    /// What was done at its start and at its end so that the road meets the deck on its axis.
+    pub lead: (Lead, Lead),
     /// The total turn of the road it grew into at its start and at its end, in degrees.
     pub turn_deg: (f64, f64),
     /// The straight room beyond its start and its end.
@@ -916,6 +997,90 @@ impl BridgeFit {
         }
         line
     }
+}
+
+/// Makes the road beyond the end (`at_start`: the start) of bridge stretch `i` meet the deck on its axis; see
+/// [`Lead`]. `steps` is how many steps a grid has (1 for a model): the deck's heading at its end is that of the
+/// chord of the last step, as the placement lays it. `radius` is the tightest curve of the road's family.
+///
+/// The neighbour's line from the node outwards is `[node, a, q, ..]`: `a` on the deck's axis `d` metres out, with
+/// `d = max(`[`LEAD_MIN_M`]`, 2 R tan(turn / 2))`, and `q` on its own path far enough along that the line from
+/// `a` to `q` turns away from the path by at most [`LEAD_BLEND_DEG`] (limited to half the neighbour and to what
+/// is left of it less [`GROW_KEEP_M`]); the points of the path before `q` are dropped. The turn then happens at
+/// `a`, on plain road, where the pieces can curve it.
+fn lead_in(
+    graph: &mut RoadGraph,
+    i: usize,
+    at_start: bool,
+    end: &Result<End, RoomEnd>,
+    steps: usize,
+    radius: f64,
+) -> Lead {
+    match end {
+        Ok(end) => lead_beyond(graph, i, at_start, end, steps, radius).unwrap_or(Lead::Unbuilt),
+        Err(why) => Lead::Beyond(*why),
+    }
+}
+
+/// [`lead_in`] for a neighbour that exists; `None` where the line is not usable (no heading, not in the graph).
+fn lead_beyond(
+    graph: &mut RoadGraph,
+    i: usize,
+    at_start: bool,
+    end: &End,
+    steps: usize,
+    radius: f64,
+) -> Option<Lead> {
+    let bridge = graph.stretches.get(i)?;
+    let node_id = if at_start { bridge.start } else { bridge.end };
+    // the deck's points with the end in question last
+    let deck: Vec<(f64, f64)> = if at_start {
+        bridge.points.iter().rev().copied().collect()
+    } else {
+        bridge.points.clone()
+    };
+    let total = polyline_length(&deck);
+    let step = total / times(steps.max(1));
+    let from = point_at(&deck, (total - step).max(0.0))?;
+    let node = deck.last().copied()?;
+    let out = heading(from, node)?;
+    let own = end
+        .points
+        .windows(2)
+        .find_map(|w| heading(*w.first()?, *w.get(1)?))?;
+    let turn = turn_deg(out, own);
+    if turn < LEAD_MIN_TURN_DEG {
+        return Some(Lead::Straight);
+    }
+    let room = (end.length / 2.0).min(end.reach()).max(0.0);
+    let half = turn.to_radians() / 2.0;
+    let straight = (2.0 * radius * half.tan()).max(LEAD_MIN_M);
+    let blend = LEAD_BLEND_DEG.to_radians();
+    let wanted = straight * (turn.to_radians().sin() / blend.tan() + turn.to_radians().cos());
+    let replaced = wanted.min(room);
+    if !(straight.is_finite() && replaced >= straight + LEAD_MIN_M) {
+        return Some(Lead::NoRoom {
+            turn_deg: turn,
+            room,
+        });
+    }
+    let axis = (node.0 + straight * out.sin(), node.1 + straight * out.cos());
+    let mut away = vec![node, axis];
+    away.extend(slice_points(
+        &end.points,
+        replaced,
+        end.length.max(replaced),
+    ));
+    let n = graph.stretches.get_mut(end.stretch)?;
+    if n.start != node_id {
+        away.reverse();
+    }
+    n.points = away;
+    Some(Lead::Laid {
+        turn_deg: turn,
+        straight,
+        replaced,
+    })
 }
 
 /// The thickness of the deck of the bridge on stretch `s`, for the clearance over a road below: a panel grid is as
@@ -1182,6 +1347,19 @@ pub fn fit_bridges(
             s.bridge_offset = (-choice.grown.0).max(0.0);
             s.bridge_kind = Some(choice.kind.clone());
         }
+        let lead = if matches!(choice.kind, BridgeKind::Fill) {
+            (Lead::Unbuilt, Lead::Unbuilt)
+        } else {
+            let steps = match &choice.kind {
+                BridgeKind::Panels { count, .. } => *count,
+                _ => 1,
+            };
+            let ends = ends_of(&g, i);
+            (
+                lead_in(&mut g, i, true, &ends.0, steps, choice.lead_radius),
+                lead_in(&mut g, i, false, &ends.1, steps, choice.lead_radius),
+            )
+        };
         g.crossings = crossings_of(&g.stretches);
         fits.push(BridgeFit {
             stretches: members
@@ -1197,6 +1375,7 @@ pub fn fit_bridges(
             part_length: choice.length,
             grown: choice.grown,
             part_start: 0.0 - choice.grown.0,
+            lead,
             turn_deg,
             room,
             room_end,

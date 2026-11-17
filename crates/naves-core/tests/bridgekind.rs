@@ -13,8 +13,8 @@
 
 use naves_core::bridgekind::{
     BridgeFit, BridgeKind, BridgeSite, Choice, FILL_MAX_M, Fallback, GROW_KEEP_M,
-    GROW_TURN_MAX_DEG, PANEL_SCALE_MAX, PANEL_SCALE_MIN, RoomEnd, bridge_kind, choose, fit_bridges,
-    panel_grid, straight_room,
+    GROW_TURN_MAX_DEG, Lead, PANEL_SCALE_MAX, PANEL_SCALE_MIN, RoomEnd, bridge_kind, choose,
+    fit_bridges, panel_grid, straight_room,
 };
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
 use naves_core::catalog::{Family, PANELS_PREFIX, PieceCatalog, Slab};
@@ -504,10 +504,35 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
         "{:?}",
         f.room_end
     );
+    // the bridge's own line is as it was; the roads beside it get a straight lead on its axis (30 degrees, so
+    // 2 R tan 15 = 5.36 m with the 10 m radius of the tightest synthetic arc), and only within what is replaced
     for s in &g.stretches {
         let o = out.stretches.iter().find(|o| o.id == s.id).unwrap();
-        assert_eq!(o.points, s.points);
+        if s.id.starts_with("2:") {
+            assert_eq!(o.points, s.points);
+        } else {
+            assert_ne!(o.points, s.points, "{}", s.id);
+        }
     }
+    assert!(
+        matches!(f.lead.0, Lead::Laid { turn_deg, .. } if near(turn_deg, 30.0, 1e-6)),
+        "{:?}",
+        f.lead
+    );
+    assert!(matches!(f.lead.1, Lead::Laid { .. }), "{:?}", f.lead);
+    let before = out
+        .stretches
+        .iter()
+        .find(|o| o.id.starts_with("1:"))
+        .unwrap();
+    // from the node outwards: the node, a point on the axis (to the west), then the road's own path
+    let node = *before.points.last().unwrap();
+    let axis = before.points[before.points.len() - 2];
+    assert!(
+        near(axis.1, 0.0, 1e-9) && axis.0 < node.0,
+        "{axis:?} {node:?}"
+    );
+    assert!(near(node.0 - axis.0, 5.359, 0.01), "{axis:?}");
     // a panel grid is a real bridge
     let b = bridge_of(&out);
     assert!(b.bridge);
@@ -930,6 +955,7 @@ fn a_choice_closure_decides_and_the_graph_follows() {
         length: 40.0,
         grown: (s.room.0.min(11.65), 11.65),
         fallback: Vec::new(),
+        lead_radius: 15.0,
     };
     let (out, fits) = fit_bridges(&g, &choice, &|_| 0.0);
     assert!(near(len(bridge_of(&out)), 40.0, 1e-6));
@@ -973,6 +999,7 @@ fn a_neighbour_is_never_used_up() {
         length: 400.0,
         grown: (196.0, 196.0),
         fallback: Vec::new(),
+        lead_radius: 15.0,
     };
     let (out, fits) = fit_bridges(&g, &greedy, &|_| 0.0);
     assert!(
