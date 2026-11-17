@@ -66,6 +66,21 @@ vertices, so their vertex arrays are compressed). The reader decodes it to the a
 vertices of the Geometry LOD (resolution 10¹³, not the roadway or land-contact LODs) are kept: the thickness of a
 bridge deck is measured on them.
 
+**Faces** (verified on the 265 models of `structures_roads.pbo`, 2026-11-17): the count is an `i32`, then 6
+unused bytes, then per face a corner count (u8) and that many u16 indices **into the vertices of the same LOD**
+(the vertex array above, in the order the reader returns it). Every face of the 265 models has 3 or 4 corners; the
+largest index is the vertex count minus one in all six bridges and in the panels. The reader keeps the faces of the
+Geometry LOD as triangles (`OdolModel::geometry_faces`; a quad `a b c d` becomes `a b c` and `a c d`) and rejects
+a face with other than 3 or 4 corners or an index past the vertices. A Geometry LOD with faces and no vertices
+(some models) reads with no faces. Faces are what shows a solid block: an end block has faces across its middle
+and no vertices there. Example: `Bridge_Stone_25` has 476 vertices and 824 triangles, `Bridge_Metal_25` 232 and
+356, `Panel_Concrete_1` 8 and 12.
+
+**Roadway LOD**: resolution 3·10¹⁵ (stored as 2.99…·10¹⁵; the reader takes 2.5·10¹⁵ to 3.5·10¹⁵). It has the same
+layout; its vertices are kept as `OdolModel::roadway` (the drivable surface: 56 to 68 vertices on the metal and
+stone bridges, 8 on a concrete panel). The Roadway LODs of the wooden bridges hold an embedded material, which this
+reader does not parse: for them `roadway` is empty and the model still reads.
+
 Not parsed: the visual LODs.
 
 ### What the road pieces contain

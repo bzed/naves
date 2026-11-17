@@ -10,6 +10,8 @@
 //!
 //! * the header and the `ModelInfo`, to reach the LOD address table;
 //! * the memory LOD (resolution 10¹⁵) up to its vertices;
+//! * the Geometry LOD (10¹³): its vertices and its faces, as triangles;
+//! * the Roadway LOD (3·10¹⁵): its vertices;
 //! * the named properties of the small geometry-type LODs (resolution 10¹³ and up).
 //!
 //! The visual LODs, which hold the big meshes, are never parsed. An array that the format stores
@@ -36,6 +38,9 @@ const MEMORY_RESOLUTION: std::ops::Range<f32> = 5.0e14..2.0e15;
 
 /// LODs from this resolution on are geometry-type LODs (small, no embedded materials).
 const GEOMETRY_RESOLUTION: f32 = 9.0e12;
+
+/// The Roadway LOD (3·10¹⁵ is stored as 2.99…·10¹⁵).
+const ROADWAY_RESOLUTION: std::ops::Range<f32> = 2.5e15..3.5e15;
 
 /// The Geometry LOD itself (10¹³), the one whose vertices are kept.
 const GEOMETRY_ONLY: std::ops::Range<f32> = 9.5e12..1.05e13;
@@ -98,6 +103,22 @@ pub enum OdolError {
     /// A feature of the format that this reader leaves out.
     #[error("{0} is not supported")]
     Unsupported(&'static str),
+    /// A face of the Geometry LOD that has other than three or four corners.
+    #[error("a face of the Geometry LOD at byte {at} has {count} corners (3 or 4 are possible)")]
+    FaceCorners {
+        /// Byte offset of the face's corner count within the LOD.
+        at: usize,
+        /// The corner count as stored.
+        count: u8,
+    },
+    /// A face of the Geometry LOD names a vertex that does not exist.
+    #[error("a face of the Geometry LOD names vertex {index}, but the LOD has {count}")]
+    FaceIndex {
+        /// The vertex index.
+        index: u16,
+        /// How many vertices the LOD has.
+        count: usize,
+    },
     /// A named selection points at a vertex that does not exist.
     #[error("selection \"{selection}\" names vertex {index}, but the LOD has {count}")]
     VertexIndex {
@@ -127,6 +148,12 @@ pub struct OdolModel {
     /// Vertices of the Geometry LOD (resolution 10¹³ exactly, not the other geometry-type LODs such as the
     /// roadway or the land contact), in model coordinates; `None` if there is none or it cannot be read.
     pub geometry: Option<Vec<[f32; 3]>>,
+    /// The faces of the Geometry LOD as triangles: indices into [`OdolModel::geometry`]. A quad `a b c d` is
+    /// the triangles `a b c` and `a c d`. Empty if there is no Geometry LOD or its vertices cannot be read.
+    pub geometry_faces: Vec<[u32; 3]>,
+    /// Vertices of the Roadway LOD (resolution 3·10¹⁵) in model coordinates; empty if the model has none or
+    /// it cannot be read (the wooden bridges' roadway LODs hold embedded materials).
+    pub roadway: Vec<[f32; 3]>,
 }
 
 /// Reads a binarized model.
@@ -158,6 +185,8 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
         memory: BTreeMap::new(),
         properties: BTreeMap::new(),
         geometry: None,
+        geometry_faces: Vec::new(),
+        roadway: Vec::new(),
     };
     let mut memory_done = false;
     for (index, resolution) in resolutions.iter().enumerate() {
@@ -177,7 +206,8 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
                     end,
                     len: bytes.len(),
                 })?;
-        match read_lod(lod_bytes, is_memory) {
+        let is_geometry = GEOMETRY_ONLY.contains(resolution);
+        match read_lod(lod_bytes, is_memory, is_geometry) {
             Ok(lod) => {
                 for (key, value) in lod.properties {
                     model.properties.entry(key).or_insert(value);
@@ -185,11 +215,14 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
                 if is_memory {
                     memory_done = true;
                     model.memory = lod.memory;
-                } else if GEOMETRY_ONLY.contains(resolution) {
+                } else if is_geometry {
                     model.geometry = Some(lod.points);
+                    model.geometry_faces = lod.faces;
+                } else if ROADWAY_RESOLUTION.contains(resolution) && model.roadway.is_empty() {
+                    model.roadway = lod.points;
                 }
             }
-            Err(e) if is_memory => return Err(e),
+            Err(e) if is_memory || (is_geometry && e.faces) => return Err(e.error),
             // A geometry-type LOD only contributes its properties. If it holds something this
             // reader does not know (a compressed array, an embedded material), the model is still
             // good for its memory points, so the LOD is left out instead of failing the file.
@@ -285,13 +318,30 @@ fn read_lod_table(
 }
 
 struct Lod {
+    faces: Vec<[u32; 3]>,
     points: Vec<[f32; 3]>,
     memory: BTreeMap<String, Vec<[f32; 3]>>,
     properties: BTreeMap<String, String>,
 }
 
-/// Reads one LOD up to its named properties, and for the memory LOD on to its vertices.
-fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
+/// Why a LOD could not be read, and whether it was in its faces (which the Geometry LOD must get right).
+struct LodFailure {
+    error: OdolError,
+    faces: bool,
+}
+
+impl From<OdolError> for LodFailure {
+    fn from(error: OdolError) -> Self {
+        Self {
+            error,
+            faces: false,
+        }
+    }
+}
+
+/// Reads one LOD up to its named properties, and for the memory LOD on to its vertices. With `keep_faces`
+/// (the Geometry LOD) the faces are kept as triangles and checked against the vertices.
+fn read_lod(bytes: &[u8], is_memory: bool, keep_faces: bool) -> Result<Lod, LodFailure> {
     const W: &str = "a LOD";
     let mut c = Cursor::new(bytes);
     // proxies: model name, 3×4 matrix, sequence, selection, bone, section
@@ -313,17 +363,12 @@ fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
         c.cstr(W)?;
     }
     if c.count(1, "the materials")? != 0 {
-        return Err(OdolError::Unsupported("an embedded material in a LOD"));
+        return Err(OdolError::Unsupported("an embedded material in a LOD").into());
     }
     c.compressed(2, "the point-to-vertex map")?;
     c.compressed(2, "the vertex-to-point map")?;
-    // faces: count, two unused fields, then per face a length and 16-bit indices
-    let faces = c.count(1, "the faces")?;
-    c.skip(4 + 2, W)?;
-    for _ in 0..faces {
-        let corners = usize::from(c.u8(W)?);
-        c.skip(corners * 2, W)?;
-    }
+    let faces =
+        read_faces(&mut c, keep_faces).map_err(|error| LodFailure { error, faces: true })?;
     for _ in 0..c.count(34, "the sections")? {
         c.skip(5 * 4 + 2 + 4, W)?;
         if c.i32(W)? == -1 {
@@ -342,18 +387,36 @@ fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
     }
     let points = match read_points(&mut c) {
         Ok(points) => points,
-        Err(e) if is_memory => return Err(e),
+        Err(e) if is_memory => return Err(e.into()),
         // a geometry-type LOD whose vertices cannot be read still gives its properties
         Err(_) => {
             return Ok(Lod {
+                faces: Vec::new(),
                 points: Vec::new(),
                 memory: BTreeMap::new(),
                 properties,
             });
         }
     };
+    // a LOD without readable vertices (some models have a Geometry LOD with faces and no vertices) has no
+    // faces to map
+    let faces = if points.is_empty() { Vec::new() } else { faces };
+    if let Some(&index) = faces
+        .iter()
+        .flatten()
+        .find(|i| usize_from(**i) >= points.len())
+    {
+        return Err(LodFailure {
+            error: OdolError::FaceIndex {
+                index: u16::try_from(index).unwrap_or(u16::MAX),
+                count: points.len(),
+            },
+            faces: true,
+        });
+    }
     if !is_memory {
         return Ok(Lod {
+            faces,
             points,
             memory: BTreeMap::new(),
             properties,
@@ -375,10 +438,43 @@ fn read_lod(bytes: &[u8], is_memory: bool) -> Result<Lod, OdolError> {
         memory.insert(name, selected);
     }
     Ok(Lod {
+        faces,
         points,
         memory,
         properties,
     })
+}
+
+/// The faces: count, two unused fields, then per face a corner count (a byte) and that many 16-bit vertex
+/// indices. With `keep` they are returned as triangles (a quad `a b c d` as `a b c` and `a c d`; any other
+/// corner count is an error), else they are skipped. The indices are checked later, against the vertices.
+fn read_faces(c: &mut Cursor<'_>, keep: bool) -> Result<Vec<[u32; 3]>, OdolError> {
+    const W: &str = "the faces";
+    let faces = c.count(1, W)?;
+    c.skip(4 + 2, W)?;
+    let mut triangles = Vec::new();
+    for _ in 0..faces {
+        let at = c.pos;
+        let corners = c.u8(W)?;
+        let raw = c.take(usize::from(corners) * 2, W)?;
+        if !keep {
+            continue;
+        }
+        let index = |i: usize| {
+            raw.get(i * 2..i * 2 + 2)
+                .and_then(|b| <[u8; 2]>::try_from(b).ok())
+                .map_or(0, |b| u32::from(u16::from_le_bytes(b)))
+        };
+        match corners {
+            3 => triangles.push([index(0), index(1), index(2)]),
+            4 => {
+                triangles.push([index(0), index(1), index(2)]);
+                triangles.push([index(0), index(2), index(3)]);
+            }
+            count => return Err(OdolError::FaceCorners { at, count }),
+        }
+    }
+    Ok(triangles)
 }
 
 /// The named selections: a lower-cased name and the vertex indices it holds.
@@ -605,6 +701,8 @@ impl<'a> Cursor<'a> {
 pub mod synthetic {
     /// Resolution of the memory LOD as the game files store it.
     const MEMORY_RESOLUTION: f32 = 999_999_986_991_104.0;
+    /// Resolution of the roadway LOD as the game files store it.
+    const ROADWAY_RESOLUTION: f32 = 2_999_999_983_755_264.0;
     /// Resolution of the geometry LOD as the game files store it.
     const GEOMETRY_RESOLUTION: f32 = 9_999_999_827_968.0;
 
@@ -648,12 +746,19 @@ pub mod synthetic {
     }
 
     /// One LOD: named selections of one point each (`names` index into `vertices`) and the vertices.
-    fn lod(names: &[&str], vertices: &[[f32; 3]]) -> Vec<u8> {
+    fn lod(names: &[&str], vertices: &[[f32; 3]], faces: &[Vec<u16>]) -> Vec<u8> {
         let mut lod = Vec::new();
         lod.extend_from_slice(&[0; 12]); // proxies, sub-skeletons, skeleton map
         lod.extend_from_slice(&[0; 56]);
         lod.extend_from_slice(&[0; 4 * 4]); // textures, materials, two maps
-        lod.extend_from_slice(&[0; 10]); // faces
+        put_u32(&mut lod, faces.len());
+        lod.extend_from_slice(&[0; 6]); // two unused fields
+        for face in faces {
+            lod.push(u8::try_from(face.len()).unwrap_or(u8::MAX));
+            for index in face {
+                lod.extend_from_slice(&index.to_le_bytes());
+            }
+        }
         lod.extend_from_slice(&[0; 4]); // sections
         put_u32(&mut lod, names.len());
         for (i, name) in names.iter().enumerate() {
@@ -691,13 +796,28 @@ pub mod synthetic {
         points: &[(&str, [f32; 3])],
         geometry: &[[f32; 3]],
     ) -> Vec<u8> {
+        model_bytes_with_lods(points, geometry, &[], &[])
+    }
+
+    /// [`model_bytes_with_geometry`] with the faces of the geometry LOD (one entry per face: 3 or 4 vertex
+    /// indices) and a roadway LOD with the vertices `roadway` (none: no roadway LOD).
+    #[must_use]
+    pub fn model_bytes_with_lods(
+        points: &[(&str, [f32; 3])],
+        geometry: &[[f32; 3]],
+        faces: &[Vec<u16>],
+        roadway: &[[f32; 3]],
+    ) -> Vec<u8> {
         let names: Vec<&str> = points.iter().map(|(n, _)| *n).collect();
         let vertices: Vec<[f32; 3]> = points.iter().map(|(_, p)| *p).collect();
         let mut lods: Vec<(f32, Vec<u8>)> = Vec::new();
         if !geometry.is_empty() {
-            lods.push((GEOMETRY_RESOLUTION, lod(&[], geometry)));
+            lods.push((GEOMETRY_RESOLUTION, lod(&[], geometry, faces)));
         }
-        lods.push((MEMORY_RESOLUTION, lod(&names, &vertices)));
+        lods.push((MEMORY_RESOLUTION, lod(&names, &vertices, &[])));
+        if !roadway.is_empty() {
+            lods.insert(0, (ROADWAY_RESOLUTION, lod(&[], roadway, &[])));
+        }
 
         let mut file = Vec::new();
         file.extend_from_slice(b"ODOL");

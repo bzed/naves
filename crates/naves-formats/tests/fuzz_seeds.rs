@@ -62,5 +62,8 @@ fn odol_read_seeds() {
         .iter()
         .filter(|data| read_odol(data).is_ok())
         .count();
-    assert_eq!(ok, 2, "the valid seed and the LZO one are readable files");
+    assert_eq!(
+        ok, 3,
+        "the valid seed, the faces seed and the LZO one are readable files"
+    );
 }
