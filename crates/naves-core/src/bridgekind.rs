@@ -18,7 +18,9 @@
 use std::f64::consts::{PI, TAU};
 use std::fmt;
 
-use crate::bridgefit::{Below, BelowFit, Chain, Fit, Need, below_fits, below_interval, fit_over};
+use crate::bridgefit::{
+    Below, BelowFit, Chain, Fit, Need, below_fits, below_interval, clearance_thickness, fit_over,
+};
 use crate::catalog::{BridgeModel, Family, PartShape, PieceCatalog, Slab};
 use crate::roadnet::{
     BridgeOverRoad, RoadGraph, Stretch, built_as_bridge, crossings_of, crossings_under, grow_into,
@@ -581,11 +583,23 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
 /// within its straight room (and its turn limit, and its posts); the panel row of the bridge's own length
 /// ([`Fallback::ModelBlocksRoad`]); else the placement that leaves the least of the roads' intervals under a
 /// solid part or outside the deck, which [`Choice::below`] reports. Standing geometry (the cross walls of
-/// `bridge_concrete3`) never passes a road. A panel row is never lengthened.
+/// `bridge_concrete3`) never passes a road. A panel grid not over a road is never lengthened; over a road it is
+/// lengthened into the road beside the bridge until the road passes (by exactly what each end lacks, at most [`GRID_GROW_MAX_M`]). A bridge of at most
+/// [`FILL_MAX_M`] over a road is such a grid, not plain road.
 #[must_use]
 pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
     let choice = choose_part(catalog, site);
-    if site.below.is_empty() || matches!(choice.kind, BridgeKind::Fill) {
+    if site.below.is_empty() {
+        return choice;
+    }
+    if matches!(choice.kind, BridgeKind::Fill) {
+        // a bridge of at most FILL_MAX_M over a road is never plain road (a fill for lack of parts stays one)
+        if choice.fallback.is_empty() && site.length.is_finite() && site.length > EPS_M {
+            let grid = panel_row(catalog, site, Vec::new());
+            if matches!(grid.kind, BridgeKind::Panels { .. }) {
+                return lengthened_grid(catalog, site, grid);
+            }
+        }
         return choice;
     }
     over_roads(catalog, site, choice)
@@ -702,39 +716,62 @@ fn needs_of(catalog: &PieceCatalog, site: &BridgeSite, shape: &PartShape) -> Vec
 /// The most times the grid is measured again with the length its last measure asked for (the scale and the
 /// width change with the length, so does what the road needs).
 const LENGTHEN_ROUNDS: usize = 8;
+/// A panel grid over a road grows by at most this much at each end, in metres.
+pub const GRID_GROW_MAX_M: f64 = 15.0;
 
 /// The panel grid `choice` over the roads below `site`, lengthened into the road beside the bridge where its
-/// own length does not hold what the roads need: at each end by what that end lacks, as far as `site.reach`
-/// allows (a grid needs no straight room and may follow a bend: its steps run chord to chord along the line),
-/// the grid then computed again for the longer length ([`panel_grid`], same width rule). What is still
-/// missing is in [`Choice::below`]. A lengthened grid says so in [`Choice::fallback`].
+/// own length does not hold what the roads need: each end grows by exactly what it lacks, at most
+/// [`GRID_GROW_MAX_M`] and `site.reach` (a grid needs no straight room and may follow a bend: its steps run chord
+/// to chord along the line), the grid then computed again for the longer length ([`panel_grid`], same width rule)
+/// and measured again. An end where the road's footprint (without the cutting's walls) would still lie outside
+/// the deck after that does not grow at all: more deck would not help the road. An end where only the walls'
+/// run stays outside grows as far as it can. What is still missing is in [`Choice::below`]; a lengthened grid
+/// says so in [`Choice::fallback`].
 fn lengthened_grid(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> Choice {
     let Some(slab) = panel_slab(catalog) else {
         return choice;
     };
-    let width = piece_width(catalog, site.family);
-    let reach = (clean(site.reach.0), clean(site.reach.1));
-    let (mut g0, mut g1) = (0.0_f64, 0.0_f64);
-    let mut grid = match choice.kind {
-        BridgeKind::Panels {
-            count,
-            abreast,
-            scale,
-        } => (count, abreast, scale),
-        _ => return choice,
+    let BridgeKind::Panels {
+        count,
+        abreast,
+        scale,
+    } = choice.kind
+    else {
+        return choice;
     };
+    let width = piece_width(catalog, site.family);
+    let cap = (
+        clean(site.reach.0).min(GRID_GROW_MAX_M),
+        clean(site.reach.1).min(GRID_GROW_MAX_M),
+    );
+    let mut grid = (count, abreast, scale);
+    let (mut g0, mut g1) = (0.0_f64, 0.0_f64);
+    let mut seen: Vec<(f64, f64)> = vec![(0.0, 0.0)];
     for _ in 0..LENGTHEN_ROUNDS {
         let shape = PartShape::panels(slab, grid.0, grid.1, grid.2);
         let needs = needs_of(catalog, site, &shape);
-        let (mut want0, mut want1) = (g0, g1);
+        let (mut want0, mut want1) = (0.0_f64, 0.0_f64);
         for need in &needs {
             want0 = want0.max(need.reach.total() - need.station);
             want1 = want1.max(need.station + need.reach.total() - site.length);
         }
-        let (n0, n1) = (want0.min(reach.0), want1.min(reach.1));
-        if (n0 - g0).abs() < EPS_M && (n1 - g1).abs() < EPS_M {
+        let (mut n0, mut n1) = (want0.min(cap.0), want1.min(cap.1));
+        for need in &needs {
+            if need.station - need.reach.footprint + n0 < -EPS_M {
+                n0 = 0.0;
+            }
+            if need.station + need.reach.footprint - site.length - n1 > EPS_M {
+                n1 = 0.0;
+            }
+        }
+        let stable = (n0 - g0).abs() < EPS_M && (n1 - g1).abs() < EPS_M;
+        let again = seen
+            .iter()
+            .any(|(a, b)| (n0 - a).abs() < EPS_M && (n1 - b).abs() < EPS_M);
+        if stable || again {
             break;
         }
+        seen.push((n0, n1));
         (g0, g1) = (n0, n1);
         grid = panel_grid(site.length + g0 + g1, width, slab);
     }
@@ -1330,8 +1367,8 @@ pub fn deck_thickness(catalog: &PieceCatalog, s: &Stretch) -> Option<f64> {
 }
 
 /// The thickness of the deck of the bridge of `c` over the road below it, for the clearance the height solve
-/// keeps: what hangs under the deck over the road's interval ([`below_interval`], the footprint with the skew),
-/// not the deepest point of the part and not its crown. A panel grid is as thick as one panel at its scale. A
+/// keeps ([`clearance_thickness`]: 4.5 m under the deepest point over the centre line and 3 m over the road's
+/// footprint, with the skew), not the deepest point of the part and not its crown. A panel grid is as thick as one panel at its scale. A
 /// bridge that has no part of its own (over a dip) and a part whose interval is not on it get
 /// [`deck_thickness`]. `None` where the part cannot be measured.
 #[must_use]
@@ -1356,11 +1393,7 @@ pub fn crossing_thickness(catalog: &PieceCatalog, c: &BridgeOverRoad) -> Option<
     );
     // where the road lies on the part: from the part's first end, which is `bridge_offset` into the stretch
     let at = c.crossing.upper_s - upper.bridge_offset;
-    Some(
-        chain
-            .thickness(at - reach.footprint, at + reach.footprint)
-            .unwrap_or(model.deck_thickness),
-    )
+    Some(clearance_thickness(&chain, at, &reach).unwrap_or(model.deck_thickness))
 }
 
 /// Whether stretch `s` can be joined with a bridge that follows it.

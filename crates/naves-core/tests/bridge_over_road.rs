@@ -543,13 +543,21 @@ fn the_deck_thickness_over_a_road_is_what_hangs_over_its_interval() {
         .iter()
         .find(|b| b.model.ends_with("bridge_stone_25.p3d"))
         .unwrap();
-    let expected = arch.thickness(12.5 - 3.5, 12.5 + 3.5);
+    // 4.5 m under the deepest point over the centre line (the metre either side of the crossing) and 3 m over the
+    // footprint (3.5 m either side): the larger of the first and the second less 1.5 m
+    let centre = arch.thickness(12.5 - 1.0, 12.5 + 1.0);
+    let footprint = arch.thickness(12.5 - 3.5, 12.5 + 3.5);
+    let expected = centre.max(footprint - 1.5);
     assert!(near(t, expected, 1e-9), "{t} against {expected}");
-    // not the crown, and not the abutments' depth, the deepest point of the part
-    assert!(t > 3.2 + 0.5 && t < arch.reach_down / 2.0, "{t}");
-    // a narrower road near the crown asks for less
-    let narrow = arch.thickness(12.0, 13.0);
-    assert!(narrow < t, "{narrow} {t}");
+    assert!(
+        footprint - 1.5 < centre,
+        "the centre line decides here: {centre} {footprint}"
+    );
+    // not below the crown, and not the abutments' depth, the deepest point of the part
+    assert!(t >= 3.2 && t < arch.reach_down / 2.0, "{t}");
+    // a road near the flank is deeper under the deck
+    let flank = arch.thickness(9.0, 11.0);
+    assert!(flank > t, "{flank} {t}");
 }
 
 #[test]
@@ -609,7 +617,7 @@ fn a_model_is_slid_only_within_the_turn_limit() {
 #[test]
 fn a_filled_bridge_and_a_bridge_without_parts_are_unchanged() {
     let catalog = synthetic_catalog();
-    // 2 m of bridge is plain road, whatever crosses below
+    // 2 m of bridge with nothing below is plain road
     let features = over_road(
         Family::Asf1,
         2.0,
@@ -617,6 +625,8 @@ fn a_filled_bridge_and_a_bridge_without_parts_are_unchanged() {
         1.0,
         std::f64::consts::FRAC_PI_2,
     );
+    let mut features = features;
+    features.pop();
     let (_, fits) = fits(&features, &catalog);
     assert!(matches!(fits[0].kind, BridgeKind::Fill));
     assert_eq!(fits[0].below.len(), 0);
@@ -705,9 +715,26 @@ fn a_short_bridge_over_a_wide_road_gets_a_grid_that_covers_the_road() {
 
 #[test]
 fn a_grid_stops_a_metre_before_a_junction_and_only_what_is_left_is_missing() {
-    // the road after the bridge is 3 m long and ends at a junction: the grid may take 2 m of it, the other
-    // end has room
+    // the road after the bridge is 6 m long and ends at a junction: the grid may take 5 m of it, which brings the
+    // road's footprint under the deck; the cutting's walls still reach past the end, and that is the finding.
+    // The other end has room and grows by what it lacks
     let catalog = synthetic_catalog();
+    let features = over_road_near(
+        Family::Asf1,
+        4.0,
+        Family::City,
+        2.0,
+        std::f64::consts::FRAC_PI_2,
+        (300.0, 6.0),
+    );
+    let (_, fits) = fits(&features, &catalog);
+    let fit = &fits[0];
+    assert!(near(fit.grown.1, 5.0, 1e-6), "{:?}", fit.grown);
+    assert!(fit.grown.0 > fit.grown.1 + 1.0, "{:?}", fit.grown);
+    assert!(fit.below[0].missing > 0.1, "{fit:?}");
+    assert!(fit.below[0].missing < 4.0, "{fit:?}");
+    // with only 3 m of road after the bridge the footprint would still be outside the deck: that end does not
+    // grow, and the whole of what it lacks is missing
     let features = over_road_near(
         Family::Asf1,
         4.0,
@@ -716,14 +743,9 @@ fn a_grid_stops_a_metre_before_a_junction_and_only_what_is_left_is_missing() {
         std::f64::consts::FRAC_PI_2,
         (300.0, 3.0),
     );
-    let (_, fits) = fits(&features, &catalog);
-    let fit = &fits[0];
-    assert!(near(fit.grown.1, GROW_KEEP_FREE, 1e-6), "{:?}", fit.grown);
-    assert!(fit.grown.0 > fit.grown.1 + 1.0, "{:?}", fit.grown);
-    // the end that has room takes what the other lacks as well (the road is in the middle of the interval:
-    // the grid must reach the road's far edge on the short side, so the missing is on that side)
-    assert!(fit.below[0].missing > 0.1, "{fit:?}");
-    assert!(fit.below[0].missing < 8.0, "{fit:?}");
+    let (_, fits) = fits_of(&features, &catalog);
+    assert!(near(fits[0].grown.1, 0.0, 1e-9), "{:?}", fits[0].grown);
+    assert!(fits[0].grown.0 > 1.0);
 }
 
 #[test]
@@ -788,4 +810,249 @@ fn a_grid_with_no_road_below_is_not_lengthened() {
     assert_eq!(fits[0].grown, (0.0, 0.0));
     assert!(near(bridge_length(&graph), 4.0, 1e-9));
     assert_eq!(fits[0].below.len(), 0);
+}
+
+/// The fit with `ground` as the original ground.
+fn fits_on(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+    ground: &dyn Fn((f64, f64)) -> f64,
+) -> Vec<BridgeFit> {
+    fit_bridges(
+        &build_graph(features),
+        &|site| choose(catalog, site),
+        ground,
+    )
+    .1
+}
+
+#[test]
+fn a_road_that_turns_back_at_the_bridges_end_is_no_road_below_and_nothing_grows() {
+    // 6 m of bridge, and at its end node the road turns back by 172 degrees along the bridge: the two meet at the
+    // node, nothing crosses under the deck
+    let catalog = synthetic_catalog();
+    let features = vec![
+        feature(
+            1,
+            Family::Asf1,
+            false,
+            0,
+            &[1, 2],
+            &[(100.0, 500.0), (400.0, 500.0)],
+        ),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(400.0, 500.0), (406.0, 500.0)],
+        ),
+        feature(
+            3,
+            Family::Asf1,
+            false,
+            0,
+            &[3, 4],
+            &[(406.0, 500.0), (307.0, 486.1)],
+        ),
+    ];
+    let (graph, fits) = fits(&features, &catalog);
+    assert_eq!(fits[0].below.len(), 0, "{:?}", fits[0]);
+    assert_eq!(fits[0].grown, (0.0, 0.0));
+    assert!(near(bridge_length(&graph), 6.0, 1e-6));
+}
+
+#[test]
+fn a_grid_is_not_lengthened_for_a_road_nearly_along_it() {
+    // 0.01 rad between the lines wants 600 m of deck: no grid helps, so none grows (it was 618 m long)
+    let catalog = synthetic_catalog();
+    let features = over_road(Family::Asf1, 4.0, Family::Grav, 2.0, 0.01);
+    let (graph, fits) = fits(&features, &catalog);
+    assert_eq!(fits[0].grown, (0.0, 0.0), "{:?}", fits[0]);
+    assert!(near(bridge_length(&graph), 4.0, 1e-6));
+    assert!(fits[0].below[0].missing > 100.0, "{:?}", fits[0].below);
+}
+
+#[test]
+fn an_end_that_cannot_be_helped_does_not_grow_and_the_other_end_does() {
+    // 4 m of bridge, a 10 m road at 0.7 rad 3.9 m from the start: the far end would need 18.6 m, more than 15 m
+    // and with the footprint still outside the deck, so it does not grow; the start needs 14.8 m and does
+    let catalog = synthetic_catalog();
+    let features = over_road(Family::Asf1, 4.0, Family::City, 3.9, 0.7);
+    let (_, fits) = fits(&features, &catalog);
+    let fit = &fits[0];
+    assert!(near(fit.grown.1, 0.0, 1e-9), "{:?}", fit.grown);
+    assert!(near(fit.grown.0, -fit.below[0].interval.0, 1e-3), "{fit:?}");
+    assert!(fit.below[0].missing > 10.0, "{:?}", fit.below);
+}
+
+#[test]
+fn an_end_grows_by_exactly_what_it_lacks_and_at_most_fifteen_metres() {
+    let catalog = synthetic_catalog();
+    // square: what each end lacks is what the interval reaches past the bridge
+    let features = over_road(
+        Family::Asf1,
+        4.0,
+        Family::City,
+        3.5,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let (_, fits) = fits(&features, &catalog);
+    let (fit, below) = (&fits[0], &fits[0].below[0]);
+    assert!(near(fit.grown.0, -below.interval.0, 1e-3), "{fit:?}");
+    assert!(near(fit.grown.1, below.interval.1 - 4.0, 1e-3), "{fit:?}");
+    assert!(below.missing.abs() < 1e-6);
+    // at 0.8 rad the far end lacks more than 15 m: it grows by 15 m, the footprint is in, the walls are not
+    let features = over_road(Family::Asf1, 4.0, Family::City, 3.9, 0.8);
+    let (_, fits) = fits_of(&features, &catalog);
+    assert!(near(fits[0].grown.1, 15.0, 1e-9), "{:?}", fits[0].grown);
+    assert!(fits[0].below[0].missing > 0.1, "{:?}", fits[0].below);
+}
+
+#[test]
+fn a_bridge_of_three_metres_or_less_over_a_road_is_a_panel_grid_and_without_one_it_is_plain_road() {
+    let catalog = synthetic_catalog();
+    let features = over_road(
+        Family::Asf1,
+        2.5,
+        Family::Grav,
+        1.25,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let (graph, fits) = fits(&features, &catalog);
+    assert!(
+        matches!(fits[0].kind, BridgeKind::Panels { .. }),
+        "{:?}",
+        fits[0]
+    );
+    assert!(fits[0].below[0].missing.abs() < 1e-6);
+    assert!(fits[0].grown.0 > 1.0, "{:?}", fits[0].grown);
+    assert!(graph.stretches.iter().any(|s| s.bridge));
+    // the road is found in the fitted graph, so the height solve keeps its clearance
+    assert_eq!(over_crossings(&graph).len(), 1);
+    let mut alone = features;
+    alone.pop();
+    let (_, fits) = fits_of(&alone, &catalog);
+    assert!(matches!(fits[0].kind, BridgeKind::Fill));
+}
+
+fn fits_of(features: &[Feature], catalog: &PieceCatalog) -> (RoadGraph, Vec<BridgeFit>) {
+    fits(features, catalog)
+}
+
+#[test]
+fn a_model_shorter_than_its_bridge_is_slid_over_the_road_below() {
+    // 25 m of bridge on a gravel track; where the ground under the posts of bridge_wood_25 is 10 m down the plain
+    // deck of bridge_wood2 (19.7 m) is laid, centred (2.65 m from the start). A 5 m road square at 18 m needs
+    // 11.8..24.2 m (its footprint and the cutting's walls): the deck must start at 4.5 m
+    let catalog = synthetic_catalog();
+    let features = over_road(
+        Family::Mud,
+        25.0,
+        Family::Mud,
+        18.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let valley = |p: (f64, f64)| {
+        if (404.0..421.0).contains(&p.0) {
+            -10.0
+        } else {
+            0.0
+        }
+    };
+    let fits = fits_on(&features, &catalog, &valley);
+    let fit = &fits[0];
+    assert_eq!(model_name(&fit.kind), "bridge_wood2.p3d", "{fit:?}");
+    assert!(near(fit.part_start, 4.5, 2e-3), "{}", fit.part_start);
+    assert!(near(fit.slid, 4.5 - 2.65, 2e-3), "{}", fit.slid);
+    assert!(fit.below[0].missing.abs() < 1e-6, "{fit:?}");
+    assert!(near(fit.grown.0, -fit.part_start, 1e-9));
+    // the same where the part keeps to a node of bridges at its start: it cannot move
+    let at_start = over_road(
+        Family::Mud,
+        25.0,
+        Family::Mud,
+        8.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let fits = fits_on(&at_start, &catalog, &valley);
+    // 1.8..14.2 m needs the deck to start at most 1.8 m in: the other way
+    assert!(near(fits[0].part_start, 1.8, 2e-3), "{:?}", fits[0]);
+    assert!(near(fits[0].slid, 1.8 - 2.65, 2e-3), "{:?}", fits[0]);
+}
+
+#[test]
+fn a_model_on_posts_is_tried_at_every_start_against_its_posts() {
+    // bridge_wood_25 on a 25 m bridge, a road below square at 12 m: its rows of posts leave no gap for it; the
+    // starts that are tried are checked against the posts (valid ones only) and the bridge ends as a grid or as the
+    // model with what is missing
+    let catalog = synthetic_catalog();
+    let features = over_road(
+        Family::Mud,
+        25.0,
+        Family::Mud,
+        12.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let (_, fits) = fits(&features, &catalog);
+    assert!(fits[0].below[0].missing.is_finite());
+    assert_eq!(fits[0].below.len(), 1);
+}
+
+#[test]
+fn a_blocked_model_stays_where_there_is_no_panel_to_replace_it() {
+    use naves_core::catalog::PANELS_PREFIX;
+    let mut models = synthetic_models();
+    models.retain(|path, _| !path.starts_with(PANELS_PREFIX));
+    let catalog = PieceCatalog::from_models(&models).unwrap();
+    let features = over_road(
+        Family::Asf1,
+        25.0,
+        Family::City,
+        12.5,
+        std::f64::consts::FRAC_PI_4,
+    );
+    let (_, fits) = fits(&features, &catalog);
+    let fit = &fits[0];
+    assert_eq!(model_name(&fit.kind), "bridge_metal_25.p3d", "{fit:?}");
+    assert!(fit.below[0].missing > 1.0, "{fit:?}");
+}
+
+#[test]
+fn the_report_texts_of_a_lengthened_grid_and_a_blocked_model() {
+    let grid = Fallback::GridLengthened { by: (2.5, 0.0) };
+    assert_eq!(
+        grid.to_string(),
+        "the panel grid was lengthened by 2.5 m at the start and 0.0 m at the end for the road below"
+    );
+    let model = Fallback::ModelBlocksRoad {
+        model: "dz\\structures\\roads\\bridges\\bridge_metal_25.p3d".to_string(),
+    };
+    assert_eq!(
+        model.to_string(),
+        "bridge_metal_25 would stand on the road below the bridge"
+    );
+}
+
+#[test]
+fn a_fit_with_no_start_to_try_keeps_the_part_where_it_was_asked_for() {
+    let catalog = synthetic_catalog();
+    let metal = catalog
+        .bridges()
+        .iter()
+        .find(|b| b.model.ends_with("bridge_metal_25.p3d"))
+        .unwrap();
+    let shape = metal.shape();
+    let chain = Chain {
+        shape: &shape,
+        count: 1,
+    };
+    let need = Need {
+        station: 10.0,
+        reach: below_interval(6.0, std::f64::consts::FRAC_PI_2, &shape),
+    };
+    let fit = fit_over(&chain, (f64::NAN, f64::NAN), f64::NAN, &[need], &|_| true);
+    assert!(matches!(fit, Fit::Blocked { .. }), "{fit:?}");
+    assert!(fit.start().is_nan());
 }

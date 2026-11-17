@@ -276,3 +276,11 @@ the work in `conform`, the wording of findings and report lines, and the order o
   into the road beside the bridge by what each end lacks, at most the neighbour's length less `GROW_KEEP_M` (no straight
   room, no turn limit: its steps run chord to chord along the grown line), and `panel_grid` is computed again for the longer
   length (measured again up to 8 times). `Fallback::GridLengthened`. Only what is still missing is `bridge_blocks_road`.
+- **A road below is found by geometry, and a lengthened grid is bounded** (Task 6, fix round 2). For stretches that share a
+  node `line_crossings` runs like for any pair and hits within the deck's and the road's half widths of the node are
+  dropped (the heading rule is gone). A grid grows at an end by exactly what that end lacks, at most `GRID_GROW_MAX_M` = 15 m
+  and its reach; an end where the road's footprint would still lie outside the deck does not grow. A bridge of at most
+  `FILL_MAX_M` over a road is a grid, not a fill. The clearance thickness is the larger of what hangs over the crossing
+  ±1 m and what hangs over the footprint less 1.5 m (`clearance_thickness`). `placed` is true where a placed piece of the
+  road below (or of a part split from it) lies within the placed deck's outline widened by its half width.
+

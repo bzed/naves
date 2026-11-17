@@ -546,6 +546,10 @@ fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: decks, roads below, fits and the findings"
+)]
 fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_road_is_placed() {
     use naves_core::bridgefit::{BelowFit, mark_placed};
     use naves_core::bridgekind::{BridgeFit, BridgeKind, Lead, RoomEnd};
@@ -576,10 +580,62 @@ fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_roa
         slid: 0.0,
         below,
     };
-    // a road placed under the crossing at (300, 40) and one that is not placed near (500, 40)
-    let mut lower = road(0, PlacedKind::Piece, (300.0, 25.0));
-    lower.slot.stretch = "5:7-8".to_string();
-    let mut n = net(vec![lower]);
+    // the placed decks (a step of a grid each: 12 m wide, running north), and the roads below them: one part
+    // split from "5:7-8" by the dip pass crossing under the deck of "9:1-2", the road "5:7-8" itself under the
+    // deck of "4:3-4", and "6:7-8" laid 12 m beside the first deck, which it does not run under
+    let piece = |stretch: &str, kind: PlacedKind, from: (f64, f64), to: (f64, f64), width: f64| {
+        let mut r = road(0, kind, from);
+        r.slot.stretch = stretch.to_string();
+        r.start = Pose {
+            x: from.0,
+            y: from.1,
+            heading: 0.0,
+        };
+        r.end = Pose {
+            x: to.0,
+            y: to.1,
+            heading: 0.0,
+        };
+        r.width = width;
+        r
+    };
+    let mut n = net(vec![
+        piece(
+            "9:1-2",
+            PlacedKind::Bridge,
+            (300.0, 30.0),
+            (300.0, 50.0),
+            12.0,
+        ),
+        piece(
+            "4:3-4",
+            PlacedKind::Bridge,
+            (300.0, 20.0),
+            (300.0, 35.0),
+            12.0,
+        ),
+        piece(
+            "5:7-8/after1",
+            PlacedKind::Piece,
+            (290.0, 40.0),
+            (310.0, 40.0),
+            10.0,
+        ),
+        piece(
+            "5:7-8|9:1-2",
+            PlacedKind::Junction,
+            (290.0, 30.0),
+            (310.0, 30.0),
+            10.0,
+        ),
+        piece(
+            "6:7-8",
+            PlacedKind::Piece,
+            (312.0, 20.0),
+            (312.0, 60.0),
+            10.0,
+        ),
+    ]);
     n.bridge_fits = vec![
         fit(
             "9:1-2",
@@ -587,7 +643,7 @@ fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_roa
                 below("5:7-8", (300.0, 40.0), 7.31),
                 // nothing missing there
                 below("5:7-8", (300.0, 41.0), 0.0),
-                // the lower road is not where the lines cross
+                // the lower road is not under the deck
                 below("6:7-8", (500.0, 40.0), 3.0),
                 // a rounding sliver is no finding
                 below("5:7-8", (300.0, 42.0), 0.01),
@@ -596,6 +652,8 @@ fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_roa
         fit("4:3-4", vec![below("5:7-8", (300.0, 30.0), 1.5)]),
     ];
     mark_placed(&mut n.bridge_fits, &n.roads);
+    let placed: Vec<bool> = n.bridge_fits[0].below.iter().map(|b| b.placed).collect();
+    assert_eq!(placed, [true, true, false, true]);
     let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     let found = only(Rule::BridgeBlocksRoad, &v);
     // sorted by position, not by bridge

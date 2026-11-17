@@ -269,8 +269,9 @@ finding is `bridge_clearance`, with the clearance reached. Crossings that are no
 not treated like this.
 
 **A bridge over a road is built so that the road passes through its opening.** For every road below a bridge (a road
-that crosses its line at another height, or one that leaves the bridge's end node and heads back under its deck within
-10 degrees of the bridge's line), the part must carry the whole of what the road needs along the span: the road's
+that crosses its line at another height; roads that meet at a node join there, so a crossing within the deck's half
+width plus the road's half width of a shared node is none, while a road that leaves the node, loops and crosses the line
+further on is a road below at that place), the part must carry the whole of what the road needs along the span: the road's
 footprint (its width over the sine of the angle between the two lines), a metre of margin on each side, the skew of
 the road's centre line across the part (as wide as what hangs under the deck), and, where the part holds nothing back
 (panels, `bridge_wood2`), the run of the cutting's walls under the deck (the clearance plus the deck's thickness, over
@@ -278,16 +279,21 @@ the cutting's slope of 2). A road nearly along the bridge asks for a long interv
 0.01). The road needs 4.5 m under the deck at its centre line and 3 m over its footprint; standing geometry (end
 blocks, arch flanks, posts, the cross walls of `bridge_concrete3`) never passes a road. The first of these that works is
 used: the part the table gives, slid along the bridge's line within its straight room (and the turn limit and the posts
-of the model); the panel grid, lengthened into the road beside the bridge by what each end lacks (as far as that road
-goes on, keeping a metre before a junction, another bridge, a tunnel or a dead end; a grid needs no straight room and
-follows the bend of the road it grows into, its steps running chord to chord along the line, and the grid is then
-computed again for the longer length); else what is still missing, the placement that leaves the least of the road's interval
+of the model); the panel grid, lengthened into the road beside the bridge by exactly what each end lacks (at most 15 m at an end,
+as far as that road goes on, keeping a metre before a junction, another bridge, a tunnel or a dead end; a grid needs
+no straight room and follows the bend of the road it grows into, its steps running chord to chord along the line, and
+the grid is then computed again for the longer length). An end where the road's footprint would still lie outside the
+deck after that does not grow at all (more deck would not help the road); an end where only the cutting's walls stay
+outside grows as far as it can. A bridge of 3 m or less over a road is such a grid, not plain road. Else what is still
+missing, the placement that leaves the least of the road's interval
 under a solid part or past the end of the deck, with the finding `bridge_blocks_road` and the missing metres. A bridge
 that was slid shows it in `build/report.json` (`slid_m`, `part_start_m`, and `below` with the interval each road needs
-and what is missing). The clearance of the height solve uses the part's depth over the road's own interval (for the
-stone arch, its depth where the road passes, not its crown and not the abutments), not the deck's thickness over its
-longest opening. A road below that the placement laid elsewhere (its line has a bend too tight for the pieces) does not
-run under the deck and is not a finding (`placed` is false in the report).
+and what is missing). The clearance of the height solve keeps 4.5 m under the deck's deepest point over the road's centre line (a metre either
+side of the crossing) and 3 m over its whole footprint (for the stone arch: its depth where the road passes, not its crown
+and not the abutments), not the deck's thickness over its longest opening. A road below is a finding only where a placed
+piece of it (or of a part split from it) runs under the placed deck (its centre line inside the deck's outline widened by
+the road's half width); a road that the placement laid away from the deck (a bend in its line too tight for the pieces)
+has `placed: false` in the report and is not a finding.
 
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the

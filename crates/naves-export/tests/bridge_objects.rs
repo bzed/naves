@@ -123,6 +123,11 @@ fn pbf(nodes: &[(i64, f64, f64)], ways: &[(i64, Vec<i64>, Vec<(&str, &str)>)]) -
 
 /// A gravel track east to west with a bridge of 30 m (15 m on the map at half scale): the plain wooden deck.
 fn track_with_a_wooden_bridge(dir: &Path) -> (std::path::PathBuf, Project, FakeEnv) {
+    track_with_a_bridge(dir, false)
+}
+
+/// The same, with a second gravel track crossing under the bridge's middle where `road_below`.
+fn track_with_a_bridge(dir: &Path, road_below: bool) -> (std::path::PathBuf, Project, FakeEnv) {
     let env = FakeEnv::new(&dir.join("fake")).unwrap();
     let proj = dir.join("proj");
     std::fs::create_dir_all(proj.join("dem")).unwrap();
@@ -135,7 +140,7 @@ fn track_with_a_wooden_bridge(dir: &Path) -> (std::path::PathBuf, Project, FakeE
     // scale): it gets the plain wooden deck (19.7 m), laid as it is (bridges were scaled to the road's width
     // before)
     let lat = 47.55;
-    let nodes = [
+    let mut nodes = vec![
         (1, lat, 12.9715),
         (2, lat, 12.9745),
         (3, lat, 12.9749),
@@ -144,11 +149,15 @@ fn track_with_a_wooden_bridge(dir: &Path) -> (std::path::PathBuf, Project, FakeE
     let track = vec![("highway", "track"), ("tracktype", "grade2")];
     let mut bridge_tags = track.clone();
     bridge_tags.push(("bridge", "yes"));
-    let ways = [
+    let mut ways = vec![
         (10, vec![1, 2], track.clone()),
         (11, vec![2, 3], bridge_tags),
-        (12, vec![3, 4], track),
+        (12, vec![3, 4], track.clone()),
     ];
+    if road_below {
+        nodes.extend([(5, lat - 0.0008, 12.9747), (6, lat + 0.0008, 12.9747)]);
+        ways.push((13, vec![5, 6], track));
+    }
     std::fs::write(proj.join("osm/bridge.osm.pbf"), pbf(&nodes, &ways)).unwrap();
 
     let mut p = Project::new("Test", 47.55, 12.975, 1500.0);
@@ -358,6 +367,29 @@ fn the_report_and_the_summary_say_what_every_bridge_was_built_from() {
     assert!(bridges[0]["slid_m"].is_number());
     assert_eq!(bridges[0]["below"].as_array().unwrap().len(), 0);
     assert_eq!(bridges[0]["lead"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_road_below_a_bridge_is_in_the_report_with_what_it_needs_and_what_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proj, _, env) = track_with_a_bridge(dir.path(), true);
+    naves_export::build::build(&proj, &env.tools(), &|_| {}).unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(proj.join("build/report.json")).unwrap()).unwrap();
+    let below = report["bridges"][0]["below"].as_array().unwrap();
+    assert_eq!(below.len(), 1, "{report}");
+    let entry = &below[0];
+    assert!(
+        entry["lower"].as_str().unwrap().starts_with("13:"),
+        "{entry}"
+    );
+    assert!(entry["x"].is_number() && entry["y"].is_number());
+    assert!(entry["station_m"].as_f64().unwrap() > 0.0);
+    let needs = entry["needs_m"].as_array().unwrap();
+    assert_eq!(needs.len(), 2);
+    assert!(needs[0].as_f64().unwrap() < needs[1].as_f64().unwrap());
+    assert!(entry["missing_m"].is_number());
+    assert!(entry["placed"].is_boolean());
 }
 
 #[test]

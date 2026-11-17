@@ -185,14 +185,15 @@ away from the crossing in the data, or accept it.
 
 **`bridge_blocks_road`: "Bridge ... lies on the road ... below it: 7.0 m of the 33.6 m the road needs are under a solid part or past the end of the deck"**
 A bridge crosses another road and no part of the install's catalog lets that road pass: the road needs more room along the
-bridge than its opening has, within the straight room the part may slide in, and the panel row of the bridge's own
-length (which is never lengthened) has none either. The usual cause is a wide road crossing a short bridge at a small
+bridge than its opening has, within the straight room the part may slide in, and the panel grid, lengthened into the road
+beside the bridge by what each end lacks (at most 15 m, a metre before a junction, another bridge, a tunnel or a dead end),
+has none either. The usual cause is a wide road crossing a short bridge at a small
 angle (the road's footprint is its width over the sine of the angle), or a crossing close to the end of the bridge.
 The position is where the two lines cross and the number is how much of what the road needs (its footprint, margins,
 skew and, for panels and plain decks, the cutting's walls) is under a solid part or outside the deck. The build keeps
 the placement with the least missing. Straighten the crossing in the data or accept it; bending the road below so that
-it crosses squarely is a later task. A road below that the placement laid away from the bridge (a bend too tight for
-the pieces, as at the Silbergstrasse near (4689, 7321) of the Berchtesgaden example) is not reported.
+it crosses squarely is a later task. A road below that the placement laid away from the deck (a bend too tight for the
+pieces) is not reported; one whose placed pieces run under the deck is, wherever its OpenStreetMap line crosses.
 
 **`road_kink`: "Road ... meets its bridge 17.5 degrees off the deck's heading"**
 The road reaches the end of an OpenStreetMap bridge, but its heading there differs from the deck's by more than

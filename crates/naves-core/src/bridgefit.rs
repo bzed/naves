@@ -28,7 +28,7 @@
 use crate::catalog::{Family, PartShape};
 use crate::conform::CUT_SLOPE_MAX;
 use crate::profile::BRIDGE_CLEARANCE_M;
-use crate::roadplace::PlacedRoad;
+use crate::roadplace::{PlacedKind, PlacedRoad};
 
 /// The margin on each side of a road's footprint under a bridge, in metres.
 pub const PASS_MARGIN_M: f64 = 1.0;
@@ -76,9 +76,9 @@ pub struct BelowFit {
     pub interval: (f64, f64),
     /// How much of that is under a solid part or outside the deck, in metres; 0 where the road passes.
     pub missing: f64,
-    /// Whether a placed piece of the road below lies under the crossing (see [`mark_placed`]); true until the
-    /// placement is known. A road below that the placement laid elsewhere (its line has a bend tighter than a
-    /// piece can follow, say) does not run under the deck: nothing is missing there that anyone drives.
+    /// Whether a placed piece of the road below runs under the placed deck (see [`mark_placed`]); true until the
+    /// placement is known. A road below that the placement laid away from the deck (its line has a bend tighter
+    /// than a piece can follow, say) does not run under it: nothing is missing there that anyone drives.
     pub placed: bool,
 }
 
@@ -232,19 +232,40 @@ fn uncovered(runs: &[(f64, f64)], from: f64, to: f64) -> f64 {
     if missing < EPS_M { 0.0 } else { missing }
 }
 
+/// The metres by which the deck's underside may hang deeper over a road's footprint than at its centre line: the
+/// centre line needs [`BRIDGE_CLEARANCE_M`] and the footprint [`PASS_CLEARANCE_M`].
+const FOOTPRINT_SLACK_M: f64 = BRIDGE_CLEARANCE_M - PASS_CLEARANCE_M;
+/// The centre line of a road below is taken as the metre either side of the crossing when the thickness over it is
+/// measured.
+const CENTRE_M: f64 = 1.0;
+
+/// The thickness the height solve keeps [`BRIDGE_CLEARANCE_M`] above a road below, with `at` the crossing in the
+/// chain's own metres: the larger of what hangs over `at ± 1 m` (4.5 m under the deepest point at the centre line)
+/// and what hangs over the footprint `at ± reach.footprint` less 1.5 m (3 m over the whole footprint). `None`
+/// where neither interval meets the chain.
+#[must_use]
+pub fn clearance_thickness(chain: &Chain, at: f64, reach: &Reach) -> Option<f64> {
+    let centre = chain.thickness(at - CENTRE_M, at + CENTRE_M);
+    let footprint = chain.thickness(at - reach.footprint, at + reach.footprint);
+    match (centre, footprint) {
+        (None, None) => None,
+        (c, f) => Some(
+            c.unwrap_or(0.0)
+                .max(f.map_or(0.0, |t| t - FOOTPRINT_SLACK_M)),
+        ),
+    }
+}
+
 /// How many metres of what `need` asks of `chain` lying with its first end `start` metres from the bridge's
 /// start (negative where it reaches before it) are not available: under a solid part, or outside the deck. The
-/// road's depth below the deck is [`BRIDGE_CLEARANCE_M`] plus what hangs over its footprint, as the height
-/// solve makes it.
+/// road's depth below the deck is [`BRIDGE_CLEARANCE_M`] plus [`clearance_thickness`], as the height solve makes
+/// it.
 #[must_use]
 pub fn missing_at(chain: &Chain, start: f64, need: &Need) -> f64 {
     let s = need.station - start;
-    let footprint = (s - need.reach.footprint, s + need.reach.footprint);
     let band = (s - need.reach.centre, s + need.reach.centre);
     let whole = (s - need.reach.total(), s + need.reach.total());
-    let hanging = chain
-        .thickness(footprint.0, footprint.1)
-        .unwrap_or_default();
+    let hanging = clearance_thickness(chain, s, &need.reach).unwrap_or_default();
     // (the epsilon keeps `depth - clearance >= hanging` true against rounding)
     let depth = BRIDGE_CLEARANCE_M + hanging + EPS_M;
     let at_centre = uncovered(&chain.passable(depth, BRIDGE_CLEARANCE_M), band.0, band.1);
@@ -309,6 +330,13 @@ pub fn fit_over(
     needs: &[Need],
     valid: &dyn Fn(f64) -> bool,
 ) -> Fit {
+    if !(range.0.is_finite() && range.1.is_finite()) {
+        // no start to try
+        return Fit::Blocked {
+            start: wanted,
+            missing: missing_total(chain, wanted, needs),
+        };
+    }
     let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
     let mut candidates = vec![wanted, lo, hi];
     // where `valid` cuts the range (the turn limit, the posts) no end of an interval says where: a grid of starts
@@ -358,13 +386,12 @@ pub fn fit_over(
             best = Some(key);
         }
     }
-    match best {
-        Some((missing, _, start)) if missing <= EPS_M => Fit::Fits { start },
-        Some((missing, _, start)) => Fit::Blocked { start, missing },
-        None => Fit::Blocked {
-            start: wanted,
-            missing: missing_total(chain, wanted, needs),
-        },
+    // the ends of a range that is a range are candidates, so there is a best
+    let (missing, _, start) = best.unwrap_or((f64::INFINITY, 0.0, wanted));
+    if missing <= EPS_M {
+        Fit::Fits { start }
+    } else {
+        Fit::Blocked { start, missing }
     }
 }
 
@@ -388,22 +415,61 @@ pub fn below_fits(chain: &Chain, start: f64, below: &[Below], needs: &[Need]) ->
         .collect()
 }
 
-/// How far from the crossing's point a placed piece of the road below may lie, beyond half its width, and still
-/// run under the deck there, in metres (the reach the clearance of the height solve uses).
-pub const PLACED_REACH_M: f64 = 5.0;
+/// Whether the placed road `slot` stretch (a junction piece has two ids joined by `|`) is the stretch `id` or a part
+/// split from it (the dip pass names the parts `<id>/after<k>`).
+fn is_part_of(slot: &str, id: &str) -> bool {
+    slot.split('|')
+        .any(|p| p == id || p.strip_prefix(id).is_some_and(|rest| rest.starts_with('/')))
+}
 
-/// Sets [`BelowFit::placed`] of every road below of `fits`: whether `roads` has a piece of that road within half its
-/// width and [`PLACED_REACH_M`] of the crossing.
+/// Sets [`BelowFit::placed`] of every road below of `fits`: whether a placed piece of that road (the stretch or a
+/// part split from it) has its centre line inside the outline of the placed deck of the bridge, widened by the
+/// road's half width (a step of a grid is measured by its chord and width, so a grid that follows a bend is
+/// followed). A bridge whose deck is not in `roads` leaves them all placed.
 pub fn mark_placed(fits: &mut [crate::bridgekind::BridgeFit], roads: &[PlacedRoad]) {
     for fit in fits {
+        let deck: Vec<&PlacedRoad> = roads
+            .iter()
+            .filter(|r| r.kind == PlacedKind::Bridge && is_part_of(&r.slot.stretch, &fit.stretch))
+            .collect();
+        if deck.is_empty() {
+            continue;
+        }
         for below in &mut fit.below {
-            below.placed = roads.iter().any(|r| {
-                r.slot.stretch.split('|').any(|id| id == below.lower)
-                    && distance_to_segment(below.at, (r.start.x, r.start.y), (r.end.x, r.end.y))
-                        <= r.width / 2.0 + PLACED_REACH_M
-            });
+            below.placed = roads
+                .iter()
+                .filter(|r| is_part_of(&r.slot.stretch, &below.lower))
+                .any(|piece| {
+                    deck.iter().any(|step| {
+                        segment_distance(
+                            (piece.start.x, piece.start.y),
+                            (piece.end.x, piece.end.y),
+                            (step.start.x, step.start.y),
+                            (step.end.x, step.end.y),
+                        ) <= f64::midpoint(piece.width, step.width)
+                    })
+                });
         }
     }
+}
+
+/// The distance between the segments `a`-`b` and `c`-`d` (0 where they cross).
+fn segment_distance(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> f64 {
+    let side = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    };
+    let crossing = side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0;
+    if crossing {
+        return 0.0;
+    }
+    [
+        distance_to_segment(a, c, d),
+        distance_to_segment(b, c, d),
+        distance_to_segment(c, a, b),
+        distance_to_segment(d, a, b),
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
 }
 
 /// The distance from `p` to the segment `a`-`b`.
