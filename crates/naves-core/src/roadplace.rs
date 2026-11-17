@@ -51,61 +51,66 @@ const BRIDGE_SLIDE_STEPS: u32 = 10;
 /// chord's heading: the arcs leave a degree or two, a larger error is a road that turns into the bridge (a span
 /// on a curve), and forcing it onto the chord puts a tight turn right before the deck (research 9.6).
 const BRIDGE_TURN_MAX_DEG: f64 = 2.5;
-/// A bridge model narrower than its road is scaled up to the road's width, but at most this much.
-pub const MAX_BRIDGE_SCALE: f64 = 1.5;
 /// A bridge model shorter than this is not used: a length near zero would ask for endless pieces.
 pub const MIN_BRIDGE_M: f64 = 1.0;
+/// A bridge model may be this much narrower than the piece of its road, in metres; wider is always fine. Bridges
+/// are never scaled.
+pub const BRIDGE_NARROWER_M: f64 = 1.0;
+/// Which bridge model serves which roads, by the model's file name: the one table to change.
+pub const BRIDGE_MODELS: [(&str, &[Family]); 5] = [
+    ("bridge_wood2", &[Family::Grav, Family::Mud]),
+    ("bridge_wood_25", &[Family::Grav, Family::Mud]),
+    ("bridge_concrete3", &[Family::Asf3]),
+    ("bridge_metal_25", &[Family::Asf1, Family::City]),
+    ("bridge_stone_25", &[Family::Asf2, Family::Asf3]),
+];
 
-/// The bridge model for a road of `family`, the scale to lay it with and whether the scale was capped at
-/// [`MAX_BRIDGE_SCALE`] so that the bridge is still narrower than the road: wooden models for gravel and
-/// dirt, the others for the paved families. The narrowest model that is at least as wide as the road, at
-/// scale 1; else the widest, scaled up to the road's width but at most [`MAX_BRIDGE_SCALE`]. Never scaled
-/// down. A model whose length is not finite or below [`MIN_BRIDGE_M`], or whose width is not finite or not
-/// positive, is never chosen (the catalog is untrusted); a road width that is not finite counts as 0.
+/// The file name of a model path, lower case, without folder and extension.
+fn model_name(path: &str) -> String {
+    let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    name.strip_suffix(".p3d")
+        .unwrap_or(name)
+        .to_ascii_lowercase()
+}
+
+/// Every bridge model for a road of `family`: the models [`BRIDGE_MODELS`] names for it whose deck is at most
+/// [`BRIDGE_NARROWER_M`] narrower than the family's piece (wider is always fine), shortest first, then by
+/// model path. Never scaled. A model whose length is not finite or below [`MIN_BRIDGE_M`], or whose width is
+/// not finite or not positive, is never offered (the catalog is untrusted); a road width that is not finite
+/// counts as 0.
 #[must_use]
-pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Option<(&BridgeModel, f64, bool)> {
-    let wooden = matches!(family, Family::Grav | Family::Mud);
-    let all: Vec<&BridgeModel> = catalog
-        .bridges()
-        .iter()
-        .filter(|b| {
-            b.length.is_finite() && b.length >= MIN_BRIDGE_M && b.width.is_finite() && b.width > 0.0
-        })
-        .collect();
-    let of_material: Vec<&BridgeModel> = all
-        .iter()
-        .copied()
-        .filter(|b| b.model.contains("wood") == wooden)
-        .collect();
-    let pool = if of_material.is_empty() {
-        all
-    } else {
-        of_material
-    };
+pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Vec<&BridgeModel> {
     let width = catalog
         .pieces(family)
         .first()
         .map_or(0.0, |p| p.width)
         .max(0.0);
     let width = if width.is_finite() { width } else { 0.0 };
-    let enough = pool
+    let mut fitting: Vec<&BridgeModel> = catalog
+        .bridges()
         .iter()
-        .filter(|b| b.width + 1e-6 >= width)
-        .min_by(|x, y| x.width.total_cmp(&y.width))
-        .copied();
-    if let Some(model) = enough {
-        return Some((model, 1.0, false));
-    }
-    let widest = pool
-        .iter()
-        .max_by(|x, y| x.width.total_cmp(&y.width))
-        .copied()?;
-    let scale = if widest.width > 0.0 {
-        (width / widest.width).clamp(1.0, MAX_BRIDGE_SCALE)
-    } else {
-        1.0
-    };
-    Some((widest, scale, widest.width * scale + 1e-6 < width))
+        .filter(|b| {
+            let name = model_name(&b.model);
+            BRIDGE_MODELS
+                .iter()
+                .any(|(model, families)| *model == name && families.contains(&family))
+        })
+        .filter(|b| {
+            b.length.is_finite() && b.length >= MIN_BRIDGE_M && b.width.is_finite() && b.width > 0.0
+        })
+        .filter(|b| b.width + BRIDGE_NARROWER_M + 1e-6 >= width)
+        .collect();
+    fitting.sort_by(|a, b| a.length.total_cmp(&b.length).then(a.model.cmp(&b.model)));
+    fitting
+}
+
+/// The longest model of [`bridge_for`] (the first in model order among equals): what the placement lays until
+/// bridges are chosen by their length.
+#[must_use]
+pub fn longest_bridge(catalog: &PieceCatalog, family: Family) -> Option<&BridgeModel> {
+    bridge_for(catalog, family)
+        .into_iter()
+        .reduce(|best, b| if b.length > best.length { b } else { best })
 }
 
 /// The identity of a placed object along a stretch: it does not change with the direction a chain is
@@ -151,9 +156,9 @@ pub struct PlacedRoad {
     pub start: Pose,
     /// Where the road leaves.
     pub end: Pose,
-    /// Width of the road; of a scaled bridge, its scaled width.
+    /// Width of the road.
     pub width: f64,
-    /// Uniform scale of the model: 1 for everything but a bridge that was made as wide as its road.
+    /// Uniform scale of the model: 1 for everything the placement lays (bridges are not scaled).
     pub scale: f64,
 }
 
@@ -1352,20 +1357,6 @@ impl<'a> Placer<'a> {
         Some((last.0 - first.0).hypot(last.1 - first.1))
     }
 
-    /// The bridge for a road of `family`, see [`bridge_for`]; warns once when the scale is capped.
-    fn choose_bridge(&mut self, family: Family, stretch: &str) -> Option<(&'a BridgeModel, f64)> {
-        let (model, scale, capped) = bridge_for(self.catalog, family)?;
-        if capped {
-            let width = self.family_width(family);
-            self.out.warnings.push(format!(
-                "bridge on {stretch}: the widest bridge model is {:.1} m, scaled up to {:.1} m; the road is {width:.1} m wide",
-                model.width,
-                model.width * scale
-            ));
-        }
-        Some((model, scale))
-    }
-
     /// Fits the road up to link `k` of the run (which starts at link `first` of chain `c`) and lays the bridge models along its chord.
     #[expect(clippy::too_many_arguments, reason = "the state of one run, passed on")]
     fn place_bridge(
@@ -1399,10 +1390,10 @@ impl<'a> Placer<'a> {
             .and_then(|l| self.graph.stretches.get(l.stretch))
             .map(|s| s.id.clone())
             .unwrap_or_default();
-        let Some((model, scale)) = self.choose_bridge(family, &id) else {
+        let Some(model) = longest_bridge(self.catalog, family) else {
             return Ok(out);
         };
-        let length = model.length * scale;
+        let length = model.length;
         let count = (chord / length).round().max(1.0);
         if s0 - *s_cur > 1.0 {
             // the deck lies on its line; the approach closes on the deck's port
@@ -1420,12 +1411,7 @@ impl<'a> Placer<'a> {
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
             pose.heading = heading;
         }
-        let scaled = |port: &Port| Port {
-            x: port.x * scale,
-            z: port.z * scale,
-            ..*port
-        };
-        let (model_start, model_end) = (scaled(&model.start), scaled(&model.end));
+        let (model_start, model_end) = (model.start, model.end);
         let mut laid = 0.0;
         while laid < count {
             let frame = Frame::through(&pose_of(&model_start), *pose);
@@ -1444,8 +1430,8 @@ impl<'a> Placer<'a> {
                     origin: frame.origin,
                     start,
                     end,
-                    width: model.width * scale,
-                    scale,
+                    width: model.width,
+                    scale: 1.0,
                 },
                 s: s0 + laid * length,
                 link: None,

@@ -109,8 +109,12 @@ file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only th
 List OpenStreetMap extracts in `sources.osm` and `naves build` also builds the **roads**: the `highway` ways of the
 map become the game's own road pieces (asphalt, streets, gravel and dirt tracks, with junctions, end caps and
 bridges), laid along the OSM line, and the terrain is shaped to fit them. The pieces are read from the game: the
-DayZ Server install needs its `addons/structures_roads.pbo`, and `dayzmake` unpacks it once (the result is cached
-per user and rebuilt when the game is updated). No model of the game is ever copied into your mod.
+DayZ Server install needs its `addons/structures_roads.pbo` (the road pieces, the bridges and the concrete
+panels); `sakhal/addons/structures_sakhal.pbo` (the bridges `bridge_wood2` and `bridge_concrete3`) and
+`addons/structures_industrial.pbo` (the concrete pipe) are read too, and a build without them says so and goes on
+without those parts. Folder names are found in any case (`Addons` on a client install). `dayzmake` lists each
+archive and takes out only the models it needs, once (the result is cached per user and rebuilt when one of the
+archives changes, appears or goes). No model of the game is ever copied into your mod.
 
 What is built, from the `highway` tag:
 
@@ -266,8 +270,14 @@ not treated like this.
 
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
-paved roads the stone and metal ones, the narrowest model that is at least as wide as the road. If none is wide enough,
-the widest is scaled up to the road's width, at most 1.5 times (it becomes longer and taller by the same factor).
+paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
+the stone bridge or `bridge_concrete3`, gravel and dirt tracks `bridge_wood_25` or `bridge_wood2`. A model may be
+up to 1 m narrower than the road (wider is always fine); a model more than 1 m narrower is not used. Bridges are never
+scaled. Until bridges are chosen by their length, the longest model a road may have is laid. For each model the
+catalog measures, on its collision geometry, what hangs below the deck in slices of 1 m: the deck, the solid ends
+(the abutment blocks of the metal bridge, the flanks of the stone arch) and whether they hold the ground back, and
+the wooden posts. The deck thickness used for the clearance over a road below is the depth of the deck over the
+longest open stretch between the solid parts.
 Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than a bridge model grows evenly into the roads on both sides until a model fits (each neighbouring stretch keeps at least 1 m). Between two junctions that leave no room for a model the bridge stays an ordinary road, and the build says so.
 A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
 least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
@@ -283,7 +293,7 @@ ids are `road/<stretch>/bridge<n>/<slot>`.
 The ground under the pieces that were placed (not under the OSM line, which they may leave by some metres) is painted
 as soil, 2 m wider than the road.
 
-**Roads in the game.** `binarize` is given the game's road models (the build unpacks `structures_roads.pbo` and puts the models on its `P:` drive for the run, and removes them afterwards), and roads, junctions and bridges have been looked at in the game. Scaled bridges and the vehicle limits are less tested. If a bridge misbehaves, replace it in `edits/overrides.toml`.
+**Roads in the game.** `binarize` is given the game's road models (the build unpacks `structures_roads.pbo` and puts the models on its `P:` drive for the run, and removes them afterwards), and roads, junctions and bridges have been looked at in the game. The vehicle limits are less tested. If a bridge misbehaves, replace it in `edits/overrides.toml`.
 
 Your own changes to what was generated are kept in `edits/overrides.toml`
 ([the project file](project-file.md#editsoverridestoml)).

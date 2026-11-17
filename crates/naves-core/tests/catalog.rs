@@ -14,7 +14,9 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use naves_core::catalog::testing::{SYNTHETIC_DECK_THICKNESS, synthetic_catalog, synthetic_models};
+use naves_core::catalog::testing::{
+    SYNTHETIC_DECK_THICKNESS, synthetic_catalog, synthetic_models, synthetic_models_with_bridges,
+};
 use naves_core::catalog::{CatalogError, Family, PieceCatalog, PieceKind, ThicknessSource};
 use naves_formats::odol::OdolModel;
 
@@ -262,7 +264,11 @@ fn the_tightest_arc_is_the_smallest_radius_of_the_families_arcs() {
 
 #[test]
 fn a_bridge_deck_thickness_is_measured_from_the_geometry() {
-    let c = synthetic_catalog();
+    let c = PieceCatalog::from_models(&synthetic_models_with_bridges(&[
+        ("bridge_stone_25", 25.0, 9.0, 7.9),
+        ("bridge_wood_25", 31.6, 5.0, 0.05),
+    ]))
+    .unwrap();
     for b in c.bridges() {
         assert_eq!(b.thickness_source, ThicknessSource::Measured, "{}", b.model);
         assert!(
@@ -274,7 +280,8 @@ fn a_bridge_deck_thickness_is_measured_from_the_geometry() {
 }
 
 const STONE_25: &str = "dz\\structures\\roads\\bridges\\bridge_stone_25.p3d";
-const STONE_12: &str = "dz\\structures\\roads\\bridges\\bridge_stone_12.p3d";
+const WOOD2: &str = "dz\\structures_sakhal\\roads\\bridges\\bridge_wood2.p3d";
+const CONCRETE3: &str = "dz\\structures_sakhal\\roads\\bridges\\bridge_concrete3.p3d";
 const WOOD_25: &str = "dz\\structures\\roads\\bridges\\bridge_wood_25.p3d";
 const CONCRETE_25: &str = "dz\\structures\\roads\\bridges\\bridge_concrete_25.p3d";
 
@@ -283,6 +290,8 @@ fn with_thickness(models: &mut BTreeMap<String, OdolModel>, path: &str, thicknes
     let m = models.get_mut(path).unwrap();
     let deck = m.memory["lb"][0][1];
     m.geometry = Some(vec![[0.0, deck, 0.0], [0.0, deck - thickness, 1.0]]);
+    // vertices only: the thickness is the lowest vertex near the deck
+    m.geometry_faces = Vec::new();
 }
 
 fn bridge<'a>(c: &'a PieceCatalog, name: &str) -> &'a naves_core::catalog::BridgeModel {
@@ -294,20 +303,39 @@ fn an_unreadable_deck_takes_the_thickest_of_its_type_and_each_readable_one_keeps
     let mut models = synthetic_models();
     with_thickness(&mut models, STONE_25, 1.0);
     with_thickness(&mut models, WOOD_25, 0.5);
-    // a second stone bridge whose geometry cannot be read
-    models.get_mut(STONE_12).unwrap().geometry = None;
+    // a second wooden bridge whose geometry cannot be read
+    models.get_mut(WOOD2).unwrap().geometry = None;
     let c = PieceCatalog::from_models(&models).unwrap();
     assert!(near(bridge(&c, "stone_25").deck_thickness, 1.0, 1e-4));
     assert!(near(bridge(&c, "wood_25").deck_thickness, 0.5, 1e-4));
-    let unreadable = bridge(&c, "stone_12");
+    let unreadable = bridge(&c, "wood2");
     assert_eq!(unreadable.thickness_source, ThicknessSource::SameType);
     assert!(
-        near(unreadable.deck_thickness, 1.0, 1e-4),
+        near(unreadable.deck_thickness, 0.5, 1e-4),
         "{}",
         unreadable.deck_thickness
     );
+    // it is level at that depth over its whole length, and the build is told
+    assert_eq!(unreadable.solid.len(), 0);
+    assert!(
+        unreadable
+            .underside
+            .depth
+            .iter()
+            .all(|d| near(*d, 0.5, 1e-4))
+    );
+    assert!(
+        c.warnings()
+            .iter()
+            .any(|w| w.contains("bridge_wood2") && w.contains("thickest deck of its type"))
+    );
     assert_eq!(
         bridge(&c, "wood_25").thickness_source,
+        ThicknessSource::Vertices
+    );
+    // the model with faces keeps its own measure
+    assert_eq!(
+        bridge(&c, "metal_25").thickness_source,
         ThicknessSource::Measured
     );
 }
@@ -317,14 +345,32 @@ fn an_unreadable_deck_of_a_type_without_a_readable_one_takes_the_thickest_of_all
     let mut models = synthetic_models();
     with_thickness(&mut models, STONE_25, 1.0);
     with_thickness(&mut models, WOOD_25, 0.5);
-    models.get_mut(STONE_12).unwrap().geometry = Some(vec![]);
+    models.get_mut(WOOD2).unwrap().geometry = Some(vec![]);
+    models.get_mut(CONCRETE3).unwrap().geometry = None;
     let mut concrete = models[STONE_25].clone();
     concrete.geometry = None;
     models.insert(CONCRETE_25.to_string(), concrete);
     let c = PieceCatalog::from_models(&models).unwrap();
+    let thickest = c
+        .bridges()
+        .iter()
+        .filter(|b| {
+            matches!(
+                b.thickness_source,
+                ThicknessSource::Measured | ThicknessSource::Vertices
+            )
+        })
+        .map(|b| b.deck_thickness)
+        .fold(0.0, f64::max);
     let b = bridge(&c, "concrete_25");
     assert_eq!(b.thickness_source, ThicknessSource::Thickest);
-    assert!(near(b.deck_thickness, 1.0, 1e-4));
+    assert!(near(b.deck_thickness, thickest, 1e-4));
+    assert!(thickest >= 1.0);
+    assert!(
+        c.warnings()
+            .iter()
+            .any(|w| w.contains("bridge_concrete_25") && w.contains("thickest deck of all"))
+    );
 }
 
 #[test]
@@ -346,8 +392,9 @@ fn geometry_far_below_the_deck_is_a_pier_not_the_deck() {
     let mut models = synthetic_models();
     let key = "dz\\structures\\roads\\bridges\\bridge_stone_25.p3d";
     // the deck at 7.9: its beams down to 6.9, a pier down to 0
-    models.get_mut(key).unwrap().geometry =
-        Some(vec![[0.0, 7.9, 0.0], [0.0, 6.9, 1.0], [0.0, 0.0, 2.0]]);
+    let m = models.get_mut(key).unwrap();
+    m.geometry = Some(vec![[0.0, 7.9, 0.0], [0.0, 6.9, 1.0], [0.0, 0.0, 2.0]]);
+    m.geometry_faces = Vec::new();
     let c = PieceCatalog::from_models(&models).unwrap();
     let stone = c
         .bridges()

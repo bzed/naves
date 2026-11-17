@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The catalog of vanilla road pieces: straights, arcs, end caps, junctions and bridges, with the
-//! geometry of their join points as the models state it.
+//! geometry of their join points as the models state it, and the bridge parts without ports (the concrete
+//! panels and the pipe). For every bridge it knows what hangs below its deck (see [`shape`]).
 //!
 //! The catalog is built from the memory points of the models (see `naves_formats::odol`), never
 //! from the file names alone: the names only say which kind of piece a model is. The heading
@@ -11,6 +12,8 @@
 //! Coordinates are model coordinates: x east, z north, metres. A heading is in radians clockwise
 //! from north (+z), like everywhere in Náves.
 
+pub mod shape;
+
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -18,10 +21,24 @@ use naves_formats::odol::OdolModel;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use shape::{
+    MAX_COORDINATE_M, MAX_PART_LENGTH_M, PartShape, Pipe, SLICE_M, Slab, Solid, Underside,
+};
+
 /// The folder of the road pieces inside the game, as a model path prefix.
 pub const PARTS_PREFIX: &str = "dz\\structures\\roads\\parts\\";
 /// The folder of the bridges inside the game, as a model path prefix.
 pub const BRIDGES_PREFIX: &str = "dz\\structures\\roads\\bridges\\";
+/// The folder of the concrete panels inside the game.
+pub const PANELS_PREFIX: &str = "dz\\structures\\roads\\panels\\";
+/// The folder of the Sakhal bridges (`bridge_wood2`, `bridge_concrete3`) inside the game.
+pub const SAKHAL_BRIDGES_PREFIX: &str = "dz\\structures_sakhal\\roads\\bridges\\";
+/// The folder of the concrete pipe inside the game.
+pub const INDUSTRIAL_MISC_PREFIX: &str = "dz\\structures\\industrial\\misc\\";
+/// The panels the catalog uses (not the broken `_dam`, the sunken `_legacy` or the `_lc` variants).
+pub const PANEL_MODELS: [&str; 2] = ["panel_concrete_1", "panel_concrete_2"];
+/// The concrete pipe.
+pub const PIPE_MODEL: &str = "misc_concretepipe";
 
 /// A kind of road surface; one set of pieces each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -178,8 +195,11 @@ pub struct Junction {
 /// Where the thickness of a bridge deck comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThicknessSource {
-    /// Measured on the model's own Geometry LOD.
+    /// Measured on the faces of the model's own Geometry LOD.
     Measured,
+    /// The model's Geometry LOD has vertices but no faces that can be used: the lowest vertex within
+    /// [`MAX_DECK_THICKNESS_M`] of the deck, taken over the whole length.
+    Vertices,
     /// The model's Geometry LOD cannot be read: the thickest deck measured among the models of the same type
     /// (the word after `bridge_` in the name: stone, wood, metal).
     SameType,
@@ -204,10 +224,10 @@ pub struct BridgeModel {
     pub width: f64,
     /// Height of the deck above the model origin.
     pub deck_height: f64,
-    /// How far the deck reaches down below its surface, in metres, that a road below has to clear: the distance
-    /// to the lowest vertex of the Geometry LOD within [`MAX_DECK_THICKNESS_M`] of the deck (what hangs lower,
-    /// piers and abutments, is not the deck). Where the model's Geometry LOD cannot be read, taken from the
-    /// other models (see `thickness_source`).
+    /// How far the deck reaches down below its surface over its opening, in metres: [`BridgeModel::thickness`]
+    /// over [`BridgeModel::opening`]. Where the model's faces cannot be used, the lowest vertex within
+    /// [`MAX_DECK_THICKNESS_M`] of the deck, and where its Geometry LOD cannot be read, taken from the other
+    /// models (see `thickness_source`).
     pub deck_thickness: f64,
     /// Where `deck_thickness` comes from.
     #[serde(default)]
@@ -216,6 +236,53 @@ pub struct BridgeModel {
     pub start: Port,
     /// Where the road leaves.
     pub end: Port,
+    /// What hangs below the deck, per slice of [`SLICE_M`] from `start`. Where the faces cannot be used, the
+    /// deck thickness in every slice.
+    #[serde(default)]
+    pub underside: Underside,
+    /// The runs of slices deeper than [`MAX_DECK_THICKNESS_M`]; none where the faces cannot be used.
+    #[serde(default)]
+    pub solid: Vec<Solid>,
+    /// Whether the model holds the ground back at `start` and at `end` (a solid wall across the deck there).
+    #[serde(default)]
+    pub retains: (bool, bool),
+    /// The deepest point of the Geometry LOD below the deck surface, also beyond the ports.
+    #[serde(default)]
+    pub reach_down: f64,
+}
+
+impl BridgeModel {
+    /// See [`PartShape::thickness`]: how far the model reaches below its deck over `from..to`, in metres
+    /// from `start`.
+    #[must_use]
+    pub fn thickness(&self, from: f64, to: f64) -> f64 {
+        self.shape().thickness(from, to)
+    }
+
+    /// See [`PartShape::opening`].
+    #[must_use]
+    pub fn opening(&self) -> (f64, f64) {
+        self.shape().opening()
+    }
+
+    /// The model's shape below its deck.
+    #[must_use]
+    pub fn shape(&self) -> PartShape {
+        PartShape {
+            length: self.length,
+            underside: self.underside.clone(),
+            solid: self.solid.clone(),
+            retains: self.retains,
+            reach_down: self.reach_down,
+        }
+    }
+
+    /// Whether the model stands on posts that must reach the ground (`bridge_wood_25`): nothing solid, and its
+    /// deck hangs less than half its reach in some slice, so what reaches down are posts, not the deck.
+    #[must_use]
+    pub fn posts(&self) -> bool {
+        shape::on_posts(&self.underside, &self.solid, self.reach_down)
+    }
 }
 
 /// What can go wrong building the catalog.
@@ -246,6 +313,12 @@ pub struct PieceCatalog {
     t_junctions: Vec<Junction>,
     x_junctions: Vec<Junction>,
     bridges: Vec<BridgeModel>,
+    #[serde(default)]
+    panels: Vec<Slab>,
+    #[serde(default)]
+    pipe: Option<Pipe>,
+    #[serde(default)]
+    warnings: Vec<String>,
 }
 
 /// What a model name says.
@@ -254,6 +327,8 @@ enum Class {
     T(Family, Family),
     X(Family, Family),
     Bridge,
+    Panel,
+    Pipe,
 }
 
 /// The file name without folder and extension.
@@ -262,37 +337,57 @@ fn stem(path: &str) -> &str {
     name.strip_suffix(".p3d").unwrap_or(name)
 }
 
-/// The type of a bridge model, the word after `bridge_` in its name (stone, wood, metal).
+/// The type of a bridge model, the word after `bridge_` in its name without a number (stone, wood, metal,
+/// concrete: `bridge_wood2` is wood).
 fn bridge_type(model: &str) -> String {
     let name = stem(model).to_ascii_lowercase();
     let rest = name.strip_prefix("bridge_").unwrap_or(&name);
-    rest.split('_').next().unwrap_or(rest).to_string()
+    let word = rest.split('_').next().unwrap_or(rest);
+    word.trim_end_matches(|c: char| c.is_ascii_digit())
+        .to_string()
 }
 
 /// Gives each bridge whose thickness could not be measured the thickest deck measured among the models of its
-/// type, else the thickest of all; each readable model keeps its own.
-fn fill_thickness(bridges: &mut [BridgeModel]) {
+/// type, else the thickest of all; each readable model keeps its own. A model whose faces cannot be used is
+/// level at that thickness over its whole length. Returns a warning for each model that borrows (or has no)
+/// thickness.
+fn fill_thickness(bridges: &mut [BridgeModel]) -> Vec<String> {
+    let has_own =
+        |s: ThicknessSource| matches!(s, ThicknessSource::Measured | ThicknessSource::Vertices);
     let measured: Vec<(String, f64)> = bridges
         .iter()
-        .filter(|b| b.thickness_source == ThicknessSource::Measured)
+        .filter(|b| has_own(b.thickness_source))
         .map(|b| (bridge_type(&b.model), b.deck_thickness))
         .collect();
     let thickest = |of: &mut dyn Iterator<Item = f64>| of.max_by(f64::total_cmp);
     let overall = thickest(&mut measured.iter().map(|m| m.1));
-    for b in bridges
-        .iter_mut()
-        .filter(|b| b.thickness_source != ThicknessSource::Measured)
-    {
+    let mut warnings = Vec::new();
+    for b in bridges.iter_mut().filter(|b| !has_own(b.thickness_source)) {
         let kind = bridge_type(&b.model);
         let same = thickest(&mut measured.iter().filter(|m| m.0 == kind).map(|m| m.1));
+        let model = &b.model;
         if let Some(value) = same {
             b.deck_thickness = value;
             b.thickness_source = ThicknessSource::SameType;
+            warnings.push(format!(
+                "bridge model {model}: its Geometry LOD cannot be read; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
+            ));
         } else if let Some(value) = overall {
             b.deck_thickness = value;
             b.thickness_source = ThicknessSource::Thickest;
+            warnings.push(format!(
+                "bridge model {model}: its Geometry LOD cannot be read and no model of its type can be; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
+            ));
+        } else {
+            warnings.push(format!(
+                "bridge model {model}: no bridge model's Geometry LOD can be read; the clearance over a road below is not checked"
+            ));
         }
+        let level = PartShape::level(b.length, b.deck_thickness, b.width / 2.0);
+        b.underside = level.underside;
+        b.reach_down = b.reach_down.max(b.deck_thickness);
     }
+    warnings
 }
 
 fn two_families(rest: &str) -> Option<(Family, Family)> {
@@ -308,6 +403,12 @@ fn classify(stem: &str) -> Option<Class> {
     let s = stem.to_ascii_lowercase();
     if s.starts_with("bridge_") {
         return Some(Class::Bridge);
+    }
+    if PANEL_MODELS.contains(&s.as_str()) {
+        return Some(Class::Panel);
+    }
+    if s == PIPE_MODEL {
+        return Some(Class::Pipe);
     }
     if let Some(rest) = s.strip_prefix("kr_t_") {
         return two_families(rest).map(|(a, b)| Class::T(a, b));
@@ -415,43 +516,123 @@ fn junction(
     })
 }
 
-fn bridge(m: &OdolModel, model: &str) -> Result<Option<BridgeModel>, CatalogError> {
+/// The bridge part of a model, `None` for a model without a memory LOD (no ports: the 50 m wooden bridges), or
+/// a warning why it cannot be used (a missing port, coordinates that are not numbers or far out, ports at one
+/// point or a part longer than [`MAX_PART_LENGTH_M`]). The second value is a warning about faces that cannot
+/// be used (the model is then taken as open over its whole length).
+fn bridge(m: &OdolModel, model: &str) -> Option<Result<(BridgeModel, Option<String>), String>> {
     if m.memory.is_empty() {
-        // no memory LOD, so no ports: the 50 m wooden bridges
-        return Ok(None);
+        return None;
     }
-    let (start, width) = gate(m, model, "lb", "pb")?;
-    let (end, _) = gate(m, model, "le", "pe")?;
-    let mut height = 0.0;
+    Some(measured_bridge(m, model))
+}
+
+fn measured_bridge(m: &OdolModel, model: &str) -> Result<(BridgeModel, Option<String>), String> {
+    let skip = |why: String| format!("bridge model {model}: {why}; it is not used");
+    let (start, width) = gate(m, model, "lb", "pb").map_err(|e| skip(e.to_string()))?;
+    let (end, _) = gate(m, model, "le", "pe").map_err(|e| skip(e.to_string()))?;
+    let mut ports = Vec::new();
     for name in ["lb", "pb", "le", "pe"] {
-        height += f64::from(point(m, model, name)?[1]);
+        ports.push(point(m, model, name).map_err(|e| skip(e.to_string()))?);
     }
-    let deck_height = height / 4.0;
-    let measured = m.geometry.as_deref().and_then(|g| {
-        g.iter()
+    let geometry = m.geometry.as_deref().unwrap_or_default();
+    if !shape::sane(&ports) || !shape::sane(geometry) {
+        return Err(skip(format!(
+            "its ports or its Geometry LOD have coordinates that are not numbers or lie more than {MAX_COORDINATE_M} m out"
+        )));
+    }
+    let deck_height = ports.iter().map(|p| f64::from(p[1])).sum::<f64>() / 4.0;
+    let length = (end.x - start.x).hypot(end.z - start.z);
+    if !(MIN_PART_M..=MAX_PART_LENGTH_M).contains(&length) {
+        return Err(skip(format!(
+            "it is {length:.2} m between its ports, not {MIN_PART_M} to {MAX_PART_LENGTH_M} m"
+        )));
+    }
+    if width < MIN_PART_M {
+        return Err(skip(format!("its deck is {width:.2} m wide")));
+    }
+    let span = shape::Span {
+        x: start.x,
+        z: start.z,
+        dir_x: (end.x - start.x) / length,
+        dir_z: (end.z - start.z) / length,
+        length,
+        deck: deck_height,
+    };
+    let faces_usable =
+        !geometry.is_empty() && !m.geometry_faces.is_empty() && m.geometry_faces_error.is_none();
+    let (part, source, deck_thickness, warning) = if faces_usable {
+        let part = shape::measure(&span, width / 2.0, geometry, &m.geometry_faces);
+        let (from, to) = part.opening();
+        let thickness = part.thickness(from, to);
+        (part, ThicknessSource::Measured, thickness, None)
+    } else {
+        // what was measured before the faces were read: the lowest vertex within reach of the deck
+        let lowest = geometry
+            .iter()
             .map(|p| f64::from(p[1]))
             .filter(|y| *y >= deck_height - MAX_DECK_THICKNESS_M)
-            .min_by(f64::total_cmp)
-    });
-    Ok(Some(BridgeModel {
-        model: model.to_string(),
-        length: (end.x - start.x).hypot(end.z - start.z),
-        width,
-        deck_height,
-        deck_thickness: measured.map_or(0.0, |low| (deck_height - low).max(0.0)),
-        thickness_source: if measured.is_some() {
-            ThicknessSource::Measured
+            .min_by(f64::total_cmp);
+        let thickness = lowest.map_or(0.0, |low| (deck_height - low).max(0.0));
+        let mut part = PartShape::level(length, thickness, width / 2.0);
+        part.reach_down = geometry
+            .iter()
+            .map(|p| deck_height - f64::from(p[1]))
+            .fold(thickness, f64::max);
+        let why = match &m.geometry_faces_error {
+            Some(e) => format!("the faces of its Geometry LOD cannot be used ({e})"),
+            None if geometry.is_empty() => String::new(),
+            None => "its Geometry LOD has no faces".to_string(),
+        };
+        let source = if lowest.is_some() {
+            ThicknessSource::Vertices
         } else {
             ThicknessSource::Unknown
+        };
+        let warning = (!why.is_empty() && lowest.is_some()).then(|| {
+            format!(
+                "bridge model {model}: {why}; it is taken as open over its whole length, {thickness:.2} m deep, with no solid ends"
+            )
+        });
+        (part, source, thickness, warning)
+    };
+    Ok((
+        BridgeModel {
+            model: model.to_string(),
+            length,
+            width,
+            deck_height,
+            deck_thickness,
+            thickness_source: source,
+            start,
+            end,
+            underside: part.underside,
+            solid: part.solid,
+            retains: part.retains,
+            reach_down: part.reach_down,
         },
-        start,
-        end,
-    }))
+        warning,
+    ))
+}
+
+/// A bridge part shorter or narrower than this, in metres, is not used.
+const MIN_PART_M: f64 = 1.0;
+
+/// The bridge models, panels and the pipe that the build looks for; one that is missing is a warning.
+fn expected_parts() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = crate::roadplace::BRIDGE_MODELS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    names.extend(PANEL_MODELS);
+    names.push(PIPE_MODEL);
+    names
 }
 
 impl PieceCatalog {
     /// Builds the catalog from the models of the road PBO, keyed by model path. Models that are not
-    /// road pieces (crosswalks, runways, taxiways, centre lines, paths, other sets) are ignored.
+    /// road pieces (crosswalks, runways, taxiways, centre lines, paths, other sets) are ignored. A bridge part
+    /// that cannot be used is left out with a warning (see [`PieceCatalog::warnings`]), as is a missing one.
     ///
     /// # Errors
     /// [`CatalogError::MissingPoint`] for a piece or junction without its memory points, and
@@ -462,6 +643,9 @@ impl PieceCatalog {
             t_junctions: Vec::new(),
             x_junctions: Vec::new(),
             bridges: Vec::new(),
+            panels: Vec::new(),
+            pipe: None,
+            warnings: Vec::new(),
         };
         for (path, m) in models {
             let Some(class) = classify(stem(path)) else {
@@ -488,7 +672,31 @@ impl PieceCatalog {
                     let j = junction(m, path, through, side, &[("ld", "lh"), ("pd", "ph")])?;
                     catalog.x_junctions.push(j);
                 }
-                Class::Bridge => catalog.bridges.extend(bridge(m, path)?),
+                Class::Bridge => match bridge(m, path) {
+                    None => {}
+                    Some(Ok((b, warning))) => {
+                        catalog.bridges.push(b);
+                        catalog.warnings.extend(warning);
+                    }
+                    Some(Err(warning)) => catalog.warnings.push(warning),
+                },
+                Class::Panel => {
+                    let geometry = m.geometry.as_deref().unwrap_or_default();
+                    match shape::slab(path, geometry, &m.roadway) {
+                        Ok(slab) => catalog.panels.push(slab),
+                        Err(why) => catalog
+                            .warnings
+                            .push(format!("panel {why}; it is not used")),
+                    }
+                }
+                Class::Pipe => {
+                    let geometry = m.geometry.as_deref().unwrap_or_default();
+                    match shape::pipe(path, geometry, &m.roadway) {
+                        Ok(pipe) if catalog.pipe.is_none() => catalog.pipe = Some(pipe),
+                        Ok(_) => {}
+                        Err(why) => catalog.warnings.push(format!("pipe {why}; it is not used")),
+                    }
+                }
             }
         }
         for family in Family::ALL {
@@ -503,8 +711,47 @@ impl PieceCatalog {
                 });
             }
         }
-        fill_thickness(&mut catalog.bridges);
+        let borrowed = fill_thickness(&mut catalog.bridges);
+        catalog.warnings.extend(borrowed);
+        for name in expected_parts() {
+            let present = catalog
+                .bridges
+                .iter()
+                .map(|b| b.model.as_str())
+                .chain(catalog.panels.iter().map(|p| p.model.as_str()))
+                .chain(catalog.pipe.iter().map(|p| p.model.as_str()))
+                .any(|m| stem(m).eq_ignore_ascii_case(name));
+            if !present {
+                catalog.warnings.push(format!(
+                    "the bridge part {name} is not in the game's files or cannot be read; bridges are built without it"
+                ));
+            }
+        }
         Ok(catalog)
+    }
+
+    /// The concrete panels, in the order of their model paths.
+    #[must_use]
+    pub fn panels(&self) -> &[Slab] {
+        &self.panels
+    }
+
+    /// The concrete pipe, if the game has it.
+    #[must_use]
+    pub fn pipe(&self) -> Option<&Pipe> {
+        self.pipe.as_ref()
+    }
+
+    /// What the build should say about the catalog: parts that are missing or cannot be read, models whose
+    /// faces cannot be used or whose deck thickness is borrowed. In a fixed order.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Adds a warning (a reader of the game's files that found an archive missing).
+    pub fn warn(&mut self, warning: String) {
+        self.warnings.push(warning);
     }
 
     /// The pieces of a family, in the order of their model paths.
@@ -558,9 +805,12 @@ pub mod testing {
 
     use naves_formats::odol::OdolModel;
 
-    use super::{BRIDGES_PREFIX, Family, PARTS_PREFIX, PieceCatalog};
+    use super::{
+        BRIDGES_PREFIX, Family, INDUSTRIAL_MISC_PREFIX, PANELS_PREFIX, PARTS_PREFIX, PieceCatalog,
+        SAKHAL_BRIDGES_PREFIX,
+    };
 
-    /// How far below its deck the synthetic bridges' geometry reaches.
+    /// How far below its deck the plain synthetic bridges of [`synthetic_models_with_bridges`] reach.
     pub const SYNTHETIC_DECK_THICKNESS: f64 = 1.5;
 
     /// Heading change in degrees and radius in metres of the arcs every family has.
@@ -682,13 +932,226 @@ pub mod testing {
         model(&points)
     }
 
-    /// A bridge `length` long and `width` wide, lying north (`along_x` false) or east, with its
-    /// deck `deck` above the origin.
-    fn bridge(length: f64, width: f64, deck: f64, along_x: bool) -> OdolModel {
+    /// A box from `lo` to `hi` (model coordinates) as 8 vertices and 12 triangles, appended to `vertices` and
+    /// `faces`.
+    fn push_box(
+        vertices: &mut Vec<[f32; 3]>,
+        faces: &mut Vec<[u32; 3]>,
+        lo: [f64; 3],
+        hi: [f64; 3],
+    ) {
+        let base = u32::try_from(vertices.len()).unwrap_or(u32::MAX);
+        for i in 0..8u8 {
+            let pick = |bit: u8, l: f64, h: f64| if i & bit == 0 { l } else { h };
+            vertices.push(vertex(
+                pick(1, lo[0], hi[0]),
+                pick(2, lo[1], hi[1]),
+                pick(4, lo[2], hi[2]),
+            ));
+        }
+        // the six sides, two triangles each
+        for [a, b, c, d] in [
+            [0, 1, 3, 2],
+            [4, 6, 7, 5],
+            [0, 4, 5, 1],
+            [2, 3, 7, 6],
+            [0, 2, 6, 4],
+            [1, 5, 7, 3],
+        ] {
+            faces.push([base + a, base + b, base + c]);
+            faces.push([base + a, base + c, base + d]);
+        }
+    }
+
+    /// One block of a synthetic bridge in its own frame: from `a0` to `a1` along the span (metres from the first
+    /// port), from `c0` to `c1` across the axis, from `depth` below the deck
+    /// surface up to `top` below it.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Block {
+        /// Start along the span.
+        pub a0: f64,
+        /// End along the span.
+        pub a1: f64,
+        /// Start across.
+        pub c0: f64,
+        /// End across.
+        pub c1: f64,
+        /// Top, as a depth below the deck surface (0: the surface).
+        pub top: f64,
+        /// Bottom, as a depth below the deck surface.
+        pub depth: f64,
+    }
+
+    /// A bridge `length` long between its ports, `width` wide, its deck `deck` above the origin, lying north
+    /// (`along_x` false: the first port at z = -length/2) or east, with a Geometry LOD of `blocks` (with faces).
+    #[must_use]
+    pub fn bridge_of_blocks(
+        length: f64,
+        width: f64,
+        deck: f64,
+        along_x: bool,
+        blocks: &[Block],
+    ) -> OdolModel {
         let mut m = bridge_ports(length, width, deck, along_x);
-        // the deck's beams hang SYNTHETIC_DECK_THICKNESS below the deck
-        let low = vertex(0.0, deck - SYNTHETIC_DECK_THICKNESS, 0.0);
-        m.geometry = Some(vec![vertex(0.0, deck, 0.0), low]);
+        let (mut vertices, mut faces) = (Vec::new(), Vec::new());
+        let h = length / 2.0;
+        for b in blocks {
+            let (y0, y1) = (deck - b.depth, deck - b.top);
+            let (lo, hi) = if along_x {
+                ([b.a0 - h, y0, b.c0], [b.a1 - h, y1, b.c1])
+            } else {
+                ([b.c0, y0, b.a0 - h], [b.c1, y1, b.a1 - h])
+            };
+            push_box(&mut vertices, &mut faces, lo, hi);
+        }
+        m.geometry = Some(vertices);
+        m.geometry_faces = faces;
+        m
+    }
+
+    /// A plain deck `thickness` thick over the whole length, like `bridge_wood2`.
+    #[must_use]
+    pub fn slab_bridge(length: f64, width: f64, deck: f64, thickness: f64) -> OdolModel {
+        bridge_of_blocks(
+            length,
+            width,
+            deck,
+            false,
+            &[Block {
+                a0: 0.0,
+                a1: length,
+                c0: -(width / 2.0),
+                c1: width / 2.0,
+                top: 0.0,
+                depth: thickness,
+            }],
+        )
+    }
+
+    /// A deck `slab` thick on two end blocks `block` long, `block_half` to either side and `block_depth` deep, like
+    /// `bridge_metal_25`.
+    #[must_use]
+    pub fn bridge_with_end_blocks(
+        length: f64,
+        width: f64,
+        deck: f64,
+        slab: f64,
+        (block, block_half, block_depth): (f64, f64, f64),
+    ) -> OdolModel {
+        let end = |a0: f64, a1: f64| Block {
+            a0,
+            a1,
+            c0: -(block_half),
+            c1: block_half,
+            top: slab,
+            depth: block_depth,
+        };
+        bridge_of_blocks(
+            length,
+            width,
+            deck,
+            false,
+            &[
+                Block {
+                    a0: 0.0,
+                    a1: length,
+                    c0: -(width / 2.0),
+                    c1: width / 2.0,
+                    top: 0.0,
+                    depth: slab,
+                },
+                end(0.0, block),
+                end(length - block, length),
+            ],
+        )
+    }
+
+    /// A single arch, like `bridge_stone_25`: the intrados `crown` below the deck at mid-span and `spring` at the
+    /// ports, growing with the square of the distance from mid-span, in steps of half a metre.
+    #[must_use]
+    pub fn arch_bridge(length: f64, width: f64, deck: f64, crown: f64, spring: f64) -> OdolModel {
+        let mut blocks = Vec::new();
+        let mut a = 0.0;
+        while a < length - 1e-9 {
+            let a1 = (a + 0.5).min(length);
+            let mid = f64::midpoint(a, a1);
+            let t = (mid - length / 2.0) / (length / 2.0);
+            blocks.push(Block {
+                a0: a,
+                a1,
+                c0: -(width / 2.0 + 0.5),
+                c1: width / 2.0 + 0.5,
+                top: 0.0,
+                depth: crown + (spring - crown) * t * t,
+            });
+            a = a1;
+        }
+        bridge_of_blocks(length, width, deck, false, &blocks)
+    }
+
+    /// A deck on rows of posts, like `bridge_wood_25`: lying east, rails along the whole length just above the
+    /// deck and no deck in the Geometry LOD, and at each of `rows` (metres from the first port) posts 0.4 m long
+    /// reaching `post_depth` below the deck, outside the deck to either side.
+    #[must_use]
+    pub fn post_bridge(
+        length: f64,
+        width: f64,
+        deck: f64,
+        rows: &[f64],
+        post_depth: f64,
+    ) -> OdolModel {
+        let half = width / 2.0;
+        let mut blocks = vec![Block {
+            a0: 0.0,
+            a1: length,
+            c0: -(half + 0.3),
+            c1: half + 0.3,
+            top: -1.0,
+            depth: -0.9,
+        }];
+        for &row in rows {
+            blocks.push(Block {
+                a0: row,
+                a1: row + 0.4,
+                c0: -(half + 0.8),
+                c1: half + 0.8,
+                top: -1.0,
+                depth: post_depth,
+            });
+        }
+        bridge_of_blocks(length, width, deck, true, &blocks)
+    }
+
+    /// A concrete panel: a slab `along` × `across` (the short side along x), `thickness` thick and centred on
+    /// the origin, with a Roadway LOD whose surface is 0.02 m above the slab.
+    #[must_use]
+    pub fn panel_model(along: f64, across: f64, thickness: f64) -> OdolModel {
+        let mut m = model(&[]);
+        let (mut vertices, mut faces) = (Vec::new(), Vec::new());
+        let (a, c, t) = (along / 2.0, across / 2.0, thickness / 2.0);
+        push_box(&mut vertices, &mut faces, [-a, -t, -c], [a, t, c]);
+        let mut roadway = Vec::new();
+        push_box(
+            &mut roadway,
+            &mut Vec::new(),
+            [-a - 0.05, -t - 0.02, -c - 0.05],
+            [a + 0.05, t + 0.02, c + 0.05],
+        );
+        m.geometry = Some(vertices);
+        m.geometry_faces = faces;
+        m.roadway = roadway;
+        m
+    }
+
+    /// The concrete pipe: `diameter` high and wide, `length` long along z, its axis through the origin.
+    #[must_use]
+    pub fn pipe_model(length: f64, diameter: f64) -> OdolModel {
+        let mut m = model(&[]);
+        let (mut vertices, mut faces) = (Vec::new(), Vec::new());
+        let (r, l) = (diameter / 2.0, length / 2.0);
+        push_box(&mut vertices, &mut faces, [-r, -r, -l], [r, r, l]);
+        m.geometry = Some(vertices);
+        m.geometry_faces = faces;
         m
     }
 
@@ -748,34 +1211,79 @@ pub mod testing {
         }
         add(
             BRIDGES_PREFIX,
+            "bridge_metal_25".to_string(),
+            bridge_with_end_blocks(25.0, 12.0, 8.05, 1.7, (3.4, 8.0, 20.5)),
+        );
+        add(
+            BRIDGES_PREFIX,
             "bridge_stone_25".to_string(),
-            bridge(25.0, 9.0, 7.9, false),
+            arch_bridge(25.0, 9.0, 7.9, 3.2, 16.9),
         );
         add(
             BRIDGES_PREFIX,
             "bridge_wood_25".to_string(),
-            bridge(31.6, 5.0, 0.05, true),
+            post_bridge(
+                31.6,
+                5.0,
+                0.05,
+                &[3.0, 6.5, 10.5, 15.0, 19.25, 24.0, 27.25],
+                2.6,
+            ),
         );
         add(
-            BRIDGES_PREFIX,
-            "bridge_stone_12".to_string(),
-            bridge(25.0, 12.0, 7.9, false),
+            SAKHAL_BRIDGES_PREFIX,
+            "bridge_wood2".to_string(),
+            slab_bridge(19.7, 7.6, 4.04, 0.9),
+        );
+        let mut walls = vec![Block {
+            a0: 0.0,
+            a1: 21.1,
+            c0: -3.8,
+            c1: 3.8,
+            top: 0.0,
+            depth: 0.6,
+        }];
+        for at in [4.5, 10.5, 16.5] {
+            walls.push(Block {
+                a0: at,
+                a1: at + 0.4,
+                c0: -3.8,
+                c1: 3.8,
+                top: 0.6,
+                depth: 4.8,
+            });
+        }
+        add(
+            SAKHAL_BRIDGES_PREFIX,
+            "bridge_concrete3".to_string(),
+            bridge_of_blocks(21.1, 7.6, 2.16, false, &walls),
+        );
+        for name in ["panel_concrete_1", "panel_concrete_2"] {
+            add(PANELS_PREFIX, name.to_string(), panel_model(3.0, 6.0, 0.24));
+        }
+        add(
+            INDUSTRIAL_MISC_PREFIX,
+            "misc_concretepipe".to_string(),
+            pipe_model(3.04, 2.46),
         );
         models
     }
 
-    /// The synthetic models with the bridges replaced by `bridges`: for each a name (the path says
-    /// stone or wood), its length, width and deck height, lying north.
+    /// The synthetic models with the bridges replaced by `bridges`: for each a name (the table of
+    /// `roadplace::BRIDGE_MODELS` says which roads it serves), its length, width and deck height, lying north,
+    /// a plain deck [`SYNTHETIC_DECK_THICKNESS`] thick. The panels and the pipe stay.
     #[must_use]
     pub fn synthetic_models_with_bridges(
         bridges: &[(&str, f64, f64, f64)],
     ) -> BTreeMap<String, OdolModel> {
         let mut models = synthetic_models();
-        models.retain(|path, _| !path.starts_with(BRIDGES_PREFIX));
+        models.retain(|path, _| {
+            !path.starts_with(BRIDGES_PREFIX) && !path.starts_with(SAKHAL_BRIDGES_PREFIX)
+        });
         for &(name, length, width, deck) in bridges {
             models.insert(
                 format!("{BRIDGES_PREFIX}{name}.p3d"),
-                bridge(length, width, deck, false),
+                slab_bridge(length, width, deck, SYNTHETIC_DECK_THICKNESS),
             );
         }
         models

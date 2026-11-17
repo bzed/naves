@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use crate::tools::{BinarizeBridge, Tools};
 
-const DAYZMAKE: &str = r#"case "$1" in
+const DAYZMAKE: &str = r#"echo "$*" >> "$(dirname "$0")/../dayzmake-calls.log"
+trees="$(dirname "$0")/../pbo-trees"
+case "$1" in
   --version) echo "v2.0.0" ;;
   img2paa)
     shift; [ "$1" = "-f" ] && shift
@@ -26,7 +28,16 @@ const DAYZMAKE: &str = r#"case "$1" in
       printf 'PAA:%s\n' "$2"; cat "$3"; } > "$4" ;;
   unpack)
     # the road pieces: a tree of synthetic models next to the script
-    cp -r "$(dirname "$0")/../roads-tree"/. "$3"/ ;;
+    cp -r "$trees/structures_roads"/. "$3"/ && rm -f "$3/.prefix" ;;
+  inspect)
+    # the header with the prefix, then the table of files, as the real tool prints them
+    tree="$trees/$(basename "$2" .pbo)"
+    [ -d "$tree" ] || { echo "cannot read $2" >&2; exit 3; }
+    printf 'Header extensions:\n- product=dayz\n- prefix=%s\n\n# Files\n\nPath    Method  Original  Packed\n==========\n' "$(cat "$tree/.prefix")"
+    (cd "$tree" && find . -type f ! -name .prefix | sort | sed 's|^\./||; s|/|\\|g; s|$|    0    0    1|') ;;
+  cat)
+    tree="$trees/$(basename "$2" .pbo)"
+    cp "$tree/$(printf '%s' "$3" | tr '\\' '/')" "$4" ;;
   keygen)
     shift; [ "$1" = "-f" ] && shift
     : > "$1.biprivatekey"; : > "$1.bikey" ;;
@@ -112,6 +123,8 @@ impl FakeEnv {
         let server = common.join("DayZServer");
         let dayzmake = root.join("bin/dayzmake");
         write_script(&dayzmake, DAYZMAKE)?;
+        // the same, for a replacement script to fall back on
+        write_script(&root.join("bin/dayzmake-fake"), DAYZMAKE)?;
         std::fs::create_dir_all(common.join("DayZ Tools/Bin/Binarize"))?;
         std::fs::write(common.join("DayZ Tools/Bin/Binarize/binarize.exe"), "MZ")?;
         std::fs::create_dir_all(common.join("DayZ"))?;
@@ -135,11 +148,18 @@ impl FakeEnv {
         std::fs::write(enoch.join("db/types.xml"), "<types/>\n")?;
         std::fs::create_dir_all(root.join("sandboxes"))?;
         std::fs::create_dir_all(server.join("addons"))?;
-        std::fs::write(
-            server.join("addons/structures_roads.pbo"),
-            b"fake roads pbo",
-        )?;
-        write_road_tree(&root.join("roads-tree"))?;
+        for (pbo, content) in [
+            ("addons/structures_roads.pbo", &b"fake roads pbo"[..]),
+            ("addons/structures_industrial.pbo", b"fake industrial pbo"),
+            ("sakhal/addons/structures_sakhal.pbo", b"fake sakhal pbo"),
+        ] {
+            let path = server.join(pbo);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, content)?;
+        }
+        write_pbo_trees(&root.join("pbo-trees"))?;
         Ok(FakeEnv {
             root: root.to_path_buf(),
             dayzmake,
@@ -199,50 +219,96 @@ impl FakeEnv {
     }
 }
 
-/// Writes the unpacked content of a road PBO with synthetic models of all pieces, junctions and two bridges
-/// below `dir` (`Parts/` and `Bridges/`, in the mixed case of the game's files).
+/// The archive a synthetic model's path belongs to, its prefix as the game spells it, and the path inside it.
+fn archive_of(path: &str) -> Option<(&'static str, &'static str, &str)> {
+    [
+        (
+            "structures_roads",
+            "DZ\\structures\\roads",
+            "dz\\structures\\roads\\",
+        ),
+        (
+            "structures_sakhal",
+            "DZ\\structures_sakhal",
+            "dz\\structures_sakhal\\",
+        ),
+        (
+            "structures_industrial",
+            "DZ\\structures\\industrial",
+            "dz\\structures\\industrial\\",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(pbo, prefix, key)| path.strip_prefix(key).map(|rest| (pbo, prefix, rest)))
+}
+
+/// `bridge_stone_25` as `Bridge_Stone_25`, `parts` as `Parts`: the game's files are mixed case. The road
+/// pieces keep their lower-case names.
+fn game_case(name: &str, capitalise: bool) -> String {
+    if !capitalise {
+        return name.to_string();
+    }
+    name.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// Writes the content of the three archives the catalog reads, with synthetic models of all pieces,
+/// junctions, bridges, panels and the pipe, below `dir/<archive>/` (`structures_roads/Parts/`, `.../Bridges/`
+/// and so on, in the mixed case of the game's files), each with its prefix in a file `.prefix`.
 ///
 /// # Errors
 ///
 /// Any I/O error while writing the files.
-pub fn write_road_tree(dir: &Path) -> std::io::Result<()> {
+pub fn write_pbo_trees(dir: &Path) -> std::io::Result<()> {
     for (path, model) in naves_core::catalog::testing::synthetic_models() {
-        let (folder, file) = if path.contains("\\bridges\\") {
-            ("Bridges", path.rsplit('\\').next().unwrap_or_default())
-        } else {
-            ("Parts", path.rsplit('\\').next().unwrap_or_default())
+        let Some((pbo, prefix, rest)) = archive_of(&path) else {
+            continue;
         };
-        let stem = file.strip_suffix(".p3d").unwrap_or(file);
-        let stem = match stem.strip_prefix("bridge_") {
-            // the game's bridge files are capitalised: Bridge_Stone_25
-            Some(rest) => {
-                let words: Vec<String> = rest
-                    .split('_')
-                    .map(|w| {
-                        let mut c = w.chars();
-                        c.next()
-                            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
-                            .unwrap_or_default()
-                    })
-                    .collect();
-                format!("Bridge_{}", words.join("_"))
-            }
-            None => stem.to_string(),
-        };
+        let tree = dir.join(pbo);
+        std::fs::create_dir_all(&tree)?;
+        std::fs::write(tree.join(".prefix"), prefix)?;
+        let parts: Vec<&str> = rest.split('\\').collect();
+        let mut target = tree.clone();
+        for (i, part) in parts.iter().enumerate() {
+            let is_file = i + 1 == parts.len();
+            let piece = is_file && rest.starts_with("parts\\");
+            let part = part.strip_suffix(".p3d").unwrap_or(part);
+            // the Sakhal archive spells its folders in lower case
+            let folder_case = is_file || pbo != "structures_sakhal";
+            let name = game_case(part, !piece && folder_case);
+            target = target.join(if is_file { format!("{name}.p3d") } else { name });
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let points: Vec<(&str, [f32; 3])> = model
             .memory
             .iter()
             .filter_map(|(name, v)| v.first().map(|p| (name.as_str(), *p)))
             .collect();
-        let target = dir.join(folder).join(format!("{stem}.p3d"));
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let faces: Vec<Vec<u16>> = model
+            .geometry_faces
+            .iter()
+            .map(|t| {
+                t.iter()
+                    .map(|i| u16::try_from(*i).unwrap_or(u16::MAX))
+                    .collect()
+            })
+            .collect();
         std::fs::write(
             target,
-            naves_formats::odol::synthetic::model_bytes_with_geometry(
+            naves_formats::odol::synthetic::model_bytes_with_lods(
                 &points,
                 model.geometry.as_deref().unwrap_or_default(),
+                &faces,
+                &model.roadway,
             ),
         )?;
     }

@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use naves_core::catalog::PieceCatalog;
 use naves_core::dem::DemTile;
 use naves_core::landcover::{GeoWindow, LandCover};
 use naves_core::prefs::Preferences;
@@ -148,5 +149,24 @@ fn landcover_tile_seeds() {
     for (name, data) in seeds("landcover_tile") {
         let result = LandCover::from_bytes(data, window);
         assert_eq!(result.is_ok(), name == "valid", "seed {name}");
+    }
+}
+
+#[test]
+fn odol_read_seeds_measure_as_bridge_parts() {
+    // what the odol_read target does with a model that reads: never a panic
+    for (_, data) in seeds("odol_read") {
+        let Ok(model) = naves_formats::odol::read_odol(&data) else {
+            continue;
+        };
+        let models: std::collections::BTreeMap<String, _> = [
+            "dz\\structures\\roads\\bridges\\bridge_metal_25.p3d",
+            "dz\\structures\\roads\\panels\\panel_concrete_1.p3d",
+            "dz\\structures\\industrial\\misc\\misc_concretepipe.p3d",
+        ]
+        .into_iter()
+        .map(|k| (k.to_string(), model.clone()))
+        .collect();
+        drop(PieceCatalog::from_models(&models));
     }
 }

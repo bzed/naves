@@ -120,7 +120,7 @@ fn pbf(nodes: &[(i64, f64, f64)], ways: &[(i64, Vec<i64>, Vec<(&str, &str)>)]) -
 }
 
 #[test]
-fn a_scaled_osm_bridge_reaches_the_object_transform_with_its_scale() {
+fn an_osm_bridge_reaches_the_object_transform_unscaled() {
     let dir = tempfile::tempdir().unwrap();
     let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
     let proj = dir.path().join("proj");
@@ -130,8 +130,9 @@ fn a_scaled_osm_bridge_reaches_the_object_transform_with_its_scale() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
     std::fs::copy(fixture, proj.join("dem/koenigssee.tif")).unwrap();
 
-    // a gravel track (6 m) east to west through the middle with an 8 m bridge: the widest wooden model
-    // of the synthetic catalog is 5 m wide, so the bridge is scaled by 1.2
+    // a gravel track (6 m) east to west through the middle with an 8 m bridge: the wooden model of the
+    // synthetic catalog is 5 m wide, a metre narrower than the road, and it is laid as it is (bridges were
+    // scaled to the road's width before, by 1.2 here)
     let lat = 47.55;
     let nodes = [
         (1, lat, 12.9715),
@@ -167,7 +168,7 @@ fn a_scaled_osm_bridge_reaches_the_object_transform_with_its_scale() {
     assert_eq!(bridges.len(), 1, "{:?}", generated.warnings);
     let i = bridges[0];
     let object = &generated.objects[i];
-    assert!((object.scale - 1.2).abs() < 1e-9, "{}", object.scale);
+    assert!((object.scale - 1.0).abs() < 1e-9, "{}", object.scale);
 
     let transform = piece_transform(object, generated.heights[i]);
     // the matrix is the rotation times the scale: its columns have the length of the scale
@@ -176,16 +177,16 @@ fn a_scaled_osm_bridge_reaches_the_object_transform_with_its_scale() {
             .map(|row| f64::from(transform[row * 3 + column]).powi(2))
             .sum::<f64>()
             .sqrt();
-        assert!((length - 1.2).abs() < 1e-5, "column {column}: {length}");
+        assert!((length - 1.0).abs() < 1e-5, "column {column}: {length}");
     }
-    assert!((f64::from(transform[4]) - 1.2).abs() < 1e-6);
+    assert!((f64::from(transform[4]) - 1.0).abs() < 1e-6);
 
-    // the height is the deck level less scale * deck height (0.05 m for the synthetic wooden bridge); the
+    // the height is the deck level less the deck height (0.05 m for the synthetic wooden bridge); the
     // deck follows the ground at the bridge's ends, which is flat enough here to compare with its middle
     let ground = f64::from(generated.heightmap.sample(object.x, object.y).height);
     let height = f64::from(generated.heights[i]);
     assert!(
-        (height + 1.2 * 0.05 - ground).abs() < 1.5,
+        (height + 0.05 - ground).abs() < 1.5,
         "height {height}, ground {ground}"
     );
     assert!(

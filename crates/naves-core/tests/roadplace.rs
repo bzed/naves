@@ -18,7 +18,7 @@ use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
 use naves_core::roadnet::{build_graph, collapse_small_rings, widen_bridges, with_bridge_spans};
 use naves_core::roadplace::{
-    MAX_BRIDGE_SCALE, PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network,
+    PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, longest_bridge, place_network,
 };
 
 fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
@@ -452,7 +452,7 @@ fn a_bridge_is_a_straight_run_of_bridge_models() {
 fn place_widened(features: &[Feature]) -> PlacedNetwork {
     let catalog = synthetic_catalog();
     let graph = widen_bridges(&build_graph(features), &|s| {
-        bridge_for(&catalog, s.family).map_or(0.0, |(m, scale, _)| m.length * scale)
+        longest_bridge(&catalog, s.family).map_or(0.0, |m| m.length)
     });
     place_network(&graph, &catalog).unwrap()
 }
@@ -508,20 +508,20 @@ fn place_with(bridges: &[(&str, f64, f64, f64)], features: &[Feature]) -> Placed
 }
 
 #[test]
-fn a_paved_road_gets_the_narrowest_bridge_that_is_wide_enough() {
-    // asf1 is 12 m wide: the 12 m model, not the 9 m one, and not scaled
+fn a_paved_road_gets_the_bridge_of_its_family() {
+    // asf1 (12 m) gets the metal model, not scaled
     let net = place(&bridge_stretch(Family::Asf1));
     let bridges = of_kind(&net, PlacedKind::Bridge);
     assert_ne!(bridges.len(), 0);
     assert!(
-        bridges.iter().all(|r| r.model.contains("bridge_stone_12")
+        bridges.iter().all(|r| r.model.contains("bridge_metal_25")
             && r.width >= width(Family::Asf1)
             && (r.scale - 1.0).abs() < 1e-12),
         "{:?}",
         bridges[0]
     );
     assert!(net.warnings.is_empty(), "{:?}", net.warnings);
-    // asf3 (7 m) is served by the 9 m model
+    // asf3 (7 m) is served by the longest of its models, the 9 m stone one
     let net = place(&bridge_stretch(Family::Asf3));
     assert!(
         of_kind(&net, PlacedKind::Bridge)
@@ -531,39 +531,30 @@ fn a_paved_road_gets_the_narrowest_bridge_that_is_wide_enough() {
 }
 
 #[test]
-fn a_bridge_that_is_too_narrow_is_scaled_up_and_not_down() {
-    let only_9m = [("bridge_stone_25", 25.0, 9.0, 7.9)];
-    // a 12 m road
-    let wide = place_with(&only_9m, &bridge_stretch(Family::Asf1));
-    let bridges = of_kind(&wide, PlacedKind::Bridge);
-    assert_ne!(bridges.len(), 0);
-    let scale = width(Family::Asf1) / 9.0;
-    assert!(bridges.iter().all(|r| (r.scale - scale).abs() < 1e-9));
-    assert!(bridges.iter().all(|r| (r.width - 12.0).abs() < 1e-9));
-    assert!(wide.warnings.is_empty(), "{:?}", wide.warnings);
-    // a 7 m road is not given a bridge scaled down
-    let narrow = place_with(&only_9m, &bridge_stretch(Family::Asf3));
-    let bridges = of_kind(&narrow, PlacedKind::Bridge);
+fn a_bridge_more_than_a_metre_narrower_than_its_road_is_not_used_and_none_is_scaled() {
+    // a 12 m road: a 9 m model is not used
+    let wide = place_with(
+        &[("bridge_metal_25", 25.0, 9.0, 7.9)],
+        &bridge_stretch(Family::Asf1),
+    );
+    assert_eq!(of_kind(&wide, PlacedKind::Bridge).len(), 0);
+    // an 11.2 m model is used as it is
+    let fits = place_with(
+        &[("bridge_metal_25", 25.0, 11.2, 7.9)],
+        &bridge_stretch(Family::Asf1),
+    );
+    let bridges = of_kind(&fits, PlacedKind::Bridge);
     assert_ne!(bridges.len(), 0);
     assert!(bridges.iter().all(|r| (r.scale - 1.0).abs() < 1e-12));
-}
-
-#[test]
-fn the_scale_stops_at_one_and_a_half_and_says_so() {
-    // a 3.5 m wooden model for a 6 m track: 6 / 3.5 is more than 1.5
-    let net = place_with(
+    assert!(bridges.iter().all(|r| (r.width - 11.2).abs() < 1e-4));
+    assert!(fits.warnings.is_empty(), "{:?}", fits.warnings);
+    // a 3.5 m wooden model for a 6 m track is not used either, and there is nothing to warn about the scale
+    let narrow = place_with(
         &[("bridge_wood_25", 30.0, 3.5, 0.05)],
         &bridge_stretch(Family::Grav),
     );
-    let bridges = of_kind(&net, PlacedKind::Bridge);
-    assert_ne!(bridges.len(), 0);
-    assert!(
-        bridges
-            .iter()
-            .all(|r| (r.scale - MAX_BRIDGE_SCALE).abs() < 1e-12)
-    );
-    assert_eq!(net.warnings.len(), 1, "{:?}", net.warnings);
-    assert!(net.warnings[0].contains("bridge"));
+    assert_eq!(of_kind(&narrow, PlacedKind::Bridge).len(), 0);
+    assert!(narrow.warnings.iter().all(|w| !w.contains("scaled")));
 }
 
 #[test]
@@ -588,13 +579,12 @@ fn tracks_get_wooden_bridges_and_paved_roads_do_not() {
 }
 
 #[test]
-fn scaled_bridges_still_meet_end_to_end() {
+fn bridges_meet_end_to_end() {
     let net = place_with(
-        &[("bridge_stone_25", 25.0, 9.0, 7.9)],
+        &[("bridge_metal_25", 25.0, 12.0, 7.9)],
         &bridge_stretch(Family::Asf1),
     );
     let bridges = of_kind(&net, PlacedKind::Bridge);
-    assert!(bridges.len() >= 2);
     for pair in bridges.windows(2) {
         assert!(
             dist(
@@ -603,14 +593,10 @@ fn scaled_bridges_still_meet_end_to_end() {
             ) < 0.01
         );
     }
-    // the scaled length: 100 m of 33.3 m pieces, three of them
-    assert_eq!(bridges.len(), 3);
+    // the model's own length: 100 m of 25 m pieces, four of them
+    assert_eq!(bridges.len(), 4);
     let first = bridges[0];
-    assert!(
-        (dist((first.start.x, first.start.y), (first.end.x, first.end.y)) - 25.0 * 12.0 / 9.0)
-            .abs()
-            < 0.01
-    );
+    assert!((dist((first.start.x, first.start.y), (first.end.x, first.end.y)) - 25.0).abs() < 0.01);
 }
 
 #[test]
@@ -680,21 +666,21 @@ fn a_bridge_model_without_a_usable_length_is_never_chosen() {
     for bad in [0.0, f64::NAN, f64::INFINITY] {
         let net = place_with(
             &[
-                ("bridge_stone_bad", bad, 8.0, 7.9),
-                ("bridge_stone_ok", 25.0, 12.0, 7.9),
+                ("bridge_concrete3", bad, 8.0, 7.9),
+                ("bridge_stone_25", 25.0, 12.0, 7.9),
             ],
             &bridged(100.0),
         );
         let bridges = of_kind(&net, PlacedKind::Bridge);
         assert!(!bridges.is_empty(), "length {bad}");
         assert!(
-            bridges.iter().all(|b| b.model.contains("bridge_stone_ok")),
+            bridges.iter().all(|b| b.model.contains("bridge_stone_25")),
             "length {bad}: {}",
             bridges[0].model
         );
     }
     // and if no model is usable, the bridge is left out
-    let net = place_with(&[("bridge_stone_bad", 0.0, 12.0, 7.9)], &bridged(100.0));
+    let net = place_with(&[("bridge_stone_25", 0.0, 12.0, 7.9)], &bridged(100.0));
     assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }
 
@@ -717,14 +703,14 @@ fn a_bridge_model_without_a_width_is_not_used() {
         7.9,
     )]))
     .unwrap();
-    assert!(bridge_for(&catalog, Family::Asf3).is_none());
+    assert_eq!(bridge_for(&catalog, Family::Asf3).len(), 0);
     let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
     assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
     assert_finite_bridges(&net);
 }
 
 #[test]
-fn a_road_width_that_is_not_a_number_gives_an_unscaled_bridge() {
+fn a_road_width_that_is_not_a_number_still_gives_a_bridge() {
     use naves_core::catalog::PARTS_PREFIX;
     let mut models = synthetic_models_with_bridges(&[("bridge_stone_25", 25.0, 9.0, 7.9)]);
     for (path, m) in &mut models {
@@ -737,9 +723,9 @@ fn a_road_width_that_is_not_a_number_gives_an_unscaled_bridge() {
         }
     }
     let catalog = PieceCatalog::from_models(&models).unwrap();
-    let (model, scale, _) = bridge_for(&catalog, Family::Asf3).unwrap();
-    assert!(scale.is_finite() && (scale - 1.0).abs() < 1e-12, "{scale}");
-    assert!(model.width.is_finite());
+    let models = bridge_for(&catalog, Family::Asf3);
+    assert_eq!(models.len(), 1);
+    assert!(models[0].width.is_finite());
 }
 
 #[test]
@@ -751,7 +737,7 @@ fn a_bridge_model_shorter_than_a_metre_is_not_used() {
         7.9,
     )]))
     .unwrap();
-    assert!(bridge_for(&catalog, Family::Asf3).is_none());
+    assert_eq!(bridge_for(&catalog, Family::Asf3).len(), 0);
     let net = place_network(&build_graph(&bridge_stretch(Family::Asf3)), &catalog).unwrap();
     assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }

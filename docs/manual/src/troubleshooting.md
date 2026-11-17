@@ -186,11 +186,19 @@ away from the crossing in the data, or accept it.
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type
 (or of all bridge models) is used, and where no model can be read the clearance under bridges over roads is not
-checked.
+checked. Such a model is taken as open over its whole length, with no solid ends.
 
-**`bridge on ...: the widest bridge model is ... m, scaled up to ... m; the road is ... m wide`**
-The game has no bridge as wide as the road, not even scaled up by the most the build allows (1.5 times). The widest
-is used at that scale; the road is wider than the deck.
+**`bridge model ...: its Geometry LOD has no faces` / `the faces of its Geometry LOD cannot be used (...)`**
+What hangs below a deck is measured on the faces of the model's collision geometry. Without them the model is taken
+as open over its whole length, as deep everywhere as its lowest point near the deck, with no solid ends.
+
+**`bridge model ...: ... it is not used`**
+A bridge model whose ports are missing, whose coordinates are not numbers or lie more than 1000 m out, whose ports
+are less than 1 m or more than 200 m apart, or that cannot be read is left out; the roads get the other models.
+
+**`... is not in the DayZ Server install: the bridge parts it holds are not used`, `the bridge part ... is not in the game's files`**
+The Sakhal archive (`sakhal/addons/structures_sakhal.pbo`) or the industrial archive
+(`addons/structures_industrial.pbo`) is missing, or a model in it; the build goes on without those parts.
 
 **`bridge on ...: no room for a bridge model between the junctions`**
 An OpenStreetMap bridge is shorter than one bridge model and the roads beside it, junction to junction, are too short

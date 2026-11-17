@@ -9,7 +9,6 @@
 //! Nothing here touches the project folder or runs a tool other than dayzmake for the catalog, so the editor
 //! can run it too.
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -32,7 +31,7 @@ use naves_core::roadnet::{
     DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
     lost_bridges, widen_bridges, with_bridge_spans,
 };
-use naves_core::roadplace::{PlacedKind, PlacedNetwork, bridge_for, place_network};
+use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
@@ -182,32 +181,13 @@ pub fn place_once(
     let junctions = find_junctions(&net, graph, base);
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
-    let borrowed: RefCell<BTreeMap<String, (ThicknessSource, f64)>> = RefCell::new(BTreeMap::new());
+    // what the catalog could not measure it says in its own warnings
     let thickness = |s: &Stretch| {
-        bridge_for(catalog, s.family).and_then(|(m, scale, _)| {
-            if m.thickness_source != ThicknessSource::Measured {
-                borrowed
-                    .borrow_mut()
-                    .insert(m.model.clone(), (m.thickness_source, m.deck_thickness));
-            }
-            (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness * scale)
+        longest_bridge(catalog, s.family).and_then(|m| {
+            (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness)
         })
     };
     let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness)?;
-    let mut net = net;
-    for (model, (source, value)) in borrowed.into_inner() {
-        net.warnings.push(match source {
-            ThicknessSource::SameType => format!(
-                "bridge model {model}: its Geometry LOD cannot be read; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below"
-            ),
-            ThicknessSource::Thickest => format!(
-                "bridge model {model}: its Geometry LOD cannot be read and no model of its type can be; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below"
-            ),
-            _ => format!(
-                "bridge model {model}: no bridge model's Geometry LOD can be read; the clearance over a road below is not checked"
-            ),
-        });
-    }
     Ok(Placed {
         net,
         junctions,
@@ -231,9 +211,9 @@ pub fn widened_graph(
     (built, widened, dropped)
 }
 
-/// The scaled length of the bridge model a road of `family` gets.
+/// The length of the bridge model a road of `family` gets.
 fn model_length(catalog: &PieceCatalog, family: naves_core::catalog::Family) -> Option<f64> {
-    bridge_for(catalog, family).map(|(model, scale, _)| model.length * scale)
+    longest_bridge(catalog, family).map(|model| model.length)
 }
 
 /// The roads as they are built: the final graph, its placement and what was decided about the dips.
@@ -747,6 +727,9 @@ pub fn generate(
         &frame,
         &roads.dips,
     );
+    if let Some(catalog) = roads.catalog.as_ref() {
+        warnings.extend(catalog.warnings().iter().cloned());
+    }
     warnings.extend(roads.net.warnings.iter().cloned());
     let stats = statistics(&roads, &pieces, &steep_paths);
     Ok(Generated {

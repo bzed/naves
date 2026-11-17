@@ -1236,7 +1236,7 @@ fn a_failed_unpack_leaves_no_game_files_in_staging() {
     env.replace_dayzmake(
         r#"case "$1" in
   unpack) echo partial > "$3/asf1_25.p3d"; echo broken >&2; exit 3 ;;
-  *) exit 0 ;;
+  *) exec "$(dirname "$0")/dayzmake-fake" "$@" ;;
 esac"#,
     )
     .unwrap();

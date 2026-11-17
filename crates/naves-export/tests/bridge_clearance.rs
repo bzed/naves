@@ -78,14 +78,14 @@ fn an_unreadable_deck_thickness_is_borrowed_and_named_in_a_warning() {
     }
     let catalog = PieceCatalog::from_models(&models).unwrap();
     let placed = place_once(&graph(), &catalog, &flat()).unwrap();
+    // the catalog says it, once, and the build prints the catalog's warnings
     assert!(
-        placed
-            .net
-            .warnings
+        catalog
+            .warnings()
             .iter()
             .any(|w| w.contains("bridge_stone") && w.contains("thickest deck of all bridge models")),
         "{:?}",
-        placed.net.warnings
+        catalog.warnings()
     );
     assert!(
         placed.profiles.clearances[0].reached >= 4.45,
@@ -103,13 +103,9 @@ fn with_no_readable_deck_the_clearance_is_not_checked_and_the_build_says_so() {
     let catalog = PieceCatalog::from_models(&models).unwrap();
     let placed = place_once(&graph(), &catalog, &flat()).unwrap();
     assert!(
-        placed
-            .net
-            .warnings
-            .iter()
-            .any(|w| w.contains("not checked")),
+        catalog.warnings().iter().any(|w| w.contains("not checked")),
         "{:?}",
-        placed.net.warnings
+        catalog.warnings()
     );
     assert_eq!(placed.profiles.clearances.len(), 0);
 }

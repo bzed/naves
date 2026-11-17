@@ -295,9 +295,9 @@ fn main() {
     );
     // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
     let thickness = |s: &naves_core::roadnet::Stretch| {
-        naves_core::roadplace::bridge_for(&catalog, s.family).and_then(|(m, scale, _)| {
+        naves_core::roadplace::longest_bridge(&catalog, s.family).and_then(|m| {
             (m.thickness_source != naves_core::catalog::ThicknessSource::Unknown)
-                .then_some(m.deck_thickness * scale)
+                .then_some(m.deck_thickness)
         })
     };
     {
