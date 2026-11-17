@@ -12,7 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use naves_core::bridgekind::{BridgeFit, choose, deck_thickness, fit_bridges};
+use naves_core::bridgefit::mark_placed;
+use naves_core::bridgekind::{BridgeFit, choose, crossing_thickness, fit_bridges};
 use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
@@ -29,7 +30,7 @@ use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
 use naves_core::roadnet::{
-    DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
+    DroppedDuplicate, RoadGraph, build_graph, collapse_small_rings, drop_duplicates,
     with_bridge_spans,
 };
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
@@ -185,7 +186,7 @@ pub fn place_once(
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
-    let thickness = |s: &Stretch| deck_thickness(catalog, s);
+    let thickness = |c: &naves_core::roadnet::BridgeOverRoad| crossing_thickness(catalog, c);
     let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness)?;
     Ok(Placed {
         net,
@@ -310,6 +311,7 @@ pub fn plan_roads(
     };
     placed.net.duplicates = duplicates;
     placed.net.bridge_fits = bridges;
+    mark_placed(&mut placed.net.bridge_fits, &placed.net.roads);
     Ok(RoadPlan {
         graph,
         placed,

@@ -425,8 +425,9 @@ fn a_panel_grid_is_one_level_deck_that_covers_exactly_the_grid() {
         h,
     };
     let junctions = find_junctions(&net, &graph, &hm);
-    let thickness =
-        |s: &naves_core::roadnet::Stretch| naves_core::bridgekind::deck_thickness(&catalog, s);
+    let thickness = |c: &naves_core::roadnet::BridgeOverRoad| {
+        naves_core::bridgekind::crossing_thickness(&catalog, c)
+    };
     let (profiles, _) = solve_clearing(
         &net,
         &hm,

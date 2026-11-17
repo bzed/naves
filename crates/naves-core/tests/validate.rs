@@ -486,6 +486,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
         Rule::BridgeClearance,
+        Rule::BridgeBlocksRoad,
         Rule::BridgeNotBuilt,
     ];
     assert_eq!(rules, Rule::ALL);
@@ -501,6 +502,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
     assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
     assert_eq!(Rule::BridgeNotBuilt.id(), "bridge_not_built");
+    assert_eq!(Rule::BridgeBlocksRoad.id(), "bridge_blocks_road");
     assert_eq!(Rule::RoadKink.id(), "road_kink");
 }
 
@@ -523,6 +525,8 @@ fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
         room: (0.0, 0.0),
         room_end: (RoomEnd::Junction, RoomEnd::Junction),
         fallback,
+        slid: 0.0,
+        below: Vec::new(),
     };
     let mut n = net(vec![]);
     n.bridge_fits = vec![
@@ -539,6 +543,76 @@ fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
         "{}",
         found[0].message
     );
+}
+
+#[test]
+fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_road_is_placed() {
+    use naves_core::bridgefit::{BelowFit, mark_placed};
+    use naves_core::bridgekind::{BridgeFit, BridgeKind, Lead, RoomEnd};
+    let below = |lower: &str, at: (f64, f64), missing: f64| BelowFit {
+        lower: lower.to_string(),
+        at,
+        station: 10.0,
+        interval: (2.0, 20.0),
+        missing,
+        placed: true,
+    };
+    let fit = |id: &str, below: Vec<BelowFit>| BridgeFit {
+        stretches: vec![id.to_string()],
+        stretch: id.to_string(),
+        at: (0.0, 0.0),
+        family: Family::Asf1,
+        length: 25.0,
+        own_turn_deg: 0.0,
+        kind: BridgeKind::Fill,
+        part_length: 0.0,
+        grown: (0.0, 0.0),
+        part_start: 0.0,
+        lead: (Lead::Unbuilt, Lead::Unbuilt),
+        turn_deg: (0.0, 0.0),
+        room: (0.0, 0.0),
+        room_end: (RoomEnd::Junction, RoomEnd::Junction),
+        fallback: Vec::new(),
+        slid: 0.0,
+        below,
+    };
+    // a road placed under the crossing at (300, 40) and one that is not placed near (500, 40)
+    let mut lower = road(0, PlacedKind::Piece, (300.0, 25.0));
+    lower.slot.stretch = "5:7-8".to_string();
+    let mut n = net(vec![lower]);
+    n.bridge_fits = vec![
+        fit(
+            "9:1-2",
+            vec![
+                below("5:7-8", (300.0, 40.0), 7.31),
+                // nothing missing there
+                below("5:7-8", (300.0, 41.0), 0.0),
+                // the lower road is not where the lines cross
+                below("6:7-8", (500.0, 40.0), 3.0),
+                // a rounding sliver is no finding
+                below("5:7-8", (300.0, 42.0), 0.01),
+            ],
+        ),
+        fit("4:3-4", vec![below("5:7-8", (300.0, 30.0), 1.5)]),
+    ];
+    mark_placed(&mut n.bridge_fits, &n.roads);
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::BridgeBlocksRoad, &v);
+    // sorted by position, not by bridge
+    assert_eq!(found.len(), 2, "{v:?}");
+    assert_eq!(found[0].at, (300.0, 30.0));
+    assert_eq!(found[1].at, (300.0, 40.0));
+    assert!(
+        found[1].message.contains("9:1-2")
+            && found[1].message.contains("5:7-8")
+            && found[1].message.contains("7.3 m")
+            && found[1].message.contains("18.0 m"),
+        "{}",
+        found[1].message
+    );
+    // the same input gives the same list
+    let again = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    assert_eq!(v, again);
 }
 
 #[test]

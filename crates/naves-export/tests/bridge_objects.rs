@@ -355,6 +355,8 @@ fn the_report_and_the_summary_say_what_every_bridge_was_built_from() {
     assert_eq!(bridges[0]["stretches"][0], "11:2-3");
     assert_eq!(bridges[0]["fallback"].as_array().unwrap().len(), 0);
     assert!(bridges[0]["part_start_m"].is_number());
+    assert!(bridges[0]["slid_m"].is_number());
+    assert_eq!(bridges[0]["below"].as_array().unwrap().len(), 0);
     assert_eq!(bridges[0]["lead"].as_array().unwrap().len(), 2);
 }
 
@@ -384,11 +386,22 @@ fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
         fallback: vec![Fallback::ModelNoRoom {
             model: "dz\\structures_sakhal\\roads\\bridges\\bridge_wood2.p3d".into(),
         }],
+        slid: 1.5,
+        below: vec![naves_core::bridgefit::BelowFit {
+            lower: "9:7-8".into(),
+            at: (10.0, 20.0),
+            station: 4.0,
+            interval: (-2.0, 10.0),
+            missing: 2.5,
+            placed: true,
+        }],
     };
     let line = fit.summary();
     assert!(line.contains("1:1-2+2:2-3"), "{line}");
     assert!(line.contains("panels 3 x 2 at scale 0.98"), "{line}");
     assert!(line.contains("bridge_wood2 has no room"), "{line}");
+    assert!(line.contains("slid 1.5 m"), "{line}");
+    assert!(line.contains("2.5 m"), "{line}");
     assert_eq!(BridgeKind::Fill.to_string(), "fill");
 }
 

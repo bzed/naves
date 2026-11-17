@@ -268,6 +268,24 @@ as its grade limits and its vertical radius allow, and the terrain under the bri
 finding is `bridge_clearance`, with the clearance reached. Crossings that are not tagged as a bridge (and tunnels) are
 not treated like this.
 
+**A bridge over a road is built so that the road passes through its opening.** For every road below a bridge (a road
+that crosses its line at another height, or one that leaves the bridge's end node and heads back under its deck within
+10 degrees of the bridge's line), the part must carry the whole of what the road needs along the span: the road's
+footprint (its width over the sine of the angle between the two lines), a metre of margin on each side, the skew of
+the road's centre line across the part (as wide as what hangs under the deck), and, where the part holds nothing back
+(panels, `bridge_wood2`), the run of the cutting's walls under the deck (the clearance plus the deck's thickness, over
+the cutting's slope of 2). A road nearly along the bridge asks for a long interval (the sine is never taken below
+0.01). The road needs 4.5 m under the deck at its centre line and 3 m over its footprint; standing geometry (end
+blocks, arch flanks, posts, the cross walls of `bridge_concrete3`) never passes a road. The first of these that works is
+used: the part the table gives, slid along the bridge's line within its straight room (and the turn limit and the posts
+of the model); the panel row of the bridge's own length; else the placement that leaves the least of the road's interval
+under a solid part or past the end of the deck, with the finding `bridge_blocks_road` and the missing metres. A bridge
+that was slid shows it in `build/report.json` (`slid_m`, `part_start_m`, and `below` with the interval each road needs
+and what is missing). The clearance of the height solve uses the part's depth over the road's own interval (for the
+stone arch, its depth where the road passes, not its crown and not the abutments), not the deck's thickness over its
+longest opening. A road below that the placement laid elsewhere (its line has a bend too tight for the pieces) does not
+run under the deck and is not a finding (`placed` is false in the report).
+
 **Bridges.** On a bridge, the span has a level deck and the ground below keeps
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
@@ -276,8 +294,9 @@ up to 1 m narrower than the road (wider is always fine); a model more than 1 m n
 scaled (the panels of a grid are). Which of them, or whether a grid of concrete panels, is told below. For each model the
 catalog measures, on its collision geometry, what hangs below the deck in slices of 1 m: the deck, the solid ends
 (the abutment blocks of the metal bridge, the flanks of the stone arch) and whether they hold the ground back, and
-the wooden posts. The deck thickness used for the clearance over a road below is the depth of the deck over the
-longest open stretch between the solid parts.
+the wooden posts. The thickness used for the clearance over a road below is what hangs under the deck over that road's
+own interval (see below); a bridge over a dip, which has no part of its own, takes the thickness over the longest open
+stretch between the solid parts.
 
 **What a bridge is built from.** Every OpenStreetMap bridge is built from a part that fits its length (on the map; bridge ways that follow each other
 are one bridge):

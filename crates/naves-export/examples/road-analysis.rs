@@ -170,10 +170,31 @@ fn main() {
     let t_read = t0.elapsed();
     let FittedGraph {
         graph: widened,
+        built,
         duplicates,
         bridges,
-        ..
     } = fitted_graph(&features, &catalog, &base);
+    if let Ok(spot) = std::env::var("NEARDUMP") {
+        // NEARDUMP=x,y: every stretch of the OpenStreetMap graph and of the fitted one within 40 m of the spot
+        let v: Vec<f64> = spot.split(',').filter_map(|p| p.parse().ok()).collect();
+        for (label, g) in [("OSM", &built), ("FIT", &widened)] {
+            for s in &g.stretches {
+                let near = s
+                    .points
+                    .windows(2)
+                    .any(|w| seg_dist((v[0], v[1]), w[0], w[1]).0 < 40.0);
+                if near {
+                    println!(
+                        "NEAR {label} {} nodes {}-{} bridge {} layer {} family {:?} {:?}",
+                        s.id, s.start, s.end, s.bridge, s.layer, s.family, s.points
+                    );
+                }
+            }
+        }
+        if std::env::var("FITONLY").is_ok() {
+            return;
+        }
+    }
     {
         let total: f64 = duplicates.iter().map(|d| d.to_m - d.from_m).sum();
         println!(
@@ -351,8 +372,9 @@ fn main() {
         profiles.clearances.len()
     );
     // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
-    let thickness =
-        |s: &naves_core::roadnet::Stretch| naves_core::bridgekind::deck_thickness(&catalog, s);
+    let thickness = |c: &naves_core::roadnet::BridgeOverRoad| {
+        naves_core::bridgekind::crossing_thickness(&catalog, c)
+    };
     {
         // the same placement with the junctions at the ground, as it was without the clearance
         let plain = naves_core::junctions::find_junctions(&net, &graph, &base);
@@ -1393,6 +1415,41 @@ fn main() {
     for rule in Rule::ALL {
         let n = violations.iter().filter(|v| v.rule == rule).count();
         println!("RULE {:24} {n}", rule.id());
+    }
+    for v in violations
+        .iter()
+        .filter(|v| v.rule == Rule::BridgeBlocksRoad)
+    {
+        println!("BLOCKS at ({:.0}, {:.0}): {}", v.at.0, v.at.1, v.message);
+    }
+    // every bridge over a road: what it is built from, whether it was slid, what the road needs and the
+    // clearance measured at the crossing
+    for fit in net.bridge_fits.iter().filter(|f| !f.below.is_empty()) {
+        for b in &fit.below {
+            let reached = profiles
+                .clearances
+                .iter()
+                .find(|c| (c.at.0 - b.at.0).hypot(c.at.1 - b.at.1) < 0.5)
+                .map_or_else(
+                    || "not measured".to_string(),
+                    |c| format!("{:.2} m", c.reached),
+                );
+            println!(
+                "BELOW {} over {} at ({:.0}, {:.0}) station {:.1} m: {} slid {:.2} m part_start {:.2} m needs {:.1}..{:.1} missing {:.2} m placed {} clearance {reached}",
+                fit.stretch,
+                b.lower,
+                b.at.0,
+                b.at.1,
+                b.station,
+                fit.kind,
+                fit.slid,
+                fit.part_start,
+                b.interval.0,
+                b.interval.1,
+                b.missing,
+                b.placed
+            );
+        }
     }
     // roads far from the ground: by family, the extremes and the distribution of |off_ground_m|
     {

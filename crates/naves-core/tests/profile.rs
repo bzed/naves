@@ -137,7 +137,7 @@ fn solve_clearing(
     junctions: &Junctions,
     side: &[f64],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&naves_core::roadnet::Stretch) -> Option<f64>,
+    thickness: &dyn Fn(&naves_core::roadnet::BridgeOverRoad) -> Option<f64>,
 ) -> (Profiles, Junctions) {
     naves_core::profile::solve_clearing(net, hm, junctions, side, graph, thickness).unwrap()
 }

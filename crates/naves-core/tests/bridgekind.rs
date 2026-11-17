@@ -50,6 +50,7 @@ fn site_on(
         at_bridge_node: false,
         node_ends: (false, false),
         ground,
+        below: Vec::new(),
     }
 }
 
@@ -956,6 +957,8 @@ fn a_choice_closure_decides_and_the_graph_follows() {
         grown: (s.room.0.min(11.65), 11.65),
         fallback: Vec::new(),
         lead_radius: 15.0,
+        slid: 0.0,
+        below: Vec::new(),
     };
     let (out, fits) = fit_bridges(&g, &choice, &|_| 0.0);
     assert!(near(len(bridge_of(&out)), 40.0, 1e-6));
@@ -1000,6 +1003,8 @@ fn a_neighbour_is_never_used_up() {
         grown: (196.0, 196.0),
         fallback: Vec::new(),
         lead_radius: 15.0,
+        slid: 0.0,
+        below: Vec::new(),
     };
     let (out, fits) = fit_bridges(&g, &greedy, &|_| 0.0);
     assert!(

@@ -932,6 +932,65 @@ fn a_bridge_over_a_road_is_found_without_a_shared_node() {
 }
 
 #[test]
+fn an_over_crossing_has_the_angle_between_the_lines_whichever_way_they_run() {
+    // square: a right angle; at 45 degrees: a quarter of a right angle either way round
+    for (dir, expected) in [
+        ((0.0, 1.0), std::f64::consts::FRAC_PI_2),
+        ((0.0, -1.0), std::f64::consts::FRAC_PI_2),
+        ((1.0, 1.0), std::f64::consts::FRAC_PI_4),
+        ((-1.0, 1.0), std::f64::consts::FRAC_PI_4),
+        ((1.0, -1.0), std::f64::consts::FRAC_PI_4),
+    ] {
+        let features = [
+            road(1, &[1, 2], &[(-100.0, 0.0), (100.0, 0.0)]),
+            layered(
+                2,
+                true,
+                1,
+                &[3, 4],
+                &[(-50.0 * dir.0, -50.0 * dir.1), (50.0 * dir.0, 50.0 * dir.1)],
+            ),
+        ];
+        let found = over_crossings(&build_graph(&features));
+        assert_eq!(found.len(), 1);
+        assert!(
+            (found[0].angle - expected).abs() < 1e-9,
+            "{dir:?}: {}",
+            found[0].angle
+        );
+        assert!(!found[0].from_node);
+    }
+}
+
+#[test]
+fn a_road_that_leaves_the_end_of_a_bridge_and_runs_back_under_the_deck_is_an_over_crossing() {
+    // the bridge runs east from node 2 at the origin to node 3 at (40, 0); a road leaves node 3 and heads back
+    // west and a little south, 8 degrees off the bridge's own line: it runs under the deck. A road that leaves at
+    // a wider angle (a fork), a right angle or away from the bridge does not
+    let bridge = layered(1, true, 1, &[2, 3], &[(0.0, 0.0), (40.0, 0.0)]);
+    let back = road(2, &[3, 4], &[(40.0, 0.0), (-60.0, -14.1)]);
+    let g = build_graph(&[bridge.clone(), back]);
+    let found = over_crossings(&g);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let c = &found[0];
+    assert!(c.from_node && g.stretches[c.upper].bridge && !g.stretches[c.lower].bridge);
+    assert!((c.at.0 - 40.0).abs() < 1e-9 && c.at.1.abs() < 1e-9);
+    assert!((c.upper_s - 40.0).abs() < 1e-9, "{}", c.upper_s);
+    assert!(c.lower_s.abs() < 1e-9);
+    assert!((c.angle - 8.0_f64.to_radians()).abs() < 0.02, "{}", c.angle);
+    for away in [
+        road(2, &[3, 4], &[(40.0, 0.0), (100.0, 0.0)]),
+        road(2, &[3, 4], &[(40.0, 0.0), (40.0, 80.0)]),
+        road(2, &[3, 4], &[(40.0, 0.0), (0.0, 80.0)]),
+        // a fork 30 degrees off the line, heading back
+        road(2, &[3, 4], &[(40.0, 0.0), (-60.0, -57.7)]),
+    ] {
+        let g = build_graph(&[bridge.clone(), away]);
+        assert_eq!(over_crossings(&g).len(), 0);
+    }
+}
+
+#[test]
 fn roads_crossing_at_a_shared_node_are_not_an_over_crossing() {
     let features = [
         road(1, &[1, 2, 3], &[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)]),

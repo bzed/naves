@@ -25,7 +25,7 @@ use crate::catalog::Family;
 use crate::heightmap::Heightmap;
 use crate::junctions::{Junctions, RingPlane};
 use crate::qp::{Problem, QpError};
-use crate::roadnet::{OverCrossing, RoadGraph, Stretch, over_crossings};
+use crate::roadnet::{BridgeOverRoad, OverCrossing, RoadGraph, over_crossings};
 use crate::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad};
 
 mod holds;
@@ -718,7 +718,9 @@ pub fn solve_profiles(
 /// ceiling whose other end is a ring's constant or a meeting with another road, or whose two ends one junction
 /// holds, is a [`GradeExcessKind::Grade`] excess without an entry.
 ///
-/// A bridge over a road (see [`over_crossings`]) whose deck thickness `thickness` knows keeps
+/// A bridge over a road (see [`over_crossings`]) whose deck thickness `thickness` knows (it is given the bridge's
+/// stretch, the road below and the crossing, so that it can take what hangs under the deck over the road's own
+/// interval, see [`crate::bridgekind::crossing_thickness`]) keeps
 /// [`BRIDGE_CLEARANCE_M`] between the surface of the road below and the underside of its deck, as far as the
 /// rest of the problem allows. It is a row of the same problem, solved once: the height of the deck less the
 /// height of the road below at the crossing (between its two joints there) is at least the clearance and the
@@ -741,7 +743,7 @@ pub fn solve_clearing(
     junctions: &Junctions,
     side: &[f64],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&Stretch) -> Option<f64>,
+    thickness: &dyn Fn(&BridgeOverRoad) -> Option<f64>,
 ) -> Result<(Profiles, Junctions), ProfileError> {
     solve_clearing_with(
         net,
@@ -766,18 +768,23 @@ pub fn solve_clearing_with(
     junctions: &Junctions,
     side: &[f64],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&Stretch) -> Option<f64>,
+    thickness: &dyn Fn(&BridgeOverRoad) -> Option<f64>,
     solver: &dyn Fn(&Problem) -> Result<Vec<f64>, QpError>,
 ) -> Result<(Profiles, Junctions), ProfileError> {
     let crossings: Vec<model::Crossing> = over_crossings(graph)
         .iter()
         .filter_map(|c| {
             let upper = graph.stretches.get(c.upper)?;
+            let lower = graph.stretches.get(c.lower)?;
             Some(model::Crossing {
                 at: c.at,
                 upper: upper.id.clone(),
-                lower: graph.stretches.get(c.lower)?.id.clone(),
-                thickness: thickness(upper)?,
+                lower: lower.id.clone(),
+                thickness: thickness(&BridgeOverRoad {
+                    upper,
+                    lower,
+                    crossing: c,
+                })?,
             })
         })
         .collect();
@@ -982,12 +989,18 @@ pub fn measure_clearances(
     net: &PlacedNetwork,
     strips: &[RoadStrip],
     graph: &RoadGraph,
-    thickness: &dyn Fn(&Stretch) -> Option<f64>,
+    thickness: &dyn Fn(&BridgeOverRoad) -> Option<f64>,
 ) -> Vec<Clearance> {
     over_crossings(graph)
         .iter()
         .filter_map(|c| {
-            let deck = graph.stretches.get(c.upper).and_then(thickness)?;
+            let upper = graph.stretches.get(c.upper)?;
+            let lower = graph.stretches.get(c.lower)?;
+            let deck = thickness(&BridgeOverRoad {
+                upper,
+                lower,
+                crossing: c,
+            })?;
             clearance_at(net, strips, graph, c, deck).map(|reached| Clearance {
                 at: c.at,
                 reached,

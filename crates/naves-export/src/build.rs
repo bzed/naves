@@ -693,6 +693,16 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
                 "part_length_m": b.part_length,
                 "grown_m": [b.grown.0, b.grown.1],
                 "part_start_m": b.part_start,
+                "slid_m": b.slid,
+                "below": b.below.iter().map(|r| serde_json::json!({
+                    "lower": r.lower,
+                    "x": r.at.0,
+                    "y": r.at.1,
+                    "station_m": r.station,
+                    "needs_m": [r.interval.0, r.interval.1],
+                    "missing_m": r.missing,
+                    "placed": r.placed,
+                })).collect::<Vec<_>>(),
                 "lead": [b.lead.0.to_string(), b.lead.1.to_string()],
                 "fallback": b.fallback.iter().map(ToString::to_string).collect::<Vec<_>>(),
             })

@@ -396,7 +396,8 @@ fn crossings(stretches: &[Stretch]) -> Vec<Crossing> {
         .collect()
 }
 
-/// Two stretches whose lines cross without a shared node, the first on a bridge over the second.
+/// Two stretches whose lines cross without a shared node, the first on a bridge over the second; or a road that
+/// leaves the bridge's end node and runs back under the deck (see [`over_crossings`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverCrossing {
     /// The bridge, an index into [`RoadGraph::stretches`].
@@ -409,54 +410,169 @@ pub struct OverCrossing {
     pub upper_s: f64,
     /// The distance of `at` from the start of the lower stretch along its line.
     pub lower_s: f64,
+    /// The angle between the two lines at `at`, in radians from 0 (along each other) to a right angle (square);
+    /// never negative, never above a right angle, whichever way the lines run.
+    pub angle: f64,
+    /// Whether the road below leaves the bridge's own end node (and runs back under the deck) instead of
+    /// crossing its line: `at` is then the node, `upper_s` its distance along the bridge.
+    pub from_node: bool,
 }
+
+/// A road that leaves the end node of a bridge and heads back onto the deck within this many degrees of the
+/// bridge's own line runs under the deck: it stays within the deck's width for a width over the sine of the angle
+/// (35 m for a road of 12 m). At a wider angle the two only fork at the node (on the Berchtesgaden example a fork
+/// of 59 degrees, whose roads part within a few metres, was no road under a deck).
+pub const UNDER_DECK_MAX_DEG: f64 = 10.0;
 
 /// Stretches that cross without a shared node and are not at one height: `upper` is a bridge and `lower` is no
 /// tunnel and no bridge of a higher or equal layer. Untagged crossings are not here (nothing says which is
-/// above), nor are crossings of stretches that share a node (they join, see [`RoadGraph::crossings`]). Sorted
-/// by the two stretches and the place.
+/// above), nor are crossings of stretches that share a node (they join, see [`RoadGraph::crossings`]), with one
+/// exception: a road that leaves the bridge's end node and heads back onto the deck, within
+/// [`UNDER_DECK_MAX_DEG`] of the bridge's line, runs under the deck from the node on (`from_node`). Sorted by the
+/// two stretches and the place.
 #[must_use]
 pub fn over_crossings(graph: &RoadGraph) -> Vec<OverCrossing> {
-    let boxes: Vec<((f64, f64), (f64, f64))> =
-        graph.stretches.iter().map(|s| bounds(&s.points)).collect();
+    let boxes: Vec<Bounds> = graph.stretches.iter().map(|s| bounds(&s.points)).collect();
     let mut out = Vec::new();
-    for (i, a) in graph.stretches.iter().enumerate() {
-        for (j, b) in graph.stretches.iter().enumerate().skip(i + 1) {
-            let upper_is_a = match (a.bridge, b.bridge) {
-                (true, false) => true,
-                (false, true) => false,
-                (true, true) if a.layer != b.layer => a.layer > b.layer,
-                _ => continue,
-            };
-            let (upper, lower) = if upper_is_a { (a, b) } else { (b, a) };
-            let shared = [upper.start, upper.end]
-                .iter()
-                .any(|n| *n == lower.start || *n == lower.end);
-            let apart = boxes.get(i).zip(boxes.get(j)).is_some_and(|(p, q)| {
-                p.1.0 < q.0.0 || q.1.0 < p.0.0 || p.1.1 < q.0.1 || q.1.1 < p.0.1
-            });
-            if shared || apart || upper.tunnel || lower.tunnel {
-                continue;
-            }
-            let (u, l) = if upper_is_a { (i, j) } else { (j, i) };
-            out.extend(
-                line_crossings(&upper.points, &lower.points)
-                    .into_iter()
-                    .map(|(at, upper_s, lower_s)| OverCrossing {
-                        upper: u,
-                        lower: l,
-                        at,
-                        upper_s,
-                        lower_s,
-                    }),
-            );
+    for i in 0..graph.stretches.len() {
+        for j in i + 1..graph.stretches.len() {
+            out.extend(crossings_of_pair(graph, &boxes, i, j));
         }
     }
     out
 }
 
-/// Where two polylines cross: the point and the distance along each.
-fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64), f64, f64)> {
+/// The corners of a box, the lower left and the upper right.
+type Bounds = ((f64, f64), (f64, f64));
+
+/// The [`OverCrossing`]s of bridge stretch `upper` over any road of `graph` (before the bridges are fitted, a
+/// bridge is a stretch with `bridge` set). Sorted by the road below and the place.
+#[must_use]
+pub fn crossings_under(graph: &RoadGraph, upper: usize) -> Vec<OverCrossing> {
+    let boxes: Vec<Bounds> = graph.stretches.iter().map(|s| bounds(&s.points)).collect();
+    let mut out = Vec::new();
+    for j in 0..graph.stretches.len() {
+        if j == upper {
+            continue;
+        }
+        out.extend(
+            crossings_of_pair(graph, &boxes, upper.min(j), upper.max(j))
+                .into_iter()
+                .filter(|c| c.upper == upper),
+        );
+    }
+    out
+}
+
+/// The crossings of stretches `i < j` with the one that is on a bridge above (none if neither is).
+fn crossings_of_pair(
+    graph: &RoadGraph,
+    boxes: &[Bounds],
+    first: usize,
+    second: usize,
+) -> Vec<OverCrossing> {
+    let (Some(a), Some(b)) = (graph.stretches.get(first), graph.stretches.get(second)) else {
+        return Vec::new();
+    };
+    let upper_is_a = match (a.bridge, b.bridge) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) if a.layer != b.layer => a.layer > b.layer,
+        _ => return Vec::new(),
+    };
+    let (upper, lower) = if upper_is_a { (a, b) } else { (b, a) };
+    let (u, l) = if upper_is_a {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    if upper.tunnel || lower.tunnel {
+        return Vec::new();
+    }
+    let shared = [upper.start, upper.end]
+        .iter()
+        .any(|n| *n == lower.start || *n == lower.end);
+    if shared {
+        return under_deck_from_node(upper, lower, u, l)
+            .into_iter()
+            .collect();
+    }
+    let apart = boxes
+        .get(first)
+        .zip(boxes.get(second))
+        .is_some_and(|(p, q)| p.1.0 < q.0.0 || q.1.0 < p.0.0 || p.1.1 < q.0.1 || q.1.1 < p.0.1);
+    if apart {
+        return Vec::new();
+    }
+    line_crossings(&upper.points, &lower.points)
+        .into_iter()
+        .map(|(at, upper_s, lower_s, angle)| OverCrossing {
+            upper: u,
+            lower: l,
+            at,
+            upper_s,
+            lower_s,
+            angle,
+            from_node: false,
+        })
+        .collect()
+}
+
+/// The road `lower` that leaves an end node of the bridge `upper` back onto the deck, if it does: it shares the
+/// node, and its heading out of the node is within [`UNDER_DECK_MAX_DEG`] of the bridge's heading from the node
+/// into the deck. The crossing is at the node.
+fn under_deck_from_node(
+    upper: &Stretch,
+    lower: &Stretch,
+    u: usize,
+    l: usize,
+) -> Option<OverCrossing> {
+    let length = polyline_length(&upper.points);
+    if !length.is_finite() || length <= 0.0 {
+        return None;
+    }
+    for (node, at_start) in [(upper.start, true), (upper.end, false)] {
+        for lower_at_start in [true, false] {
+            let lower_node = if lower_at_start {
+                lower.start
+            } else {
+                lower.end
+            };
+            if lower_node != node || (lower.start == lower.end) {
+                continue;
+            }
+            let point = if at_start {
+                upper.points.first()
+            } else {
+                upper.points.last()
+            }
+            .copied()?;
+            let into = arm_heading(upper, at_start, point);
+            let out = arm_heading(lower, lower_at_start, point);
+            let angle = angle_between(into, out);
+            if angle.is_finite() && angle <= UNDER_DECK_MAX_DEG.to_radians() {
+                return Some(OverCrossing {
+                    upper: u,
+                    lower: l,
+                    at: point,
+                    upper_s: if at_start { 0.0 } else { length },
+                    lower_s: if lower_at_start {
+                        0.0
+                    } else {
+                        polyline_length(&lower.points)
+                    },
+                    angle: angle.max(0.0),
+                    from_node: true,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Where two polylines cross: the point, the distance along each, and the angle between the lines there in
+/// radians (0 along each other, a right angle square).
+fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64), f64, f64, f64)> {
     let mut found = Vec::new();
     let mut along_first = 0.0;
     for pair in first.windows(2) {
@@ -472,10 +588,14 @@ fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64
                 let on_first = (gap.0 * o_dir.1 - gap.1 * o_dir.0) / denom;
                 let on_second = (gap.0 * dir.1 - gap.1 * dir.0) / denom;
                 if (0.0..=1.0).contains(&on_first) && (0.0..=1.0).contains(&on_second) {
+                    let (l1, l2) = (dir.0.hypot(dir.1), o_dir.0.hypot(o_dir.1));
+                    // the sine of the angle between the lines is |cross| / (l1 l2); the cosine |dot| / (l1 l2)
+                    let angle = (denom.abs()).atan2((dir.0 * o_dir.0 + dir.1 * o_dir.1).abs());
                     found.push((
                         (from.0 + on_first * dir.0, from.1 + on_first * dir.1),
-                        along_first + on_first * dir.0.hypot(dir.1),
-                        along_second + on_second * o_dir.0.hypot(o_dir.1),
+                        along_first + on_first * l1,
+                        along_second + on_second * l2,
+                        if angle.is_finite() { angle } else { 0.0 },
                     ));
                 }
             }
@@ -484,6 +604,17 @@ fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64
         along_first += dir.0.hypot(dir.1);
     }
     found
+}
+
+/// A bridge over a road, as the height solve's clearance sees it.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeOverRoad<'a> {
+    /// The bridge's stretch.
+    pub upper: &'a Stretch,
+    /// The stretch of the road below.
+    pub lower: &'a Stretch,
+    /// Where they cross.
+    pub crossing: &'a OverCrossing,
 }
 
 /// A stretch end at a crossing.
@@ -1205,7 +1336,7 @@ impl Mark {
     }
 }
 
-fn bounds(points: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+fn bounds(points: &[(f64, f64)]) -> Bounds {
     let mut min = (f64::INFINITY, f64::INFINITY);
     let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for p in points {

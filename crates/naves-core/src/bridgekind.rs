@@ -18,9 +18,11 @@
 use std::f64::consts::{PI, TAU};
 use std::fmt;
 
-use crate::catalog::{BridgeModel, Family, PieceCatalog, Slab};
+use crate::bridgefit::{Below, BelowFit, Chain, Fit, Need, below_fits, below_interval, fit_over};
+use crate::catalog::{BridgeModel, Family, PartShape, PieceCatalog, Slab};
 use crate::roadnet::{
-    RoadGraph, Stretch, built_as_bridge, crossings_of, grow_into, polyline_length, slice_points,
+    BridgeOverRoad, RoadGraph, Stretch, built_as_bridge, crossings_of, crossings_under, grow_into,
+    polyline_length, slice_points,
 };
 use crate::roadplace::{BRIDGE_NARROWER_M, bridge_for, model_name};
 
@@ -125,6 +127,12 @@ pub enum Fallback {
         /// The model's path.
         model: String,
     },
+    /// The model would stand on a road below the bridge (or end on it) wherever it lies within the straight
+    /// room: a panel row instead.
+    ModelBlocksRoad {
+        /// The model's path.
+        model: String,
+    },
     /// The install has no panels and no bridge model that fits: plain road.
     NoParts,
 }
@@ -145,6 +153,11 @@ impl fmt::Display for Fallback {
             Fallback::ModelBetweenBridges { model } => write!(
                 f,
                 "{} is shorter than the bridge, which meets other bridges at both ends",
+                model_name(model)
+            ),
+            Fallback::ModelBlocksRoad { model } => write!(
+                f,
+                "{} would stand on the road below the bridge",
                 model_name(model)
             ),
             Fallback::NoParts => write!(
@@ -216,6 +229,11 @@ pub struct Choice {
     /// The radius of the tightest curve of the road's family, for the lead on the bridge's axis: the chord over
     /// twice the sine of half the turn of its tightest arc piece, [`LEAD_RADIUS_M`] without one.
     pub lead_radius: f64,
+    /// How far the part was slid along the bridge's line from where the table puts it so that the roads below
+    /// pass through its opening, in metres (positive towards the bridge's end); 0 if it was not.
+    pub slid: f64,
+    /// What the part got for each road below the bridge (see [`BridgeSite::below`]).
+    pub below: Vec<BelowFit>,
 }
 
 impl Choice {
@@ -226,6 +244,8 @@ impl Choice {
             grown: (0.0, 0.0),
             fallback,
             lead_radius: LEAD_RADIUS_M,
+            slid: 0.0,
+            below: Vec::new(),
         }
     }
 }
@@ -255,6 +275,9 @@ pub struct BridgeSite<'a> {
     /// The original ground at `(along, across)`: metres along its line from its start (negative before it,
     /// beyond its length after it, on the road it would grow into) and metres to the left of the line.
     pub ground: &'a dyn Fn(f64, f64) -> f64,
+    /// The roads that cross below it (see [`crate::roadnet::crossings_under`]): the part must lie so that each
+    /// passes through its opening (see [`crate::bridgefit`]).
+    pub below: Vec<Below>,
 }
 
 impl fmt::Debug for BridgeSite<'_> {
@@ -267,6 +290,7 @@ impl fmt::Debug for BridgeSite<'_> {
             .field("bends", &self.bends)
             .field("at_bridge_node", &self.at_bridge_node)
             .field("node_ends", &self.node_ends)
+            .field("below", &self.below)
             .finish_non_exhaustive()
     }
 }
@@ -516,6 +540,8 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
         grown: (0.0, 0.0),
         fallback,
         lead_radius: lead_radius(catalog, site.family),
+        slid: 0.0,
+        below: Vec::new(),
     }
 }
 
@@ -533,8 +559,24 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
 ///   model without room, or on a line that turns too much, becomes a panel row.
 /// - Otherwise a panel row of the bridge's own length (see [`panel_grid`]). Without panels: a fill
 ///   ([`Fallback::NoParts`]).
+///
+/// Where roads cross below the bridge ([`BridgeSite::below`]) the part must also let each pass through its
+/// opening (see [`crate::bridgefit`]), in this order: the part the table gives, slid along the bridge's line
+/// within its straight room (and its turn limit, and its posts); the panel row of the bridge's own length
+/// ([`Fallback::ModelBlocksRoad`]); else the placement that leaves the least of the roads' intervals under a
+/// solid part or outside the deck, which [`Choice::below`] reports. Standing geometry (the cross walls of
+/// `bridge_concrete3`) never passes a road. A panel row is never lengthened.
 #[must_use]
 pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
+    let choice = choose_part(catalog, site);
+    if site.below.is_empty() || matches!(choice.kind, BridgeKind::Fill) {
+        return choice;
+    }
+    over_roads(catalog, site, choice)
+}
+
+/// The table of [`choose`] without the roads below the bridge.
+fn choose_part(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
     let length = site.length;
     if length.is_nan() || length <= EPS_M || (length <= FILL_MAX_M && !site.at_bridge_node) {
         return Choice::fill(Vec::new());
@@ -598,9 +640,118 @@ pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
             grown,
             fallback: Vec::new(),
             lead_radius: lead_radius(catalog, site.family),
+            slid: 0.0,
+            below: Vec::new(),
         };
     }
     panel_row(catalog, site, Vec::new())
+}
+
+/// The range of metres a model chain `part` long may reach past the start of a bridge `length` long (`grown.0`),
+/// from the room beyond its ends and the nodes of bridges it keeps to; `None` where it has no place.
+fn growth_range(
+    part: f64,
+    length: f64,
+    room: (f64, f64),
+    node_ends: (bool, bool),
+) -> Option<(f64, f64)> {
+    let missing = part - length;
+    if !missing.is_finite() {
+        return None;
+    }
+    if missing >= 0.0 {
+        let lo = (missing - room.1).max(0.0);
+        let hi = room.0.min(missing);
+        return (lo <= hi + EPS_M).then_some((lo, hi.max(lo)));
+    }
+    match node_ends {
+        (true, true) => None,
+        (true, false) => Some((0.0, 0.0)),
+        (false, true) => Some((missing, missing)),
+        (false, false) => Some((missing, 0.0)),
+    }
+}
+
+/// What every road below `site` needs along a part of shape `shape`.
+fn needs_of(catalog: &PieceCatalog, site: &BridgeSite, shape: &PartShape) -> Vec<Need> {
+    site.below
+        .iter()
+        .map(|b| Need {
+            station: b.station,
+            reach: below_interval(piece_width(catalog, b.family), b.angle, shape),
+        })
+        .collect()
+}
+
+/// `choice` made to let the roads below `site` pass: see [`choose`].
+fn over_roads(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> Choice {
+    let room = (clean(site.room.0), clean(site.room.1));
+    match choice.kind.clone() {
+        BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        } => {
+            let Some(slab) = panel_slab(catalog) else {
+                return choice;
+            };
+            let shape = PartShape::panels(slab, count, abreast, scale);
+            let chain = Chain {
+                shape: &shape,
+                count: 1,
+            };
+            let needs = needs_of(catalog, site, &shape);
+            choice.below = below_fits(&chain, 0.0, &site.below, &needs);
+            choice
+        }
+        BridgeKind::Model { model, count } => {
+            let Some(bm) = catalog.bridges().iter().find(|b| b.model == model) else {
+                return choice;
+            };
+            let shape = bm.shape();
+            let chain = Chain {
+                shape: &shape,
+                count,
+            };
+            let needs = needs_of(catalog, site, &shape);
+            let wanted = -choice.grown.0;
+            let range = growth_range(choice.length, site.length, room, site.node_ends)
+                .map_or((wanted, wanted), |(lo, hi)| (-hi, -lo));
+            let missing_len = choice.length - site.length;
+            let valid = |start: f64| {
+                let (g0, g1) = (-start, missing_len + start);
+                let turn = clean(site.turn_deg)
+                    + turn_over(&site.bends.0, g0.max(0.0))
+                    + turn_over(&site.bends.1, g1.max(0.0));
+                turn <= GROW_TURN_MAX_DEG + 1e-9
+                    && (!bm.posts() || posts_reach(bm, count, site, (g0, g1)))
+            };
+            let fit = fit_over(&chain, range, wanted, &needs, &valid);
+            if let Fit::Blocked { missing, .. } = fit {
+                // the next step: a panel row of the bridge's own length, if it lets the roads pass better
+                let alt = panel_row(
+                    catalog,
+                    site,
+                    vec![Fallback::ModelBlocksRoad {
+                        model: model.clone(),
+                    }],
+                );
+                if matches!(alt.kind, BridgeKind::Panels { .. }) {
+                    let alt = over_roads(catalog, site, alt);
+                    let panels_missing: f64 = alt.below.iter().map(|b| b.missing).sum();
+                    if panels_missing + EPS_M < missing {
+                        return alt;
+                    }
+                }
+            }
+            let start = fit.start();
+            choice.grown = (-start, missing_len + start);
+            choice.slid = start - wanted;
+            choice.below = below_fits(&chain, start, &site.below, &needs);
+            choice
+        }
+        BridgeKind::Fill => choice,
+    }
 }
 
 /// What [`choose`] gives: only the kind.
@@ -977,6 +1128,11 @@ pub struct BridgeFit {
     pub room_end: (RoomEnd, RoomEnd),
     /// Why it is not the part the table gives first.
     pub fallback: Vec<Fallback>,
+    /// How far the part was slid along the bridge's line from where the table puts it, so that the roads
+    /// below pass through its opening, in metres (positive towards the bridge's end); 0 if it was not.
+    pub slid: f64,
+    /// What the part got for each road below the bridge, in the order of the roads' stretches.
+    pub below: Vec<BelowFit>,
 }
 
 impl BridgeFit {
@@ -995,6 +1151,14 @@ impl BridgeFit {
         if !self.fallback.is_empty() {
             let why: Vec<String> = self.fallback.iter().map(ToString::to_string).collect();
             line = format!("{line} ({})", why.join("; "));
+        }
+        if self.slid.abs() > EPS_M {
+            line = format!("{line}, slid {:.1} m for the road below", self.slid);
+        }
+        let missing: f64 = self.below.iter().map(|b| b.missing).sum();
+        if missing > EPS_M {
+            line =
+                format!("{line}, {missing:.1} m of the opening the road below needs are missing");
         }
         line
     }
@@ -1101,6 +1265,40 @@ pub fn deck_thickness(catalog: &PieceCatalog, s: &Stretch) -> Option<f64> {
                 .then_some(m.deck_thickness)
         }),
     }
+}
+
+/// The thickness of the deck of the bridge of `c` over the road below it, for the clearance the height solve
+/// keeps: what hangs under the deck over the road's interval ([`below_interval`], the footprint with the skew),
+/// not the deepest point of the part and not its crown. A panel grid is as thick as one panel at its scale. A
+/// bridge that has no part of its own (over a dip) and a part whose interval is not on it get
+/// [`deck_thickness`]. `None` where the part cannot be measured.
+#[must_use]
+pub fn crossing_thickness(catalog: &PieceCatalog, c: &BridgeOverRoad) -> Option<f64> {
+    let upper = c.upper;
+    let Some(BridgeKind::Model { count, .. }) = &upper.bridge_kind else {
+        return deck_thickness(catalog, upper);
+    };
+    let model = crate::roadplace::bridge_model(catalog, upper)?;
+    if model.thickness_source == crate::catalog::ThicknessSource::Unknown {
+        return None;
+    }
+    let shape = model.shape();
+    let chain = Chain {
+        shape: &shape,
+        count: *count,
+    };
+    let reach = below_interval(
+        piece_width(catalog, c.lower.family),
+        c.crossing.angle,
+        &shape,
+    );
+    // where the road lies on the part: from the part's first end, which is `bridge_offset` into the stretch
+    let at = c.crossing.upper_s - upper.bridge_offset;
+    Some(
+        chain
+            .thickness(at - reach.footprint, at + reach.footprint)
+            .unwrap_or(model.deck_thickness),
+    )
 }
 
 /// Whether stretch `s` can be joined with a bridge that follows it.
@@ -1268,6 +1466,23 @@ fn join(graph: &RoadGraph, chain: &[usize]) -> Option<Stretch> {
     Some(joined)
 }
 
+/// The roads that cross below bridge stretch `i` of `graph`, as the fit needs them.
+fn roads_below(graph: &RoadGraph, i: usize) -> Vec<Below> {
+    crossings_under(graph, i)
+        .iter()
+        .filter_map(|c| {
+            let lower = graph.stretches.get(c.lower)?;
+            Some(Below {
+                station: c.upper_s,
+                angle: c.angle,
+                family: lower.family,
+                at: c.at,
+                lower: lower.id.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Every OpenStreetMap bridge of `graph` built from the part `choose` gives it, a model grown along the
 /// straight road as far as it needs, and for every bridge what it became and why.
 ///
@@ -1323,6 +1538,7 @@ pub fn fit_bridges(
                 room_end.1 == RoomEnd::BridgeNode,
             ),
             ground: &beside,
+            below: roads_below(&g, i),
         };
         let at = point_at(&s.points, length / 2.0).unwrap_or_default();
         let (id, family) = (s.id.clone(), s.family);
@@ -1385,6 +1601,8 @@ pub fn fit_bridges(
             room,
             room_end,
             fallback: choice.fallback,
+            slid: choice.slid,
+            below: choice.below,
         });
     }
     (g, fits)

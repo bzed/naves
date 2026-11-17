@@ -64,6 +64,9 @@ pub enum Rule {
     RoadDuplicateDropped,
     /// A bridge over a road that does not clear it by [`crate::profile::BRIDGE_CLEARANCE_M`].
     BridgeClearance,
+    /// A solid part of a bridge, or the end of its deck, on the road below it: the road does not pass through the
+    /// opening. The message has the metres of the road's interval that are missing.
+    BridgeBlocksRoad,
     /// An OpenStreetMap bridge laid as plain road because the install has no part for it: no concrete panels and
     /// no bridge model that fits (a bridge of at most [`crate::bridgekind::FILL_MAX_M`] is filled on purpose and
     /// is none).
@@ -72,7 +75,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 18] = [
+    pub const ALL: [Rule; 19] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -90,6 +93,7 @@ impl Rule {
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
         Rule::BridgeClearance,
+        Rule::BridgeBlocksRoad,
         Rule::BridgeNotBuilt,
     ];
 
@@ -114,6 +118,7 @@ impl Rule {
             Rule::RoadOverWater => "road_over_water",
             Rule::RoadDuplicateDropped => "road_duplicate_dropped",
             Rule::BridgeClearance => "bridge_clearance",
+            Rule::BridgeBlocksRoad => "bridge_blocks_road",
             Rule::BridgeNotBuilt => "bridge_not_built",
         }
     }
@@ -397,6 +402,33 @@ fn not_built_violations(net: &PlacedNetwork) -> Vec<Violation> {
         .collect()
 }
 
+/// Less than this of a road's interval missing is no finding (rounding of the model's measured geometry), in metres.
+const BLOCKS_MIN_M: f64 = 0.05;
+
+/// A bridge whose part stands on a road below it, or ends on it: one violation for each road, in the order of the
+/// bridges and their roads, with the metres of the road's interval that are missing. A road that was not placed
+/// under the bridge is none (see [`crate::bridgefit::BelowFit::placed`]).
+fn blocks_violations(net: &PlacedNetwork) -> Vec<Violation> {
+    net.bridge_fits
+        .iter()
+        .flat_map(|f| f.below.iter().map(move |b| (f, b)))
+        .filter(|(_, b)| b.placed && b.missing > BLOCKS_MIN_M)
+        .map(|(f, b)| {
+            violation(
+                Rule::BridgeBlocksRoad,
+                b.at,
+                format!(
+                    "Bridge {} lies on the road {} below it: {:.1} m of the {:.1} m the road needs are under a solid part or past the end of the deck",
+                    f.stretch,
+                    b.lower,
+                    b.missing,
+                    b.interval.1 - b.interval.0
+                ),
+            )
+        })
+        .collect()
+}
+
 /// A road left standing over water: one violation for each dip that is reported, where it is.
 fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
     dips.iter()
@@ -515,6 +547,7 @@ pub fn check_roads(
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));
+    out.extend(blocks_violations(net));
     out.sort_by(|a, b| {
         a.rule
             .cmp(&b.rule)
