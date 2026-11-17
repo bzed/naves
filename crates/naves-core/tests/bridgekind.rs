@@ -967,3 +967,133 @@ fn a_neighbour_is_never_used_up() {
     assert!(near(fits[0].grown.0, 99.0, 1e-9) && near(fits[0].grown.1, 99.0, 1e-9));
     assert!(near(total(&out), total(&g), 1e-6));
 }
+
+#[test]
+fn odd_sites_are_a_fill_or_a_row_and_say_so() {
+    let c = synthetic_catalog();
+    assert_eq!(
+        bridge_kind(&c, &site(f64::INFINITY, Family::Asf1, ROOM)),
+        BridgeKind::Fill
+    );
+    // an own turn that is not a number is no straight bridge
+    let mut s = site(16.7, Family::Asf1, ROOM);
+    s.turn_deg = f64::NAN;
+    let choice = choose(&c, &s);
+    assert!(matches!(
+        choice.fallback.as_slice(),
+        [Fallback::ModelBends { deg, .. }] if deg.is_infinite()
+    ));
+    assert!(format!("{s:?}").contains("BridgeSite"));
+    for f in [
+        Fallback::ModelNoRoom {
+            model: "a\\b.p3d".to_string(),
+        },
+        Fallback::ModelBends {
+            model: "a\\b.p3d".to_string(),
+            deg: 7.0,
+        },
+        Fallback::NoParts,
+    ] {
+        assert_ne!(f.to_string(), "");
+    }
+}
+
+#[test]
+fn a_tunnel_or_the_same_road_at_both_ends_gives_no_room() {
+    let mut tunnel = road(3, &[3, 4], &[(116.7, 0.0), (216.7, 0.0)]);
+    if let FeatureKind::Road { tunnel: t, .. } = &mut tunnel.kind {
+        *t = true;
+    }
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(100.0, 0.0), (116.7, 0.0)],
+        ),
+        tunnel,
+    ]);
+    let (_, fits) = fit(&g);
+    assert_eq!(fits[0].room_end.1, RoomEnd::Tunnel);
+    // a road that leaves the bridge's end and comes back to its start: it grows into it once
+    let g = build_graph(&[
+        road(
+            1,
+            &[1, 5, 6, 2],
+            &[(0.0, 0.0), (0.0, 50.0), (16.7, 50.0), (16.7, 0.0)],
+        ),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 1],
+            &[(16.7, 0.0), (0.0, 0.0)],
+        ),
+    ]);
+    let (_, fits) = fit(&g);
+    assert_eq!(fits.len(), 1);
+    assert!(
+        fits[0].room_end.0 == RoomEnd::Junction || fits[0].room_end.1 == RoomEnd::Junction,
+        "{:?}",
+        fits[0]
+    );
+}
+
+#[test]
+fn bridges_are_joined_whichever_way_their_ways_run_and_a_ring_of_bridges_stays() {
+    // the bridge with the lower id runs away from the shared node, the other towards it
+    let g = build_graph(&[
+        road(1, &[30, 40], &[(20.0, 0.0), (120.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[20, 30],
+            &[(10.0, 0.0), (20.0, 0.0)],
+        ),
+        feature(
+            3,
+            Family::Asf1,
+            true,
+            2,
+            &[10, 20],
+            &[(0.0, 0.0), (10.0, 0.0)],
+        ),
+        road(4, &[5, 10], &[(-100.0, 0.0), (0.0, 0.0)]),
+    ]);
+    let (out, fits) = fit(&g);
+    assert_eq!(fits.len(), 1, "{fits:?}");
+    assert_eq!(fits[0].stretch, "2:20-30");
+    assert!(near(fits[0].length, 20.0, 1e-9));
+    let joined = out.stretches.iter().find(|s| s.id == "2:20-30").unwrap();
+    assert!(joined.start < joined.end);
+    assert!(near(total(&out), total(&g), 1e-6));
+    // three bridges in a ring: each is a bridge of its own
+    let ring = build_graph(&[
+        feature(
+            5,
+            Family::Asf1,
+            true,
+            1,
+            &[1, 2],
+            &[(0.0, 0.0), (10.0, 0.0)],
+        ),
+        feature(
+            6,
+            Family::Asf1,
+            true,
+            2,
+            &[2, 3],
+            &[(10.0, 0.0), (5.0, 8.0)],
+        ),
+        feature(7, Family::Asf1, true, 3, &[3, 1], &[(5.0, 8.0), (0.0, 0.0)]),
+    ]);
+    let (_, fits) = fit(&ring);
+    assert_eq!(fits.len(), 3, "{fits:?}");
+    assert!(fits.iter().all(|f| f.stretches.len() == 1));
+}
