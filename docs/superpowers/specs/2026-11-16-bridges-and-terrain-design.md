@@ -115,7 +115,7 @@ applies:
 
 - "Two thirds" is `MODEL_FILL = 2.0 / 3.0`, one constant. On the example: 5 fills, 61 panel rows, and 18 with a model
   (about 6 `bridge_wood2`, the rest metal, stone or panels by width).
-- A panel row never grows and needs no room: it covers the bridge exactly, also on a bend.
+- A panel row never grows and needs no room: it covers the bridge exactly, also on a bend. (Over a road below it is lengthened, see "Changes during implementation".)
 - Only a model grows. A model longer than `L` takes the missing length evenly from the road at both ends, but **only
   along a straight line and only on a bridge that is itself straight**: the bridge's own line and the grown parts
   together may turn by at most `GROW_TURN_MAX_DEG = 5`, and a grown part ends 1 m before a junction or another bridge.
@@ -271,4 +271,8 @@ the work in `conform`, the wording of findings and report lines, and the order o
   the finding `road_kink`, reported only at bridge ends (grid and model ports, and a grid that starts where the chain
   is: after a junction exit, or after another grid). Kinks are not in `PlacedNetwork::gaps`, so `road_gap` and the
   moving of junctions count positions only, as before.
-
+- **A grid over a road is lengthened** (Task 6, fix round 1). The maintainer: a bridge must always be wide enough to cover
+  the roads below it. Where the road's interval (`Reach::total` about its station) is not inside the grid, the grid grows
+  into the road beside the bridge by what each end lacks, at most the neighbour's length less `GROW_KEEP_M` (no straight
+  room, no turn limit: its steps run chord to chord along the grown line), and `panel_grid` is computed again for the longer
+  length (measured again up to 8 times). `Fallback::GridLengthened`. Only what is still missing is `bridge_blocks_road`.

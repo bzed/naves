@@ -51,6 +51,7 @@ fn site_on(
         node_ends: (false, false),
         ground,
         below: Vec::new(),
+        reach: room,
     }
 }
 

@@ -6,7 +6,7 @@
 //! [`choose`] is the table of the design: a bridge of at most [`FILL_MAX_M`] is plain road on the terrain, a
 //! bridge shorter than [`MODEL_FILL`] of every model its road may have is a row of concrete panels, a longer one
 //! the shortest model that covers it (a chain of the family's longest model when none does). A panel row covers
-//! its bridge exactly and never grows (its panels are scaled to the bridge and laid as a grid as wide as the
+//! its bridge exactly and grows only where a road below needs more (its panels are scaled to the bridge and laid as a grid as wide as the
 //! road, [`panel_grid`]). A model longer
 //! than the bridge takes the missing length from the road at both ends, but only along a straight line
 //! ([`straight_room`]) and only on a bridge that is itself straight; where it does not fit, the bridge is a
@@ -127,6 +127,12 @@ pub enum Fallback {
         /// The model's path.
         model: String,
     },
+    /// The panel grid over a road below was lengthened into the road beside the bridge, by this much at its
+    /// start and at its end, so that the road passes under it.
+    GridLengthened {
+        /// How much it reaches past the bridge's start and past its end, in metres.
+        by: (f64, f64),
+    },
     /// The model would stand on a road below the bridge (or end on it) wherever it lies within the straight
     /// room: a panel row instead.
     ModelBlocksRoad {
@@ -154,6 +160,11 @@ impl fmt::Display for Fallback {
                 f,
                 "{} is shorter than the bridge, which meets other bridges at both ends",
                 model_name(model)
+            ),
+            Fallback::GridLengthened { by } => write!(
+                f,
+                "the panel grid was lengthened by {:.1} m at the start and {:.1} m at the end for the road below",
+                by.0, by.1
             ),
             Fallback::ModelBlocksRoad { model } => write!(
                 f,
@@ -278,6 +289,10 @@ pub struct BridgeSite<'a> {
     /// The roads that cross below it (see [`crate::roadnet::crossings_under`]): the part must lie so that each
     /// passes through its opening (see [`crate::bridgefit`]).
     pub below: Vec<Below>,
+    /// How far a panel grid over a road below may be lengthened beyond its start and beyond its end, along the
+    /// stretch that continues the bridge there (whatever its turns): the neighbour's length less
+    /// [`GROW_KEEP_M`]; 0 at a junction, another bridge, a tunnel or a dead end.
+    pub reach: (f64, f64),
 }
 
 impl fmt::Debug for BridgeSite<'_> {
@@ -291,6 +306,7 @@ impl fmt::Debug for BridgeSite<'_> {
             .field("at_bridge_node", &self.at_bridge_node)
             .field("node_ends", &self.node_ends)
             .field("below", &self.below)
+            .field("reach", &self.reach)
             .finish_non_exhaustive()
     }
 }
@@ -683,27 +699,73 @@ fn needs_of(catalog: &PieceCatalog, site: &BridgeSite, shape: &PartShape) -> Vec
         .collect()
 }
 
-/// `choice` made to let the roads below `site` pass: see [`choose`].
-fn over_roads(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> Choice {
-    let room = (clean(site.room.0), clean(site.room.1));
-    match choice.kind.clone() {
+/// The most times the grid is measured again with the length its last measure asked for (the scale and the
+/// width change with the length, so does what the road needs).
+const LENGTHEN_ROUNDS: usize = 8;
+
+/// The panel grid `choice` over the roads below `site`, lengthened into the road beside the bridge where its
+/// own length does not hold what the roads need: at each end by what that end lacks, as far as `site.reach`
+/// allows (a grid needs no straight room and may follow a bend: its steps run chord to chord along the line),
+/// the grid then computed again for the longer length ([`panel_grid`], same width rule). What is still
+/// missing is in [`Choice::below`]. A lengthened grid says so in [`Choice::fallback`].
+fn lengthened_grid(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> Choice {
+    let Some(slab) = panel_slab(catalog) else {
+        return choice;
+    };
+    let width = piece_width(catalog, site.family);
+    let reach = (clean(site.reach.0), clean(site.reach.1));
+    let (mut g0, mut g1) = (0.0_f64, 0.0_f64);
+    let mut grid = match choice.kind {
         BridgeKind::Panels {
             count,
             abreast,
             scale,
-        } => {
-            let Some(slab) = panel_slab(catalog) else {
-                return choice;
-            };
-            let shape = PartShape::panels(slab, count, abreast, scale);
-            let chain = Chain {
-                shape: &shape,
-                count: 1,
-            };
-            let needs = needs_of(catalog, site, &shape);
-            choice.below = below_fits(&chain, 0.0, &site.below, &needs);
-            choice
+        } => (count, abreast, scale),
+        _ => return choice,
+    };
+    for _ in 0..LENGTHEN_ROUNDS {
+        let shape = PartShape::panels(slab, grid.0, grid.1, grid.2);
+        let needs = needs_of(catalog, site, &shape);
+        let (mut want0, mut want1) = (g0, g1);
+        for need in &needs {
+            want0 = want0.max(need.reach.total() - need.station);
+            want1 = want1.max(need.station + need.reach.total() - site.length);
         }
+        let (n0, n1) = (want0.min(reach.0), want1.min(reach.1));
+        if (n0 - g0).abs() < EPS_M && (n1 - g1).abs() < EPS_M {
+            break;
+        }
+        (g0, g1) = (n0, n1);
+        grid = panel_grid(site.length + g0 + g1, width, slab);
+    }
+    let shape = PartShape::panels(slab, grid.0, grid.1, grid.2);
+    let chain = Chain {
+        shape: &shape,
+        count: 1,
+    };
+    // the crossings lie `g0` further along the grid than along the bridge
+    let needs = needs_of(catalog, site, &shape);
+    choice.kind = BridgeKind::Panels {
+        count: grid.0,
+        abreast: grid.1,
+        scale: grid.2,
+    };
+    choice.length = site.length + g0 + g1;
+    choice.grown = (g0, g1);
+    if g0 > EPS_M || g1 > EPS_M {
+        choice
+            .fallback
+            .push(Fallback::GridLengthened { by: (g0, g1) });
+    }
+    choice.below = below_fits(&chain, -g0, &site.below, &needs);
+    choice
+}
+
+/// `choice` made to let the roads below `site` pass: see [`choose`].
+fn over_roads(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> Choice {
+    let room = (clean(site.room.0), clean(site.room.1));
+    match choice.kind.clone() {
+        BridgeKind::Panels { .. } => lengthened_grid(catalog, site, choice),
         BridgeKind::Model { model, count } => {
             let Some(bm) = catalog.bridges().iter().find(|b| b.model == model) else {
                 return choice;
@@ -737,7 +799,7 @@ fn over_roads(catalog: &PieceCatalog, site: &BridgeSite, mut choice: Choice) -> 
                     }],
                 );
                 if matches!(alt.kind, BridgeKind::Panels { .. }) {
-                    let alt = over_roads(catalog, site, alt);
+                    let alt = lengthened_grid(catalog, site, alt);
                     let panels_missing: f64 = alt.below.iter().map(|b| b.missing).sum();
                     if panels_missing + EPS_M < missing {
                         return alt;
@@ -1492,7 +1554,7 @@ fn roads_below(graph: &RoadGraph, i: usize) -> Vec<Below> {
 /// ground from `ground`, a height at a map position) and `choose` decides. A model's growth past each end (where
 /// it is positive, never closer than [`GROW_KEEP_M`] to the next junction) is moved from the road beside it to
 /// the bridge, so a later bridge sees the road that is left. The nodes stay where they are in the graph, only
-/// their points move. A panel row covers the bridge and never grows. Every stretch that was a bridge gets its
+/// their points move. A panel row covers the bridge and does not grow, except over a road below (see [`choose`]). Every stretch that was a bridge gets its
 /// [`Stretch::bridge_kind`].
 ///
 /// A bridge built from panels or from a model stays a bridge in the result (`bridge` is true); a filled one is
@@ -1539,27 +1601,24 @@ pub fn fit_bridges(
             ),
             ground: &beside,
             below: roads_below(&g, i),
+            reach,
         };
         let at = point_at(&s.points, length / 2.0).unwrap_or_default();
         let (id, family) = (s.id.clone(), s.family);
         let mut choice = choose(&site);
-        let grows = matches!(choice.kind, BridgeKind::Model { .. });
-        if !grows {
-            choice.grown = (0.0, 0.0);
-        }
+        // a model grows, and so does a panel grid over a road below (see `choose`); a fill and a grid elsewhere
+        // have no growth
         // whatever `choose` says, a part never reaches closer than GROW_KEEP_M to the next junction
         choice.grown = (choice.grown.0.min(reach.0), choice.grown.1.min(reach.1));
         let turn = |end: &Result<End, RoomEnd>, d: f64| {
             end.as_ref().map_or(0.0, |e| turn_over(&e.turns, d))
         };
         let turn_deg = (turn(&before, choice.grown.0), turn(&after, choice.grown.1));
-        if grows {
-            if let Ok(end) = &before {
-                grow_into(&mut g, i, true, end.stretch, choice.grown.0);
-            }
-            if let Ok(end) = &after {
-                grow_into(&mut g, i, false, end.stretch, choice.grown.1);
-            }
+        if let Ok(end) = &before {
+            grow_into(&mut g, i, true, end.stretch, choice.grown.0);
+        }
+        if let Ok(end) = &after {
+            grow_into(&mut g, i, false, end.stretch, choice.grown.1);
         }
         if let Some(s) = g.stretches.get_mut(i) {
             // a panel grid and a model are bridges, a fill is plain road

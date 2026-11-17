@@ -278,7 +278,10 @@ the cutting's slope of 2). A road nearly along the bridge asks for a long interv
 0.01). The road needs 4.5 m under the deck at its centre line and 3 m over its footprint; standing geometry (end
 blocks, arch flanks, posts, the cross walls of `bridge_concrete3`) never passes a road. The first of these that works is
 used: the part the table gives, slid along the bridge's line within its straight room (and the turn limit and the posts
-of the model); the panel row of the bridge's own length; else the placement that leaves the least of the road's interval
+of the model); the panel grid, lengthened into the road beside the bridge by what each end lacks (as far as that road
+goes on, keeping a metre before a junction, another bridge, a tunnel or a dead end; a grid needs no straight room and
+follows the bend of the road it grows into, its steps running chord to chord along the line, and the grid is then
+computed again for the longer length); else what is still missing, the placement that leaves the least of the road's interval
 under a solid part or past the end of the deck, with the finding `bridge_blocks_road` and the missing metres. A bridge
 that was slid shows it in `build/report.json` (`slid_m`, `part_start_m`, and `below` with the interval each road needs
 and what is missing). The clearance of the height solve uses the part's depth over the road's own interval (for the
@@ -315,7 +318,7 @@ are one bridge):
   exactly and the grid comes as near the road's width as it can (not more than 1 m narrower where any grid avoids
   it). An 8.85 m bridge on a 12 m road gets 3 panels along and 2 abreast, 11.8 m wide.
 
-A panel grid never grows. A model longer than the bridge takes the missing length evenly from the road at both ends,
+A panel grid that is not over a road never grows (see the bridge over a road below for the one case where it does). A model longer than the bridge takes the missing length evenly from the road at both ends,
 but **only along a straight line and only on a straight bridge**: the bridge's own line and the road the model grows
 into may turn by at most 5 degrees together, and the model keeps at least 1 m before a junction, another bridge or a
 dead end; where one side has no room the other takes the rest. A model without room, or on a bridge that bends,

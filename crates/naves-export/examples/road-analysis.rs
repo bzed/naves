@@ -1435,7 +1435,7 @@ fn main() {
                     |c| format!("{:.2} m", c.reached),
                 );
             println!(
-                "BELOW {} over {} at ({:.0}, {:.0}) station {:.1} m: {} slid {:.2} m part_start {:.2} m needs {:.1}..{:.1} missing {:.2} m placed {} clearance {reached}",
+                "BELOW {} over {} at ({:.0}, {:.0}) station {:.1} m: {} slid {:.2} m grown {:.2}/{:.2} m part_start {:.2} m needs {:.1}..{:.1} missing {:.2} m placed {} clearance {reached}",
                 fit.stretch,
                 b.lower,
                 b.at.0,
@@ -1443,6 +1443,8 @@ fn main() {
                 b.station,
                 fit.kind,
                 fit.slid,
+                fit.grown.0,
+                fit.grown.1,
                 fit.part_start,
                 b.interval.0,
                 b.interval.1,

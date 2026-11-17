@@ -6,6 +6,8 @@
 
 #![expect(
     clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::cast_precision_loss,
     reason = "test helper code; failing loudly is the point"
 )]
 
@@ -92,6 +94,55 @@ fn over_road(family: Family, span: f64, below: Family, station: f64, angle: f64)
         ),
         feature(4, below, false, 0, &[5, 6], &[a, b]),
     ]
+}
+
+/// The same, with `near` metres of road before and after the bridge, each ending at a junction (a crossing road
+/// 50 m to either side), so that the road beside the bridge is only that long.
+fn over_road_near(
+    family: Family,
+    span: f64,
+    below: Family,
+    station: f64,
+    angle: f64,
+    near: (f64, f64),
+) -> Vec<Feature> {
+    let mut features = over_road(family, span, below, station, angle);
+    let (start, end) = (400.0 - near.0, 400.0 + span + near.1);
+    features[0] = feature(
+        1,
+        family,
+        false,
+        0,
+        &[1, 2],
+        &[(start, 500.0), (400.0, 500.0)],
+    );
+    features[2] = feature(
+        3,
+        family,
+        false,
+        0,
+        &[3, 4],
+        &[(400.0 + span, 500.0), (end, 500.0)],
+    );
+    for (way, node, x) in [(10, 1, start), (11, 4, end)] {
+        features.push(feature(
+            way,
+            family,
+            false,
+            0,
+            &[node, way],
+            &[(x, 500.0), (x, 550.0)],
+        ));
+        features.push(feature(
+            way + 10,
+            family,
+            false,
+            0,
+            &[node, way + 10],
+            &[(x, 500.0), (x, 450.0)],
+        ));
+    }
+    features
 }
 
 /// The fit of the bridge among `features` with the synthetic catalog (or `catalog`).
@@ -214,24 +265,26 @@ fn a_bridge_without_a_road_below_is_laid_as_before() {
 }
 
 #[test]
-fn a_wide_road_at_an_angle_that_the_truss_cannot_span_blocks_and_says_how_much() {
+fn a_wide_road_at_an_angle_that_the_truss_cannot_span_blocks_where_the_grid_cannot_grow_either() {
     // a 25 m truss on a 25 m bridge has no room to slide. A 10 m road crossing at 45 degrees needs, on each side of
     // the crossing: the skew over the width of the end blocks (8 m), the footprint (10 / sin 45 degrees / 2 =
-    // 7.07 m) and a metre of margin: 16.07 m, 32 m in all, and the opening is 18.2 m. The panel row of the
-    // bridge's own length, 25 m, with its walls, is no better, so the bridge keeps what leaves less
+    // 7.07 m) and a metre of margin: 16.07 m, 32 m in all, and the opening is 18.2 m. The panel grid is
+    // lengthened as far as the road beside the bridge allows (3 m of road at each end, 2 m of it free), and
+    // what is still missing is the finding
     let catalog = synthetic_catalog();
-    let features = over_road(
+    let features = over_road_near(
         Family::Asf1,
         25.0,
         Family::City,
         12.5,
         std::f64::consts::FRAC_PI_4,
+        (3.0, 3.0),
     );
     let (_, fits) = fits(&features, &catalog);
     let fit = &fits[0];
     let below = &fit.below[0];
     assert!(below.missing > 1.0, "{fit:?}");
-    // both ends of the interval are known: the missing metres are what is outside the part
+    assert!(near(fit.grown.0, GROW_KEEP_FREE, 1e-6) && near(fit.grown.1, GROW_KEEP_FREE, 1e-6));
     let BridgeKind::Panels {
         count,
         abreast,
@@ -248,10 +301,14 @@ fn a_wide_road_at_an_angle_that_the_truss_cannot_span_blocks_and_says_how_much()
     let shape = PartShape::panels(slab, count, abreast, scale);
     let reach = below_interval(10.0, std::f64::consts::FRAC_PI_4, &shape);
     let total = reach.total();
-    assert!(near(below.interval.1 - below.interval.0, 2.0 * total, 1e-9));
-    // the interval is centred on the crossing; the part is the bridge's own 25 m
+    assert!(near(shape.length, 25.0 + 2.0 * GROW_KEEP_FREE, 1e-6));
     assert!(
-        near(below.missing, 2.0 * total - 25.0, 0.01),
+        near(below.interval.1 - below.interval.0, 2.0 * total, 1e-9),
+        "{below:?}"
+    );
+    // only what the grown grid still lacks is missing
+    assert!(
+        near(below.missing, 2.0 * total - shape.length, 0.01),
         "{below:?} {total}"
     );
     assert!(
@@ -260,7 +317,16 @@ fn a_wide_road_at_an_angle_that_the_truss_cannot_span_blocks_and_says_how_much()
             .any(|f| matches!(f, Fallback::ModelBlocksRoad { .. })),
         "{fit:?}"
     );
+    assert!(
+        fit.fallback
+            .iter()
+            .any(|f| matches!(f, Fallback::GridLengthened { .. })),
+        "{fit:?}"
+    );
 }
+
+/// What a bridge may grow into a road 3 m long between it and a junction: the road less `GROW_KEEP_M`.
+const GROW_KEEP_FREE: f64 = 2.0;
 
 #[test]
 fn a_road_that_a_truss_cannot_span_gets_a_panel_row_where_the_row_can() {
@@ -286,7 +352,8 @@ fn a_road_that_a_truss_cannot_span_gets_a_panel_row_where_the_row_can() {
             .any(|f| matches!(f, Fallback::ModelBlocksRoad { .. })),
         "{fit:?}"
     );
-    // and a row is never lengthened: the bridge is as long as OpenStreetMap has it
+    // the interval lies in the bridge's own grid, so the grid is not lengthened: the bridge is as long as
+    // OpenStreetMap has it
     let bridge = graph.stretches.iter().find(|s| s.bridge).unwrap();
     let length: f64 = bridge
         .points
@@ -581,4 +648,144 @@ fn a_chain_knows_its_length_and_what_hangs_only_where_it_lies() {
         missing: 2.0,
     };
     assert!(near(fit.start(), 1.0, 0.0) && near(fit.missing(), 2.0, 0.0));
+}
+
+/// The length of the bridge stretch of `graph` along its line.
+fn bridge_length(graph: &RoadGraph) -> f64 {
+    let bridge = graph.stretches.iter().find(|s| s.bridge).unwrap();
+    bridge
+        .points
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum()
+}
+
+#[test]
+fn a_short_bridge_over_a_wide_road_gets_a_grid_that_covers_the_road() {
+    // 4 m of bridge over a 10 m road with long neighbours, square and at 45 degrees: the grid grows at each end by
+    // what that end lacks, covers exactly its new length, and nothing is missing
+    let catalog = synthetic_catalog();
+    for angle in [std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_4] {
+        let features = over_road(Family::Asf1, 4.0, Family::City, 2.0, angle);
+        let (graph, fits) = fits(&features, &catalog);
+        let fit = &fits[0];
+        let BridgeKind::Panels { count, scale, .. } = fit.kind else {
+            panic!("{fit:?}");
+        };
+        let below = &fit.below[0];
+        assert!(below.missing.abs() < 1e-6, "{angle}: {fit:?}");
+        assert!(fit.grown.0 > 1.0 && fit.grown.1 > 1.0, "{angle}: {fit:?}");
+        // the road is in the middle: both ends lack the same
+        assert!(near(fit.grown.0, fit.grown.1, 1e-6), "{:?}", fit.grown);
+        let length = bridge_length(&graph);
+        assert!(
+            near(length, 4.0 + fit.grown.0 + fit.grown.1, 1e-6),
+            "{length}"
+        );
+        assert!(near(fit.part_length, length, 1e-6));
+        // the panels cover the grown bridge exactly
+        let slab = catalog
+            .panels()
+            .iter()
+            .min_by(|a, b| a.model.cmp(&b.model))
+            .unwrap();
+        assert!(near(slab.along * scale * count as f64, length, 1e-6));
+        assert!(near(fit.part_start, -fit.grown.0, 1e-9));
+        assert!(
+            fit.fallback
+                .iter()
+                .any(|f| matches!(f, Fallback::GridLengthened { .. })),
+            "{fit:?}"
+        );
+        // the interval lies in the grown grid
+        assert!(below.interval.0 + fit.grown.0 > -1e-6);
+        assert!(below.interval.1 + fit.grown.0 < length + 1e-6);
+    }
+}
+
+#[test]
+fn a_grid_stops_a_metre_before_a_junction_and_only_what_is_left_is_missing() {
+    // the road after the bridge is 3 m long and ends at a junction: the grid may take 2 m of it, the other
+    // end has room
+    let catalog = synthetic_catalog();
+    let features = over_road_near(
+        Family::Asf1,
+        4.0,
+        Family::City,
+        2.0,
+        std::f64::consts::FRAC_PI_2,
+        (300.0, 3.0),
+    );
+    let (_, fits) = fits(&features, &catalog);
+    let fit = &fits[0];
+    assert!(near(fit.grown.1, GROW_KEEP_FREE, 1e-6), "{:?}", fit.grown);
+    assert!(fit.grown.0 > fit.grown.1 + 1.0, "{:?}", fit.grown);
+    // the end that has room takes what the other lacks as well (the road is in the middle of the interval:
+    // the grid must reach the road's far edge on the short side, so the missing is on that side)
+    assert!(fit.below[0].missing > 0.1, "{fit:?}");
+    assert!(fit.below[0].missing < 8.0, "{fit:?}");
+}
+
+#[test]
+fn a_grid_follows_the_bend_of_the_road_it_grows_into() {
+    // 4 m of bridge east along y = 500; the road after it runs east for 2 m and turns 30 degrees to the north. A
+    // 10 m road crosses at 2 m. The grid grows 8 m into that road, round the bend: its steps run chord to chord
+    // along the line, so its end is on the line and its last step has turned
+    use naves_core::roadplace::{PlacedKind, place_network};
+    let catalog = synthetic_catalog();
+    let mut features = over_road(
+        Family::Asf1,
+        4.0,
+        Family::City,
+        2.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let turn = 30.0_f64.to_radians();
+    features[2] = feature(
+        3,
+        Family::Asf1,
+        false,
+        0,
+        &[3, 30, 4],
+        &[
+            (404.0, 500.0),
+            (406.0, 500.0),
+            (406.0 + 300.0 * turn.cos(), 500.0 + 300.0 * turn.sin()),
+        ],
+    );
+    let (graph, fits) = fits(&features, &catalog);
+    let fit = &fits[0];
+    assert!(fit.grown.1 > 3.0, "{fit:?}");
+    assert!(fit.below[0].missing.abs() < 1e-6, "{fit:?}");
+    let bridge = graph.stretches.iter().find(|s| s.bridge).unwrap();
+    assert!(bridge.points.len() >= 3, "{:?}", bridge.points);
+    let net = place_network(&graph, &catalog).unwrap();
+    let deck: Vec<_> = net
+        .roads
+        .iter()
+        .filter(|r| r.kind == PlacedKind::Bridge)
+        .collect();
+    let (first, last) = (deck[0], deck[deck.len() - 1]);
+    let (a, b) = (bridge.points[0], bridge.points[bridge.points.len() - 1]);
+    assert!(near(first.start.x, a.0, 1e-6) && near(first.start.y, a.1, 1e-6));
+    assert!(near(last.end.x, b.0, 1e-6) && near(last.end.y, b.1, 1e-6));
+    let turned = (last.end.heading - first.start.heading).abs().to_degrees();
+    assert!(turned > 5.0, "{turned}");
+}
+
+#[test]
+fn a_grid_with_no_road_below_is_not_lengthened() {
+    let catalog = synthetic_catalog();
+    let mut features = over_road(
+        Family::Asf1,
+        4.0,
+        Family::City,
+        2.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    features.pop();
+    let (graph, fits) = fits(&features, &catalog);
+    assert_eq!(fits[0].grown, (0.0, 0.0));
+    assert!(near(bridge_length(&graph), 4.0, 1e-9));
+    assert_eq!(fits[0].below.len(), 0);
 }
