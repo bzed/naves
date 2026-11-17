@@ -17,10 +17,12 @@
 //! `staging`, the mod folder and `missions` are removed before every build, so nothing of an earlier
 //! build (a different grid size, an old PBO) ends up in the new mod. `<project>/secrets/` is never removed.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use naves_core::bridgekind::{BridgeFit, BridgeKind};
 use naves_core::conform::ConformError;
 use naves_core::dem::DemError;
 use naves_core::heightmap::{Heightmap, HeightmapError};
@@ -35,7 +37,7 @@ use naves_formats::wrp8::{EditableWorld, WorldObject};
 use rayon::prelude::*;
 
 use crate::bridge::{Finished, copy_tree, run_supervised};
-use crate::catalog_read::{CatalogReadError, unpack_roads};
+use crate::catalog_read::{CatalogReadError, unpack_roads, unpack_used};
 use crate::config::{prefix, world_config_with};
 use crate::generate::{Generated, generate};
 use crate::layers::{LayerSet, build_layers};
@@ -56,6 +58,8 @@ pub struct BuildOutput {
     pub mission_dir: PathBuf,
     /// Things worth knowing that did not stop the build.
     pub warnings: Vec<String>,
+    /// What every OpenStreetMap bridge was built from, one line each, in the order of their stretches.
+    pub bridges: Vec<String>,
 }
 
 /// Errors from the build.
@@ -639,7 +643,27 @@ fn violation_warnings(generated: &Generated) -> Vec<String> {
     lines
 }
 
-/// `build/report.json`: the numbers and every violation.
+/// What a bridge is built from, for `build/report.json`.
+fn bridge_kind_json(kind: &BridgeKind) -> serde_json::Value {
+    match kind {
+        BridgeKind::Fill => serde_json::json!({ "type": "fill" }),
+        BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        } => serde_json::json!({
+            "type": "panels",
+            "count": count,
+            "abreast": abreast,
+            "scale": scale,
+        }),
+        BridgeKind::Model { model, count } => {
+            serde_json::json!({ "type": "model", "model": model, "count": count })
+        }
+    }
+}
+
+/// `build/report.json`: the numbers, what every OpenStreetMap bridge was built from, and every violation.
 fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError> {
     let violations: Vec<serde_json::Value> = generated
         .violations
@@ -653,7 +677,30 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
             })
         })
         .collect();
-    let report = serde_json::json!({ "roads": generated.stats, "violations": violations });
+    let bridges: Vec<serde_json::Value> = generated
+        .bridges
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "stretch": b.stretch,
+                "stretches": b.stretches,
+                "x": b.at.0,
+                "y": b.at.1,
+                "family": format!("{:?}", b.family),
+                "length_m": b.length,
+                "built_from": b.kind.to_string(),
+                "kind": bridge_kind_json(&b.kind),
+                "part_length_m": b.part_length,
+                "grown_m": [b.grown.0, b.grown.1],
+                "fallback": b.fallback.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let report = serde_json::json!({
+        "roads": generated.stats,
+        "bridges": bridges,
+        "violations": violations,
+    });
     let text = serde_json::to_string_pretty(&report).map_err(|e| BuildError::Io {
         path: layout.project_dir.join("build/report.json"),
         source: std::io::Error::other(e),
@@ -714,6 +761,7 @@ fn binarize(
     layout: &Layout,
     tools: &Tools,
     has_roads: bool,
+    models: &BTreeSet<String>,
     binarized: &Path,
 ) -> Result<PathBuf, BuildError> {
     // binarize opens the road models on its P: drive; they are the game's, so they are removed again
@@ -723,7 +771,15 @@ fn binarize(
             tools,
             &tools.dayz_server.join("addons/structures_roads.pbo"),
             &layout.staging.join("P"),
-        );
+        )
+        // the archives besides the road one that hold models the world uses (the Sakhal bridges)
+        .and_then(|()| {
+            unpack_used(
+                tools,
+                models.iter().map(String::as_str),
+                &layout.staging.join("P"),
+            )
+        });
         if let Err(e) = unpacked {
             // a failed unpack may have written part of the game's files; the unpack error is the one to
             // report, and the next build removes the whole staging folder
@@ -824,11 +880,12 @@ pub fn build(
     progress("Writing the world and converting the images");
     let objects = world_objects(&generated);
     let has_roads = !objects.is_empty();
+    let models: BTreeSet<String> = objects.iter().map(|o| o.model.clone()).collect();
     stage_world(&layout, tools, &project, heightmap, &layers, objects)?;
 
     progress("Binarizing the world (this takes a while)");
     let binarized = layout.staging.join("binarize");
-    let oprw = binarize(&layout, tools, has_roads, &binarized)?;
+    let oprw = binarize(&layout, tools, has_roads, &models, &binarized)?;
 
     progress("Assembling the server mission");
     let half = narrow(project.map_size_m() / 2.0);
@@ -858,5 +915,6 @@ pub fn build(
         mod_dir: layout.mod_dir,
         mission_dir,
         warnings,
+        bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
     })
 }

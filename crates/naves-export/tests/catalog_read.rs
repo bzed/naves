@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use naves_core::catalog::testing::synthetic_catalog;
-use naves_export::catalog_read::{CatalogReadError, road_catalog, unpack_roads};
+use naves_export::catalog_read::{CatalogReadError, road_catalog, unpack_roads, unpack_used};
 use naves_export::testing::FakeEnv;
 
 struct Fixture {
@@ -405,6 +405,46 @@ fn unpack_roads_puts_the_models_where_the_world_refers_to_them() {
     );
     let e = unpack_roads(&f.env.tools(), &f.root.join("nope.pbo"), &dest).unwrap_err();
     assert!(matches!(e, CatalogReadError::MissingPbo(_)), "{e}");
+}
+
+#[test]
+fn unpack_used_provides_the_archives_of_the_models_a_world_uses() {
+    let f = fixture();
+    let dest = f.root.join("p");
+    let wood2 = "dz\\structures_sakhal\\roads\\bridges\\bridge_wood2.p3d";
+    let road = "dz\\structures\\roads\\parts\\asf3_25.p3d";
+    // only road models: nothing more is unpacked
+    unpack_used(&f.env.tools(), [road], &dest).unwrap();
+    assert!(!dest.join("dz/structures_sakhal").exists());
+    assert!(!dest.join("dz/structures/industrial").exists());
+    // a Sakhal bridge: its archive is below the P drive
+    unpack_used(&f.env.tools(), [road, wood2], &dest).unwrap();
+    assert!(dest.join("dz/structures_sakhal/roads/bridges").is_dir());
+    assert!(!dest.join("dz/structures/industrial").exists());
+    // an industrial model
+    let pipe = "dz\\structures\\industrial\\misc\\misc_concretepipe.p3d";
+    unpack_used(&f.env.tools(), [pipe], &dest).unwrap();
+    assert!(
+        dest.join("dz/structures/industrial")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_missing_archive_names_the_model_that_needs_it() {
+    let f = fixture();
+    std::fs::remove_file(f.env.server.join("sakhal/addons/structures_sakhal.pbo")).unwrap();
+    let wood2 = "dz\\structures_sakhal\\roads\\bridges\\bridge_wood2.p3d";
+    let e = unpack_used(&f.env.tools(), [wood2], &f.root.join("p")).unwrap_err();
+    let CatalogReadError::MissingArchive { model, pbo } = &e else {
+        panic!("{e}");
+    };
+    assert_eq!(model, wood2);
+    assert!(pbo.ends_with("structures_sakhal.pbo"), "{pbo:?}");
+    assert!(e.to_string().contains("bridge_wood2"), "{e}");
 }
 
 /// Writes fuzz seeds of bridge models with faces from the synthetic trees:

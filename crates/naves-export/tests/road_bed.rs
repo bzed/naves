@@ -50,6 +50,7 @@ fn piece(stretch: &str, kind: PlacedKind, a: (f64, f64), b: (f64, f64)) -> Place
         end: pose(b),
         width: 7.0,
         scale: 1.0,
+        abreast: 1,
     }
 }
 

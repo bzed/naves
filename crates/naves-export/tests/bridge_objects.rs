@@ -17,7 +17,7 @@ use std::path::Path;
 
 use naves_core::bridgekind::BridgeKind;
 use naves_core::catalog::testing::synthetic_catalog;
-use naves_core::objects::piece_transform;
+use naves_core::objects::{PANEL_ORIGIN_BELOW_DECK_M, piece_transform};
 use naves_core::project::Project;
 use naves_export::generate::generate;
 use naves_export::testing::FakeEnv;
@@ -121,11 +121,10 @@ fn pbf(nodes: &[(i64, f64, f64)], ways: &[(i64, Vec<i64>, Vec<(&str, &str)>)]) -
     file
 }
 
-#[test]
-fn an_osm_bridge_reaches_the_object_transform_unscaled() {
-    let dir = tempfile::tempdir().unwrap();
-    let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
-    let proj = dir.path().join("proj");
+/// A gravel track east to west with a bridge of 30 m (15 m on the map at half scale): the plain wooden deck.
+fn track_with_a_wooden_bridge(dir: &Path) -> (std::path::PathBuf, Project, FakeEnv) {
+    let env = FakeEnv::new(&dir.join("fake")).unwrap();
+    let proj = dir.join("proj");
     std::fs::create_dir_all(proj.join("dem")).unwrap();
     std::fs::create_dir_all(proj.join("osm")).unwrap();
     let fixture =
@@ -158,7 +157,13 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
     p.sources.dem = vec!["dem/koenigssee.tif".into()];
     p.sources.osm = vec!["osm/bridge.osm.pbf".into()];
     p.save(&proj).unwrap();
+    (proj, p, env)
+}
 
+#[test]
+fn an_osm_bridge_reaches_the_object_transform_unscaled() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proj, p, env) = track_with_a_wooden_bridge(dir.path());
     let generated = generate(&proj, &p, &env.tools(), &|_| {}).unwrap();
     let bridges: Vec<usize> = generated
         .objects
@@ -205,7 +210,7 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
 }
 
 #[test]
-fn a_bridge_between_two_junctions_without_room_is_a_panel_row_of_its_length() {
+fn a_bridge_between_two_junctions_without_room_is_a_panel_grid_of_its_length() {
     let dir = tempfile::tempdir().unwrap();
     let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
     let proj = dir.path().join("proj");
@@ -246,8 +251,7 @@ fn a_bridge_between_two_junctions_without_room_is_a_panel_row_of_its_length() {
     p.save(&proj).unwrap();
 
     let generated = generate(&proj, &p, &env.tools(), &|_| {}).unwrap();
-    // there is no warning about room any more: a panel row covers the bridge and needs none (one panel,
-    // stretched to the bridge's length)
+    // there is no warning about room: a panel grid covers the bridge and needs none
     assert!(
         generated.warnings.iter().all(|w| !w.contains("no room")),
         "{:?}",
@@ -277,6 +281,109 @@ fn a_bridge_between_two_junctions_without_room_is_a_panel_row_of_its_length() {
             .all(|o| !o.model.contains("bridge")),
         "no bridge model is laid"
     );
-    // until panel rows are laid the stretch is ordinary road: the roads and junctions around it are built
-    assert_ne!(generated.objects.len(), 0);
+    // the panels are laid: count x abreast objects, scaled, on the deck level less the origin's offset
+    let BridgeKind::Panels {
+        count,
+        abreast,
+        scale,
+    } = fit.kind
+    else {
+        panic!("{fit:?}");
+    };
+    let catalog = synthetic_catalog();
+    let panel = &catalog.panels()[0].model;
+    let panels: Vec<usize> = generated
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| &o.model == panel)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(panels.len(), count * abreast, "{panels:?}");
+    for &i in &panels {
+        let object = &generated.objects[i];
+        assert!((object.scale - scale).abs() < 1e-9, "{}", object.scale);
+        let ground = f64::from(generated.heightmap.sample(object.x, object.y).height);
+        let height = f64::from(generated.heights[i]);
+        assert!(
+            (height + PANEL_ORIGIN_BELOW_DECK_M * scale - ground).abs() < 1.5,
+            "height {height}, ground {ground}"
+        );
+    }
+    // one level deck: every panel at the same height
+    let first = generated.heights[panels[0]];
+    assert!(
+        panels
+            .iter()
+            .all(|&i| (generated.heights[i] - first).abs() < 1e-4)
+    );
+    // and the roads and junctions around it are built
+    assert_ne!(generated.objects.len(), panels.len());
+}
+
+#[test]
+fn the_archive_of_the_sakhal_bridges_is_on_the_p_drive_for_binarize_and_removed_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proj, _, env) = track_with_a_wooden_bridge(dir.path());
+    let out = naves_export::build::build(&proj, &env.tools(), &|_| {}).unwrap();
+    let log = std::fs::read_to_string(proj.join("build/logs/binarize.log")).unwrap();
+    assert!(log.contains("sakhal models on P: yes"), "{log}");
+    assert!(log.contains("road models on P: yes"), "{log}");
+    // game files are not kept
+    assert!(!proj.join("build/staging/P/dz").exists());
+    assert!(out.mod_dir.is_dir());
+}
+
+#[test]
+fn the_report_and_the_summary_say_what_every_bridge_was_built_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let (proj, _, env) = track_with_a_wooden_bridge(dir.path());
+    let out = naves_export::build::build(&proj, &env.tools(), &|_| {}).unwrap();
+    assert_eq!(out.bridges.len(), 1, "{:?}", out.bridges);
+    assert!(
+        out.bridges[0].contains("bridge_wood2 x 1"),
+        "{:?}",
+        out.bridges
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(proj.join("build/report.json")).unwrap()).unwrap();
+    let bridges = report["bridges"].as_array().unwrap();
+    assert_eq!(bridges.len(), 1);
+    assert_eq!(bridges[0]["built_from"], "bridge_wood2 x 1");
+    assert_eq!(bridges[0]["kind"]["type"], "model");
+    assert_eq!(bridges[0]["kind"]["count"], 1);
+    assert_eq!(bridges[0]["stretches"][0], "11:2-3");
+    assert_eq!(bridges[0]["fallback"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
+    use naves_core::bridgekind::{BridgeFit, Fallback, RoomEnd};
+    use naves_core::catalog::Family;
+    let fit = BridgeFit {
+        stretches: vec!["1:1-2".into(), "2:2-3".into()],
+        stretch: "1:1-2".into(),
+        at: (10.4, 20.6),
+        family: Family::Grav,
+        length: 9.0,
+        own_turn_deg: 0.0,
+        kind: BridgeKind::Panels {
+            count: 3,
+            abreast: 2,
+            scale: 0.9833,
+        },
+        part_length: 9.0,
+        grown: (0.0, 0.0),
+        turn_deg: (0.0, 0.0),
+        room: (0.0, 0.0),
+        room_end: (RoomEnd::Junction, RoomEnd::Junction),
+        fallback: vec![Fallback::ModelNoRoom {
+            model: "dz\\structures_sakhal\\roads\\bridges\\bridge_wood2.p3d".into(),
+        }],
+    };
+    let line = fit.summary();
+    assert!(line.contains("1:1-2+2:2-3"), "{line}");
+    assert!(line.contains("panels 3 x 2 at scale 0.98"), "{line}");
+    assert!(line.contains("bridge_wood2 has no room"), "{line}");
+    assert_eq!(BridgeKind::Fill.to_string(), "fill");
 }

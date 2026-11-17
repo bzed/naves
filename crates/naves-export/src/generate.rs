@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use naves_core::bridgekind::{BridgeFit, choose, fit_bridges};
+use naves_core::bridgekind::{BridgeFit, BridgeKind, choose, fit_bridges, panel_slab};
 use naves_core::catalog::{BridgeModel, PieceCatalog, ThicknessSource};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
@@ -23,7 +23,7 @@ use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
-    road_objects,
+    panel_object_height, road_object_id, road_objects,
 };
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_clearing};
@@ -187,10 +187,14 @@ pub fn place_once(
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
-    let thickness = |s: &Stretch| {
-        bridge_model(catalog, s).and_then(|m| {
+    let thickness = |s: &Stretch| match &s.bridge_kind {
+        // a grid of panels is as thick as one panel at its scale
+        Some(BridgeKind::Panels { scale, .. }) => {
+            panel_slab(catalog).map(|slab| slab.thickness * scale)
+        }
+        _ => bridge_model(catalog, s).and_then(|m| {
             (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness)
-        })
+        }),
     };
     let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness)?;
     Ok(Placed {
@@ -433,14 +437,10 @@ fn deck_levels(roads: &Roads) -> BTreeMap<ObjectId, f64> {
             if placed.kind == PlacedKind::Bridge
                 && let Some(joint) = strip.joints.get(position)
             {
-                levels.insert(
-                    ObjectId {
-                        feature: placed.slot.stretch.clone(),
-                        preset: "road".to_string(),
-                        slot: placed.slot.index,
-                    },
-                    joint.2,
-                );
+                // every object of a step of a panel grid lies at the step's level
+                for column in 0..placed.abreast.max(1) {
+                    levels.insert(road_object_id(placed, column), joint.2);
+                }
             }
         }
     }
@@ -484,10 +484,17 @@ fn object_heights(
                     original.is_some_and(|g| g.model == b.model) && object.model == b.model
                 })
             });
+            // a panel is the object the grid was laid with, at its own scale
+            let panel = catalog.is_some_and(|c| {
+                c.panels().iter().any(|p| {
+                    original.is_some_and(|g| g.model == p.model) && object.model == p.model
+                })
+            });
             match (deck, bridge) {
                 (Some(level), Some(model)) => {
                     narrow(bridge_object_height(*level, model, object.scale))
                 }
+                (Some(level), None) if panel => narrow(panel_object_height(*level, object.scale)),
                 _ => ground,
             }
         })

@@ -42,6 +42,17 @@ pub enum CatalogReadError {
         .0.display()
     )]
     MissingPbo(PathBuf),
+    /// An archive that holds a model the build uses is not in the DayZ Server install.
+    #[error(
+        "the model {model} needs {}, which is not in the DayZ Server install (set DAYZ_SERVER or Settings, External tools)",
+        .pbo.display()
+    )]
+    MissingArchive {
+        /// The model that needs it.
+        model: String,
+        /// Where the archive was looked for.
+        pbo: PathBuf,
+    },
     /// A dayzmake command failed.
     #[error("dayzmake {command} failed ({status}):\n{output}")]
     Dayzmake {
@@ -393,6 +404,78 @@ pub fn unpack_roads(tools: &Tools, pbo: &Path, dest: &Path) -> Result<(), Catalo
         &log,
         UNPACK_TIMEOUT,
     )
+}
+
+/// An archive besides the road one whose models binarize needs on its `P:` drive when a world uses them.
+struct Extra {
+    /// The prefix of the models it holds, lower case, with backslashes and a trailing one.
+    models: &'static str,
+    /// The folders below the server install and the file name, matched in any case.
+    pbo: &'static [&'static str],
+    /// The folders below `P:` it is unpacked into.
+    to: &'static [&'static str],
+}
+
+/// The archives of [`unpack_used`]: the Sakhal bridges and the industrial models. The concrete panels are in the
+/// road archive.
+const EXTRA_ARCHIVES: [Extra; 2] = [
+    Extra {
+        models: "dz\\structures_sakhal\\",
+        pbo: &["sakhal", "addons", "structures_sakhal.pbo"],
+        to: &["dz", "structures_sakhal"],
+    },
+    Extra {
+        models: "dz\\structures\\industrial\\",
+        pbo: &["addons", "structures_industrial.pbo"],
+        to: &["dz", "structures", "industrial"],
+    },
+];
+
+/// Unpacks, below `dest` (the `P:` drive), every archive besides the road one that holds one of the `models` the
+/// world uses (`dz/structures_sakhal` for the Sakhal bridges, `dz/structures/industrial`), where `binarize`
+/// looks for them. The models are in the order of their archives, each archive is unpacked once.
+///
+/// # Errors
+/// [`CatalogReadError::MissingArchive`] naming the first model whose archive is not in the install,
+/// [`CatalogReadError::Dayzmake`] with the tool's output.
+pub fn unpack_used<'a>(
+    tools: &Tools,
+    models: impl IntoIterator<Item = &'a str>,
+    dest: &Path,
+) -> Result<(), CatalogReadError> {
+    let used: Vec<String> = models
+        .into_iter()
+        .map(|m| m.to_ascii_lowercase().replace('/', "\\"))
+        .collect();
+    for extra in &EXTRA_ARCHIVES {
+        let Some(model) = used.iter().find(|m| m.starts_with(extra.models)) else {
+            continue;
+        };
+        let Some(pbo) = find_ci(&tools.dayz_server, extra.pbo) else {
+            return Err(CatalogReadError::MissingArchive {
+                model: model.clone(),
+                pbo: extra
+                    .pbo
+                    .iter()
+                    .fold(tools.dayz_server.clone(), |p, c| p.join(c)),
+            });
+        };
+        let out = extra.to.iter().fold(dest.to_path_buf(), |p, c| p.join(c));
+        std::fs::create_dir_all(&out).map_err(io(&out))?;
+        let scratch = tempfile::Builder::new()
+            .prefix("naves-unpack-")
+            .tempdir()
+            .map_err(io(&std::env::temp_dir()))?;
+        let log = scratch.path().join("dayzmake.log");
+        dayzmake(
+            tools,
+            "unpack",
+            &[pbo.as_os_str(), out.as_os_str()],
+            &log,
+            UNPACK_TIMEOUT,
+        )?;
+    }
+    Ok(())
 }
 
 /// What `dayzmake inspect` says about an archive: its prefix (lower case, backslashes, ending in one) and the

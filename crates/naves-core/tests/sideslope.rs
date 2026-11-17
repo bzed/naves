@@ -57,6 +57,7 @@ fn chain(a: (f64, f64), b: (f64, f64)) -> PlacedNetwork {
             end: pose(p1),
             width: 6.0,
             scale: 1.0,
+            abreast: 1,
         });
     }
     net.chains.push((0..10).collect());

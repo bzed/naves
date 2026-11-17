@@ -272,8 +272,8 @@ not treated like this.
 its height; the ground starts to be shaped only at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
 the stone bridge or `bridge_concrete3`, gravel and dirt tracks `bridge_wood_25` or `bridge_wood2`. A model may be
-up to 1 m narrower than the road (wider is always fine); a model more than 1 m narrower is not used. Bridges are never
-scaled. Which of them, or whether a row of concrete panels, is told below. For each model the
+up to 1 m narrower than the road (wider is always fine); a model more than 1 m narrower is not used. Bridge models are never
+scaled (the panels of a grid are). Which of them, or whether a grid of concrete panels, is told below. For each model the
 catalog measures, on its collision geometry, what hangs below the deck in slices of 1 m: the deck, the solid ends
 (the abutment blocks of the metal bridge, the flanks of the stone arch) and whether they hold the ground back, and
 the wooden posts. The deck thickness used for the clearance over a road below is the depth of the deck over the
@@ -296,14 +296,27 @@ are one bridge):
   exactly and the grid comes as near the road's width as it can (not more than 1 m narrower where any grid avoids
   it). An 8.85 m bridge on a 12 m road gets 3 panels along and 2 abreast, 11.8 m wide.
 
-A panel row never grows. A model longer than the bridge takes the missing length evenly from the road at both ends,
+A panel grid never grows. A model longer than the bridge takes the missing length evenly from the road at both ends,
 but **only along a straight line and only on a straight bridge**: the bridge's own line and the road the model grows
 into may turn by at most 5 degrees together, and the model keeps at least 1 m before a junction, another bridge or a
 dead end; where one side has no room the other takes the rest. A model without room, or on a bridge that bends,
-becomes a panel row of the bridge's length. No bridge is dropped: the build knows for every OpenStreetMap bridge what
+becomes a panel grid of the bridge's length. No bridge is dropped: the build knows for every OpenStreetMap bridge what
 it became and why (and why its room ends at each end). If the install has neither panels nor a model that fits, the
 bridge is plain road and the finding is `bridge_not_built`.
-**Panel rows are not laid yet:** until they are, a bridge that gets panels is built as an ordinary road.
+
+**How a bridge is laid.** A panel grid is a real bridge: its panels lie crosswise (the long side across the road),
+each on the heading of the bridge's line at its centre, so a grid follows a bend; the panels of a step are centred on
+the line. The grid is one level deck for the height solve (as a model is), as thick as one panel at its scale, with no
+road under it and no solid part; the origin of every panel is 0.12 m times its scale below the deck level (measured in
+the game: the panels lie flush with the road and carry). Panels are the only objects of a bridge that are scaled. A model lies
+the way round its stretch is stored (its first end at the stretch's start); a model shorter than its bridge is centred
+on it (it keeps to the end where another bridge meets it: bridges that meet at a node of bridges end exactly at the
+node), and the road between its end and the end of the bridge is plain road. `build/report.json` has a `bridges`
+list with, for every OpenStreetMap bridge, its ways, its position, what it was built from (`fill`, `panels 3 x 2 at
+scale 0.98`, `bridge_wood2 x 1`) and why it is not the part the table gives first; the build prints the same, one
+line per bridge. The bridge models of the Sakhal archive (`sakhal/addons/structures_sakhal.pbo`) are unpacked for
+`binarize` next to the road models when the map uses them, and removed again; a build that needs such an archive
+that the install does not have stops and names the model.
 
 A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
 least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays 1 m clear of junctions,

@@ -301,7 +301,7 @@ fn a_panel_row_is_a_plain_slab() {
         top: 0.14,
         thickness: 0.24,
     };
-    let row = PartShape::panels(&slab, 3, 1.5);
+    let row = PartShape::panels(&slab, 3, 1, 1.5);
     assert!(near(row.length, 13.5, 1e-9));
     assert_eq!(row.underside.depth.len(), 14);
     assert!(row.underside.depth.iter().all(|d| near(*d, 0.36, 1e-9)));
@@ -309,14 +309,30 @@ fn a_panel_row_is_a_plain_slab() {
     assert_eq!(row.solid.len(), 0);
     assert_eq!(row.retains, (false, false));
     assert_eq!(row.opening(), (0.0, 13.5));
+    // three abreast: the grid is three times as wide, and no abreast is one
+    let grid = PartShape::panels(&slab, 3, 3, 1.5);
+    assert!(
+        grid.underside
+            .half_width
+            .iter()
+            .all(|d| near(*d, 13.5, 1e-9))
+    );
+    assert!(near(grid.length, 13.5, 1e-9));
+    let none = PartShape::panels(&slab, 3, 0, 1.5);
+    assert!(
+        none.underside
+            .half_width
+            .iter()
+            .all(|d| near(*d, 4.5, 1e-9))
+    );
     assert!(near(row.thickness(2.0, 5.0), 0.36, 1e-9));
     // a scale that is not a number counts as 1, and a very long row has a bounded underside
     assert!(near(
-        PartShape::panels(&slab, 2, f64::NAN).length,
+        PartShape::panels(&slab, 2, 1, f64::NAN).length,
         6.0,
         1e-9
     ));
-    let long = PartShape::panels(&slab, 1_000_000, 1.0);
+    let long = PartShape::panels(&slab, 1_000_000, 1, 1.0);
     assert!(long.underside.depth.len() <= 200);
     assert!(near(long.thickness(1e5, 2e5), 0.24, 1e-9));
     assert_eq!(long.opening(), (0.0, long.length));
@@ -622,7 +638,7 @@ fn a_panel_row_hangs_its_slab_and_stands_nowhere() {
         top: 0.14,
         thickness: 0.24,
     };
-    let row = PartShape::panels(&slab, 4, 1.0);
+    let row = PartShape::panels(&slab, 4, 1, 1.0);
     assert!(row.underside.hang.iter().all(|h| near(*h, 0.24, 1e-9)));
     assert!(row.underside.stand.iter().all(Vec::is_empty));
     assert_eq!(row.stands().count(), 0);

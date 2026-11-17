@@ -474,10 +474,12 @@ fn a_sixteen_metre_osm_bridge_is_built_from_the_model_it_fills() {
 }
 
 #[test]
-fn an_eight_metre_osm_bridge_lays_no_model() {
-    // a panel row, laid as plain road until panel rows are laid
+fn an_eight_metre_osm_bridge_lays_panels_and_no_model() {
+    // a panel grid: two panels along (scale 4/3), as wide as the 7 m road
     let net = place_fitted(&bridged(8.0));
-    assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
+    let bridges = of_kind(&net, PlacedKind::Bridge);
+    assert_eq!(bridges.len(), 2);
+    assert!(bridges.iter().all(|b| b.model.contains("panel_concrete")));
 }
 
 #[test]

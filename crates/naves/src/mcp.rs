@@ -604,6 +604,7 @@ impl NavesMcp {
                 "mod_dir": out.mod_dir,
                 "mission_dir": out.mission_dir,
                 "warnings": out.warnings,
+                "bridges": out.bridges,
                 "progress": progress,
             })),
             Err(e) => failure(e),

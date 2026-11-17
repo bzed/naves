@@ -16,7 +16,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::catalog::BridgeModel;
-use crate::roadplace::PlacedNetwork;
+use crate::roadplace::{PlacedNetwork, PlacedRoad};
 
 /// An edited object further than this from where it was generated is not the object the edit was for.
 const SAME_OBJECT_M: f64 = 25.0;
@@ -373,24 +373,55 @@ pub fn apply_overrides(
 }
 
 /// The road objects of a placed network: one per piece, junction, bridge and end cap, identified by the
-/// stretch and slot they sit on.
+/// stretch and slot they sit on. A step of a panel grid is `abreast` objects side by side across the road,
+/// centred on the line (to the left of the line's heading, the one of `road.start`), the first of them with
+/// the id of the road and the others with the preset `road-<n>`.
 #[must_use]
 pub fn road_objects(net: &PlacedNetwork) -> Vec<GeneratedObject> {
-    net.roads
-        .iter()
-        .map(|road| GeneratedObject {
-            id: ObjectId {
-                feature: road.slot.stretch.clone(),
-                preset: "road".to_string(),
-                slot: road.slot.index,
-            },
-            model: road.model.clone(),
-            x: road.origin.x,
-            y: road.origin.y,
-            yaw: road.origin.heading,
-            scale: road.scale,
-        })
-        .collect()
+    let mut objects = Vec::new();
+    for road in &net.roads {
+        let columns = road.abreast.max(1);
+        let cell = road.width / f64::from(u32::try_from(columns).unwrap_or(u32::MAX));
+        // to the left of the line
+        let (sin, cos) = road.start.heading.sin_cos();
+        let (left_x, left_y) = (-cos, sin);
+        for column in 0..columns {
+            let offset = (f64::from(u32::try_from(column).unwrap_or(u32::MAX))
+                - f64::from(u32::try_from(columns - 1).unwrap_or(u32::MAX)) / 2.0)
+                * cell;
+            let (x, y) = if columns > 1 {
+                (
+                    road.origin.x + offset * left_x,
+                    road.origin.y + offset * left_y,
+                )
+            } else {
+                (road.origin.x, road.origin.y)
+            };
+            objects.push(GeneratedObject {
+                id: road_object_id(road, column),
+                model: road.model.clone(),
+                x,
+                y,
+                yaw: road.origin.heading,
+                scale: road.scale,
+            });
+        }
+    }
+    objects
+}
+
+/// The id of the object of `road` in `column` of its step (0 for a road that is one object).
+#[must_use]
+pub fn road_object_id(road: &PlacedRoad, column: usize) -> ObjectId {
+    ObjectId {
+        feature: road.slot.stretch.clone(),
+        preset: if column == 0 {
+            "road".to_string()
+        } else {
+            format!("road-{column}")
+        },
+        slot: road.slot.index,
+    }
 }
 
 fn narrow(v: f64) -> f32 {
@@ -426,6 +457,18 @@ pub fn piece_transform(object: &PlacedObject, ground_height: f32) -> [f32; 12] {
         ground_height,
         narrow(object.y),
     ]
+}
+
+/// How far below the deck level the origin of a concrete panel stands, per unit of scale, in metres. Measured in
+/// the game with `panel_concrete_1` and `_2` (a 6.0 x 3.0 x 0.25 m slab): an origin that low sits flush with the
+/// deck; the catalog's own figure for the top of the slab is 0.14 m. The panels were verified flush and carrying at
+/// scales 1.0, 1.67 and 2.0.
+pub const PANEL_ORIGIN_BELOW_DECK_M: f64 = 0.12;
+
+/// The height of the origin of a panel of `scale` whose deck is at `deck_level`.
+#[must_use]
+pub fn panel_object_height(deck_level: f64, scale: f64) -> f64 {
+    deck_level - PANEL_ORIGIN_BELOW_DECK_M * scale
 }
 
 /// The height of a bridge model's origin when its deck is at `deck_level`: bridges are rigid objects

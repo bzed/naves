@@ -381,10 +381,12 @@ impl NavesApp {
                         mod_dir,
                         mission_dir,
                         warnings,
+                        bridges,
                     }) => {
                         self.build_problems
                             .extend(warnings.iter().cloned().map(problems::Problem::note));
                         self.log.extend(warnings.into_iter().map(Line::Warning));
+                        self.log.extend(bridges.into_iter().map(Line::Info));
                         self.log.push(Line::Result(format!(
                             "Mod: {}\nMission: {}",
                             mod_dir.display(),

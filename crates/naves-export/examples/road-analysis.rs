@@ -307,11 +307,14 @@ fn main() {
         profiles.clearances.len()
     );
     // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
-    let thickness = |s: &naves_core::roadnet::Stretch| {
-        naves_core::roadplace::bridge_model(&catalog, s).and_then(|m| {
+    let thickness = |s: &naves_core::roadnet::Stretch| match &s.bridge_kind {
+        Some(naves_core::bridgekind::BridgeKind::Panels { scale, .. }) => {
+            naves_core::bridgekind::panel_slab(&catalog).map(|slab| slab.thickness * scale)
+        }
+        _ => naves_core::roadplace::bridge_model(&catalog, s).and_then(|m| {
             (m.thickness_source != naves_core::catalog::ThicknessSource::Unknown)
                 .then_some(m.deck_thickness)
-        })
+        }),
     };
     {
         // the same placement with the junctions at the ground, as it was without the clearance

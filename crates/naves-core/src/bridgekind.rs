@@ -79,6 +79,21 @@ pub enum BridgeKind {
     },
 }
 
+impl fmt::Display for BridgeKind {
+    /// `fill`, `panels 3 x 2 at scale 0.98` (along x abreast) or `bridge_wood2 x 1`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BridgeKind::Fill => write!(f, "fill"),
+            BridgeKind::Panels {
+                count,
+                abreast,
+                scale,
+            } => write!(f, "panels {count} x {abreast} at scale {scale:.2}"),
+            BridgeKind::Model { model, count } => write!(f, "{} x {count}", model_name(model)),
+        }
+    }
+}
+
 /// Why a bridge is not built from the part the table gives first.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Fallback {
@@ -361,8 +376,9 @@ fn piece_width(catalog: &PieceCatalog, family: Family) -> f64 {
     clean(catalog.pieces(family).first().map_or(0.0, |p| p.width))
 }
 
-/// The panel the rows are laid from: the first by model path of those with a usable size.
-fn panel(catalog: &PieceCatalog) -> Option<&Slab> {
+/// The panel the grids are laid from: the first by model path of those with a usable size.
+#[must_use]
+pub fn panel_slab(catalog: &PieceCatalog) -> Option<&Slab> {
     catalog
         .panels()
         .iter()
@@ -449,7 +465,7 @@ pub fn panel_grid(length: f64, road_width: f64, slab: &Slab) -> (usize, usize, f
 /// A panel row over `site`, with `fallback` so far: it covers the bridge exactly (see [`panel_grid`]) and
 /// needs no room; without panels in the catalog a fill.
 fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallback>) -> Choice {
-    let Some(slab) = panel(catalog) else {
+    let Some(slab) = panel_slab(catalog) else {
         fallback.push(Fallback::NoParts);
         return Choice::fill(fallback);
     };
@@ -844,6 +860,27 @@ pub struct BridgeFit {
     pub fallback: Vec<Fallback>,
 }
 
+impl BridgeFit {
+    /// One line for the build's report and summary: the bridge, where it is, what it was built from and why not
+    /// from the part the table gives first.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let mut line = format!(
+            "bridge {} at ({:.0}, {:.0}), {:.1} m: {}",
+            self.stretches.join("+"),
+            self.at.0,
+            self.at.1,
+            self.length,
+            self.kind
+        );
+        if !self.fallback.is_empty() {
+            let why: Vec<String> = self.fallback.iter().map(ToString::to_string).collect();
+            line = format!("{line} ({})", why.join("; "));
+        }
+        line
+    }
+}
+
 /// Whether stretch `s` can be joined with a bridge that follows it.
 fn joinable(s: &Stretch) -> bool {
     s.bridge && !s.tunnel && !s.roundabout && s.start != s.end && s.bridge_kind.is_none()
@@ -1021,8 +1058,8 @@ fn join(graph: &RoadGraph, chain: &[usize]) -> Option<Stretch> {
 /// their points move. A panel row covers the bridge and never grows. Every stretch that was a bridge gets its
 /// [`Stretch::bridge_kind`].
 ///
-/// Until panel rows are laid, a bridge built from panels or filled is no bridge in the result (`bridge` is
-/// false); one built from a model stays a bridge.
+/// A bridge built from panels or from a model stays a bridge in the result (`bridge` is true); a filled one is
+/// plain road (`bridge` is false).
 #[must_use]
 pub fn fit_bridges(
     graph: &RoadGraph,
@@ -1083,8 +1120,8 @@ pub fn fit_bridges(
             }
         }
         if let Some(s) = g.stretches.get_mut(i) {
-            // until panel rows are laid: only a model is a bridge
-            s.bridge = grows;
+            // a panel grid and a model are bridges, a fill is plain road
+            s.bridge = !matches!(choice.kind, BridgeKind::Fill);
             s.bridge_kind = Some(choice.kind.clone());
         }
         g.crossings = crossings_of(&g.stretches);

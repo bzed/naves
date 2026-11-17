@@ -172,8 +172,11 @@ pub struct PlacedRoad {
     pub end: Pose,
     /// Width of the road.
     pub width: f64,
-    /// Uniform scale of the model: 1 for everything the placement lays (bridges are not scaled).
+    /// Uniform scale of the model: 1 for everything the placement lays except the panels of a bridge.
     pub scale: f64,
+    /// How many objects of this model lie side by side across the road, centred on the line: 1, except for a
+    /// step of a panel grid (`road.width` is then the grid's width).
+    pub abreast: usize,
 }
 
 /// A stretch whose fit did not meet what it had to.
@@ -1098,6 +1101,7 @@ impl<'a> Placer<'a> {
                 end: piece.end,
                 width,
                 scale: 1.0,
+                abreast: 1,
             },
             s,
             link,
@@ -1400,18 +1404,30 @@ impl<'a> Placer<'a> {
         let (p0, p1) = (line.pose_at(s0), line.pose_at(s1));
         let heading = (p1.x - p0.x).atan2(p1.y - p0.y);
         let chord = (p1.x - p0.x).hypot(p1.y - p0.y);
-        let id = self
-            .chains
-            .get(c)
-            .and_then(|ch| ch.links.get(first + k))
-            .and_then(|l| self.graph.stretches.get(l.stretch))
-            .map(|s| s.id.clone())
-            .unwrap_or_default();
-        let stretch = self
-            .chains
-            .get(c)
-            .and_then(|ch| ch.links.get(first + k))
-            .and_then(|l| self.graph.stretches.get(l.stretch));
+        let chained = self.chains.get(c).and_then(|ch| ch.links.get(first + k));
+        let stretch = chained.and_then(|l| self.graph.stretches.get(l.stretch));
+        let id = stretch.map(|s| s.id.clone()).unwrap_or_default();
+        let reversed = chained.is_some_and(|l| l.reversed);
+        if let Some(BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        }) = stretch.and_then(|s| s.bridge_kind.as_ref())
+        {
+            let (count, abreast, scale) = (*count, *abreast, *scale);
+            return self.place_panels(
+                line,
+                k,
+                (family, drivable),
+                (count, abreast, scale),
+                (pose, s_cur),
+                &id,
+            );
+        }
+        let fitted = match stretch.and_then(|s| s.bridge_kind.as_ref()) {
+            Some(BridgeKind::Model { count, .. }) => Some(*count),
+            _ => None,
+        };
         let model = match stretch {
             Some(s) => bridge_model(self.catalog, s),
             None => longest_bridge(self.catalog, family),
@@ -1420,7 +1436,30 @@ impl<'a> Placer<'a> {
             return Ok(out);
         };
         let length = model.length;
-        let count = (chord / length).round().max(1.0);
+        let (count, shift) = match fitted {
+            Some(count) => {
+                let count = f64::from(u32::try_from(count).unwrap_or(u32::MAX)).max(1.0);
+                let part = count * length;
+                (
+                    count,
+                    self.centred(c, first + k, (s1 - s0) - part, reversed),
+                )
+            }
+            None => ((chord / length).round().max(1.0), 0.0),
+        };
+        // a model lies on the straight line of its bridge, shifted along it where it is shorter than it
+        let s0 = s0 + shift;
+        let p0 = Pose {
+            x: p0.x + shift * heading.sin(),
+            y: p0.y + shift * heading.cos(),
+            heading,
+        };
+        // the model lies the way round the stretch is stored: its first port at the stretch's start
+        let (entry, exit) = if reversed {
+            (flip(&model.end), flip(&model.start))
+        } else {
+            (pose_of(&model.start), pose_of(&model.end))
+        };
         if s0 - *s_cur > 1.0 {
             // the deck lies on its line; the approach closes on the deck's port
             let (pieces, end, port) = self.fit_approach(
@@ -1437,13 +1476,31 @@ impl<'a> Placer<'a> {
         } else if (pose.x - p0.x).hypot(pose.y - p0.y) < 1.0 {
             pose.heading = heading;
         }
-        let (model_start, model_end) = (model.start, model.end);
+        out.items = Self::lay_models(model, count, (entry, exit), (family, drivable), (pose, s0));
+        *s_cur = if fitted.is_some() {
+            (s0 + count * length).min(s1)
+        } else {
+            s1
+        };
+        Ok(out)
+    }
+
+    /// `count` copies of `model` end to end from `pose` (a model's first port at the pose, `entry` and `exit`
+    /// being the ports in the order the road is driven), `s0` being the arclength of the first.
+    fn lay_models(
+        model: &BridgeModel,
+        count: f64,
+        (entry, exit): (Pose, Pose),
+        (family, drivable): (Family, bool),
+        (pose, s0): (&mut Pose, f64),
+    ) -> Vec<Item> {
+        let mut items = Vec::new();
         let mut laid = 0.0;
         while laid < count {
-            let frame = Frame::through(&pose_of(&model_start), *pose);
-            let start = frame.pose(&pose_of(&model_start));
-            let end = frame.pose(&pose_of(&model_end));
-            out.items.push(Item {
+            let frame = Frame::through(&entry, *pose);
+            let start = frame.pose(&entry);
+            let end = frame.pose(&exit);
+            items.push(Item {
                 road: PlacedRoad {
                     slot: Slot {
                         stretch: String::new(),
@@ -1458,13 +1515,133 @@ impl<'a> Placer<'a> {
                     end,
                     width: model.width,
                     scale: 1.0,
+                    abreast: 1,
                 },
-                s: s0 + laid * length,
+                s: s0 + laid * model.length,
                 link: None,
             });
             *pose = end;
             laid += 1.0;
         }
+        items
+    }
+
+    /// How far from the start of link `k` of chain `c`, in driving direction, a part `gap` shorter than the
+    /// bridge starts (negative `gap`: the part is longer, it starts at 0): centred, except that it keeps to an
+    /// end where another bridge meets it (a node of bridges: no gap there). The links' stored direction decides
+    /// which end is which.
+    fn centred(&self, c: usize, k: usize, gap: f64, reversed: bool) -> f64 {
+        if gap <= 0.0 || !gap.is_finite() {
+            return 0.0;
+        }
+        let Some(stretch) = self
+            .chains
+            .get(c)
+            .and_then(|ch| ch.links.get(k))
+            .and_then(|l| self.graph.stretches.get(l.stretch))
+        else {
+            return 0.0;
+        };
+        let meets_bridge = |node: i64| {
+            self.graph
+                .crossings
+                .iter()
+                .filter(|x| x.node == node)
+                .flat_map(|x| x.stretches.iter())
+                .filter_map(|&i| self.graph.stretches.get(i))
+                .any(|o| o.id != stretch.id && o.bridge && !o.tunnel)
+        };
+        let stored = match (meets_bridge(stretch.start), meets_bridge(stretch.end)) {
+            (true, false) => 0.0,
+            (false, true) => gap,
+            _ => gap / 2.0,
+        };
+        if reversed { gap - stored } else { stored }
+    }
+
+    /// Lays a grid of `count` steps along link `k` of the run, each of `abreast` panels `scale` times the size
+    /// of the panel: the steps share the line of the bridge from its start to its end evenly, each on the
+    /// line's heading at its centre. The road is fitted up to the start of the grid; the grid has no road
+    /// under it.
+    fn place_panels(
+        &mut self,
+        line: &Polyline,
+        k: usize,
+        (family, drivable): (Family, bool),
+        (count, abreast, scale): (usize, usize, f64),
+        (pose, s_cur): (&mut Pose, &mut f64),
+        id: &str,
+    ) -> Result<PlacedBridge, PlaceError> {
+        let mut out = PlacedBridge {
+            fit: Vec::new(),
+            items: Vec::new(),
+        };
+        let Some(slab) = crate::bridgekind::panel_slab(self.catalog) else {
+            return Ok(out);
+        };
+        let s0 = line.link_start.get(k).copied().unwrap_or(0.0);
+        let s1 = line
+            .link_start
+            .get(k + 1)
+            .copied()
+            .unwrap_or_else(|| line.total());
+        let steps = f64::from(u32::try_from(count.max(1)).unwrap_or(u32::MAX));
+        let step = (s1 - s0) / steps;
+        if !(step.is_finite() && step > 0.0) {
+            return Ok(out);
+        }
+        if s0 - *s_cur > 1.0 {
+            let goal = line.pose_at(s0);
+            let (pieces, end) = self.fit_part(
+                &line.slice(*s_cur, s0),
+                *pose,
+                EndGoal::Fixed(goal),
+                family,
+                id,
+            )?;
+            out.fit = pieces;
+            *pose = end;
+        }
+        let turn = if slab.along_x { PI / 2.0 } else { 0.0 };
+        let width =
+            f64::from(u32::try_from(abreast.max(1)).unwrap_or(u32::MAX)) * slab.across * scale;
+        for i in 0..count.max(1) {
+            let n = f64::from(u32::try_from(i).unwrap_or(u32::MAX));
+            let (a, b) = (s0 + n * step, s0 + (n + 1.0) * step);
+            let (from, to, middle) = (
+                line.pose_at(a),
+                line.pose_at(b),
+                line.pose_at(f64::midpoint(a, b)),
+            );
+            // the line's heading at the centre, for the steps's ends and the objects' sides
+            let heading = middle.heading;
+            out.items.push(Item {
+                road: PlacedRoad {
+                    slot: Slot {
+                        stretch: String::new(),
+                        index: 0,
+                    },
+                    kind: PlacedKind::Bridge,
+                    family,
+                    drivable,
+                    model: slab.model.clone(),
+                    origin: Pose {
+                        x: middle.x,
+                        y: middle.y,
+                        heading: wrap(heading + turn),
+                    },
+                    start: Pose { heading, ..from },
+                    end: Pose { heading, ..to },
+                    width,
+                    scale,
+                    abreast: abreast.max(1),
+                },
+                s: f64::midpoint(a, b),
+                link: None,
+            });
+        }
+        let end = line.pose_at(s1);
+        *pose = end;
         *s_cur = s1;
         Ok(out)
     }
@@ -2121,6 +2298,7 @@ mod tests {
                 },
                 width: 6.0,
                 scale: 1.0,
+                abreast: 1,
             });
         }
         net.joins_without_junction = vec![(0.0, 0.0); joins];

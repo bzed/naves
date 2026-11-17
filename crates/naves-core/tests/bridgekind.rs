@@ -506,9 +506,9 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
         let o = out.stretches.iter().find(|o| o.id == s.id).unwrap();
         assert_eq!(o.points, s.points);
     }
-    // until panel rows are laid it is plain road, but it knows what it is to be
+    // a panel grid is a real bridge
     let b = bridge_of(&out);
-    assert!(!b.bridge);
+    assert!(b.bridge);
     assert!(is_row(b.bridge_kind.as_ref().unwrap(), 4, 1, 1.1));
 }
 
@@ -616,7 +616,8 @@ fn a_bridge_between_two_junction_stubs_never_grows_through_a_junction() {
         let o = out.stretches.iter().find(|o| o.id == s.id).unwrap();
         assert_eq!(o.points, s.points);
     }
-    assert!(out.stretches.iter().all(|s| !s.bridge));
+    // a panel grid is a real bridge, and its stretch stays as it was
+    assert!(out.stretches.iter().any(|s| s.bridge));
 }
 
 #[test]

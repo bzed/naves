@@ -70,6 +70,7 @@ fn piece(
         end: pose(b),
         width: 7.0,
         scale: 1.0,
+        abreast: 1,
     }
 }
 

@@ -87,6 +87,7 @@ fn piece(stretch: &str, index: u32, from: (f64, f64), to: (f64, f64)) -> PlacedR
         end: pose(to),
         width: 7.0,
         scale: 1.0,
+        abreast: 1,
     }
 }
 

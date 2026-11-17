@@ -28,7 +28,7 @@ case "$1" in
       printf 'PAA:%s\n' "$2"; cat "$3"; } > "$4" ;;
   unpack)
     # the road pieces: a tree of synthetic models next to the script
-    cp -r "$trees/structures_roads"/. "$3"/ && rm -f "$3/.prefix" ;;
+    cp -r "$trees/$(basename "$2" .pbo)"/. "$3"/ && rm -f "$3/.prefix" ;;
   inspect)
     # the header with the prefix, then the table of files, as the real tool prints them
     tree="$trees/$(basename "$2" .pbo)"
@@ -59,6 +59,7 @@ for d in "$(pwd -P)"/naves/worlds/*/; do
 done
 { echo "fake binarize log"
   if [ -d "$(pwd -P)/dz/structures/roads/Parts" ]; then echo "road models on P: yes"; echo "Road 2 dirs: 4"; else echo "road models on P: no"; echo "Road 2 dirs: 0"; fi
+  if [ -d "$(pwd -P)/dz/structures_sakhal/roads" ]; then echo "sakhal models on P: yes"; else echo "sakhal models on P: no"; fi
 } > "$sandbox/binarize.log"
 exit 0"#;
 

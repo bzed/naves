@@ -184,7 +184,7 @@ below that cannot dip far enough within its own limits. The position is where th
 away from the crossing in the data, or accept it.
 
 **`bridge_not_built`: "Bridge ... (12 m) is plain road: the install has no concrete panels and no bridge model that fits it"**
-An OpenStreetMap bridge longer than 3 m is built from a bridge model or a row of concrete panels (see
+An OpenStreetMap bridge longer than 3 m is built from a bridge model or a grid of concrete panels (see
 [what a bridge is built from](getting-started.md#roads)). The DayZ Server install has no panels
 (`dz\structures\roads\panels\` in `addons/structures_roads.pbo` could not be read, see the warnings) and no bridge
 model of the road's surface that fits the bridge and its room, so the bridge is laid as an ordinary road. Check the

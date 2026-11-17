@@ -408,11 +408,12 @@ impl PartShape {
             })
     }
 
-    /// A row of `count` panels laid one after the other, each `slab.along · scale` long: a plain slab
-    /// `slab.thickness · scale` deep everywhere, nothing solid, holding nothing back. A scale that is not a
-    /// positive number counts as 1.
+    /// A grid of `count` panels laid one after the other, each `slab.along · scale` long, and `abreast` side by
+    /// side (so `abreast · slab.across · scale` wide, centred on the line): a plain slab `slab.thickness · scale`
+    /// deep everywhere, nothing solid, holding nothing back. A scale that is not a positive number counts as 1,
+    /// no panels abreast as one.
     #[must_use]
-    pub fn panels(slab: &Slab, count: usize, scale: f64) -> PartShape {
+    pub fn panels(slab: &Slab, count: usize, abreast: usize, scale: f64) -> PartShape {
         let scale = if scale.is_finite() && scale > 0.0 {
             scale
         } else {
@@ -421,7 +422,8 @@ impl PartShape {
         let count = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
         let length = count * slab.along * scale;
         let depth = (slab.thickness * scale).max(0.0);
-        PartShape::level(length, depth, slab.across / 2.0 * scale)
+        let abreast = f64::from(u32::try_from(abreast.max(1)).unwrap_or(u32::MAX));
+        PartShape::level(length, depth, abreast * slab.across / 2.0 * scale)
     }
 
     /// A part with the same `depth` and `half_width` in every slice, nothing solid and nothing that stands

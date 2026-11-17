@@ -387,6 +387,7 @@ fn bridge_road(index: u32) -> PlacedRoad {
         },
         width: 7.0,
         scale: 1.0,
+        abreast: 1,
     }
 }
 

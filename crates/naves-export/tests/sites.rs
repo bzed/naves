@@ -33,6 +33,7 @@ fn road(model: &str, kind: PlacedKind, start: Pose, end: Pose, scale: f64) -> Pl
         end,
         width: 7.0,
         scale,
+        abreast: 1,
     }
 }
 

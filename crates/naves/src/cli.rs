@@ -166,6 +166,9 @@ fn build_project(dir: &Path) -> Result<()> {
     for warning in &out.warnings {
         output::note(&format!("warning: {warning}"));
     }
+    for bridge in &out.bridges {
+        output::note(bridge);
+    }
     output::result(&format!("Mod:     {}", out.mod_dir.display()));
     output::result(&format!("Mission: {}", out.mission_dir.display()));
     Ok(())
