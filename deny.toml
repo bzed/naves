@@ -6,6 +6,12 @@ all-features = true
 
 [advisories]
 yanked = "warn"
+ignore = [
+    # chrono is marked unmaintained and has no fixed version. We do not use it ourselves: it comes in
+    # through rmcp and schemars (the MCP server) and has to be replaced there. Remove this entry when
+    # an rmcp release without chrono exists.
+    { id = "RUSTSEC-2026-0543", reason = "transitive through rmcp and schemars; to be fixed in rmcp" },
+]
 
 [licenses]
 allow = [
