@@ -9,7 +9,9 @@ use std::f64::consts::{PI, TAU};
 use crate::heightmap::{Heightmap, MapGeo};
 use crate::osm::LandPolygon;
 use crate::profile::Profiles;
-use crate::roadnet::{BridgeSpan, RoadGraph, bridge_room, polyline_length, slice_points};
+use crate::roadnet::{
+    BridgeSpan, RoadGraph, built_as_bridge, polyline_length, slice_points, span_room,
+};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 use crate::validate::{WATER_PRIORITY, in_water, outer_bounds};
 
@@ -447,9 +449,11 @@ fn run_line(graph: &RoadGraph, i: usize) -> Option<(Vec<(f64, f64)>, f64)> {
 /// any.
 ///
 /// A bridge when the dip is at least [`BRIDGE_DIP_M`] deep, a model exists, the run is at least half a
-/// model long, the span (the run grown to a whole number of models, evenly at both ends) stays within the room [`bridge_room`] gives and, over every model
+/// model long, the span (the run grown to a whole number of models, evenly at both ends) stays within its
+/// stretch, 1 m before a junction, a dead end, another bridge or a bend beyond its end, and, over every model
 /// length of it, the stretch's points are within [`BRIDGE_STRAIGHT_M`] of the chord; the span is then the
-/// second value. Otherwise a fill when no water lies under the run, else a report.
+/// second value. Otherwise (also on an OpenStreetMap bridge built from its own part) a fill when no water lies
+/// under the run, else a report.
 #[must_use]
 pub fn decide(
     dip: &Dip,
@@ -467,6 +471,14 @@ pub fn decide(
         }
         let length =
             model_length.filter(|l| l.is_finite() && *l >= crate::roadplace::MIN_BRIDGE_M)?;
+        // an OpenStreetMap bridge is built from its own part
+        if graph
+            .stretches
+            .get(dip.stretch)
+            .is_some_and(built_as_bridge)
+        {
+            return None;
+        }
         let (line, offset) = run_line(graph, dip.stretch)?;
         let run = dip.to_m - dip.from_m;
         if !run.is_finite() || run * 2.0 + SLACK_M < length {
@@ -474,7 +486,7 @@ pub fn decide(
         }
         let count = (run / length - SLACK_M).ceil().max(1.0);
         let middle = f64::midpoint(dip.from_m, dip.to_m);
-        let (lo, hi) = bridge_room(graph, dip.stretch)?;
+        let (lo, hi) = span_room(graph, dip.stretch)?;
         // no room for the centred span, or it is not straight over every model: no bridge, and
         // shifting does not help
         if middle - count * length / 2.0 < lo - SLACK_M

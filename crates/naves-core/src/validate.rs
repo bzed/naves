@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::bridgekind::Fallback;
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::Conformed;
 use crate::dips::{Dip, DipAction};
@@ -61,11 +62,15 @@ pub enum Rule {
     RoadDuplicateDropped,
     /// A bridge over a road that does not clear it by [`crate::profile::BRIDGE_CLEARANCE_M`].
     BridgeClearance,
+    /// An OpenStreetMap bridge laid as plain road because the install has no part for it: no concrete panels and
+    /// no bridge model that fits (a bridge of at most [`crate::bridgekind::FILL_MAX_M`] is filled on purpose and
+    /// is none).
+    BridgeNotBuilt,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 16] = [
+    pub const ALL: [Rule; 17] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -82,6 +87,7 @@ impl Rule {
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
         Rule::BridgeClearance,
+        Rule::BridgeNotBuilt,
     ];
 
     /// The stable id of the rule.
@@ -104,6 +110,7 @@ impl Rule {
             Rule::RoadOverWater => "road_over_water",
             Rule::RoadDuplicateDropped => "road_duplicate_dropped",
             Rule::BridgeClearance => "bridge_clearance",
+            Rule::BridgeNotBuilt => "bridge_not_built",
         }
     }
 }
@@ -342,6 +349,24 @@ fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
         .collect()
 }
 
+/// An OpenStreetMap bridge that the install has no part for: one violation in its middle.
+fn not_built_violations(net: &PlacedNetwork) -> Vec<Violation> {
+    net.bridge_fits
+        .iter()
+        .filter(|f| f.fallback.contains(&Fallback::NoParts))
+        .map(|f| {
+            violation(
+                Rule::BridgeNotBuilt,
+                f.at,
+                format!(
+                    "Bridge {} ({:.0} m) is plain road: the install has no concrete panels and no bridge model that fits it",
+                    f.stretch, f.length
+                ),
+            )
+        })
+        .collect()
+}
+
 /// A road left standing over water: one violation for each dip that is reported, where it is.
 fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
     dips.iter()
@@ -468,6 +493,7 @@ pub fn check_roads(
     out.extend(duplicate_violations(&net.duplicates));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
+    out.extend(not_built_violations(net));
     out.sort_by(|a, b| {
         a.rule
             .cmp(&b.rule)

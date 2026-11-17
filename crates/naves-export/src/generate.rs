@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use naves_core::bridgekind::{BridgeFit, choose, fit_bridges};
 use naves_core::catalog::{BridgeModel, PieceCatalog, ThicknessSource};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
@@ -29,9 +30,11 @@ use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
 use naves_core::roadnet::{
     DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
-    lost_bridges, widen_bridges, with_bridge_spans,
+    with_bridge_spans,
 };
-use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
+use naves_core::roadplace::{
+    PlacedKind, PlacedNetwork, bridge_model, longest_bridge, place_network,
+};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
@@ -107,6 +110,8 @@ pub struct Generated {
     pub used_land_cover: bool,
     /// OpenStreetMap was used.
     pub used_osm: bool,
+    /// What every OpenStreetMap bridge was built from, and why, in the order of their stretches.
+    pub bridges: Vec<BridgeFit>,
 }
 
 /// The roads of a project: nothing when it has none.
@@ -183,7 +188,7 @@ pub fn place_once(
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
     let thickness = |s: &Stretch| {
-        longest_bridge(catalog, s.family).and_then(|m| {
+        bridge_model(catalog, s).and_then(|m| {
             (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness)
         })
     };
@@ -196,22 +201,38 @@ pub fn place_once(
     })
 }
 
-/// The graph of `features` without the parts of roads that OpenStreetMap draws twice (see
-/// [`drop_duplicates`]), the same with every OpenStreetMap bridge grown to the length of the bridge model it
-/// gets (see [`widen_bridges`]), and the parts that were dropped.
-#[must_use]
-pub fn widened_graph(
-    features: &[Feature],
-    catalog: &PieceCatalog,
-) -> (RoadGraph, RoadGraph, Vec<DroppedDuplicate>) {
-    // a roundabout too small for the tightest arc of its surface is a plain crossing
-    let flat = collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
-    let (built, dropped) = drop_duplicates(&flat);
-    let widened = widen_bridges(&built, &|s| model_length(catalog, s.family).unwrap_or(0.0));
-    (built, widened, dropped)
+/// The road graph of a project before the placement.
+pub struct FittedGraph {
+    /// The graph of the features without the parts of roads that OpenStreetMap draws twice (see
+    /// [`drop_duplicates`]): its bridges are those of OpenStreetMap.
+    pub built: RoadGraph,
+    /// The same with every OpenStreetMap bridge built from the part that fits it, grown along the straight road
+    /// as far as the part needs (see [`fit_bridges`]).
+    pub graph: RoadGraph,
+    /// The parts of roads that were dropped as drawn twice.
+    pub duplicates: Vec<DroppedDuplicate>,
+    /// What every OpenStreetMap bridge was built from, and why.
+    pub bridges: Vec<BridgeFit>,
 }
 
-/// The length of the bridge model a road of `family` gets.
+/// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, and every
+/// OpenStreetMap bridge built from the part that fits it on the original ground `base`.
+#[must_use]
+pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightmap) -> FittedGraph {
+    // a roundabout too small for the tightest arc of its surface is a plain crossing
+    let flat = collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
+    let (built, duplicates) = drop_duplicates(&flat);
+    let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
+    let (graph, bridges) = fit_bridges(&built, &|site| choose(catalog, site), &ground);
+    FittedGraph {
+        built,
+        graph,
+        duplicates,
+        bridges,
+    }
+}
+
+/// The length of the bridge model a bridge over a dip on a road of `family` gets.
 fn model_length(catalog: &PieceCatalog, family: naves_core::catalog::Family) -> Option<f64> {
     longest_bridge(catalog, family).map(|model| model.length)
 }
@@ -249,7 +270,12 @@ pub fn plan_roads(
     frame: &MapGeo,
     progress: &dyn Fn(&str),
 ) -> Result<RoadPlan, BuildError> {
-    let (built, widened, duplicates) = widened_graph(features, catalog);
+    let FittedGraph {
+        graph: widened,
+        duplicates,
+        bridges,
+        ..
+    } = fitted_graph(features, catalog, base);
     let first = place_once(&widened, catalog, base)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
         find_dips(
@@ -289,12 +315,7 @@ pub fn plan_roads(
         (graph, placed, left, true)
     };
     placed.net.duplicates = duplicates;
-    // a stretch that was an OpenStreetMap bridge and is none any more, not even by a dip bridge
-    for id in lost_bridges(&built, &graph) {
-        placed.net.warnings.push(format!(
-            "bridge on {id}: no room for a bridge model between the junctions"
-        ));
-    }
+    placed.net.bridge_fits = bridges;
     Ok(RoadPlan {
         graph,
         placed,
@@ -745,5 +766,6 @@ pub fn generate(
         warnings,
         used_land_cover: sources.land_cover.is_some(),
         used_osm: sources.osm.is_some(),
+        bridges: roads.net.bridge_fits.clone(),
     })
 }

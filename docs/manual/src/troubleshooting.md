@@ -183,6 +183,13 @@ them would have to be steeper than its limit. Another cause: approaches too shor
 below that cannot dip far enough within its own limits. The position is where the two lines cross. Move the junction
 away from the crossing in the data, or accept it.
 
+**`bridge_not_built`: "Bridge ... (12 m) is plain road: the install has no concrete panels and no bridge model that fits it"**
+An OpenStreetMap bridge longer than 3 m is built from a bridge model or a row of concrete panels (see
+[what a bridge is built from](getting-started.md#roads)). The DayZ Server install has no panels
+(`dz\structures\roads\panels\` in `addons/structures_roads.pbo` could not be read, see the warnings) and no bridge
+model of the road's surface that fits the bridge and its room, so the bridge is laid as an ordinary road. Check the
+install (Steam: verify the files of DayZ Server). A bridge of at most 3 m is filled on purpose and is no finding.
+
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type
 (or of all bridge models) is used, and where no model can be read the clearance under bridges over roads is not
@@ -200,10 +207,6 @@ are less than 1 m or more than 200 m apart, or that cannot be read is left out; 
 The Sakhal archive (`sakhal/addons/structures_sakhal.pbo`) or the industrial archive
 (`addons/structures_industrial.pbo`) is missing, or a model in it; the build goes on without those parts.
 
-**`bridge on ...: no room for a bridge model between the junctions`**
-An OpenStreetMap bridge is shorter than one bridge model and the roads beside it, junction to junction, are too short
-to give the rest (they keep at least 1 m). It is built as an ordinary road. Move a junction away from the bridge in
-the data, or place a bridge by hand in `edits/overrides.toml`.
 
 ## Server mission
 

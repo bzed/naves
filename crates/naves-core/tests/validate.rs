@@ -470,6 +470,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::RoadOverWater,
         Rule::RoadDuplicateDropped,
         Rule::BridgeClearance,
+        Rule::BridgeNotBuilt,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -483,6 +484,40 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::RoadNotDrivable.id(), "road_not_drivable");
     assert_eq!(Rule::RoadDuplicateDropped.id(), "road_duplicate_dropped");
     assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
+    assert_eq!(Rule::BridgeNotBuilt.id(), "bridge_not_built");
+}
+
+#[test]
+fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
+    use naves_core::bridgekind::{BridgeFit, BridgeKind, Fallback};
+    let fit = |id: &str, fallback: Vec<Fallback>, at: (f64, f64)| BridgeFit {
+        stretches: vec![id.to_string()],
+        stretch: id.to_string(),
+        at,
+        family: Family::Asf1,
+        length: 10.4,
+        kind: BridgeKind::Fill,
+        part_length: 0.0,
+        grown: (0.0, 0.0),
+        turn_deg: (0.0, 0.0),
+        fallback,
+    };
+    let mut n = net(vec![]);
+    n.bridge_fits = vec![
+        fit("7:1-2", vec![Fallback::NoParts], (5.0, 6.0)),
+        // filled because it is short, or because there is no room: no finding
+        fit("8:3-4", vec![], (1.0, 1.0)),
+        fit("9:5-6", vec![Fallback::NoRoom], (2.0, 2.0)),
+    ];
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::BridgeNotBuilt, &v);
+    assert_eq!(found.len(), 1, "{v:?}");
+    assert_eq!(found[0].at, (5.0, 6.0));
+    assert!(
+        found[0].message.contains("7:1-2") && found[0].message.contains("10 m"),
+        "{}",
+        found[0].message
+    );
 }
 
 #[test]

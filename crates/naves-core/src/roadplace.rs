@@ -15,11 +15,12 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+use crate::bridgekind::BridgeKind;
 use crate::catalog::{BridgeModel, Family, Junction, PieceCatalog, PieceKind, Port, RoadPiece};
 use crate::roadfit::{
     EndGoal, FitError, FitPiece, GAP_CLOSED_M, GAP_TOLERATED_M, KINK_TOLERATED_DEG, Pose, fit_line,
 };
-use crate::roadnet::{Chain, Ring, RoadGraph, chains_with, overlay_rank, rings};
+use crate::roadnet::{Chain, Ring, RoadGraph, Stretch, chains_with, overlay_rank, rings};
 
 /// Two junctions on one road must be at least this far apart (the length of a junction piece).
 const JUNCTION_SPACING_M: f64 = 12.5;
@@ -66,7 +67,7 @@ pub const BRIDGE_MODELS: [(&str, &[Family]); 5] = [
 ];
 
 /// The file name of a model path, lower case, without folder and extension.
-fn model_name(path: &str) -> String {
+pub(crate) fn model_name(path: &str) -> String {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     name.strip_suffix(".p3d")
         .unwrap_or(name)
@@ -104,13 +105,26 @@ pub fn bridge_for(catalog: &PieceCatalog, family: Family) -> Vec<&BridgeModel> {
     fitting
 }
 
-/// The longest model of [`bridge_for`] (the first in model order among equals): what the placement lays until
-/// bridges are chosen by their length.
+/// The longest model of [`bridge_for`] (the first in model order among equals): what a bridge over a dip gets
+/// (an OpenStreetMap bridge gets the model [`crate::bridgekind::fit_bridges`] chose, see [`bridge_model`]).
 #[must_use]
 pub fn longest_bridge(catalog: &PieceCatalog, family: Family) -> Option<&BridgeModel> {
     bridge_for(catalog, family)
         .into_iter()
         .reduce(|best, b| if b.length > best.length { b } else { best })
+}
+
+/// The bridge model laid on bridge stretch `stretch`: the model its [`Stretch::bridge_kind`] names, else (a
+/// bridge over a dip, or a stretch whose bridges were not fitted) [`longest_bridge`]. `None` where the catalog
+/// has no such model.
+#[must_use]
+pub fn bridge_model<'a>(catalog: &'a PieceCatalog, stretch: &Stretch) -> Option<&'a BridgeModel> {
+    match &stretch.bridge_kind {
+        Some(BridgeKind::Model { model, .. }) => {
+            catalog.bridges().iter().find(|b| &b.model == model)
+        }
+        _ => longest_bridge(catalog, stretch.family),
+    }
 }
 
 /// The identity of a placed object along a stretch: it does not change with the direction a chain is
@@ -205,6 +219,9 @@ pub struct PlacedNetwork {
     pub warnings: Vec<String>,
     /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
     pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
+    /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
+    /// `duplicates`).
+    pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,
     /// The roundabouts that are placed as a closed loop (the others, smaller than the tightest arc of their
     /// family, are ordinary crossings).
     pub rings: Vec<crate::roadnet::Ring>,
@@ -1390,7 +1407,16 @@ impl<'a> Placer<'a> {
             .and_then(|l| self.graph.stretches.get(l.stretch))
             .map(|s| s.id.clone())
             .unwrap_or_default();
-        let Some(model) = longest_bridge(self.catalog, family) else {
+        let stretch = self
+            .chains
+            .get(c)
+            .and_then(|ch| ch.links.get(first + k))
+            .and_then(|l| self.graph.stretches.get(l.stretch));
+        let model = match stretch {
+            Some(s) => bridge_model(self.catalog, s),
+            None => longest_bridge(self.catalog, family),
+        };
+        let Some(model) = model else {
             return Ok(out);
         };
         let length = model.length;

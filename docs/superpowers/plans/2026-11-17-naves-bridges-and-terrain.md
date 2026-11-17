@@ -38,8 +38,8 @@ throwaway code that made them, `/var/tmp/naves-bridgerecon/recon.patch` (an ODOL
 - Docs (`docs/manual`) and a `CHANGELOG.md` line in the commit that changes behaviour. Conventional commits.
 - The goal behind every rule: roads that are drivable and usable. A rule of this plan that makes a road less usable is
   reported, not enforced.
-- All lengths are metres on the map. Constants, verbatim from the spec: `FILL_MAX_M = 3.0`, `CULVERT_MAX_M = 6.0`,
-  the pipe's size from the catalog (`Pipe::diameter`, 2.63 m measured; not a constant `PIPE_M`), `COVER_M = 0.5`, `MODEL_FILL = 2.0 / 3.0`, `BRIDGE_NARROWER_M = 1.0`, `GROW_TURN_MAX_DEG = 5.0`,
+- All lengths are metres on the map. Constants, verbatim from the spec: `FILL_MAX_M = 3.0` (the culvert, with
+  `CULVERT_MAX_M` and `COVER_M`, was dropped after the game check), `MODEL_FILL = 2.0 / 3.0`, `BRIDGE_NARROWER_M = 1.0`, `GROW_TURN_MAX_DEG = 5.0`,
   `PASS_MARGIN_M = 1.0`, `BRIDGE_AIR_M = 1.0`, `MAX_DECK_THICKNESS_M = 4.0`, `BRIDGE_CLEARANCE_M = 4.5`; a panel is
   6.0 m across the road and 3.0 m along it at scale 1; a panel's scale is `W / 6.0`, never below 1. `MAX_BRIDGE_SCALE`
   is removed.

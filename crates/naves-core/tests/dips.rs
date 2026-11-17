@@ -311,6 +311,58 @@ fn a_span_may_reach_the_end_of_a_stretch_that_continues_into_another() {
 }
 
 #[test]
+fn a_span_keeps_a_metre_before_a_bend_beyond_the_end_of_its_stretch() {
+    // the stretch continues into another that turns by 8 degrees at once (the road outside a dip bridge may
+    // turn by 10): the road beyond is no straight room, so the span keeps a metre from the node and a single
+    // model over the last 25 m does not fit
+    let (s8, c8) = 8.0_f64.to_radians().sin_cos();
+    let bend = |turn: (f64, f64)| {
+        build_graph(&[
+            feature(1, &[(0.0, 200.0), (200.0, 200.0)], &[1, 2], Family::Asf3),
+            feature(
+                2,
+                &[
+                    (200.0, 200.0),
+                    (200.0 + 100.0 * turn.1, 200.0 + 100.0 * turn.0),
+                ],
+                &[2, 3],
+                Family::Grav,
+            ),
+        ])
+    };
+    let graph = bend((s8, c8));
+    let first = index_of(&graph, "1:");
+    assert_eq!(
+        decide(&dip(first, 175.0, 200.0, false), &graph, Some(25.0)).0,
+        DipAction::Fill
+    );
+    // where it goes on straight the span still reaches the node
+    let graph = bend((0.0, 1.0));
+    let first = index_of(&graph, "1:");
+    assert_eq!(
+        decide(&dip(first, 175.0, 200.0, false), &graph, Some(25.0)).0,
+        DipAction::Bridge
+    );
+}
+
+#[test]
+fn an_osm_bridge_to_be_built_from_its_own_part_gets_no_dip_bridge() {
+    let mut graph = straight_road(Family::Asf3);
+    graph.stretches[0].bridge_kind = Some(naves_core::bridgekind::BridgeKind::Panels {
+        count: 4,
+        scale: 1.0,
+    });
+    let (action, span) = decide(&dip(0, 180.0, 220.0, false), &graph, Some(25.0));
+    assert_eq!((action, span), (DipAction::Fill, None));
+    // a filled one is road and may get one
+    graph.stretches[0].bridge_kind = Some(naves_core::bridgekind::BridgeKind::Fill);
+    assert_eq!(
+        decide(&dip(0, 180.0, 220.0, false), &graph, Some(25.0)).0,
+        DipAction::Bridge
+    );
+}
+
+#[test]
 fn a_dip_in_a_bend_gets_no_bridge() {
     // an arc of radius 30 m through 90 degrees: over 25 m it leaves the chord by more than 2 m
     let radius = 30.0;

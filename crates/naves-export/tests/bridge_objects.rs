@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! A short OSM bridge on a road wider than its bridge model goes through the generation as a scaled bridge
-//! object: the transform carries the scale and the height is the deck level less `scale * deck_height`.
+//! An OSM bridge goes through the generation as a bridge object of the model that fits it, unscaled, and
+//! every OSM bridge says what it was built from.
 
 #![cfg(unix)]
 #![expect(
@@ -15,6 +15,8 @@
 
 use std::path::Path;
 
+use naves_core::bridgekind::{BridgeKind, Fallback};
+use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::objects::piece_transform;
 use naves_core::project::Project;
 use naves_export::generate::generate;
@@ -130,14 +132,14 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
     std::fs::copy(fixture, proj.join("dem/koenigssee.tif")).unwrap();
 
-    // a gravel track (6 m) east to west through the middle with an 8 m bridge: the wooden model of the
-    // synthetic catalog is 5 m wide, a metre narrower than the road, and it is laid as it is (bridges were
-    // scaled to the road's width before, by 1.2 here)
+    // a gravel track (6 m) east to west through the middle with a bridge of 30 m (15 m on the map at half
+    // scale): it gets the plain wooden deck (19.7 m), laid as it is (bridges were scaled to the road's width
+    // before)
     let lat = 47.55;
     let nodes = [
         (1, lat, 12.9715),
         (2, lat, 12.9745),
-        (3, lat, 12.9746),
+        (3, lat, 12.9749),
         (4, lat, 12.9776),
     ];
     let track = vec![("highway", "track"), ("tracktype", "grade2")];
@@ -181,13 +183,20 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
     }
     assert!((f64::from(transform[4]) - 1.0).abs() < 1e-6);
 
-    // the height is the deck level less the deck height (0.05 m for the synthetic wooden bridge); the
-    // deck follows the ground at the bridge's ends, which is flat enough here to compare with its middle
+    assert!(object.model.contains("bridge_wood2"), "{}", object.model);
+    // the height is the deck level less the model's deck height; the deck follows the ground at the bridge's
+    // ends, which is flat enough here to compare with its middle
+    let deck = synthetic_catalog()
+        .bridges()
+        .iter()
+        .find(|b| b.model == object.model)
+        .unwrap()
+        .deck_height;
     let ground = f64::from(generated.heightmap.sample(object.x, object.y).height);
     let height = f64::from(generated.heights[i]);
     assert!(
-        (height + 0.05 - ground).abs() < 1.5,
-        "height {height}, ground {ground}"
+        (height + deck - ground).abs() < 1.5,
+        "height {height}, deck {deck}, ground {ground}"
     );
     assert!(
         (f64::from(transform[10]) - height).abs() < 1e-6,
@@ -196,7 +205,7 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
 }
 
 #[test]
-fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warning() {
+fn a_bridge_between_two_junctions_without_room_loses_panels_and_is_never_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
     let proj = dir.path().join("proj");
@@ -206,8 +215,8 @@ fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warnin
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/dem/koenigssee.tif");
     std::fs::copy(fixture, proj.join("dem/koenigssee.tif")).unwrap();
 
-    // the same track, with a side road at each end of the 8 m bridge: no stretch continues it, so there is
-    // no room for a model
+    // the same track, with a side road at each end of a 7.5 m bridge (3.8 m on the map): no stretch continues
+    // it, so there is no room to grow
     let lat = 47.55;
     let nodes = [
         (1, lat, 12.9715),
@@ -237,12 +246,23 @@ fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warnin
     p.save(&proj).unwrap();
 
     let generated = generate(&proj, &p, &env.tools(), &|_| {}).unwrap();
-    let wanted = "bridge on 11:2-3: no room for a bridge model between the junctions";
+    // there is no warning about room any more: the bridge wanted two panels (6 m), one fits on its line
     assert!(
-        generated.warnings.iter().any(|w| w == wanted),
+        generated.warnings.iter().all(|w| !w.contains("no room")),
         "{:?}",
         generated.warnings
     );
+    assert_eq!(generated.bridges.len(), 1, "{:?}", generated.bridges);
+    let fit = &generated.bridges[0];
+    assert_eq!(fit.stretches, vec!["11:2-3".to_string()]);
+    assert_eq!(
+        fit.kind,
+        BridgeKind::Panels {
+            count: 1,
+            scale: 1.0
+        }
+    );
+    assert_eq!(fit.fallback, vec![Fallback::PanelsShortened { wanted: 2 }]);
     assert!(
         generated
             .objects
@@ -250,6 +270,6 @@ fn a_bridge_between_two_junctions_without_room_is_an_ordinary_road_with_a_warnin
             .all(|o| !o.model.contains("bridge")),
         "no bridge model is laid"
     );
-    // the stretch is ordinary road now: the roads and junctions around it are built and none of it is a bridge
+    // until panel rows are laid the stretch is ordinary road: the roads and junctions around it are built
     assert_ne!(generated.objects.len(), 0);
 }

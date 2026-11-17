@@ -26,6 +26,7 @@ fn stretch(id: &str, a: (f64, f64), b: (f64, f64), bridge: bool, tunnel: bool) -
         points: vec![a, b],
         start: 1,
         end: 2,
+        bridge_kind: None,
     }
 }
 

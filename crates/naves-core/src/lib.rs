@@ -3,6 +3,7 @@
 
 //! Náves core: project, DEM, projection, heightmap and generation.
 
+pub mod bridgekind;
 pub mod catalog;
 pub mod checks;
 pub mod conform;

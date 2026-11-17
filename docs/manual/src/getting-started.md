@@ -273,15 +273,36 @@ its height; the ground starts to be shaped only at the abutments. Gravel and dir
 paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
 the stone bridge or `bridge_concrete3`, gravel and dirt tracks `bridge_wood_25` or `bridge_wood2`. A model may be
 up to 1 m narrower than the road (wider is always fine); a model more than 1 m narrower is not used. Bridges are never
-scaled. Until bridges are chosen by their length, the longest model a road may have is laid. For each model the
+scaled. Which of them, or whether a row of concrete panels, is told below. For each model the
 catalog measures, on its collision geometry, what hangs below the deck in slices of 1 m: the deck, the solid ends
 (the abutment blocks of the metal bridge, the flanks of the stone arch) and whether they hold the ground back, and
 the wooden posts. The deck thickness used for the clearance over a road below is the depth of the deck over the
 longest open stretch between the solid parts.
-Every bridge in OpenStreetMap is a bridge in the game: one that is shorter than a bridge model grows evenly into the roads on both sides until a model fits (each neighbouring stretch keeps at least 1 m). Between two junctions that leave no room for a model the bridge stays an ordinary road, and the build says so.
+
+**What a bridge is built from.** Every OpenStreetMap bridge is built from a part that fits its length (on the map; bridge ways that follow each other
+are one bridge):
+
+- **At most 3 m:** plain road on the terrain, on purpose (no finding).
+- **At least two thirds as long as a bridge model of its road:** the shortest such model that is at least as long as
+  the bridge. A bridge longer than all of them gets a chain of the longest end to end (`bridge_wood2` is never
+  chained; it is laid alone where it covers two thirds of the bridge). `bridge_wood_25` stands on posts and is used
+  only where the original ground under every post is within the posts' reach (2.6 m) below the deck and at most
+  0.5 m above it, the deck taken on the line between the ground at its two ends; else the next model.
+- **Anything else:** a row of concrete panels (`panel_concrete_1`), laid crosswise and scaled by the road's width
+  over the panel's 6 m (never below 1), as many along the bridge as cover it.
+
+A part longer than the bridge takes the missing length evenly from the road at both ends, but **only along a straight
+line**: the road it grows into may turn by at most 5 degrees in total from the bridge's own heading and keeps at least
+1 m before a junction, another bridge or a dead end; where one side has no room the other takes the rest. A model
+without room becomes a panel row of the bridge's length; a panel row without room loses panels down to one; one
+panel longer than all the room is laid centred on the bridge if it stays 1 m clear of the junctions; else the bridge
+is plain road. No bridge is dropped: the build knows for every OpenStreetMap bridge what it became and why. If the
+install has neither panels nor a model that fits, the bridge is plain road and the finding is `bridge_not_built`.
+**Panel rows are not laid yet:** until they are, a bridge that gets panels is built as an ordinary road.
+
 A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at
-least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays clear of junctions and
-dead ends, and the road is straight within 2 m over each model) it gets a bridge, or a chain of bridges end to end over
+least **8 m deep** and a bridge model fits (the dip is at least half a model long, a whole number of models laid evenly over it stays 1 m clear of junctions,
+dead ends, other bridges and a bend right after its stretch, and the road is straight within 2 m over each model; an OpenStreetMap bridge built from its own part gets none) it gets a bridge, or a chain of bridges end to end over
 a long dip; the ground below is left alone. A bridge of a dip needs straight road before and after it: at each end, every point of the road within 12.5 m outside the bridge (also across a change of surface) must lie within 10 degrees of the direction of the bridge model there (with less than 12.5 m, at least 4 m must be measurable), and the road over 4 m inside the bridge within 20 degrees. When the bridge laid evenly over the dip passes the straightness test over each model but fails this, it is moved along the dip, as far as it still covers it, in 0.5 m steps (the shorter move first, the earlier position on a tie); if no position passes, the dip is filled instead. Otherwise (a dip less than 8 m deep, or no model fits) a dip without water is
 filled, as before, and one with a stream
 (`waterway=stream`, `river` or `canal` crossing the road), a river or a lake under it is left as it is and reported as

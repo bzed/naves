@@ -50,7 +50,7 @@ use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, check_roads};
 use naves_export::catalog_read::road_catalog;
-use naves_export::generate::{Placed, place_once, plan_roads, widened_graph};
+use naves_export::generate::{FittedGraph, Placed, fitted_graph, place_once, plan_roads};
 use naves_export::tools::Tools;
 
 fn len(p: &PieceCheck) -> f64 {
@@ -168,7 +168,12 @@ fn main() {
     }
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
-    let (built, widened, duplicates) = widened_graph(&features, &catalog);
+    let FittedGraph {
+        graph: widened,
+        duplicates,
+        bridges,
+        ..
+    } = fitted_graph(&features, &catalog, &base);
     {
         let total: f64 = duplicates.iter().map(|d| d.to_m - d.from_m).sum();
         println!(
@@ -190,56 +195,44 @@ fn main() {
         }
     }
     {
-        // OSM bridge stretches: before (built as a bridge only from 10 m chord) and after widening
-        let chord = |s: &naves_core::roadnet::Stretch| match (s.points.first(), s.points.last()) {
-            (Some(a), Some(b)) => (b.0 - a.0).hypot(b.1 - a.1),
-            _ => 0.0,
-        };
-        let osm: Vec<_> = built
-            .stretches
-            .iter()
-            .zip(&widened.stretches)
-            .filter(|(b, _)| b.bridge && !b.tunnel)
-            .collect();
-        let before = osm.iter().filter(|(b, _)| chord(b) >= 10.0).count();
-        let after = osm.iter().filter(|(_, a)| a.bridge).count();
-        let plen = |s: &naves_core::roadnet::Stretch| -> f64 {
-            s.points
-                .windows(2)
-                .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
-                .sum()
-        };
-        let mut grown: Vec<f64> = osm
-            .iter()
-            .filter(|(b, a)| a.bridge && plen(a) - plen(b) > 1e-6)
-            .map(|(b, a)| plen(a) - plen(b))
-            .collect();
+        // what every OpenStreetMap bridge is built from (one line each, for a table)
         println!(
-            "OSMBRIDGE stretches {} built as bridge before {before} after {after} widened {}",
-            osm.len(),
-            grown.len()
+            "OSMBRIDGE bridges {} stretches {}",
+            bridges.len(),
+            bridges.iter().map(|b| b.stretches.len()).sum::<usize>()
         );
-        if !grown.is_empty() {
+        for b in &bridges {
+            let (kind, count, scale) = match &b.kind {
+                naves_core::bridgekind::BridgeKind::Fill => ("fill".to_string(), 0, 0.0),
+                naves_core::bridgekind::BridgeKind::Panels { count, scale } => {
+                    ("panels".to_string(), *count, *scale)
+                }
+                naves_core::bridgekind::BridgeKind::Model { model, count } => (
+                    model
+                        .rsplit('\\')
+                        .next()
+                        .unwrap_or(model)
+                        .trim_end_matches(".p3d")
+                        .to_string(),
+                    *count,
+                    1.0,
+                ),
+            };
+            let why: Vec<String> = b.fallback.iter().map(ToString::to_string).collect();
             println!(
-                "OSMBRIDGE widened by p10/p50/p90/max {:.1} {:.1} {:.1} {:.1} m",
-                pct(&mut grown, 0.1),
-                pct(&mut grown, 0.5),
-                pct(&mut grown, 0.9),
-                pct(&mut grown, 1.0)
-            );
-        }
-        for (b, _) in osm.iter().filter(|(b, a)| b.bridge && !a.bridge) {
-            let m = b
-                .points
-                .get(b.points.len() / 2)
-                .copied()
-                .unwrap_or_default();
-            println!(
-                "OSMBRIDGE no room {} length {:.1} m at ({:.0}, {:.0})",
-                b.id,
-                plen(b),
-                m.0,
-                m.1
+                "OSMBRIDGEFIT {}\t{}\t{:?}\t{:.2}\t{kind}\t{count}\t{scale:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}\t{}",
+                b.stretch,
+                b.stretches.join("+"),
+                b.family,
+                b.length,
+                b.part_length,
+                b.grown.0,
+                b.grown.1,
+                b.turn_deg.0,
+                b.turn_deg.1,
+                b.at.0,
+                b.at.1,
+                why.join("; ")
             );
         }
     }
@@ -295,7 +288,7 @@ fn main() {
     );
     // the deck thickness as the build takes it (`place_once`): none where no bridge model can be measured
     let thickness = |s: &naves_core::roadnet::Stretch| {
-        naves_core::roadplace::longest_bridge(&catalog, s.family).and_then(|m| {
+        naves_core::roadplace::bridge_model(&catalog, s).and_then(|m| {
             (m.thickness_source != naves_core::catalog::ThicknessSource::Unknown)
                 .then_some(m.deck_thickness)
         })

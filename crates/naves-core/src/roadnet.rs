@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::f64::consts::{FRAC_PI_4, PI, TAU};
 
+use crate::bridgekind::{BridgeKind, straight_room};
 use crate::catalog::Family;
 use crate::features::{Feature, FeatureKind};
 
@@ -45,6 +46,9 @@ pub struct Stretch {
     pub start: i64,
     /// Node id at the last point.
     pub end: i64,
+    /// For a stretch that is an OpenStreetMap bridge, what it is built from (see
+    /// [`crate::bridgekind::fit_bridges`]); `None` for every other stretch and before the bridges are fitted.
+    pub bridge_kind: Option<BridgeKind>,
 }
 
 /// A node where stretches meet.
@@ -353,11 +357,17 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         points: w.points,
         start,
         end,
+        bridge_kind: None,
     })
 }
 
 /// A node's position and the stretches that end there.
 type NodeEntry = (Option<(f64, f64)>, BTreeSet<usize>);
+
+/// The crossings of `stretches`.
+pub(crate) fn crossings_of(stretches: &[Stretch]) -> Vec<Crossing> {
+    crossings(stretches)
+}
 
 fn crossings(stretches: &[Stretch]) -> Vec<Crossing> {
     let mut at: BTreeMap<i64, NodeEntry> = BTreeMap::new();
@@ -885,10 +895,8 @@ pub struct BridgeSpan {
 
 /// A span shorter than this is dropped, a remainder shorter than this is not a piece.
 const EPS_M: f64 = 1e-6;
-/// A span stops this far short of a junction or a dead end.
+/// A span stops this far short of a junction, a dead end or a bend.
 const CLEARANCE_M: f64 = 1.0;
-/// A neighbour that gives room to a bridge keeps at least this much.
-const KEEP_M: f64 = 1.0;
 
 /// A polyline.
 type Points = Vec<(f64, f64)>;
@@ -950,28 +958,31 @@ fn first_free_node(graph: &RoadGraph) -> i64 {
         .map_or(1, |m| m.saturating_add(1))
 }
 
-/// The part of stretch `i`, in metres along it, that a bridge may cover: a stretch end that continues into
-/// exactly one other stretch may be reached, a crossing of three or more stretches or a dead end is kept
-/// 1 m clear. `None` for a stretch that is not in the graph.
-#[must_use]
-pub fn bridge_room(graph: &RoadGraph, i: usize) -> Option<(f64, f64)> {
+/// The part of stretch `i`, in metres along it, that a span may cover: an end where the road goes on straight
+/// beyond the stretch ([`straight_room`] is not 0 there) may be reached; a junction, a dead end, another bridge or
+/// a bend right after the end is kept 1 m clear. `None` for a stretch that is not in the graph.
+pub(crate) fn span_room(graph: &RoadGraph, i: usize) -> Option<(f64, f64)> {
     let s = graph.stretches.get(i)?;
-    let through = |node: i64| {
-        graph
-            .crossings
-            .iter()
-            .any(|c| c.node == node && c.stretches.len() == 2 && c.stretches.contains(&i))
-    };
-    let lo = if through(s.start) { 0.0 } else { CLEARANCE_M };
-    let hi = polyline_length(&s.points) - if through(s.end) { 0.0 } else { CLEARANCE_M };
+    let (before, after) = straight_room(graph, i);
+    let lo = if before > 0.0 { 0.0 } else { CLEARANCE_M };
+    let hi = polyline_length(&s.points) - if after > 0.0 { 0.0 } else { CLEARANCE_M };
     Some((lo, hi))
+}
+
+/// Whether stretch `s` is an OpenStreetMap bridge that is built from its own part (anything but a fill): no
+/// span is cut from it.
+pub(crate) fn built_as_bridge(s: &Stretch) -> bool {
+    s.bridge_kind
+        .as_ref()
+        .is_some_and(|k| !matches!(k, BridgeKind::Fill))
 }
 
 /// The graph with the spans cut out of their stretches as bridge stretches. The part before the first
 /// span keeps the stretch's id; a span is `<id>/bridge<n>` and the road after it `<id>/after<n>`, `n`
-/// counted from the stretch's start. A span that reaches a crossing with three or more stretches, or the
-/// end of a dead end, is shortened to stop 1 m before it. Overlapping spans are merged. Spans on bridges
-/// and tunnels are ignored.
+/// counted from the stretch's start. A span stops 1 m before a crossing with
+/// three or more stretches, the end of a dead end, another bridge or a bend right after the stretch's end.
+/// Overlapping spans are merged. Spans on bridges, on OpenStreetMap bridges built from their own part and on
+/// tunnels are ignored; the cut pieces have no [`Stretch::bridge_kind`].
 ///
 /// The new ends get node ids above all others, in the order of the stretches and along each stretch, so
 /// the result does not depend on anything else. A cut piece is therefore not always in the canonical
@@ -983,14 +994,14 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
     let mut stretches: Vec<Stretch> = Vec::new();
     for (i, s) in graph.stretches.iter().enumerate() {
         let total = polyline_length(&s.points);
-        let (lo, hi) = bridge_room(graph, i).unwrap_or((0.0, total));
+        let (lo, hi) = span_room(graph, i).unwrap_or((0.0, total));
         let mut mine: Vec<(f64, f64)> = spans
             .iter()
             .filter(|sp| sp.stretch == i && sp.from_m.is_finite() && sp.to_m.is_finite())
             .map(|sp| (sp.from_m.max(lo), sp.to_m.min(hi)))
             .filter(|(f, t)| t - f > EPS_M)
             .collect();
-        if s.bridge || s.tunnel || mine.is_empty() {
+        if s.bridge || s.tunnel || built_as_bridge(s) || mine.is_empty() {
             stretches.push(s.clone());
             continue;
         }
@@ -1018,6 +1029,7 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
                 points: slice_points(&s.points, from, to),
                 start: *node,
                 end,
+                bridge_kind: None,
                 ..s.clone()
             });
             *node = end;
@@ -1047,39 +1059,6 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
     }
 }
 
-/// The ids of the bridge stretches of `before` that are no bridge in `after`: a bridge stretch of `after`
-/// with the same id, or one cut from it by [`with_bridge_spans`] (`<id>/bridge<n>`), keeps it a bridge.
-#[must_use]
-pub fn lost_bridges<'a>(before: &'a RoadGraph, after: &RoadGraph) -> Vec<&'a str> {
-    let kept = |id: &str| {
-        let cut = format!("{id}/bridge");
-        after
-            .stretches
-            .iter()
-            .any(|s| s.bridge && (s.id == id || s.id.starts_with(&cut)))
-    };
-    before
-        .stretches
-        .iter()
-        .filter(|s| s.bridge && !kept(&s.id))
-        .map(|s| s.id.as_str())
-        .collect()
-}
-
-/// The stretch that continues stretch `i` at its start or end: the only other one at a crossing of exactly
-/// two stretches, if it is a plain road (not a bridge, a tunnel or a loop).
-fn continuation(graph: &RoadGraph, i: usize, at_start: bool) -> Option<usize> {
-    let this = graph.stretches.get(i)?;
-    let node = if at_start { this.start } else { this.end };
-    let crossing = graph.crossings.iter().find(|c| c.node == node)?;
-    let &[first, second] = crossing.stretches.as_slice() else {
-        return None;
-    };
-    let other = if first == i { second } else { first };
-    let next = graph.stretches.get(other)?;
-    (other != i && !next.bridge && !next.tunnel && next.start != next.end).then_some(other)
-}
-
 /// Splits `points` at distance `d` from its start into the part up to there and the part from there.
 fn split_points(points: &[(f64, f64)], d: f64) -> (Points, Points) {
     let total = polyline_length(points);
@@ -1090,8 +1069,8 @@ fn split_points(points: &[(f64, f64)], d: f64) -> (Points, Points) {
 }
 
 /// Moves `t` metres of stretch `n`, from the crossing at its `bridge_at_start` side of bridge `i`, over to
-/// the bridge.
-fn grow(graph: &mut RoadGraph, i: usize, bridge_at_start: bool, n: usize, t: f64) {
+/// the bridge. The crossings are not updated.
+pub(crate) fn grow_into(graph: &mut RoadGraph, i: usize, bridge_at_start: bool, n: usize, t: f64) {
     if t <= EPS_M {
         return;
     }
@@ -1128,54 +1107,6 @@ fn grow(graph: &mut RoadGraph, i: usize, bridge_at_start: bool, n: usize, t: f64
             b.points.extend(head);
         }
     }
-}
-
-/// For each bridge stretch shorter than `needed(stretch)`, the same stretch grown evenly at both ends into
-/// the stretches that continue it (crossings of exactly two stretches), as far as they allow: if one side
-/// allows less than half of what is missing the other takes the rest. A neighbour keeps at least 1 m. The
-/// nodes stay where they are in the graph, only their points move, so no id changes. A bridge that cannot
-/// reach `needed` that way is no bridge in the result (`bridge` is false) and its neighbours are as they
-/// were.
-#[must_use]
-pub fn widen_bridges(graph: &RoadGraph, needed: &dyn Fn(&Stretch) -> f64) -> RoadGraph {
-    let mut g = graph.clone();
-    for i in 0..g.stretches.len() {
-        let Some(s) = g.stretches.get(i) else {
-            continue;
-        };
-        if !s.bridge || s.tunnel {
-            continue;
-        }
-        let want = needed(s);
-        let missing = want - polyline_length(&s.points);
-        if !want.is_finite() || missing <= EPS_M {
-            continue;
-        }
-        let before = continuation(&g, i, true);
-        let after = continuation(&g, i, false).filter(|&a| Some(a) != before);
-        let room = |n: Option<usize>| {
-            n.and_then(|n| g.stretches.get(n))
-                .map_or(0.0, |n| (polyline_length(&n.points) - KEEP_M).max(0.0))
-        };
-        let (room_before, room_after) = (room(before), room(after));
-        if room_before + room_after + EPS_M < missing {
-            if let Some(s) = g.stretches.get_mut(i) {
-                s.bridge = false;
-            }
-            continue;
-        }
-        let take_before = (missing / 2.0).min(room_before);
-        let take_after = (missing - take_before).min(room_after);
-        let take_before = (missing - take_after).min(room_before);
-        if let Some(n) = before {
-            grow(&mut g, i, true, n, take_before);
-        }
-        if let Some(n) = after {
-            grow(&mut g, i, false, n, take_after);
-        }
-    }
-    g.crossings = crossings(&g.stretches);
-    g
 }
 
 /// Two roads along each other for at least this long are one road drawn twice.

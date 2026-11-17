@@ -11,15 +11,14 @@
 
 use std::collections::BTreeSet;
 
+use naves_core::bridgekind::{choose, fit_bridges};
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_bridges, width};
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::dips::{Dip, DipAction, decide};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
-use naves_core::roadnet::{build_graph, collapse_small_rings, widen_bridges, with_bridge_spans};
-use naves_core::roadplace::{
-    PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, longest_bridge, place_network,
-};
+use naves_core::roadnet::{build_graph, collapse_small_rings, with_bridge_spans};
+use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network};
 
 fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
     Feature {
@@ -448,26 +447,37 @@ fn a_bridge_is_a_straight_run_of_bridge_models() {
     assert_eq!(indices, vec![0, 1, 2, 3]);
 }
 
-/// The network of `features` with every bridge widened to one model, as the build does.
-fn place_widened(features: &[Feature]) -> PlacedNetwork {
+/// The network of `features` with every OpenStreetMap bridge built from the part that fits it, as the build
+/// does.
+fn place_fitted(features: &[Feature]) -> PlacedNetwork {
     let catalog = synthetic_catalog();
-    let graph = widen_bridges(&build_graph(features), &|s| {
-        longest_bridge(&catalog, s.family).map_or(0.0, |m| m.length)
-    });
+    let (graph, _) = fit_bridges(
+        &build_graph(features),
+        &|site| choose(&catalog, site),
+        &|_| 0.0,
+    );
     place_network(&graph, &catalog).unwrap()
 }
 
 #[test]
-fn an_eight_metre_osm_bridge_is_built_as_a_bridge() {
-    let net = place_widened(&bridged(8.0));
+fn a_sixteen_metre_osm_bridge_is_built_from_the_model_it_fills() {
+    let net = place_fitted(&bridged(16.0));
     let bridges = of_kind(&net, PlacedKind::Bridge);
     assert_eq!(bridges.len(), 1, "{:?}", net.warnings);
-    // one 25 m model, centred on the 8 m bridge
+    // one 21.1 m concrete3, not the 25 m stone bridge, centred on the 16 m bridge
     let b = bridges[0];
+    assert!(b.model.contains("bridge_concrete3"), "{}", b.model);
     assert!(
-        (b.start.x - 391.5).abs() < 1.0 && (b.end.x - 416.5).abs() < 1.0,
+        (b.start.x - 397.45).abs() < 1.0 && (b.end.x - 418.55).abs() < 1.0,
         "{b:?}"
     );
+}
+
+#[test]
+fn an_eight_metre_osm_bridge_lays_no_model() {
+    // a panel row, laid as plain road until panel rows are laid
+    let net = place_fitted(&bridged(8.0));
+    assert_eq!(of_kind(&net, PlacedKind::Bridge).len(), 0);
 }
 
 #[test]
