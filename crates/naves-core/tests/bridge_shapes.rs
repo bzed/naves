@@ -99,6 +99,21 @@ fn an_arch_deepens_from_the_crown_to_the_springings() {
 }
 
 #[test]
+fn the_deck_of_an_arch_is_not_deeper_than_its_opening_can_be() {
+    // the opening ends inside a slice whose flank hangs deeper than 4 m: the slice counts for the thickness over
+    // the opening, but nothing in the opening is deeper than 4 m (deeper geometry is solid)
+    let c = catalog_with("bridge_stone_25", arch_bridge(25.0, 9.0, 7.9, 3.5, 16.9));
+    let b = bridge(&c, "bridge_stone_25");
+    let (from, to) = b.opening();
+    assert!(b.thickness(from, to) > MAX_DECK_THICKNESS_M);
+    assert!(
+        near(b.deck_thickness, MAX_DECK_THICKNESS_M, 1e-12),
+        "{}",
+        b.deck_thickness
+    );
+}
+
+#[test]
 fn posts_hold_nothing_back() {
     let c = catalog_with(
         "bridge_wood_25",
@@ -471,6 +486,14 @@ fn between_two_pylons_the_deck_hangs_and_only_the_pylons_stand() {
             .all(|p| p.2.abs() >= 6.7 - 1e-4 && p.3.abs() >= 6.7 - 1e-4)
     );
     assert_eq!(stands.len(), 4);
+    // the pylons stand beside the deck, yet a road below that clears the deck does not pass them: what stands
+    // anywhere across blocks the slice
+    let deep = s.passable(25.0, 4.5);
+    assert_eq!(deep.len(), 1, "{deep:?}");
+    assert!(
+        near(deep[0].0, 0.0, 1e-4) && near(deep[0].1, 23.25, 1e-4),
+        "{deep:?}"
+    );
 }
 
 #[test]
@@ -681,4 +704,55 @@ fn ports_along_a_diagonal_or_swapped_give_the_same_shape() {
     );
     // and the pylons are mirrored across the axis: still the two intervals
     assert_eq!(back.underside.stand[0].len(), 2);
+    // `across` is positive to the left of the first port's way to the second: one pylon to the east of a deck
+    // that runs north stands to the right (negative), and to the left when the deck is used from its far end
+    let one = one_pylon_model();
+    let right = |m: OdolModel, slice: usize| {
+        bridge(&catalog_with("bridge_metal_25", m), "bridge_metal_25")
+            .underside
+            .stand[slice]
+            .clone()
+    };
+    for m in [one.clone(), turned(&one, 0.6), turned(&one, 2.5)] {
+        let feet = right(m, 24);
+        assert_eq!(feet.len(), 1, "{feet:?}");
+        assert!(
+            near(feet[0].0, -8.1, 1e-3) && near(feet[0].1, -6.7, 1e-3),
+            "{feet:?}"
+        );
+    }
+    let feet = right(swapped(&one), 0);
+    assert_eq!(feet.len(), 1, "{feet:?}");
+    assert!(
+        near(feet[0].0, 6.7, 1e-3) && near(feet[0].1, 8.1, 1e-3),
+        "{feet:?}"
+    );
+}
+
+/// A 12 m deck running north with one pylon to its east (model x 6.7 to 8.1) at its second port.
+fn one_pylon_model() -> OdolModel {
+    bridge_of_blocks(
+        25.0,
+        12.0,
+        8.0,
+        false,
+        &[
+            Block {
+                a0: -1.25,
+                a1: 25.0,
+                c0: -6.0,
+                c1: 6.0,
+                top: 0.0,
+                depth: 1.7,
+            },
+            Block {
+                a0: 23.25,
+                a1: 26.6,
+                c0: 6.7,
+                c1: 8.1,
+                top: 1.7,
+                depth: 20.5,
+            },
+        ],
+    )
 }

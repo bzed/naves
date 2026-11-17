@@ -20,6 +20,9 @@
 //! whole metre does not count for it. A face with no along extent (a vertical face across the span) on a whole
 //! metre between two slices is left out; the faces of its solid that have an along extent carry it.
 //!
+//! A triangle that reaches the foot anywhere never hangs, also where it is shallow: a hanging member that shares
+//! a triangle with a foot is not in `hang` there.
+//!
 //! Limitation: "stands" is measured against one foot depth for the whole part, the deepest point. A model whose
 //! piers stand at different depths (none in the catalog today; `bridge_concrete1/2` would) would need a foot
 //! per pier.
@@ -61,7 +64,8 @@ pub struct Underside {
     #[serde(default)]
     pub hang: Vec<f64>,
     /// The across intervals (signed, metres from the axis, sorted and merged) of the feet of what stands in the
-    /// slice; empty where nothing stands.
+    /// slice; empty where nothing stands. `across` is positive to the left of the way from the first port to the
+    /// second.
     #[serde(default)]
     pub stand: Vec<Vec<(f64, f64)>>,
 }
@@ -361,7 +365,9 @@ impl PartShape {
     /// keep from the deck surface: [`Ceiling::Foot`] at [`PartShape::reach_down`] where `across` lies under
     /// something that stands in that slice, else [`Ceiling::Hang`] with the slice's [`Underside::hang`]. A point
     /// outside the part takes the nearest slice (a number that is not one: the first); a part without slices
-    /// gives `Hang(0.0)`.
+    /// gives `Hang(0.0)`. It does not look at the part's across extent: callers ask only within the slice's
+    /// [`Underside::half_width`], and in a slice where a solid part ends tell its open side by [`Solid::from`]
+    /// and [`Solid::to`].
     #[must_use]
     pub fn ceiling(&self, along: f64, across: f64) -> Ceiling {
         let n = self.underside.depth.len();
@@ -532,20 +538,17 @@ struct Slice {
     deep_half_width: f64,
     /// The along extent of that deep geometry, `(min, max)`.
     deep_along: Option<(f64, f64)>,
-    /// The clipped pieces of triangles in the slice.
-    pieces: Vec<Piece>,
+    /// The deepest point of the clipped pieces whose triangle does not reach the foot (they may hang); 0
+    /// without any.
+    loose: f64,
+    /// The deepest point of all clipped pieces, at least 0: what hangs when nothing in the part can stand.
+    any: f64,
+    /// The across intervals of the feet of the pieces that reach the foot, merged as they come.
+    feet: Vec<(f64, f64)>,
 }
 
-/// What of one triangle lies in a slice.
-#[derive(Clone, Copy)]
-struct Piece {
-    /// Its deepest point.
-    deepest: f64,
-    /// Whether its triangle reaches the foot anywhere (then the piece never hangs).
-    reaches: bool,
-    /// If the piece itself reaches the foot, the across interval of its foot.
-    foot: Option<(f64, f64)>,
-}
+/// Feet kept per slice before they are merged.
+const FEET_BEFORE_MERGE: usize = 32;
 
 /// `spans` sorted and merged where they overlap or touch.
 fn merged(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
@@ -684,11 +687,18 @@ fn add_face(slices: &mut [Slice], length: f64, triangle: &[[f64; 3]; 3], foot: f
         let foot_span = (deepest >= foot)
             .then(|| range_of(&clip(&piece, 2, foot, true), 1))
             .flatten();
-        slice.pieces.push(Piece {
-            deepest,
-            reaches,
-            foot: foot_span,
-        });
+        // per slice only two maxima and the merged feet are kept, not every piece: a model of many long
+        // faces does not ask for memory per face and slice
+        slice.any = slice.any.max(deepest);
+        if !reaches {
+            slice.loose = slice.loose.max(deepest);
+        }
+        if let Some(span) = foot_span {
+            slice.feet.push(span);
+            if slice.feet.len() > FEET_BEFORE_MERGE {
+                slice.feet = merged(std::mem::take(&mut slice.feet));
+            }
+        }
         if deepest > MAX_DECK_THICKNESS_M {
             let deep = clip(&piece, 2, MAX_DECK_THICKNESS_M, true);
             if let Some((low, high)) = range_of(&deep, 1) {
@@ -718,19 +728,13 @@ fn underside_of(slices: &[Slice], reach_down: f64) -> Underside {
     Underside {
         hang: slices
             .iter()
-            .map(|s| {
-                s.pieces
-                    .iter()
-                    .filter(|p| !can_stand || !p.reaches)
-                    .map(|p| p.deepest)
-                    .fold(0.0, f64::max)
-            })
+            .map(|s| if can_stand { s.loose } else { s.any })
             .collect(),
         stand: slices
             .iter()
             .map(|s| {
                 if can_stand {
-                    merged(s.pieces.iter().filter_map(|p| p.foot).collect())
+                    merged(s.feet.clone())
                 } else {
                     Vec::new()
                 }

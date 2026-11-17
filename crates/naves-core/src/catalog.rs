@@ -573,7 +573,12 @@ fn measured_bridge(m: &OdolModel, model: &str) -> Result<(BridgeModel, Option<St
     let (part, source, deck_thickness, warning) = if faces_usable {
         let part = shape::measure(&span, width / 2.0, geometry, &m.geometry_faces);
         let (from, to) = part.opening();
-        let thickness = part.thickness(from, to);
+        let mut thickness = part.thickness(from, to);
+        if !part.solid.is_empty() {
+            // a slice at the edge of the opening also holds the solid part beside it; within the opening
+            // nothing is deeper than this, or it would be solid
+            thickness = thickness.min(MAX_DECK_THICKNESS_M);
+        }
         (part, ThicknessSource::Measured, thickness, None)
     } else {
         // what was measured before the faces were read: the lowest vertex within reach of the deck

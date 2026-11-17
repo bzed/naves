@@ -222,6 +222,32 @@ fn stamp(pbo: &Path) -> Result<Stamp, CatalogReadError> {
     })
 }
 
+/// An archive as found: its file, its stamp and a warning about it.
+type Found = (Option<PathBuf>, Option<Stamp>, Option<String>);
+
+/// The archive `file` (if it was found) with its stamp. An optional archive whose size and time cannot be read
+/// is treated as absent, with a warning that starts with its `label`.
+///
+/// # Errors
+/// [`CatalogReadError::Io`] if a `required` archive cannot be stated.
+fn archive_stamp(
+    file: Option<PathBuf>,
+    required: bool,
+    label: &str,
+) -> Result<Found, CatalogReadError> {
+    match file.as_deref().map(stamp).transpose() {
+        Ok(stamped) => Ok((file, stamped, None)),
+        Err(e) if !required => Ok((
+            None,
+            None,
+            Some(format!(
+                "{label} cannot be read: the bridge parts it holds are not used: {e}"
+            )),
+        )),
+        Err(e) => Err(e),
+    }
+}
+
 /// The catalog of the road pieces and bridge parts of the installed game.
 ///
 /// The result is cached in `cache_dir` and rebuilt when one of the archives appears, goes or changes its size
@@ -244,17 +270,8 @@ pub fn road_catalog(tools: &Tools, cache_dir: &Path) -> Result<PieceCatalog, Cat
                 tools.dayz_server.join(archive.path.join("/")),
             ));
         }
-        let (file, stamped) = match file.as_deref().map(stamp).transpose() {
-            Ok(stamped) => (file, stamped),
-            Err(e) if !archive.required => {
-                // an optional archive whose metadata cannot be read is treated as absent, with a warning
-                early.push(format!(
-                    "{label} cannot be read: the bridge parts it holds are not used: {e}"
-                ));
-                (None, None)
-            }
-            Err(e) => return Err(e),
-        };
+        let (file, stamped, warning) = archive_stamp(file, archive.required, &label)?;
+        early.extend(warning);
         stamps.push((label.clone(), stamped));
         found.push((archive, label, file));
     }
@@ -555,6 +572,34 @@ mod tests {
         assert_eq!(
             industrial_needs("misc\\misc_concretepipe_gate.p3d"),
             Need::No
+        );
+    }
+
+    #[test]
+    fn an_optional_archive_that_cannot_be_stated_is_absent_with_a_warning() {
+        // found by its name and gone (or unreadable) when its size and time are read
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("structures_sakhal.pbo");
+        let label = "sakhal/addons/structures_sakhal.pbo";
+        let (file, stamped, warning) = archive_stamp(Some(gone.clone()), false, label).unwrap();
+        assert_eq!((file, stamped), (None, None));
+        let warning = warning.unwrap();
+        assert!(
+            warning.starts_with(label) && warning.contains("cannot be read"),
+            "{warning}"
+        );
+        // the road archive is needed: the same is an error
+        assert!(archive_stamp(Some(gone), true, label).is_err());
+        // an archive that is there is stamped, one that is not is no stamp, both without a warning
+        let there = dir.path().join("there.pbo");
+        std::fs::write(&there, b"pbo").unwrap();
+        let (file, stamped, warning) = archive_stamp(Some(there.clone()), false, label).unwrap();
+        assert_eq!(file, Some(there));
+        assert_eq!(stamped.map(|s| s.size), Some(3));
+        assert_eq!(warning, None);
+        assert_eq!(
+            archive_stamp(None, false, label).unwrap(),
+            (None, None, None)
         );
     }
 }
