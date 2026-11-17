@@ -7,15 +7,16 @@
 #![expect(
     clippy::unwrap_used,
     clippy::indexing_slicing,
+    clippy::panic,
     reason = "test helper code; failing loudly is the point"
 )]
 
 use naves_core::bridgekind::{
     BridgeFit, BridgeKind, BridgeSite, Choice, FILL_MAX_M, Fallback, GROW_KEEP_M,
-    GROW_TURN_MAX_DEG, bridge_kind, choose, fit_bridges, straight_room,
+    GROW_TURN_MAX_DEG, RoomEnd, bridge_kind, choose, fit_bridges, panel_row_size, straight_room,
 };
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
-use naves_core::catalog::{Family, PANELS_PREFIX, PieceCatalog};
+use naves_core::catalog::{Family, PANELS_PREFIX, PieceCatalog, Slab};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::roadnet::{RoadGraph, Stretch, build_graph};
 
@@ -23,31 +24,30 @@ fn near(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol
 }
 
-/// A bridge `length` long of `family` with `room` of straight road at each end (and as much to the junction),
-/// on flat ground.
-fn site(length: f64, family: Family, room: (f64, f64)) -> BridgeSite {
-    site_on(length, family, room, &|_| 0.0)
+fn flat(_: f64, _: f64) -> f64 {
+    0.0
 }
 
-/// The same on the ground `ground(along)`.
+/// A bridge `length` long of `family` with `room` of straight road at each end, on flat ground.
+fn site(length: f64, family: Family, room: (f64, f64)) -> BridgeSite<'static> {
+    site_on(length, family, room, &flat)
+}
+
+/// The same on the ground `ground(along, across)`.
 fn site_on(
     length: f64,
     family: Family,
     room: (f64, f64),
-    ground: &dyn Fn(f64) -> f64,
-) -> BridgeSite {
-    let mut samples = Vec::new();
-    let mut at = -room.0;
-    while at <= length + room.1 + 1e-9 {
-        samples.push((at, ground(at)));
-        at += 1.0;
-    }
+    ground: &dyn Fn(f64, f64) -> f64,
+) -> BridgeSite<'_> {
     BridgeSite {
         length,
         family,
         room,
-        reach: room,
-        ground: samples,
+        turn_deg: 0.0,
+        bends: (Vec::new(), Vec::new()),
+        at_bridge_node: false,
+        ground,
     }
 }
 
@@ -61,8 +61,23 @@ fn model(kind: &BridgeKind) -> Option<(&str, usize)> {
     }
 }
 
-fn panels(count: usize, scale: f64) -> BridgeKind {
-    BridgeKind::Panels { count, scale }
+/// The count and scale of a panel row.
+fn row(kind: &BridgeKind) -> (usize, f64) {
+    match kind {
+        BridgeKind::Panels { count, scale } => (*count, *scale),
+        other => panic!("no panel row: {other:?}"),
+    }
+}
+
+fn is_row(kind: &BridgeKind, count: usize, scale: f64) -> bool {
+    let (n, s) = row(kind);
+    n == count && near(s, scale, 1e-3)
+}
+
+/// A row covers its bridge exactly and never grows.
+fn covers(choice: &Choice, length: f64) {
+    assert!(near(choice.length, length, 1e-9), "{choice:?}");
+    assert_eq!(choice.grown, (0.0, 0.0), "{choice:?}");
 }
 
 const ROOM: (f64, f64) = (100.0, 100.0);
@@ -75,53 +90,83 @@ fn three_metres_and_less_are_filled() {
     for length in [0.0, 1.0, FILL_MAX_M, f64::NAN, -2.0] {
         let choice = choose(&c, &site(length, Family::Asf1, ROOM));
         assert_eq!(choice.kind, BridgeKind::Fill, "{length}");
-        assert!(
-            choice.fallback.is_empty(),
-            "{length}: {:?}",
-            choice.fallback
-        );
+        assert_eq!(choice.fallback, Vec::new(), "{length}");
     }
 }
 
 #[test]
-fn just_over_three_metres_is_a_panel_row() {
+fn a_panel_row_has_the_count_nearest_its_nominal_scale_and_covers_the_bridge() {
+    let slab = Slab {
+        model: "p".to_string(),
+        along: 3.0,
+        across: 6.0,
+        along_x: true,
+        top: 0.14,
+        thickness: 0.25,
+    };
+    // (length, road width, count, scale)
+    for (length, width, n, s) in [
+        (8.42, 9.0, 2, 1.403),   // Gmundberg: 8.4 m wide on a 9 m road
+        (17.21, 7.0, 5, 1.147),  // Untersteiner Straße
+        (13.76, 10.0, 3, 1.529), // Schapbachweg
+        (3.07, 7.0, 1, 1.023),
+        (4.5, 6.0, 1, 1.5), // two panels would be 4.5 m wide on a 6 m road: one, 9 m wide
+        (5.9, 6.0, 2, 0.983),
+        (12.0, 6.0, 4, 1.0),
+        (12.0, 12.0, 2, 2.0),
+    ] {
+        let (count, scale) = panel_row_size(length, width, &slab);
+        assert_eq!(count, n, "{length} on {width}");
+        assert!(near(scale, s, 1e-3), "{length} on {width}: {scale}");
+        assert!(near(
+            f64::from(u32::try_from(count).unwrap()) * 3.0 * scale,
+            length,
+            1e-9
+        ));
+    }
+    // absurd input stays bounded
+    let (count, scale) = panel_row_size(1e9, 6.0, &slab);
+    assert!((1..=1000).contains(&count) && scale.is_finite());
+    let (count, _) = panel_row_size(10.0, f64::NAN, &slab);
+    assert!(count >= 1);
+}
+
+#[test]
+fn just_over_three_metres_is_one_panel() {
     let c = synthetic_catalog();
-    // one panel at scale 2 on a 12 m road, two at scale 1 on a 6 m road
-    assert_eq!(
-        bridge_kind(&c, &site(3.1, Family::Asf1, ROOM)),
-        panels(1, 2.0)
-    );
-    assert_eq!(
-        bridge_kind(&c, &site(3.1, Family::Grav, ROOM)),
-        panels(2, 1.0)
-    );
+    for family in [Family::Asf1, Family::Grav] {
+        let choice = choose(&c, &site(3.1, family, ROOM));
+        assert!(is_row(&choice.kind, 1, 3.1 / 3.0), "{family:?} {choice:?}");
+        covers(&choice, 3.1);
+    }
     // there is no culvert: 5 m is a panel row too
-    assert_eq!(
+    assert!(matches!(
         bridge_kind(&c, &site(5.0, Family::Grav, ROOM)),
-        panels(2, 1.0)
-    );
+        BridgeKind::Panels { .. }
+    ));
 }
 
 #[test]
 fn a_panel_row_is_scaled_to_its_road_and_covers_the_bridge() {
     let c = synthetic_catalog();
     let on_six = choose(&c, &site(12.0, Family::Grav, ROOM));
-    assert_eq!(on_six.kind, panels(4, 1.0));
-    assert!(near(on_six.length, 12.0, 1e-9));
+    assert!(is_row(&on_six.kind, 4, 1.0));
+    covers(&on_six, 12.0);
     let on_twelve = choose(&c, &site(12.0, Family::Asf1, ROOM));
-    assert_eq!(on_twelve.kind, panels(2, 2.0));
-    // a row longer than the bridge is centred on it
-    let longer = choose(&c, &site(10.0, Family::Grav, ROOM));
-    assert_eq!(longer.kind, panels(4, 1.0));
-    assert!(near(longer.grown.0, 1.0, 1e-9) && near(longer.grown.1, 1.0, 1e-9));
-    // a 7 m road (asphalt 3) scales the 6 m panel by 7 / 6
-    match bridge_kind(&c, &site(10.0, Family::Asf3, ROOM)) {
-        BridgeKind::Panels { count, scale } => {
-            assert!(near(scale, 7.0 / 6.0, 1e-9));
-            assert_eq!(count, 3);
-        }
-        other => panic!("{other:?}"),
-    }
+    assert!(is_row(&on_twelve.kind, 2, 2.0));
+    // a 7 m road (asphalt 3): three panels of 10 / 9
+    let asf3 = choose(&c, &site(10.0, Family::Asf3, ROOM));
+    assert!(is_row(&asf3.kind, 3, 10.0 / 9.0), "{asf3:?}");
+    covers(&asf3, 10.0);
+}
+
+#[test]
+fn a_panel_row_needs_no_room() {
+    let c = synthetic_catalog();
+    let choice = choose(&c, &site(13.0, Family::Grav, (0.0, 0.0)));
+    assert!(is_row(&choice.kind, 4, 13.0 / 12.0), "{choice:?}");
+    covers(&choice, 13.0);
+    assert_eq!(choice.fallback, Vec::new());
 }
 
 #[test]
@@ -154,22 +199,41 @@ fn a_model_is_used_from_two_thirds_of_its_length() {
 fn a_model_on_posts_needs_ground_its_posts_reach() {
     let c = synthetic_catalog();
     // on flat ground the posts reach: the wooden 31.6 m bridge covers 22 m
-    let flat = choose(&c, &site(22.0, Family::Grav, ROOM));
-    assert_eq!(model(&flat.kind), Some(("bridge_wood_25", 1)));
+    let flat_site = choose(&c, &site(22.0, Family::Grav, ROOM));
+    assert_eq!(model(&flat_site.kind), Some(("bridge_wood_25", 1)));
     // the ground 4 m down under the middle: the 2.6 m posts do not reach it, so the plain deck
-    let valley = |at: f64| if (2.0..20.0).contains(&at) { -4.0 } else { 0.0 };
+    let valley = |at: f64, _: f64| if (2.0..20.0).contains(&at) { -4.0 } else { 0.0 };
     let deep = choose(&c, &site_on(22.0, Family::Grav, ROOM, &valley));
     assert_eq!(model(&deep.kind), Some(("bridge_wood2", 1)));
     // nor where the ground rises more than 0.5 m above the deck under a post
-    let hump = |at: f64| if (8.0..14.0).contains(&at) { 1.0 } else { 0.0 };
+    let hump = |at: f64, _: f64| if (8.0..14.0).contains(&at) { 1.0 } else { 0.0 };
     let high = choose(&c, &site_on(22.0, Family::Grav, ROOM, &hump));
     assert_eq!(model(&high.kind), Some(("bridge_wood2", 1)));
     // ground that is not known reaches nothing
-    let unknown = choose(&c, &site_on(22.0, Family::Grav, ROOM, &|_| f64::NAN));
-    assert_eq!(model(&unknown.kind), Some(("bridge_wood2", 1)));
+    let unknown = |_: f64, _: f64| f64::NAN;
+    let none = choose(&c, &site_on(22.0, Family::Grav, ROOM, &unknown));
+    assert_eq!(model(&none.kind), Some(("bridge_wood2", 1)));
     // a plain deck shorter than two thirds of the bridge is not used: a panel row instead
     let long = choose(&c, &site_on(40.0, Family::Grav, ROOM, &valley));
     assert!(matches!(long.kind, BridgeKind::Panels { .. }), "{long:?}");
+}
+
+#[test]
+fn posts_are_checked_where_they_stand_not_on_the_centre_line() {
+    let c = synthetic_catalog();
+    // a slope across the bridge, level along it: the centre line is at the deck's level, the posts 3.3 m to
+    // either side stand 3.3 m above and below it
+    let across = |_: f64, across: f64| across;
+    let choice = choose(&c, &site_on(22.0, Family::Grav, ROOM, &across));
+    assert_eq!(model(&choice.kind), Some(("bridge_wood2", 1)), "{choice:?}");
+    // a gentle one (0.1 per metre: 0.33 m at the posts) they reach
+    let gentle = |_: f64, across: f64| 0.1 * across;
+    let choice = choose(&c, &site_on(22.0, Family::Grav, ROOM, &gentle));
+    assert_eq!(
+        model(&choice.kind),
+        Some(("bridge_wood_25", 1)),
+        "{choice:?}"
+    );
 }
 
 #[test]
@@ -182,6 +246,30 @@ fn a_long_bridge_is_a_chain_of_the_family_model() {
     // asphalt 3: the stone bridge is longer than concrete3, so it is the chain
     let asf3 = choose(&c, &site(30.0, Family::Asf3, ROOM));
     assert_eq!(model(&asf3.kind), Some(("bridge_stone_25", 2)));
+}
+
+#[test]
+fn a_model_needs_a_straight_bridge() {
+    let c = synthetic_catalog();
+    let mut bent = site(16.7, Family::Asf1, ROOM);
+    bent.turn_deg = 30.0;
+    let choice = choose(&c, &bent);
+    assert_eq!(model(&choice.kind), None, "{choice:?}");
+    covers(&choice, 16.7);
+    assert!(matches!(
+        choice.fallback.as_slice(),
+        [Fallback::ModelBends { deg, .. }] if near(*deg, 30.0, 1e-9)
+    ));
+    // the bridge's own turn and the turn of the road it grows into count together
+    let mut grown = site(16.7, Family::Asf1, ROOM);
+    grown.turn_deg = 3.0;
+    grown.bends = (vec![(10.0, 1.0)], vec![(10.0, 1.5)]);
+    assert!(model(&choose(&c, &grown).kind).is_none());
+    grown.bends = (vec![(10.0, 1.0)], vec![(10.0, 0.5)]);
+    assert_eq!(
+        model(&choose(&c, &grown).kind),
+        Some(("bridge_metal_25", 1))
+    );
 }
 
 // --- room ------------------------------------------------------------------------------------------------------
@@ -201,44 +289,14 @@ fn room_on_one_side_only_leaves_the_rest_to_the_other() {
 fn a_model_without_room_is_a_panel_row_of_the_bridge_length() {
     let c = synthetic_catalog();
     let choice = choose(&c, &site(16.7, Family::Asf1, (1.0, 1.0)));
-    // 3 panels at scale 2 are 18 m: 1.3 m more than the bridge, in the room
-    assert_eq!(choice.kind, panels(3, 2.0));
-    assert!(near(choice.grown.0, 0.65, 1e-9));
+    // 3 panels of 16.7 / 9
+    assert!(is_row(&choice.kind, 3, 16.7 / 9.0), "{choice:?}");
+    covers(&choice, 16.7);
     assert!(matches!(
         choice.fallback.as_slice(),
         [Fallback::ModelNoRoom { model }] if model.ends_with("bridge_metal_25.p3d")
     ));
-}
-
-#[test]
-fn a_panel_row_without_room_loses_panels_down_to_one() {
-    let c = synthetic_catalog();
-    // 13 m wants 5 panels (15 m); with 0.5 m of room at each end 4 fit, centred on the bridge
-    let choice = choose(&c, &site(13.0, Family::Grav, (0.5, 0.5)));
-    assert_eq!(choice.kind, panels(4, 1.0));
-    assert!(near(choice.grown.0, -0.5, 1e-9) && near(choice.grown.1, -0.5, 1e-9));
-    assert_eq!(
-        choice.fallback,
-        vec![Fallback::PanelsShortened { wanted: 5 }]
-    );
-}
-
-#[test]
-fn one_panel_past_the_straight_road_is_laid_if_it_stays_clear_of_the_junctions() {
-    let c = synthetic_catalog();
-    // a 6 m panel (scale 2) on a 4 m bridge with no straight room, 2 m to the junctions
-    let mut s = site(4.0, Family::Asf1, (0.0, 0.0));
-    s.reach = (2.0, 2.0);
-    let choice = choose(&c, &s);
-    assert_eq!(choice.kind, panels(1, 2.0));
-    assert!(near(choice.grown.0, 1.0, 1e-9) && near(choice.grown.1, 1.0, 1e-9));
-    assert_eq!(choice.fallback, vec![Fallback::OnePanelPastTheStraight]);
-    // not if it reaches within a metre of a junction: plain road, and the report says why
-    s.reach = (0.5, 2.0);
-    let fill = choose(&c, &s);
-    assert_eq!(fill.kind, BridgeKind::Fill);
-    assert_eq!(fill.fallback, vec![Fallback::NoRoom]);
-    assert_ne!(fill.fallback[0].to_string(), "");
+    assert_ne!(choice.fallback[0].to_string(), "");
 }
 
 /// The synthetic catalog without its panels.
@@ -266,14 +324,25 @@ fn without_panels_a_model_where_it_fits_else_plain_road_with_a_reason() {
 #[test]
 fn rooms_that_are_not_numbers_are_no_room() {
     let c = synthetic_catalog();
-    let mut s = site(16.7, Family::Asf1, (f64::NAN, f64::INFINITY));
-    s.reach = (f64::NAN, -1.0);
-    let choice = choose(&c, &s);
+    let choice = choose(&c, &site(16.7, Family::Asf1, (f64::NAN, f64::INFINITY)));
     assert!(
         matches!(choice.kind, BridgeKind::Panels { .. }),
         "{choice:?}"
     );
-    assert!(choice.grown.0 <= 0.0 && choice.grown.1 <= 0.0);
+    covers(&choice, 16.7);
+}
+
+#[test]
+fn a_short_bridge_at_a_node_of_bridges_is_never_filled() {
+    let c = synthetic_catalog();
+    let mut s = site(2.0, Family::Asf1, (0.0, 0.0));
+    s.at_bridge_node = true;
+    let choice = choose(&c, &s);
+    assert!(is_row(&choice.kind, 1, 2.0 / 3.0), "{choice:?}");
+    covers(&choice, 2.0);
+    // one of no length is still nothing
+    s.length = 0.0;
+    assert_eq!(choose(&c, &s).kind, BridgeKind::Fill);
 }
 
 // --- the graph -------------------------------------------------------------------------------------------------
@@ -404,16 +473,19 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
     ]);
     let (out, fits) = fit(&g);
     let f = &fits[0];
-    // wood2 has no room, 5 panels (15 m) neither: 4 panels, centred on the bridge
-    assert_eq!(f.kind, panels(4, 1.0));
-    assert!(f.grown.0 <= 0.0 && f.grown.1 <= 0.0, "{:?}", f.grown);
+    // wood2 has no room: 4 panels of 13.2 / 12, covering the bridge
+    assert!(is_row(&f.kind, 4, 1.1), "{f:?}");
+    assert_eq!(f.grown, (0.0, 0.0));
+    assert!(near(f.part_length, 13.2, 1e-9));
     assert!(matches!(
         f.fallback.as_slice(),
-        [
-            Fallback::ModelNoRoom { .. },
-            Fallback::PanelsShortened { wanted: 5 }
-        ]
+        [Fallback::ModelNoRoom { .. }]
     ));
+    assert!(
+        matches!(f.room_end.0, RoomEnd::KinkAtJoint { deg } if near(deg, 30.0, 1e-6)),
+        "{:?}",
+        f.room_end
+    );
     for s in &g.stretches {
         let o = out.stretches.iter().find(|o| o.id == s.id).unwrap();
         assert_eq!(o.points, s.points);
@@ -421,7 +493,7 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
     // until panel rows are laid it is plain road, but it knows what it is to be
     let b = bridge_of(&out);
     assert!(!b.bridge);
-    assert_eq!(b.bridge_kind, Some(panels(4, 1.0)));
+    assert!(is_row(b.bridge_kind.as_ref().unwrap(), 4, 1.1));
 }
 
 #[test]
@@ -455,6 +527,11 @@ fn a_grown_line_never_turns_more_than_five_degrees() {
     let f = &fits[0];
     assert_eq!(model(&f.kind), Some(("bridge_metal_25", 1)));
     assert!(f.turn_deg.1 <= GROW_TURN_MAX_DEG + 1e-9, "{:?}", f.turn_deg);
+    assert!(
+        matches!(f.room_end.1, RoomEnd::TurnAfter { m, deg } if near(m, 6.0, 1e-6) && near(deg, 6.0, 1e-6)),
+        "{:?}",
+        f.room_end
+    );
     assert!(f.grown.1 <= room + 1e-9);
     assert!(near(f.grown.0 + f.grown.1, 8.3, 1e-6));
 }
@@ -513,13 +590,223 @@ fn a_bridge_between_two_junction_stubs_never_grows_through_a_junction() {
         road(8, &[4, 9], &[(5.0, 0.0), (5.0, -50.0)]),
     ]);
     let (out, fits) = fit(&g);
-    assert_eq!(fits[0].kind, BridgeKind::Fill);
-    assert_eq!(fits[0].fallback, vec![Fallback::NoRoom]);
+    // one panel of 4 / 3, the bridge's own length: no room is needed
+    assert!(is_row(&fits[0].kind, 1, 4.0 / 3.0), "{:?}", fits[0]);
+    assert_eq!(
+        fits[0].room_end,
+        (RoomEnd::ShortNeighbour, RoomEnd::ShortNeighbour)
+    );
     for s in &g.stretches {
         let o = out.stretches.iter().find(|o| o.id == s.id).unwrap();
         assert_eq!(o.points, s.points);
     }
     assert!(out.stretches.iter().all(|s| !s.bridge));
+}
+
+#[test]
+fn the_room_says_why_it_ends() {
+    // a bridge from a 3-way crossing to a dead end
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)]),
+        road(5, &[2, 6], &[(0.0, 0.0), (0.0, 50.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(0.0, 0.0), (16.7, 0.0)],
+        ),
+    ]);
+    let (_, fits) = fit(&g);
+    assert_eq!(fits[0].room_end, (RoomEnd::Junction, RoomEnd::DeadEnd));
+    assert_eq!(fits[0].room, (0.0, 0.0));
+    for reason in [
+        RoomEnd::Junction,
+        RoomEnd::BridgeNode,
+        RoomEnd::Bridge,
+        RoomEnd::DeadEnd,
+        RoomEnd::KinkAtJoint { deg: 8.0 },
+        RoomEnd::TurnAfter { m: 3.0, deg: 6.0 },
+        RoomEnd::ShortNeighbour,
+        RoomEnd::Tunnel,
+    ] {
+        assert_ne!(reason.to_string(), "");
+    }
+}
+
+#[test]
+fn bridges_that_meet_at_a_node_of_bridges_reach_it_and_none_is_filled() {
+    // a fork of three bridges at node 2: a 2 m one and two of 10 m, each with road at its other end
+    let g = build_graph(&[
+        road(1, &[1, 3], &[(-50.0, 0.0), (-2.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[3, 2],
+            &[(-2.0, 0.0), (0.0, 0.0)],
+        ),
+        feature(
+            3,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 4],
+            &[(0.0, 0.0), (10.0, 0.0)],
+        ),
+        feature(
+            4,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 5],
+            &[(0.0, 0.0), (0.0, 10.0)],
+        ),
+        road(5, &[4, 6], &[(10.0, 0.0), (60.0, 0.0)]),
+        road(6, &[5, 7], &[(0.0, 10.0), (0.0, 60.0)]),
+    ]);
+    let (out, fits) = fit(&g);
+    assert_eq!(fits.len(), 3);
+    for f in &fits {
+        assert!(matches!(f.kind, BridgeKind::Panels { .. }), "{f:?}");
+        assert!(near(f.part_length, f.length, 1e-9), "{f:?}");
+        assert_eq!(f.grown, (0.0, 0.0));
+        assert!(
+            f.room_end.0 == RoomEnd::BridgeNode || f.room_end.1 == RoomEnd::BridgeNode,
+            "{f:?}"
+        );
+    }
+    assert!(near(total(&out), total(&g), 1e-9));
+}
+
+#[test]
+fn a_filled_bridge_is_plain_road_for_the_room_beside_it() {
+    let g = road_bridge_road(Family::Asf1, 2.0);
+    let (out, fits) = fit(&g);
+    assert_eq!(fits[0].kind, BridgeKind::Fill);
+    // the road before it reaches into the filled stretch, keeping a metre of it
+    let first = out
+        .stretches
+        .iter()
+        .position(|s| s.id.starts_with("1:"))
+        .unwrap();
+    let (_, after) = straight_room(&out, first);
+    assert!(near(after, 2.0 - GROW_KEEP_M, 1e-9), "{after}");
+}
+
+#[test]
+fn a_model_is_never_laid_on_a_bent_bridge() {
+    // a 17 m Asf1 bridge drawn as a 30 degree arc between straight roads
+    let radius = 17.0 / 30.0_f64.to_radians();
+    let arc: Vec<(f64, f64)> = (0..=10)
+        .map(|k| {
+            let a = 30.0_f64.to_radians() * f64::from(k) / 10.0;
+            (radius * a.sin(), radius * (1.0 - a.cos()))
+        })
+        .collect();
+    let end = *arc.last().unwrap();
+    let out_dir = (30.0_f64.to_radians().cos(), 30.0_f64.to_radians().sin());
+    let nodes: Vec<i64> = (2..=12).collect();
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(-100.0, 0.0), (0.0, 0.0)]),
+        feature(2, Family::Asf1, true, 1, &nodes, &arc),
+        road(
+            3,
+            &[12, 13],
+            &[end, (end.0 + 100.0 * out_dir.0, end.1 + 100.0 * out_dir.1)],
+        ),
+    ]);
+    let (_, fits) = fit(&g);
+    let f = &fits[0];
+    // 27 degrees over its own nine vertices (and 1.5 at each joint)
+    assert!(f.own_turn_deg > 25.0, "{f:?}");
+    assert!(matches!(f.kind, BridgeKind::Panels { .. }), "{f:?}");
+    assert!(matches!(
+        f.fallback.as_slice(),
+        [Fallback::ModelBends { .. }]
+    ));
+}
+
+#[test]
+fn the_joined_bridge_has_the_id_of_its_lower_outer_way_and_its_edits_still_apply() {
+    use naves_core::objects::{
+        ObjectId, Override, Overrides, PinnedEdit, apply_overrides, road_objects,
+    };
+    use naves_core::roadplace::place_network;
+    // three bridge ways (their layers differ), the one in the middle with the lowest way id
+    let g = build_graph(&[
+        road(10, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            5,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(100.0, 0.0), (106.0, 0.0)],
+        ),
+        feature(
+            1,
+            Family::Asf1,
+            true,
+            2,
+            &[3, 4],
+            &[(106.0, 0.0), (112.0, 0.0)],
+        ),
+        feature(
+            7,
+            Family::Asf1,
+            true,
+            3,
+            &[4, 5],
+            &[(112.0, 0.0), (120.0, 0.0)],
+        ),
+        road(11, &[5, 6], &[(120.0, 0.0), (220.0, 0.0)]),
+    ]);
+    let (out, fits) = fit(&g);
+    assert_eq!(fits.len(), 1);
+    let f = &fits[0];
+    assert_eq!(f.stretch, "5:2-3");
+    assert_eq!(f.stretches.len(), 3);
+    assert_eq!(model(&f.kind), Some(("bridge_metal_25", 1)));
+    let catalog = synthetic_catalog();
+    let net = place_network(&out, &catalog).unwrap();
+    let objects = road_objects(&net);
+    let deck = objects
+        .iter()
+        .find(|o| o.model.contains("bridge_metal_25"))
+        .unwrap();
+    assert_eq!(deck.id.feature, "5:2-3");
+    let edit = |feature: &str| PinnedEdit {
+        id: ObjectId {
+            feature: feature.to_string(),
+            preset: "road".to_string(),
+            slot: deck.id.slot,
+        },
+        generated_model: deck.model.clone(),
+        generated_at: (deck.x, deck.y),
+        generated_yaw: deck.yaw,
+        edit: Override::Replaced {
+            model: "other".to_string(),
+        },
+    };
+    // an edit on the first outer way finds the deck; one on another way of the bridge is orphaned
+    let (placed, orphans) = apply_overrides(
+        &objects,
+        &Overrides {
+            edits: vec![edit("5:2-3")],
+        },
+    );
+    assert_eq!(orphans.len(), 0);
+    assert!(placed.iter().any(|o| o.model == "other" && o.id.is_some()));
+    let (_, orphans) = apply_overrides(
+        &objects,
+        &Overrides {
+            edits: vec![edit("1:3-4")],
+        },
+    );
+    assert_eq!(orphans.len(), 1);
 }
 
 #[test]

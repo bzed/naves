@@ -282,22 +282,27 @@ longest open stretch between the solid parts.
 **What a bridge is built from.** Every OpenStreetMap bridge is built from a part that fits its length (on the map; bridge ways that follow each other
 are one bridge):
 
-- **At most 3 m:** plain road on the terrain, on purpose (no finding).
+- **At most 3 m:** plain road on the terrain, on purpose (no finding), unless the bridge meets other bridges at a node
+  where only bridges meet (a fork of bridges): then it is at least one panel.
 - **At least two thirds as long as a bridge model of its road:** the shortest such model that is at least as long as
   the bridge. A bridge longer than all of them gets a chain of the longest end to end (`bridge_wood2` is never
   chained; it is laid alone where it covers two thirds of the bridge). `bridge_wood_25` stands on posts and is used
-  only where the original ground under every post is within the posts' reach (2.6 m) below the deck and at most
-  0.5 m above it, the deck taken on the line between the ground at its two ends; else the next model.
-- **Anything else:** a row of concrete panels (`panel_concrete_1`), laid crosswise and scaled by the road's width
-  over the panel's 6 m (never below 1), as many along the bridge as cover it.
+  only where the original ground under every post (over the whole post, beside the deck too) is within the posts'
+  reach (2.6 m) below the deck and at most 0.5 m above it, the deck taken on the line between the ground at its two
+  ends; else the next model.
+- **Anything else:** a row of concrete panels (`panel_concrete_1`), laid crosswise one after the other along the
+  bridge's own line, from its start to its end (also on a bend). The row covers the bridge exactly: its panels are
+  scaled so that a whole number of them is the bridge's length, with the count that comes nearest the road's width
+  over the panel's 6 m (never below 1); a row may be wider than the road, but not more than 1 m narrower where one
+  panel fewer avoids it. An 8.4 m bridge on a 9 m road gets two panels 8.4 m wide.
 
-A part longer than the bridge takes the missing length evenly from the road at both ends, but **only along a straight
-line**: the road it grows into may turn by at most 5 degrees in total from the bridge's own heading and keeps at least
-1 m before a junction, another bridge or a dead end; where one side has no room the other takes the rest. A model
-without room becomes a panel row of the bridge's length; a panel row without room loses panels down to one; one
-panel longer than all the room is laid centred on the bridge if it stays 1 m clear of the junctions; else the bridge
-is plain road. No bridge is dropped: the build knows for every OpenStreetMap bridge what it became and why. If the
-install has neither panels nor a model that fits, the bridge is plain road and the finding is `bridge_not_built`.
+A panel row never grows. A model longer than the bridge takes the missing length evenly from the road at both ends,
+but **only along a straight line and only on a straight bridge**: the bridge's own line and the road the model grows
+into may turn by at most 5 degrees together, and the model keeps at least 1 m before a junction, another bridge or a
+dead end; where one side has no room the other takes the rest. A model without room, or on a bridge that bends,
+becomes a panel row of the bridge's length. No bridge is dropped: the build knows for every OpenStreetMap bridge what
+it became and why (and why its room ends at each end). If the install has neither panels nor a model that fits, the
+bridge is plain road and the finding is `bridge_not_built`.
 **Panel rows are not laid yet:** until they are, a bridge that gets panels is built as an ordinary road.
 
 A road that stands more than 3 m above the original ground over some length is crossing a dip. Where the dip is at

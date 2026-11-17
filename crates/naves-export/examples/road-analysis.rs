@@ -219,8 +219,20 @@ fn main() {
                 ),
             };
             let why: Vec<String> = b.fallback.iter().map(ToString::to_string).collect();
+            // the row's width against the road's
+            let road_w = catalog.pieces(b.family).first().map_or(0.0, |p| p.width);
+            let panel_across = catalog
+                .panels()
+                .iter()
+                .min_by(|x, y| x.model.cmp(&y.model))
+                .map_or(0.0, |p| p.across);
+            let row_w = if kind == "panels" {
+                scale * panel_across
+            } else {
+                0.0
+            };
             println!(
-                "OSMBRIDGEFIT {}\t{}\t{:?}\t{:.2}\t{kind}\t{count}\t{scale:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}\t{}",
+                "OSMBRIDGEFIT {}\t{}\t{:?}\t{:.2}\t{kind}\t{count}\t{scale:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}\t{}\t{row_w:.2}\t{road_w:.2}\t{:.1}\t{:.2}\t{:.2}\t{}\t{}",
                 b.stretch,
                 b.stretches.join("+"),
                 b.family,
@@ -232,7 +244,12 @@ fn main() {
                 b.turn_deg.1,
                 b.at.0,
                 b.at.1,
-                why.join("; ")
+                why.join("; "),
+                b.own_turn_deg,
+                b.room.0,
+                b.room.1,
+                b.room_end.0,
+                b.room_end.1,
             );
         }
     }

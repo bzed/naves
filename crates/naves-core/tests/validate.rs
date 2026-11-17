@@ -489,25 +489,27 @@ fn the_rule_ids_are_distinct_snake_case_words() {
 
 #[test]
 fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
-    use naves_core::bridgekind::{BridgeFit, BridgeKind, Fallback};
+    use naves_core::bridgekind::{BridgeFit, BridgeKind, Fallback, RoomEnd};
     let fit = |id: &str, fallback: Vec<Fallback>, at: (f64, f64)| BridgeFit {
         stretches: vec![id.to_string()],
         stretch: id.to_string(),
         at,
         family: Family::Asf1,
         length: 10.4,
+        own_turn_deg: 0.0,
         kind: BridgeKind::Fill,
         part_length: 0.0,
         grown: (0.0, 0.0),
         turn_deg: (0.0, 0.0),
+        room: (0.0, 0.0),
+        room_end: (RoomEnd::Junction, RoomEnd::Junction),
         fallback,
     };
     let mut n = net(vec![]);
     n.bridge_fits = vec![
         fit("7:1-2", vec![Fallback::NoParts], (5.0, 6.0)),
-        // filled because it is short, or because there is no room: no finding
+        // filled because it is short: no finding
         fit("8:3-4", vec![], (1.0, 1.0)),
-        fit("9:5-6", vec![Fallback::NoRoom], (2.0, 2.0)),
     ];
     let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     let found = only(Rule::BridgeNotBuilt, &v);

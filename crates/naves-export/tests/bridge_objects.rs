@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use naves_core::bridgekind::{BridgeKind, Fallback};
+use naves_core::bridgekind::BridgeKind;
 use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::objects::piece_transform;
 use naves_core::project::Project;
@@ -205,7 +205,7 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
 }
 
 #[test]
-fn a_bridge_between_two_junctions_without_room_loses_panels_and_is_never_dropped() {
+fn a_bridge_between_two_junctions_without_room_is_a_panel_row_of_its_length() {
     let dir = tempfile::tempdir().unwrap();
     let env = FakeEnv::new(&dir.path().join("fake")).unwrap();
     let proj = dir.path().join("proj");
@@ -246,7 +246,8 @@ fn a_bridge_between_two_junctions_without_room_loses_panels_and_is_never_dropped
     p.save(&proj).unwrap();
 
     let generated = generate(&proj, &p, &env.tools(), &|_| {}).unwrap();
-    // there is no warning about room any more: the bridge wanted two panels (6 m), one fits on its line
+    // there is no warning about room any more: a panel row covers the bridge and needs none (one panel,
+    // stretched to the bridge's length)
     assert!(
         generated.warnings.iter().all(|w| !w.contains("no room")),
         "{:?}",
@@ -255,14 +256,16 @@ fn a_bridge_between_two_junctions_without_room_loses_panels_and_is_never_dropped
     assert_eq!(generated.bridges.len(), 1, "{:?}", generated.bridges);
     let fit = &generated.bridges[0];
     assert_eq!(fit.stretches, vec!["11:2-3".to_string()]);
-    assert_eq!(
-        fit.kind,
-        BridgeKind::Panels {
-            count: 1,
-            scale: 1.0
+    match fit.kind {
+        BridgeKind::Panels { count, scale } => {
+            assert_eq!(count, 1);
+            assert!((scale * 3.0 - fit.length).abs() < 1e-9, "{fit:?}");
         }
-    );
-    assert_eq!(fit.fallback, vec![Fallback::PanelsShortened { wanted: 2 }]);
+        _ => panic!("{fit:?}"),
+    }
+    assert!((fit.part_length - fit.length).abs() < 1e-9);
+    assert_eq!(fit.grown, (0.0, 0.0));
+    assert_eq!(fit.fallback, Vec::new());
     assert!(
         generated
             .objects

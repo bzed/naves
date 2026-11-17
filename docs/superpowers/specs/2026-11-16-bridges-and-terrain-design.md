@@ -109,17 +109,20 @@ applies:
 
 | `L` | built as |
 |---|---|
-| at most `FILL_MAX_M = 3.0` | plain road on the terrain. No finding; the report counts them. |
-| below two thirds of the shortest model that fits `W` | **panel row**: panels laid crosswise (the 6 m side across the road), scaled by `W / 6.0` (never below 1), `ceil(L / (3.0 · scale))` of them along the bridge's line, centred on the bridge. |
+| at most `FILL_MAX_M = 3.0`, unless the bridge touches a node where only bridges meet | plain road on the terrain. No finding; the report counts them. |
+| below two thirds of the shortest model that fits `W`, or a model that has no straight room or would lie on a bent bridge | **panel row** covering the bridge exactly: `n` panels laid crosswise (the 6 m side across the road), one after the other along the bridge's own line from its start to its end, each on the line's heading there, each scaled by `s = L / (3.0 · n)`. `n` is the count nearest the nominal scale: `s0 = max(1, W / 6.0)`, `n0 = max(1, round(L / (3.0 · s0)))`; `n0`, or `n0 − 1` (at least 1) where `n0`'s scale would make the row more than `BRIDGE_NARROWER_M` narrower than the road. Wider than the road is always fine. |
 | at least two thirds of a model that fits `W` | **that model**, the shortest that fits: `bridge_wood2` (19.7 m, a plank deck: Grav, Mud), `bridge_concrete3` (21.1 m, a concrete deck 7.6 m wide on cross walls 4.8 m deep about every 3 m, so it never spans a road: Asf3), `bridge_wood_25` (31.6 m with its end ramps; Grav, Mud, and only where the original ground under each post row is within the posts' 2.6 m of the deck), `bridge_metal_25` (Asf1, City), `bridge_stone_25` (Asf2, Asf3). Longer bridges are chains of the family's model as today. |
 
 - "Two thirds" is `MODEL_FILL = 2.0 / 3.0`, one constant. On the example: 5 fills, 61 panel rows, and 18 with a model
   (about 6 `bridge_wood2`, the rest metal, stone or panels by width).
-- A part longer than `L` takes the missing length evenly from the road at both ends, as `widen_bridges` does, but
-  **only along a straight line**: the grown part may turn by at most `GROW_TURN_MAX_DEG = 5` in total and ends 1 m before
-  a junction or another bridge. If one side has no room the other takes the rest; if the part still does not fit, the
-  next shorter kind is taken (a model becomes a panel row, a panel row loses panels down to one). A bridge is never
-  dropped for lack of room.
+- A panel row never grows and needs no room: it covers the bridge exactly, also on a bend.
+- Only a model grows. A model longer than `L` takes the missing length evenly from the road at both ends, but **only
+  along a straight line and only on a bridge that is itself straight**: the bridge's own line and the grown parts
+  together may turn by at most `GROW_TURN_MAX_DEG = 5`, and a grown part ends 1 m before a junction or another bridge.
+  If one side has no room the other takes the rest; if the model still does not fit, or the line turns more, the
+  bridge is a panel row. A bridge is never dropped for lack of room.
+- At a node where only bridges meet (a fork of bridges), a part reaches the node itself, and a bridge that touches
+  such a node is never filled (it is at least one panel).
 - A panel row is one deck for the height solve (level, one variable), like a model.
 
 ### A bridge over a road
@@ -215,8 +218,8 @@ the work in `conform`, the wording of findings and report lines, and the order o
 - **The parts were checked in the game** (panel rows at scale 1.0, 1.67 and 2.0 sit flush and carry; `bridge_wood2`
   and `bridge_concrete3` carry). `bridge_wood_25` is used only where its posts reach the ground: the original ground
   under every standing post (`PartShape::stands`) is within `reach_down` below the deck level and at most
-  `POST_ABOVE_DECK_M = 0.5` above it; the deck level is the line between the original ground at the two ends of the
-  span. The ground is taken on the bridge's line, not beside it.
+  `POST_ABOVE_DECK_M = 0.5` above it, sampled over each post's rectangle (its corners and every metre along and
+  across it); the deck level is the line between the original ground at the two ends of the span.
 - **Length and grouping.** `L` is the length of the OpenStreetMap bridge stretch in map metres as the graph has it
   before any growth. Bridge stretches that follow each other (joined at nodes of exactly two stretches, both bridges)
   are one bridge: they are joined into one stretch before the table is applied (the id of the lower outer stretch,
@@ -226,14 +229,21 @@ the work in `conform`, the wording of findings and report lines, and the order o
   `ceil(L / length)` models. `bridge_wood2` is never chained (`UNCHAINED_MODELS`): it is laid alone where it covers
   `MODEL_FILL` of the bridge (a model may then be shorter than the bridge; it is centred on it), else the bridge is a
   panel row.
-- **The panel row:** the first panel by name (`panel_concrete_1`), `scale = max(1, W / Slab::across)`,
-  `count = ceil(L / (Slab::along * scale))`, at least 1.
-- **Falling back.** A model without straight room becomes a panel row of `L`; a panel row without room loses panels
-  (a row shorter than the bridge is centred on it); one panel longer than all the room is laid centred if it stays
-  `GROW_KEEP_M = 1.0` before the junctions, else the bridge is a fill. The turn of `GROW_TURN_MAX_DEG` is counted per
-  end, from the bridge's own heading at that end, over the stretch that continues it (growth reaches only into that
-  stretch). `fit_bridges` returns for every OpenStreetMap bridge what it became and why (`BridgeFit`); a fill
-  because the install has no panels and no fitting model is the finding `bridge_not_built`. All thresholds are named
-  constants at the top of `bridgekind.rs`.
+- **The panel row:** the first panel by name (`panel_concrete_1`); its count and scale as in the table
+  (`panel_row_size`).
+- **Falling back.** A model without straight room, or whose bridge and grown parts turn by more than
+  `GROW_TURN_MAX_DEG` together, becomes a panel row of `L`. The turn of the grown parts is counted per end from the
+  bridge's own heading at that end, over the stretch that continues it (growth reaches only into that stretch), and
+  added to the bridge's own turn. `fit_bridges` returns for every OpenStreetMap bridge what it became and why
+  (`BridgeFit`, with the reason the room ends at each end); a fill because the install has no panels and no fitting
+  model is the finding `bridge_not_built`. All thresholds are named constants at the top of `bridgekind.rs`.
+- **Panel rows cover the bridge exactly** (fix round 1). Rows of whole panels at the nominal scale that had no room
+  were shortened and centred, which left gaps of up to 2 m at the abutments on 25 bridges of the example; a row now
+  scales its panels to the bridge's length and never grows. A filled bridge is plain road for the room of others.
+- **A model needs a straight bridge** (fix round 1): Schornstraße (19.1 m, its own line turning by 14°) had got a
+  straight 21.1 m `bridge_concrete3`.
+- **Bridges that meet at a node of bridges reach the node** (fix round 1): at the two forks of three bridges on the
+  example each bridge was fitted alone, keeping room at the shared node, and one became a fill in the middle of the
+  complex.
 - **Bridges over dips** use the same straight room: a span may reach the end of its stretch only where the road beyond
   goes on straight (else it keeps 1 m), and an OpenStreetMap bridge built from its own part gets no bridge over a dip.
