@@ -501,6 +501,7 @@ fn an_osm_bridge_without_parts_is_a_finding_and_a_fill_is_not() {
         kind: BridgeKind::Fill,
         part_length: 0.0,
         grown: (0.0, 0.0),
+        part_start: 0.0,
         turn_deg: (0.0, 0.0),
         room: (0.0, 0.0),
         room_end: (RoomEnd::Junction, RoomEnd::Junction),

@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use naves_core::bridgekind::{BridgeFit, BridgeKind, choose, fit_bridges, panel_slab};
-use naves_core::catalog::{BridgeModel, PieceCatalog, ThicknessSource};
+use naves_core::bridgekind::{BridgeFit, choose, deck_thickness, fit_bridges};
+use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
 use naves_core::conform::{Conformed, LevelPatch, conform};
 use naves_core::dem::Dem;
@@ -32,9 +32,7 @@ use naves_core::roadnet::{
     DroppedDuplicate, RoadGraph, Stretch, build_graph, collapse_small_rings, drop_duplicates,
     with_bridge_spans,
 };
-use naves_core::roadplace::{
-    PlacedKind, PlacedNetwork, bridge_model, longest_bridge, place_network,
-};
+use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
 use naves_core::sideslope::side_slopes;
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
@@ -187,15 +185,7 @@ pub fn place_once(
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
-    let thickness = |s: &Stretch| match &s.bridge_kind {
-        // a grid of panels is as thick as one panel at its scale
-        Some(BridgeKind::Panels { scale, .. }) => {
-            panel_slab(catalog).map(|slab| slab.thickness * scale)
-        }
-        _ => bridge_model(catalog, s).and_then(|m| {
-            (m.thickness_source != ThicknessSource::Unknown).then_some(m.deck_thickness)
-        }),
-    };
+    let thickness = |s: &Stretch| deck_thickness(catalog, s);
     let (profiles, junctions) = solve_clearing(&net, base, &junctions, &side, graph, &thickness)?;
     Ok(Placed {
         net,

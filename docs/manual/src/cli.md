@@ -48,7 +48,8 @@ Builds the mod and the server mission of the project in `<DIR>`:
 6. assembles the server mission from the installed `dayzOffline.enoch`, and writes `ATTRIBUTION.txt` into the mod
    folder.
 
-Progress goes to standard error; the last two lines on standard output are the folders to use:
+Progress goes to standard error, and so do the warnings and one line per OpenStreetMap bridge that says what it was built
+from (`bridge 11:2-3 at (x, y), 9.0 m: panels 3 x 1 at scale 1.00`; the same is in `build/report.json`). The last two lines on standard output are the folders to use:
 
 ```text
 Mod:     <DIR>/build/@naves_<world>

@@ -110,6 +110,11 @@ pub enum Fallback {
         /// The total turn, in degrees.
         deg: f64,
     },
+    /// The model is shorter than the bridge, which meets other bridges at both ends: a panel grid instead.
+    ModelBetweenBridges {
+        /// The model's path.
+        model: String,
+    },
     /// The install has no panels and no bridge model that fits: plain road.
     NoParts,
 }
@@ -125,6 +130,11 @@ impl fmt::Display for Fallback {
             Fallback::ModelBends { model, deg } => write!(
                 f,
                 "{} would lie on a line that turns by {deg:.1} degrees",
+                model_name(model)
+            ),
+            Fallback::ModelBetweenBridges { model } => write!(
+                f,
+                "{} is shorter than the bridge, which meets other bridges at both ends",
                 model_name(model)
             ),
             Fallback::NoParts => write!(
@@ -225,6 +235,9 @@ pub struct BridgeSite<'a> {
     pub bends: (Bends, Bends),
     /// Whether one of its ends is a node where only bridges meet.
     pub at_bridge_node: bool,
+    /// Whether the room ends at a node where only bridges meet, at its start and at its end: a model shorter
+    /// than the bridge then reaches that node (it is not chosen where both ends are such nodes).
+    pub node_ends: (bool, bool),
     /// The original ground at `(along, across)`: metres along its line from its start (negative before it,
     /// beyond its length after it, on the road it would grow into) and metres to the left of the line.
     pub ground: &'a dyn Fn(f64, f64) -> f64,
@@ -239,6 +252,7 @@ impl fmt::Debug for BridgeSite<'_> {
             .field("turn_deg", &self.turn_deg)
             .field("bends", &self.bends)
             .field("at_bridge_node", &self.at_bridge_node)
+            .field("node_ends", &self.node_ends)
             .finish_non_exhaustive()
     }
 }
@@ -515,6 +529,24 @@ pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
                 model: model.model.clone(),
             }];
             return panel_row(catalog, site, fallback);
+        };
+        // a model shorter than its bridge reaches a node where other bridges meet it; between two such nodes it
+        // has no place
+        let grown = if grown.0 < 0.0 || grown.1 < 0.0 {
+            let gap = -(grown.0 + grown.1);
+            match site.node_ends {
+                (true, true) => {
+                    let fallback = vec![Fallback::ModelBetweenBridges {
+                        model: model.model.clone(),
+                    }];
+                    return panel_row(catalog, site, fallback);
+                }
+                (true, false) => (0.0, -gap),
+                (false, true) => (-gap, 0.0),
+                (false, false) => grown,
+            }
+        } else {
+            grown
         };
         let turn = clean(site.turn_deg)
             + turn_over(&site.bends.0, grown.0)
@@ -850,6 +882,11 @@ pub struct BridgeFit {
     /// How far the part reaches past the bridge's start and end, signed: a model that grows at one end only
     /// has 0 at the other; negative where a model is shorter than the bridge (centred on it); 0 for a panel row.
     pub grown: (f64, f64),
+    /// Where the part's first end lies, in metres from the bridge's own start along it (the bridge's start in
+    /// the stored direction of the stretch): `-grown.0`, so negative where the part grows past the start and
+    /// positive where a short model is centred, or keeps to a node of bridges. The report, the post check and
+    /// the placement all read this one place.
+    pub part_start: f64,
     /// The total turn of the road it grew into at its start and at its end, in degrees.
     pub turn_deg: (f64, f64),
     /// The straight room beyond its start and its end.
@@ -878,6 +915,21 @@ impl BridgeFit {
             line = format!("{line} ({})", why.join("; "));
         }
         line
+    }
+}
+
+/// The thickness of the deck of the bridge on stretch `s`, for the clearance over a road below: a panel grid is as
+/// thick as one panel at its scale, a model as measured on it (`None` where it cannot be measured).
+#[must_use]
+pub fn deck_thickness(catalog: &PieceCatalog, s: &Stretch) -> Option<f64> {
+    match &s.bridge_kind {
+        Some(BridgeKind::Panels { scale, .. }) => {
+            panel_slab(catalog).map(|slab| slab.thickness * scale)
+        }
+        _ => crate::roadplace::bridge_model(catalog, s).and_then(|m| {
+            (m.thickness_source != crate::catalog::ThicknessSource::Unknown)
+                .then_some(m.deck_thickness)
+        }),
     }
 }
 
@@ -1096,6 +1148,10 @@ pub fn fit_bridges(
             turn_deg: own_turn,
             bends: (bends(&before), bends(&after)),
             at_bridge_node: room_end.0 == RoomEnd::BridgeNode || room_end.1 == RoomEnd::BridgeNode,
+            node_ends: (
+                room_end.0 == RoomEnd::BridgeNode,
+                room_end.1 == RoomEnd::BridgeNode,
+            ),
             ground: &beside,
         };
         let at = point_at(&s.points, length / 2.0).unwrap_or_default();
@@ -1122,6 +1178,8 @@ pub fn fit_bridges(
         if let Some(s) = g.stretches.get_mut(i) {
             // a panel grid and a model are bridges, a fill is plain road
             s.bridge = !matches!(choice.kind, BridgeKind::Fill);
+            // a short model lies this far from the stretch's start (growth is already in the stretch)
+            s.bridge_offset = (-choice.grown.0).max(0.0);
             s.bridge_kind = Some(choice.kind.clone());
         }
         g.crossings = crossings_of(&g.stretches);
@@ -1138,6 +1196,7 @@ pub fn fit_bridges(
             kind: choice.kind,
             part_length: choice.length,
             grown: choice.grown,
+            part_start: 0.0 - choice.grown.0,
             turn_deg,
             room,
             room_end,

@@ -49,6 +49,10 @@ pub struct Stretch {
     /// For a stretch that is an OpenStreetMap bridge, what it is built from (see
     /// [`crate::bridgekind::fit_bridges`]); `None` for every other stretch and before the bridges are fitted.
     pub bridge_kind: Option<BridgeKind>,
+    /// For an OpenStreetMap bridge built from a model that is shorter than the stretch: how far from the stretch's
+    /// stored start the model's first end lies, in metres (decided by [`crate::bridgekind::fit_bridges`]); 0
+    /// otherwise.
+    pub bridge_offset: f64,
 }
 
 /// A node where stretches meet.
@@ -358,6 +362,7 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         start,
         end,
         bridge_kind: None,
+        bridge_offset: 0.0,
     })
 }
 
@@ -1030,6 +1035,7 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
                 start: *node,
                 end,
                 bridge_kind: None,
+                bridge_offset: 0.0,
                 ..s.clone()
             });
             *node = end;

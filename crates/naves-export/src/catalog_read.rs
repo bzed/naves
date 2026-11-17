@@ -416,23 +416,15 @@ struct Extra {
     to: &'static [&'static str],
 }
 
-/// The archives of [`unpack_used`]: the Sakhal bridges and the industrial models. The concrete panels are in the
-/// road archive.
-const EXTRA_ARCHIVES: [Extra; 2] = [
-    Extra {
-        models: "dz\\structures_sakhal\\",
-        pbo: &["sakhal", "addons", "structures_sakhal.pbo"],
-        to: &["dz", "structures_sakhal"],
-    },
-    Extra {
-        models: "dz\\structures\\industrial\\",
-        pbo: &["addons", "structures_industrial.pbo"],
-        to: &["dz", "structures", "industrial"],
-    },
-];
+/// The archives of [`unpack_used`]: the Sakhal bridges. The concrete panels are in the road archive.
+const EXTRA_ARCHIVES: [Extra; 1] = [Extra {
+    models: "dz\\structures_sakhal\\",
+    pbo: &["sakhal", "addons", "structures_sakhal.pbo"],
+    to: &["dz", "structures_sakhal"],
+}];
 
 /// Unpacks, below `dest` (the `P:` drive), every archive besides the road one that holds one of the `models` the
-/// world uses (`dz/structures_sakhal` for the Sakhal bridges, `dz/structures/industrial`), where `binarize`
+/// world uses (`dz/structures_sakhal` for the Sakhal bridges), where `binarize`
 /// looks for them. The models are in the order of their archives, each archive is unpacked once.
 ///
 /// # Errors

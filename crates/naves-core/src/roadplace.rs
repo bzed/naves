@@ -1442,7 +1442,11 @@ impl<'a> Placer<'a> {
                 let part = count * length;
                 (
                     count,
-                    self.centred(c, first + k, (s1 - s0) - part, reversed),
+                    Self::offset_in_link(
+                        stretch.map_or(0.0, |s| s.bridge_offset),
+                        (s1 - s0) - part,
+                        reversed,
+                    ),
                 )
             }
             None => ((chord / length).round().max(1.0), 0.0),
@@ -1526,36 +1530,14 @@ impl<'a> Placer<'a> {
         items
     }
 
-    /// How far from the start of link `k` of chain `c`, in driving direction, a part `gap` shorter than the
-    /// bridge starts (negative `gap`: the part is longer, it starts at 0): centred, except that it keeps to an
-    /// end where another bridge meets it (a node of bridges: no gap there). The links' stored direction decides
-    /// which end is which.
-    fn centred(&self, c: usize, k: usize, gap: f64, reversed: bool) -> f64 {
-        if gap <= 0.0 || !gap.is_finite() {
+    /// How far from the start of the link, in driving direction, a model `gap` shorter than the stretch starts:
+    /// where [`crate::bridgekind::fit_bridges`] put it (`offset` from the stored start), counted from the other
+    /// end where the link is walked against the stored direction.
+    fn offset_in_link(offset: f64, gap: f64, reversed: bool) -> f64 {
+        if !(gap > 0.0 && gap.is_finite()) {
             return 0.0;
         }
-        let Some(stretch) = self
-            .chains
-            .get(c)
-            .and_then(|ch| ch.links.get(k))
-            .and_then(|l| self.graph.stretches.get(l.stretch))
-        else {
-            return 0.0;
-        };
-        let meets_bridge = |node: i64| {
-            self.graph
-                .crossings
-                .iter()
-                .filter(|x| x.node == node)
-                .flat_map(|x| x.stretches.iter())
-                .filter_map(|&i| self.graph.stretches.get(i))
-                .any(|o| o.id != stretch.id && o.bridge && !o.tunnel)
-        };
-        let stored = match (meets_bridge(stretch.start), meets_bridge(stretch.end)) {
-            (true, false) => 0.0,
-            (false, true) => gap,
-            _ => gap / 2.0,
-        };
+        let stored = offset.clamp(0.0, gap);
         if reversed { gap - stored } else { stored }
     }
 
@@ -1577,6 +1559,10 @@ impl<'a> Placer<'a> {
             items: Vec::new(),
         };
         let Some(slab) = crate::bridgekind::panel_slab(self.catalog) else {
+            // `choose` gives panels only with a panel in the catalog; say so rather than lay no deck
+            self.out.warnings.push(format!(
+                "stretch {id} is a panel grid but the catalog has no panel"
+            ));
             return Ok(out);
         };
         let s0 = line.link_start.get(k).copied().unwrap_or(0.0);
@@ -1590,8 +1576,15 @@ impl<'a> Placer<'a> {
         if !(step.is_finite() && step > 0.0) {
             return Ok(out);
         }
+        // the grid's two ends are ports: on the line, with the heading of the first and of the last step
+        let heading_at = |s: f64| line.pose_at(s).heading;
+        let first_heading = heading_at(s0 + step / 2.0);
+        let last_heading = heading_at(s1 - step / 2.0);
         if s0 - *s_cur > 1.0 {
-            let goal = line.pose_at(s0);
+            let goal = Pose {
+                heading: first_heading,
+                ..line.pose_at(s0)
+            };
             let (pieces, end) = self.fit_part(
                 &line.slice(*s_cur, s0),
                 *pose,
@@ -1601,6 +1594,8 @@ impl<'a> Placer<'a> {
             )?;
             out.fit = pieces;
             *pose = end;
+        } else {
+            pose.heading = first_heading;
         }
         let turn = if slab.along_x { PI / 2.0 } else { 0.0 };
         let width =
@@ -1640,8 +1635,10 @@ impl<'a> Placer<'a> {
                 link: None,
             });
         }
-        let end = line.pose_at(s1);
-        *pose = end;
+        *pose = Pose {
+            heading: last_heading,
+            ..line.pose_at(s1)
+        };
         *s_cur = s1;
         Ok(out)
     }

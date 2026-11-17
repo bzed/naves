@@ -416,21 +416,9 @@ fn unpack_used_provides_the_archives_of_the_models_a_world_uses() {
     // only road models: nothing more is unpacked
     unpack_used(&f.env.tools(), [road], &dest).unwrap();
     assert!(!dest.join("dz/structures_sakhal").exists());
-    assert!(!dest.join("dz/structures/industrial").exists());
     // a Sakhal bridge: its archive is below the P drive
     unpack_used(&f.env.tools(), [road, wood2], &dest).unwrap();
     assert!(dest.join("dz/structures_sakhal/roads/bridges").is_dir());
-    assert!(!dest.join("dz/structures/industrial").exists());
-    // an industrial model
-    let pipe = "dz\\structures\\industrial\\misc\\misc_concretepipe.p3d";
-    unpack_used(&f.env.tools(), [pipe], &dest).unwrap();
-    assert!(
-        dest.join("dz/structures/industrial")
-            .read_dir()
-            .unwrap()
-            .next()
-            .is_some()
-    );
 }
 
 #[test]

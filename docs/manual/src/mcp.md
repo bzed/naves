@@ -44,7 +44,7 @@ Give the full path of the project folder. The environment variables from [Instal
 | `render_topdown` | `x0, y0, x1, y1, px, overlay`, `layers`? | a PNG of that part of the map, north up, with the layers drawn over it |
 | `roads_stats` | none | the numbers of the generated roads: `km_by_family`, `pieces`, `stretches`, `open`, `median_deviation_m`, `max_grade`, `max_cut_m`, `max_fill_m`, `not_drivable_m`, `largest_miss_m`, `paths_too_steep_m` |
 | `validation_list` | `rule`? | `{violations}`: what is wrong with the roads, each with `rule`, `x`, `y` (map metres) and `message` |
-| `build` | none | `{mod_dir, mission_dir, warnings, progress}` after the build |
+| `build` | none | `{mod_dir, mission_dir, warnings, bridges, progress}` after the build; `bridges` has one line per OpenStreetMap bridge: what it was built from |
 
 **`project_set`** accepts only fields that exist and checks the value like a project file does (see
 [Project file](project-file.md)): a wrong type or an out-of-range value is an error that names the field, and

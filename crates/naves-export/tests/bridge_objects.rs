@@ -374,6 +374,7 @@ fn a_panel_grid_and_a_fallback_are_told_in_the_summary() {
         },
         part_length: 9.0,
         grown: (0.0, 0.0),
+        part_start: 0.0,
         turn_deg: (0.0, 0.0),
         room: (0.0, 0.0),
         room_end: (RoomEnd::Junction, RoomEnd::Junction),

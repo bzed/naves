@@ -48,6 +48,7 @@ fn site_on(
         turn_deg: 0.0,
         bends: (Vec::new(), Vec::new()),
         at_bridge_node: false,
+        node_ends: (false, false),
         ground,
     }
 }
@@ -353,6 +354,7 @@ fn a_short_bridge_at_a_node_of_bridges_is_never_filled() {
     let c = synthetic_catalog();
     let mut s = site(2.0, Family::Asf1, (0.0, 0.0));
     s.at_bridge_node = true;
+    s.node_ends = (true, false);
     let choice = choose(&c, &s);
     assert!(is_row(&choice.kind, 1, 3, 2.0 / 3.0), "{choice:?}");
     covers(&choice, 2.0);
@@ -1113,4 +1115,72 @@ fn bridges_are_joined_whichever_way_their_ways_run_and_a_ring_of_bridges_stays()
     let (_, fits) = fit(&ring);
     assert_eq!(fits.len(), 3, "{fits:?}");
     assert!(fits.iter().all(|f| f.stretches.len() == 1));
+}
+
+#[test]
+fn a_short_model_is_centred_or_keeps_to_the_node_of_bridges_and_the_fit_says_where() {
+    let c = synthetic_catalog();
+    // the posts of bridge_wood_25 do not reach the ground in the middle: bridge_wood2 (19.7 m) on 25 m
+    let valley = |at: f64, _: f64| if (2.0..20.0).contains(&at) { -4.0 } else { 0.0 };
+    let gap = 25.0 - 19.7;
+    let mut s = site_on(25.0, Family::Grav, ROOM, &valley);
+    let choice = choose(&c, &s);
+    assert_eq!(model(&choice.kind), Some(("bridge_wood2", 1)));
+    assert!(near(choice.grown.0, -gap / 2.0, 1e-5) && near(choice.grown.1, -gap / 2.0, 1e-5));
+    // it reaches the node of bridges at its start, or at its end
+    s.node_ends = (true, false);
+    let at_start = choose(&c, &s);
+    assert!(
+        near(at_start.grown.0, 0.0, 1e-5) && near(at_start.grown.1, -gap, 1e-5),
+        "{at_start:?}"
+    );
+    s.node_ends = (false, true);
+    let at_end = choose(&c, &s);
+    assert!(
+        near(at_end.grown.0, -gap, 1e-5) && near(at_end.grown.1, 0.0, 1e-5),
+        "{at_end:?}"
+    );
+    // between two nodes of bridges it has no place: a panel grid, with the reason
+    s.node_ends = (true, true);
+    let between = choose(&c, &s);
+    assert!(
+        matches!(between.kind, BridgeKind::Panels { .. }),
+        "{between:?}"
+    );
+    assert!(matches!(
+        between.fallback.as_slice(),
+        [Fallback::ModelBetweenBridges { model }] if model.ends_with("bridge_wood2.p3d")
+    ));
+    assert_ne!(between.fallback[0].to_string(), "");
+}
+
+#[test]
+fn the_deck_thickness_is_the_panels_at_their_scale_or_the_model_measured() {
+    use naves_core::bridgekind::deck_thickness;
+    let c = synthetic_catalog();
+    // a 9 m bridge on gravel: three panels at scale 1, the synthetic panel is 0.24 m thick
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(-100.0, 0.0), (0.0, 0.0)]),
+        feature(2, Family::Grav, true, 1, &[2, 3], &[(0.0, 0.0), (9.0, 0.0)]),
+        road(3, &[3, 4], &[(9.0, 0.0), (109.0, 0.0)]),
+    ]);
+    let (out, _) = fit(&g);
+    let panels = deck_thickness(&c, bridge_of(&out)).unwrap();
+    assert!(near(panels, 0.24, 1e-5), "{panels}");
+    // a long one: a chain of models, whose thickness is the one measured on the model
+    let g = build_graph(&[
+        road(1, &[1, 2], &[(-100.0, 0.0), (0.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(0.0, 0.0), (60.0, 0.0)],
+        ),
+        road(3, &[3, 4], &[(60.0, 0.0), (160.0, 0.0)]),
+    ]);
+    let (out, _) = fit(&g);
+    let model = deck_thickness(&c, bridge_of(&out)).unwrap();
+    assert!(model > 0.0, "{model}");
 }
