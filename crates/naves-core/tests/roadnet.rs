@@ -573,6 +573,7 @@ fn a_span_keeps_a_metre_before_a_bend_at_a_crossing_of_two_stretches() {
     let mut own = g.clone();
     own.stretches[0].bridge_kind = Some(naves_core::bridgekind::BridgeKind::Panels {
         count: 2,
+        abreast: 1,
         scale: 1.0,
     });
     assert_eq!(with_bridge_spans(&own, &[span]), own);

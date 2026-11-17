@@ -350,6 +350,7 @@ fn an_osm_bridge_to_be_built_from_its_own_part_gets_no_dip_bridge() {
     let mut graph = straight_road(Family::Asf3);
     graph.stretches[0].bridge_kind = Some(naves_core::bridgekind::BridgeKind::Panels {
         count: 4,
+        abreast: 1,
         scale: 1.0,
     });
     let (action, span) = decide(&dip(0, 180.0, 220.0, false), &graph, Some(25.0));

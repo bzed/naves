@@ -202,11 +202,13 @@ fn main() {
             bridges.iter().map(|b| b.stretches.len()).sum::<usize>()
         );
         for b in &bridges {
-            let (kind, count, scale) = match &b.kind {
-                naves_core::bridgekind::BridgeKind::Fill => ("fill".to_string(), 0, 0.0),
-                naves_core::bridgekind::BridgeKind::Panels { count, scale } => {
-                    ("panels".to_string(), *count, *scale)
-                }
+            let (kind, count, abreast, scale) = match &b.kind {
+                naves_core::bridgekind::BridgeKind::Fill => ("fill".to_string(), 0, 0, 0.0),
+                naves_core::bridgekind::BridgeKind::Panels {
+                    count,
+                    abreast,
+                    scale,
+                } => ("panels".to_string(), *count, *abreast, *scale),
                 naves_core::bridgekind::BridgeKind::Model { model, count } => (
                     model
                         .rsplit('\\')
@@ -215,6 +217,7 @@ fn main() {
                         .trim_end_matches(".p3d")
                         .to_string(),
                     *count,
+                    1,
                     1.0,
                 ),
             };
@@ -227,12 +230,12 @@ fn main() {
                 .min_by(|x, y| x.model.cmp(&y.model))
                 .map_or(0.0, |p| p.across);
             let row_w = if kind == "panels" {
-                scale * panel_across
+                f64::from(u32::try_from(abreast).unwrap_or(0)) * scale * panel_across
             } else {
                 0.0
             };
             println!(
-                "OSMBRIDGEFIT {}\t{}\t{:?}\t{:.2}\t{kind}\t{count}\t{scale:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}\t{}\t{row_w:.2}\t{road_w:.2}\t{:.1}\t{:.2}\t{:.2}\t{}\t{}",
+                "OSMBRIDGEFIT {}\t{}\t{:?}\t{:.2}\t{kind}\t{count}\t{scale:.3}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{:.0}\t{}\t{row_w:.2}\t{road_w:.2}\t{:.1}\t{:.2}\t{:.2}\t{}\t{}\t{abreast}",
                 b.stretch,
                 b.stretches.join("+"),
                 b.family,

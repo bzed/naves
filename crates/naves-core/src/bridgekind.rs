@@ -6,7 +6,8 @@
 //! [`choose`] is the table of the design: a bridge of at most [`FILL_MAX_M`] is plain road on the terrain, a
 //! bridge shorter than [`MODEL_FILL`] of every model its road may have is a row of concrete panels, a longer one
 //! the shortest model that covers it (a chain of the family's longest model when none does). A panel row covers
-//! its bridge exactly and never grows (its panels are scaled to the bridge, [`panel_row_size`]). A model longer
+//! its bridge exactly and never grows (its panels are scaled to the bridge and laid as a grid as wide as the
+//! road, [`panel_grid`]). A model longer
 //! than the bridge takes the missing length from the road at both ends, but only along a straight line
 //! ([`straight_room`]) and only on a bridge that is itself straight; where it does not fit, the bridge is a
 //! panel row. [`fit_bridges`] does this for every bridge of a road graph and says for each what it became and
@@ -41,8 +42,12 @@ pub const POST_ABOVE_DECK_M: f64 = 0.5;
 pub const GROUND_STEP_M: f64 = 1.0;
 /// Models that are never laid end to end (the design's non-goal: chains of `bridge_wood2`).
 pub const UNCHAINED_MODELS: [&str; 1] = ["bridge_wood2"];
-/// The most panels in a row, and the most models in a chain (a guard against absurd input).
+/// The most panels along a row or side by side, and the most models in a chain (a guard against absurd input).
 pub const MAX_PARTS: usize = 1000;
+/// A panel is scaled by at least this much.
+pub const PANEL_SCALE_MIN: f64 = 0.75;
+/// A panel is scaled by at most this much.
+pub const PANEL_SCALE_MAX: f64 = 3.0;
 
 /// Lengths closer than this are equal.
 const EPS_M: f64 = 1e-6;
@@ -54,13 +59,15 @@ const MAX_POST_SAMPLES: usize = 64;
 pub enum BridgeKind {
     /// Plain road on the terrain.
     Fill,
-    /// Concrete panels laid crosswise, one after the other along the bridge's own line from its start to its
-    /// end, each on the line's heading there: `count` of them, each scaled by `scale` (so that they cover the
-    /// bridge exactly).
+    /// Concrete panels laid crosswise as a grid, `count` along the bridge's own line from its start to its end
+    /// (each on the line's heading there) and `abreast` side by side, all scaled by `scale` (so that they cover
+    /// the bridge exactly and come near the road's width).
     Panels {
-        /// How many panels.
+        /// How many panels along the bridge.
         count: usize,
-        /// The scale of each panel.
+        /// How many panels side by side.
+        abreast: usize,
+        /// The scale of every panel.
         scale: f64,
     },
     /// A bridge model (its path in the catalog), `count` of them end to end.
@@ -363,38 +370,96 @@ fn panel(catalog: &PieceCatalog) -> Option<&Slab> {
         .min_by(|a, b| a.model.cmp(&b.model))
 }
 
-/// How many panels of `slab` a row over a bridge `length` long on a road `road_width` wide has, and their
-/// scale, so that they cover the bridge exactly: the count nearest the nominal scale
-/// `max(1, road_width / slab.across)` (at least one), or one fewer where that row would be more than
-/// [`BRIDGE_NARROWER_M`] narrower than the road. A row wider than the road is always fine. A road width that is
-/// not a number counts as 0; at most [`MAX_PARTS`] panels.
-#[must_use]
-pub fn panel_row_size(length: f64, road_width: f64, slab: &Slab) -> (usize, f64) {
-    let width = clean(road_width);
-    let nominal = (width / slab.across).max(1.0);
-    let n0 = whole((length / (slab.along * nominal)).round())
-        .unwrap_or(MAX_PARTS)
-        .clamp(1, MAX_PARTS);
-    let scale = |n: usize| length / (slab.along * times(n));
-    let narrowest = (width - BRIDGE_NARROWER_M) / slab.across;
-    let n = if n0 > 1 && scale(n0) < narrowest - 1e-12 {
-        n0 - 1
-    } else {
-        n0
-    };
-    (n, scale(n))
+/// How many panels abreast a grid of panels `slab` scaled by `scale` gets on a road `road_width` wide, and how far
+/// the grid's width is from the road's: every count from 1 up to the first whose width exceeds the road's (that
+/// one included), the nearest to the road's width among those at most [`BRIDGE_NARROWER_M`] narrower than the
+/// road, else the nearest of all; the fewer panels on a tie. `(abreast, |width - road_width|, at least the
+/// road's width less BRIDGE_NARROWER_M)`.
+fn abreast(scale: f64, road_width: f64, slab: &Slab) -> (usize, f64, bool) {
+    let one = slab.across * scale;
+    let mut best: Option<(usize, f64, bool)> = None;
+    for k in 1..=MAX_PARTS {
+        let width = times(k) * one;
+        let off = (width - road_width).abs();
+        let wide = width >= road_width - BRIDGE_NARROWER_M - 1e-9;
+        let better = best.is_none_or(|(_, b_off, b_wide)| {
+            (wide && !b_wide) || (wide == b_wide && off < b_off - 1e-9)
+        });
+        if better {
+            best = Some((k, off, wide));
+        }
+        if width.is_nan() || width > road_width {
+            break;
+        }
+    }
+    best.unwrap_or((1, f64::INFINITY, false))
 }
 
-/// A panel row over `site`, with `fallback` so far: it covers the bridge exactly (see [`panel_row_size`]) and
+/// The grid of panels `slab` over a bridge `length` long on a road `road_width` wide: how many along it, how
+/// many side by side, and their one scale, so that the panels along cover the bridge exactly.
+///
+/// The candidates are every count along whose scale `length / (slab.along * count)` lies in
+/// [`PANEL_SCALE_MIN`]..=[`PANEL_SCALE_MAX`], each with the counts abreast from 1 up to the first whose width exceeds the road's. Of
+/// those whose grid is at most [`BRIDGE_NARROWER_M`] narrower than the road the one nearest the road's width,
+/// else the nearest of all; on a tie the fewest panels, then the fewest along. Where no count along gives a
+/// scale in range (not above [`FILL_MAX_M`] with the catalog's panel, but the input is untrusted), the count
+/// nearest `length / slab.along`. A road width that is not a number counts as 0; at most [`MAX_PARTS`] along and
+/// abreast; never a panic.
+#[must_use]
+pub fn panel_grid(length: f64, road_width: f64, slab: &Slab) -> (usize, usize, f64) {
+    let width = clean(road_width);
+    let scale = |n: usize| length / (slab.along * times(n));
+    let first = whole((length / (slab.along * PANEL_SCALE_MAX) - 1e-9).ceil())
+        .unwrap_or(MAX_PARTS)
+        .max(1);
+    let last = whole((length / (slab.along * PANEL_SCALE_MIN) + 1e-9).floor()).unwrap_or(MAX_PARTS);
+    let mut best: Option<(usize, usize, f64, f64, bool)> = None;
+    for n in first..=last.min(MAX_PARTS) {
+        let s = scale(n);
+        if !(PANEL_SCALE_MIN - 1e-9..=PANEL_SCALE_MAX + 1e-9).contains(&s) {
+            continue;
+        }
+        let (k, off, wide) = abreast(s, width, slab);
+        let panels = n.saturating_mul(k);
+        let better = best.is_none_or(|(b_n, b_k, _, b_off, b_wide)| {
+            if wide != b_wide {
+                return wide;
+            }
+            if (off - b_off).abs() > 1e-9 {
+                return off < b_off;
+            }
+            let b_panels = b_n.saturating_mul(b_k);
+            panels < b_panels || (panels == b_panels && n < b_n)
+        });
+        if better {
+            best = Some((n, k, s, off, wide));
+        }
+    }
+    if let Some((n, k, s, _, _)) = best {
+        return (n, k, s);
+    }
+    let n = whole((length / slab.along).round())
+        .unwrap_or(MAX_PARTS)
+        .clamp(1, MAX_PARTS);
+    let s = scale(n);
+    let (k, _, _) = abreast(s, width, slab);
+    (n, k, s)
+}
+
+/// A panel row over `site`, with `fallback` so far: it covers the bridge exactly (see [`panel_grid`]) and
 /// needs no room; without panels in the catalog a fill.
 fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallback>) -> Choice {
     let Some(slab) = panel(catalog) else {
         fallback.push(Fallback::NoParts);
         return Choice::fill(fallback);
     };
-    let (count, scale) = panel_row_size(site.length, piece_width(catalog, site.family), slab);
+    let (count, abreast, scale) = panel_grid(site.length, piece_width(catalog, site.family), slab);
     Choice {
-        kind: BridgeKind::Panels { count, scale },
+        kind: BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        },
         length: site.length,
         grown: (0.0, 0.0),
         fallback,
@@ -413,7 +478,7 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
 ///   every post reaches the original ground (within the model's reach below the deck level, the line between
 ///   the ground at the part's two ends, and at most [`POST_ABOVE_DECK_M`] above it), else the next model. A
 ///   model without room, or on a line that turns too much, becomes a panel row.
-/// - Otherwise a panel row of the bridge's own length (see [`panel_row_size`]). Without panels: a fill
+/// - Otherwise a panel row of the bridge's own length (see [`panel_grid`]). Without panels: a fill
 ///   ([`Fallback::NoParts`]).
 #[must_use]
 pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {

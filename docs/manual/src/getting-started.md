@@ -290,11 +290,11 @@ are one bridge):
   only where the original ground under every post (over the whole post, beside the deck too) is within the posts'
   reach (2.6 m) below the deck and at most 0.5 m above it, the deck taken on the line between the ground at its two
   ends; else the next model.
-- **Anything else:** a row of concrete panels (`panel_concrete_1`), laid crosswise one after the other along the
-  bridge's own line, from its start to its end (also on a bend). The row covers the bridge exactly: its panels are
-  scaled so that a whole number of them is the bridge's length, with the count that comes nearest the road's width
-  over the panel's 6 m (never below 1); a row may be wider than the road, but not more than 1 m narrower where one
-  panel fewer avoids it. An 8.4 m bridge on a 9 m road gets two panels 8.4 m wide.
+- **Anything else:** concrete panels (`panel_concrete_1`), laid crosswise as a grid: some one after the other along
+  the bridge's own line, from its start to its end (also on a bend), and as many side by side as the road's width
+  needs. All panels of a bridge have one scale, between 0.75 and 3, chosen so that they cover the bridge's length
+  exactly and the grid comes as near the road's width as it can (not more than 1 m narrower where any grid avoids
+  it). An 8.85 m bridge on a 12 m road gets 3 panels along and 2 abreast, 11.8 m wide.
 
 A panel row never grows. A model longer than the bridge takes the missing length evenly from the road at both ends,
 but **only along a straight line and only on a straight bridge**: the bridge's own line and the road the model grows

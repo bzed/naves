@@ -110,7 +110,7 @@ applies:
 | `L` | built as |
 |---|---|
 | at most `FILL_MAX_M = 3.0`, unless the bridge touches a node where only bridges meet | plain road on the terrain. No finding; the report counts them. |
-| below two thirds of the shortest model that fits `W`, or a model that has no straight room or would lie on a bent bridge | **panel row** covering the bridge exactly: `n` panels laid crosswise (the 6 m side across the road), one after the other along the bridge's own line from its start to its end, each on the line's heading there, each scaled by `s = L / (3.0 · n)`. `n` is the count nearest the nominal scale: `s0 = max(1, W / 6.0)`, `n0 = max(1, round(L / (3.0 · s0)))`; `n0`, or `n0 − 1` (at least 1) where `n0`'s scale would make the row more than `BRIDGE_NARROWER_M` narrower than the road. Wider than the road is always fine. |
+| below two thirds of the shortest model that fits `W`, or a model that has no straight room or would lie on a bent bridge | **panel grid** covering the bridge exactly: `n` panels along the bridge's own line from its start to its end (each on the line's heading there) and `k` side by side, laid crosswise (the 6 m side across the road), all scaled by one `s = L / (3.0 · n)` with `PANEL_SCALE_MIN = 0.75 ≤ s ≤ PANEL_SCALE_MAX = 3.0`. Of every such `n`, each with the `k` from 1 up to the first whose width `k · 6.0 · s` exceeds `W`, the grid whose width is nearest `W` among those at most `BRIDGE_NARROWER_M` narrower than the road, else the nearest of all; ties: fewest panels `n · k`, then the smallest `n`. Where no `n` gives a scale in range: `n = max(1, round(L / 3.0))`. |
 | at least two thirds of a model that fits `W` | **that model**, the shortest that fits: `bridge_wood2` (19.7 m, a plank deck: Grav, Mud), `bridge_concrete3` (21.1 m, a concrete deck 7.6 m wide on cross walls 4.8 m deep about every 3 m, so it never spans a road: Asf3), `bridge_wood_25` (31.6 m with its end ramps; Grav, Mud, and only where the original ground under each post row is within the posts' 2.6 m of the deck), `bridge_metal_25` (Asf1, City), `bridge_stone_25` (Asf2, Asf3). Longer bridges are chains of the family's model as today. |
 
 - "Two thirds" is `MODEL_FILL = 2.0 / 3.0`, one constant. On the example: 5 fills, 61 panel rows, and 18 with a model
@@ -229,8 +229,8 @@ the work in `conform`, the wording of findings and report lines, and the order o
   `ceil(L / length)` models. `bridge_wood2` is never chained (`UNCHAINED_MODELS`): it is laid alone where it covers
   `MODEL_FILL` of the bridge (a model may then be shorter than the bridge; it is centred on it), else the bridge is a
   panel row.
-- **The panel row:** the first panel by name (`panel_concrete_1`); its count and scale as in the table
-  (`panel_row_size`).
+- **The panel row:** the first panel by name (`panel_concrete_1`); its grid and scale as in the table
+  (`panel_grid`).
 - **Falling back.** A model without straight room, or whose bridge and grown parts turn by more than
   `GROW_TURN_MAX_DEG` together, becomes a panel row of `L`. The turn of the grown parts is counted per end from the
   bridge's own heading at that end, over the stretch that continues it (growth reaches only into that stretch), and
@@ -247,3 +247,7 @@ the work in `conform`, the wording of findings and report lines, and the order o
   complex.
 - **Bridges over dips** use the same straight room: a span may reach the end of its stretch only where the road beyond
   goes on straight (else it keeps 1 m), and an OpenStreetMap bridge built from its own part gets no bridge over a dip.
+- **Panels are a grid** (fix round 2). One panel is 2:1, so a single row of `n` panels scaled to cover `L` cannot also
+  match the road's width (it came out up to 6.6 m wider or 4.7 m narrower on the example); `k` panels side by side
+  with one scale in `PANEL_SCALE_MIN..=PANEL_SCALE_MAX` give both. `BridgeKind::Panels { count, abreast, scale }`.
+  The maintainer: panels are used for any length where no bridge fits (no length limit for rows).

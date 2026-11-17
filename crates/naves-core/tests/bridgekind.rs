@@ -13,7 +13,8 @@
 
 use naves_core::bridgekind::{
     BridgeFit, BridgeKind, BridgeSite, Choice, FILL_MAX_M, Fallback, GROW_KEEP_M,
-    GROW_TURN_MAX_DEG, RoomEnd, bridge_kind, choose, fit_bridges, panel_row_size, straight_room,
+    GROW_TURN_MAX_DEG, PANEL_SCALE_MAX, PANEL_SCALE_MIN, RoomEnd, bridge_kind, choose, fit_bridges,
+    panel_grid, straight_room,
 };
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
 use naves_core::catalog::{Family, PANELS_PREFIX, PieceCatalog, Slab};
@@ -62,16 +63,20 @@ fn model(kind: &BridgeKind) -> Option<(&str, usize)> {
 }
 
 /// The count and scale of a panel row.
-fn row(kind: &BridgeKind) -> (usize, f64) {
+fn row(kind: &BridgeKind) -> (usize, usize, f64) {
     match kind {
-        BridgeKind::Panels { count, scale } => (*count, *scale),
+        BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        } => (*count, *abreast, *scale),
         other => panic!("no panel row: {other:?}"),
     }
 }
 
-fn is_row(kind: &BridgeKind, count: usize, scale: f64) -> bool {
-    let (n, s) = row(kind);
-    n == count && near(s, scale, 1e-3)
+fn is_row(kind: &BridgeKind, count: usize, abreast: usize, scale: f64) -> bool {
+    let (n, k, s) = row(kind);
+    n == count && k == abreast && near(s, scale, 1e-3)
 }
 
 /// A row covers its bridge exactly and never grows.
@@ -95,7 +100,7 @@ fn three_metres_and_less_are_filled() {
 }
 
 #[test]
-fn a_panel_row_has_the_count_nearest_its_nominal_scale_and_covers_the_bridge() {
+fn a_panel_grid_matches_the_road_width_and_covers_the_bridge() {
     let slab = Slab {
         model: "p".to_string(),
         along: 3.0,
@@ -104,39 +109,50 @@ fn a_panel_row_has_the_count_nearest_its_nominal_scale_and_covers_the_bridge() {
         top: 0.14,
         thickness: 0.25,
     };
-    // (length, road width, count, scale)
-    for (length, width, n, s) in [
-        (8.42, 9.0, 2, 1.403),   // Gmundberg: 8.4 m wide on a 9 m road
-        (17.21, 7.0, 5, 1.147),  // Untersteiner Straße
-        (13.76, 10.0, 3, 1.529), // Schapbachweg
-        (3.07, 7.0, 1, 1.023),
-        (4.5, 6.0, 1, 1.5), // two panels would be 4.5 m wide on a 6 m road: one, 9 m wide
-        (5.9, 6.0, 2, 0.983),
-        (12.0, 6.0, 4, 1.0),
-        (12.0, 12.0, 2, 2.0),
+    // (length, road width, along, abreast, scale)
+    for (length, width, n, k, s) in [
+        (8.85, 12.0, 3, 2, 0.983), // 11.8 m wide
+        (7.82, 10.0, 3, 2, 0.869), // 10.43 m
+        (3.01, 10.0, 1, 2, 1.003), // 12.04 m: one panel abreast would be 6 m
+        (8.42, 9.0, 2, 1, 1.403),  // 8.42 m
+        (6.11, 6.0, 2, 1, 1.018),
+        (34.98, 12.0, 6, 1, 1.943), // 11.66 m; 12 along and 2 abreast is as wide with more panels
+        (12.0, 6.0, 4, 1, 1.0),
+        (12.0, 12.0, 2, 1, 2.0), // 4 along and 2 abreast is as exact with more panels
     ] {
-        let (count, scale) = panel_row_size(length, width, &slab);
-        assert_eq!(count, n, "{length} on {width}");
+        let (count, abreast, scale) = panel_grid(length, width, &slab);
+        assert_eq!((count, abreast), (n, k), "{length} on {width}");
         assert!(near(scale, s, 1e-3), "{length} on {width}: {scale}");
+        assert!((PANEL_SCALE_MIN..=PANEL_SCALE_MAX).contains(&scale));
         assert!(near(
             f64::from(u32::try_from(count).unwrap()) * 3.0 * scale,
             length,
             1e-9
         ));
     }
+    // no count gives a scale in range (2 m): the nearest count, and abreast to the road's width
+    let (count, abreast, scale) = panel_grid(2.0, 12.0, &slab);
+    assert_eq!((count, abreast), (1, 3));
+    assert!(near(scale, 2.0 / 3.0, 1e-9));
     // absurd input stays bounded
-    let (count, scale) = panel_row_size(1e9, 6.0, &slab);
-    assert!((1..=1000).contains(&count) && scale.is_finite());
-    let (count, _) = panel_row_size(10.0, f64::NAN, &slab);
-    assert!(count >= 1);
+    let (count, abreast, scale) = panel_grid(1e9, 6.0, &slab);
+    assert!((1..=1000).contains(&count) && (1..=1000).contains(&abreast) && scale.is_finite());
+    let (count, abreast, _) = panel_grid(10.0, f64::NAN, &slab);
+    assert!(count >= 1 && abreast == 1);
+    let (count, abreast, _) = panel_grid(f64::NAN, 10.0, &slab);
+    assert!(count >= 1 && abreast >= 1);
 }
 
 #[test]
 fn just_over_three_metres_is_one_panel() {
     let c = synthetic_catalog();
-    for family in [Family::Asf1, Family::Grav] {
+    // two abreast on a 12 m road, one on a 6 m road
+    for (family, abreast) in [(Family::Asf1, 2), (Family::Grav, 1)] {
         let choice = choose(&c, &site(3.1, family, ROOM));
-        assert!(is_row(&choice.kind, 1, 3.1 / 3.0), "{family:?} {choice:?}");
+        assert!(
+            is_row(&choice.kind, 1, abreast, 3.1 / 3.0),
+            "{family:?} {choice:?}"
+        );
         covers(&choice, 3.1);
     }
     // there is no culvert: 5 m is a panel row too
@@ -150,13 +166,13 @@ fn just_over_three_metres_is_one_panel() {
 fn a_panel_row_is_scaled_to_its_road_and_covers_the_bridge() {
     let c = synthetic_catalog();
     let on_six = choose(&c, &site(12.0, Family::Grav, ROOM));
-    assert!(is_row(&on_six.kind, 4, 1.0));
+    assert!(is_row(&on_six.kind, 4, 1, 1.0));
     covers(&on_six, 12.0);
     let on_twelve = choose(&c, &site(12.0, Family::Asf1, ROOM));
-    assert!(is_row(&on_twelve.kind, 2, 2.0));
+    assert!(is_row(&on_twelve.kind, 2, 1, 2.0));
     // a 7 m road (asphalt 3): three panels of 10 / 9
     let asf3 = choose(&c, &site(10.0, Family::Asf3, ROOM));
-    assert!(is_row(&asf3.kind, 3, 10.0 / 9.0), "{asf3:?}");
+    assert!(is_row(&asf3.kind, 3, 1, 10.0 / 9.0), "{asf3:?}");
     covers(&asf3, 10.0);
 }
 
@@ -164,7 +180,7 @@ fn a_panel_row_is_scaled_to_its_road_and_covers_the_bridge() {
 fn a_panel_row_needs_no_room() {
     let c = synthetic_catalog();
     let choice = choose(&c, &site(13.0, Family::Grav, (0.0, 0.0)));
-    assert!(is_row(&choice.kind, 4, 13.0 / 12.0), "{choice:?}");
+    assert!(is_row(&choice.kind, 4, 1, 13.0 / 12.0), "{choice:?}");
     covers(&choice, 13.0);
     assert_eq!(choice.fallback, Vec::new());
 }
@@ -290,7 +306,7 @@ fn a_model_without_room_is_a_panel_row_of_the_bridge_length() {
     let c = synthetic_catalog();
     let choice = choose(&c, &site(16.7, Family::Asf1, (1.0, 1.0)));
     // 3 panels of 16.7 / 9
-    assert!(is_row(&choice.kind, 3, 16.7 / 9.0), "{choice:?}");
+    assert!(is_row(&choice.kind, 3, 1, 16.7 / 9.0), "{choice:?}");
     covers(&choice, 16.7);
     assert!(matches!(
         choice.fallback.as_slice(),
@@ -338,7 +354,7 @@ fn a_short_bridge_at_a_node_of_bridges_is_never_filled() {
     let mut s = site(2.0, Family::Asf1, (0.0, 0.0));
     s.at_bridge_node = true;
     let choice = choose(&c, &s);
-    assert!(is_row(&choice.kind, 1, 2.0 / 3.0), "{choice:?}");
+    assert!(is_row(&choice.kind, 1, 3, 2.0 / 3.0), "{choice:?}");
     covers(&choice, 2.0);
     // one of no length is still nothing
     s.length = 0.0;
@@ -474,7 +490,7 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
     let (out, fits) = fit(&g);
     let f = &fits[0];
     // wood2 has no room: 4 panels of 13.2 / 12, covering the bridge
-    assert!(is_row(&f.kind, 4, 1.1), "{f:?}");
+    assert!(is_row(&f.kind, 4, 1, 1.1), "{f:?}");
     assert_eq!(f.grown, (0.0, 0.0));
     assert!(near(f.part_length, 13.2, 1e-9));
     assert!(matches!(
@@ -493,7 +509,7 @@ fn a_bridge_between_two_bends_grows_nothing_and_becomes_panels() {
     // until panel rows are laid it is plain road, but it knows what it is to be
     let b = bridge_of(&out);
     assert!(!b.bridge);
-    assert!(is_row(b.bridge_kind.as_ref().unwrap(), 4, 1.1));
+    assert!(is_row(b.bridge_kind.as_ref().unwrap(), 4, 1, 1.1));
 }
 
 #[test]
@@ -591,7 +607,7 @@ fn a_bridge_between_two_junction_stubs_never_grows_through_a_junction() {
     ]);
     let (out, fits) = fit(&g);
     // one panel of 4 / 3, the bridge's own length: no room is needed
-    assert!(is_row(&fits[0].kind, 1, 4.0 / 3.0), "{:?}", fits[0]);
+    assert!(is_row(&fits[0].kind, 1, 2, 4.0 / 3.0), "{:?}", fits[0]);
     assert_eq!(
         fits[0].room_end,
         (RoomEnd::ShortNeighbour, RoomEnd::ShortNeighbour)

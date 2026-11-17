@@ -257,8 +257,12 @@ fn a_bridge_between_two_junctions_without_room_is_a_panel_row_of_its_length() {
     let fit = &generated.bridges[0];
     assert_eq!(fit.stretches, vec!["11:2-3".to_string()]);
     match fit.kind {
-        BridgeKind::Panels { count, scale } => {
-            assert_eq!(count, 1);
+        BridgeKind::Panels {
+            count,
+            abreast,
+            scale,
+        } => {
+            assert_eq!((count, abreast), (1, 1));
             assert!((scale * 3.0 - fit.length).abs() < 1e-9, "{fit:?}");
         }
         _ => panic!("{fit:?}"),
