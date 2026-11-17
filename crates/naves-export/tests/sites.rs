@@ -231,7 +231,6 @@ fn every_category_of_the_spec_is_present_on_the_fixture() {
         "bridge-metal",
         "bridge-stone",
         "bridge-wood",
-        "bridge-scaled",
         "finding-road_gap",
         "finding-road_grade",
         "finding-join_without_junction",

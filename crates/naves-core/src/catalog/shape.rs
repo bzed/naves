@@ -9,6 +9,20 @@
 //! that hold no vertex), and the slice keeps the lowest point of what is left, as a depth below the deck
 //! surface, and how far across the axis it reaches. Geometry beyond the ports is not sliced. Zero-area
 //! triangles clip like any other.
+//!
+//! What is left of a triangle in a slice either **stands** (it reaches to within [`STAND_TOL_M`] of the part's
+//! deepest point, [`PartShape::reach_down`]: an abutment, a pier, a post, a wall foot) or **hangs** (the deck,
+//! the intrados of an arch, the truss floor). Per slice the underside keeps the deepest hanging point and the
+//! across intervals of what stands. A part that reaches nowhere deeper than its shallowest slice (a plain slab)
+//! has nothing that stands.
+//!
+//! Slices are half open, `[i, i + 1)`, for a face with an along extent: a face that only touches a slice at a
+//! whole metre does not count for it. A face with no along extent (a vertical face across the span) on a whole
+//! metre between two slices is left out; the faces of its solid that have an along extent carry it.
+//!
+//! Limitation: "stands" is measured against one foot depth for the whole part, the deepest point. A model whose
+//! piers stand at different depths (none in the catalog today; `bridge_concrete1/2` would) would need a foot
+//! per pier.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,31 +38,53 @@ pub const MAX_PART_LENGTH_M: f64 = 200.0;
 pub const MAX_COORDINATE_M: f64 = 1000.0;
 /// Deep geometry with gaps across of at most this, in metres, still closes the deck's width (a wall).
 const WALL_GAP_M: f64 = 0.5;
-/// A slice whose deck hangs less than this share of the deepest point below a part with no solid part stands
-/// between posts (see [`super::BridgeModel::posts`]).
-const POST_SHARE: f64 = 0.5;
+/// Geometry that reaches to within this of the part's deepest point stands on the ground, in metres.
+pub const STAND_TOL_M: f64 = 0.3;
+/// Along extents shorter than this, in metres, are no extent (a face across the span, a touch at a boundary).
+const EDGE_M: f64 = 1e-3;
 
 /// The most slices a part has.
 const MAX_SLICES: u32 = 200;
 
-/// What hangs below a deck, per slice of [`SLICE_M`] from the first port; the last slice ends at the second
-/// port and may be shorter.
+/// What is below a deck, per slice of [`SLICE_M`] from the first port; the last slice ends at the second
+/// port and may be shorter (or longer, for a panel row past [`MAX_PART_LENGTH_M`]: it covers the rest).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Underside {
-    /// The depth of the lowest geometry in the slice below the deck surface, in metres; 0 where the slice has
-    /// no geometry or only geometry above the deck.
+    /// The depth of the lowest geometry in the slice below the deck surface, over the whole width, in metres; 0
+    /// where the slice has no geometry or only geometry above the deck.
     pub depth: Vec<f64>,
     /// How far the geometry in the slice reaches from the axis between the ports, to either side, in metres; 0
     /// where the slice has no geometry.
     pub half_width: Vec<f64>,
+    /// The depth of the lowest geometry in the slice that hangs (does not stand), in metres; 0 where nothing
+    /// hangs below the deck surface.
+    #[serde(default)]
+    pub hang: Vec<f64>,
+    /// The across intervals (signed, metres from the axis, sorted and merged) of the feet of what stands in the
+    /// slice; empty where nothing stands.
+    #[serde(default)]
+    pub stand: Vec<Vec<(f64, f64)>>,
 }
 
-/// A run of slices deeper than [`MAX_DECK_THICKNESS_M`]: an abutment, an arch flank, a pier or a wall.
+/// What a ground point under a part must keep from the deck surface (see [`PartShape::ceiling`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ceiling {
+    /// Geometry hangs this deep below the deck surface here: the ground stays below it (and the air beneath).
+    Hang(f64),
+    /// Geometry stands here with its foot this deep below the deck surface: the ground meets the foot and is
+    /// not cut below it.
+    Foot(f64),
+}
+
+/// A run of slices deeper than [`MAX_DECK_THICKNESS_M`]: an abutment, an arch flank, a pier or a wall. It
+/// merges what stands and what hangs: for a road below or the ground use [`PartShape::passable`] and
+/// [`PartShape::ceiling`], not its depth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Solid {
-    /// Where it starts along the span, in metres from the first port (a slice boundary).
+    /// Where its geometry deeper than [`MAX_DECK_THICKNESS_M`] starts along the span, in metres from the first
+    /// port.
     pub from: f64,
-    /// Where it ends (a slice boundary, or the second port).
+    /// Where that geometry ends (at most the second port).
     pub to: f64,
     /// How far its deep geometry reaches from the axis, to either side: the largest of its slices.
     pub half_width: f64,
@@ -70,10 +106,15 @@ pub struct PartShape {
     /// The solid parts, in order along the span.
     pub solid: Vec<Solid>,
     /// Whether the part holds the ground back at its first and at its second port: a solid part that reaches
-    /// the port and is a wall across the deck's width.
+    /// the port and is a wall across the deck's width. Only geometry between the ports is seen: an abutment
+    /// wholly behind a port does not retain.
     pub retains: (bool, bool),
-    /// The deepest point of the Geometry LOD below the deck surface, also beyond the ports, in metres.
+    /// The deepest point of the Geometry LOD below the deck surface, also beyond the ports, in metres: the foot
+    /// of what stands.
     pub reach_down: f64,
+    /// Half the width of the deck (its ports), in metres.
+    #[serde(default)]
+    pub deck_half_width: f64,
 }
 
 /// A concrete panel: a slab with a roadway and nothing below it.
@@ -159,64 +200,206 @@ fn touched(n: usize, length: f64, from: f64, to: f64) -> std::ops::RangeInclusiv
     first..=end.max(first)
 }
 
-/// The largest depth of `underside` over the slices `from..to` touches.
-fn thickness_over(underside: &Underside, length: f64, from: f64, to: f64) -> f64 {
+/// Slice `i`'s extent along the span in an underside of `n` slices of a part `length` long (the last one ends at
+/// `length`).
+fn slice_bounds(i: usize, n: usize, length: f64) -> (f64, f64) {
+    let end = if i + 1 >= n {
+        length
+    } else {
+        slice_start(i + 1).min(length)
+    };
+    (slice_start(i), end)
+}
+
+/// Whether one of `solid` overlaps `a..b` over a positive length, or, for a point (`b <= a`), holds it inside.
+fn in_solid(solid: &[Solid], a: f64, b: f64) -> bool {
+    if b > a + EDGE_M {
+        solid.iter().any(|s| s.to.min(b) - s.from.max(a) > EDGE_M)
+    } else {
+        solid.iter().any(|s| s.from < a && s.to > a)
+    }
+}
+
+/// See [`PartShape::thickness`].
+fn thickness_over(underside: &Underside, solid: &[Solid], length: f64, from: f64, to: f64) -> f64 {
     let n = underside.depth.len();
     if n == 0 {
         return 0.0;
     }
-    underside
-        .depth
-        .get(touched(n, length, from, to))
-        .unwrap_or_default()
-        .iter()
-        .copied()
+    let a = if from.is_finite() { from } else { 0.0 };
+    let b = if to.is_finite() { to } else { length };
+    let (a, b) = (a.min(b).max(0.0), a.max(b).min(length.max(0.0)));
+    touched(n, length, a, b)
+        .map(|i| {
+            let depth = underside.depth.get(i).copied().unwrap_or_default();
+            let (s0, s1) = slice_bounds(i, n, length);
+            let (lo, hi) = (a.max(s0), b.min(s1));
+            // posts or pylons outside any solid part count with their depth: the slice has no exact extent
+            // for them
+            let loose_stand =
+                !in_solid(solid, s0, s1) && underside.stand.get(i).is_some_and(|f| !f.is_empty());
+            if loose_stand || in_solid(solid, lo, hi.max(lo)) {
+                depth
+            } else {
+                underside.hang.get(i).copied().unwrap_or(depth)
+            }
+        })
         .fold(0.0, f64::max)
 }
 
-/// The longest run of slices outside `solid`, as metres along the span; the first of equal runs. `(0, 0)` if
-/// every slice is solid or there are none.
-fn opening_of(underside: &Underside, solid: &[Solid], length: f64) -> (f64, f64) {
-    let n = underside.depth.len();
-    let is_solid = |i: usize| {
-        let (a, b) = (slice_start(i), slice_start(i + 1));
-        solid.iter().any(|s| s.from < b && s.to > a)
-    };
-    let mut best: Option<(usize, usize)> = None;
-    let mut run: Option<usize> = None;
-    for i in 0..=n {
-        let open = i < n && !is_solid(i);
-        match (open, run) {
-            (true, None) => run = Some(i),
-            (false, Some(start)) => {
-                if best.is_none_or(|(a, b)| i - start > b - a) {
-                    best = Some((start, i));
-                }
-                run = None;
-            }
-            _ => {}
+/// The longest stretch of the span outside `solid`, exact to the solid parts' ends; the first of equal ones.
+/// `(0, 0)` if there is none.
+fn opening_of(solid: &[Solid], length: f64) -> (f64, f64) {
+    let length = length.max(0.0);
+    let mut parts: Vec<(f64, f64)> = solid
+        .iter()
+        .map(|s| (s.from.clamp(0.0, length), s.to.clamp(0.0, length)))
+        .collect();
+    parts.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut best = (0.0, 0.0);
+    let mut at = 0.0;
+    for (from, to) in parts.iter().copied().chain([(length, length)]) {
+        if from - at > best.1 - best.0 + EDGE_M {
+            best = (at, from);
         }
+        at = f64::max(at, to);
     }
-    best.map_or((0.0, 0.0), |(a, b)| {
-        let to = if b == n { length } else { slice_start(b) };
-        (slice_start(a), to.min(length.max(0.0)))
-    })
+    best
 }
 
 impl PartShape {
-    /// How far the part reaches below its deck surface over `from..to` (metres from the first port): the
-    /// largest [`Underside::depth`] of the slices the interval touches over a positive length. Solid slices
-    /// count with their real depth, so an interval in the opening gets the deck's (or the arch's) depth there
-    /// and one that touches a solid part gets the solid part's.
+    /// How far the part reaches below its deck surface over `from..to` (metres from the first port): per slice
+    /// the interval touches over a positive length, [`Underside::depth`] where the interval meets a solid part
+    /// in that slice or where something stands in a slice outside every solid part (posts), else
+    /// [`Underside::hang`]; the largest of them. So an interval in the opening gets the
+    /// deck's (or the arch's) depth and one that touches a solid part gets the solid part's.
     #[must_use]
     pub fn thickness(&self, from: f64, to: f64) -> f64 {
-        thickness_over(&self.underside, self.length, from, to)
+        thickness_over(&self.underside, &self.solid, self.length, from, to)
     }
 
-    /// The longest run of slices that are not solid, as `(from, to)` in metres from the first port.
+    /// The longest stretch of the span between the solid parts, as `(from, to)` in metres from the first
+    /// port, exact to the ends of the solid parts.
     #[must_use]
     pub fn opening(&self) -> (f64, f64) {
-        opening_of(&self.underside, &self.solid, self.length)
+        opening_of(&self.solid, self.length)
+    }
+
+    /// Whether something stands in slice `i`, anywhere across: a road below crosses the whole model, also beside
+    /// the deck (the posts of `bridge_wood_25` stand outside its deck).
+    fn stands_in(&self, i: usize) -> bool {
+        self.underside.stand.get(i).is_some_and(|s| !s.is_empty())
+    }
+
+    /// The stretches along the span (metres from the first port) where a road `depth_below_deck` below the deck
+    /// surface clears `clearance` under the part: slices whose [`Underside::depth`] (over the whole width) is at
+    /// most `depth_below_deck - clearance` and where nothing stands (anywhere across: a road below crosses the
+    /// whole model); neighbouring slices merged. A run bounded by a solid part that ends inside the next slice reaches to that part's end, if what
+    /// hangs there clears. Standing geometry never passes, however deep the road. Inputs that are not numbers
+    /// pass nothing.
+    #[must_use]
+    pub fn passable(&self, depth_below_deck: f64, clearance: f64) -> Vec<(f64, f64)> {
+        let limit = depth_below_deck - clearance;
+        let n = self.underside.depth.len();
+        if !limit.is_finite() || n == 0 {
+            return Vec::new();
+        }
+        let hang = |i: usize| {
+            self.underside
+                .hang
+                .get(i)
+                .or_else(|| self.underside.depth.get(i))
+                .copied()
+                .unwrap_or_default()
+        };
+        let ok = |i: usize| {
+            self.underside.depth.get(i).is_some_and(|d| *d <= limit) && !self.stands_in(i)
+        };
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < n {
+            if !ok(i) {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && ok(i) {
+                i += 1;
+            }
+            let (mut from, _) = slice_bounds(start, n, self.length);
+            let (_, mut to) = slice_bounds(i - 1, n, self.length);
+            if let Some(before) = start.checked_sub(1) {
+                let (s0, s1) = slice_bounds(before, n, self.length);
+                let end = self
+                    .solid
+                    .iter()
+                    .map(|s| s.to)
+                    .filter(|t| *t > s0 && *t < s1)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if end.is_finite() && hang(before) <= limit {
+                    from = end;
+                }
+            }
+            if i < n {
+                let (s0, s1) = slice_bounds(i, n, self.length);
+                let begin = self
+                    .solid
+                    .iter()
+                    .map(|s| s.from)
+                    .filter(|f| *f > s0 && *f < s1)
+                    .fold(f64::INFINITY, f64::min);
+                if begin.is_finite() && hang(i) <= limit {
+                    to = begin;
+                }
+            }
+            out.push((from, to));
+        }
+        out
+    }
+
+    /// What the ground at `along` (metres from the first port) and `across` (signed, metres from the axis) must
+    /// keep from the deck surface: [`Ceiling::Foot`] at [`PartShape::reach_down`] where `across` lies under
+    /// something that stands in that slice, else [`Ceiling::Hang`] with the slice's [`Underside::hang`]. A point
+    /// outside the part takes the nearest slice (a number that is not one: the first); a part without slices
+    /// gives `Hang(0.0)`.
+    #[must_use]
+    pub fn ceiling(&self, along: f64, across: f64) -> Ceiling {
+        let n = self.underside.depth.len();
+        if n == 0 {
+            return Ceiling::Hang(0.0);
+        }
+        let i = clamp_index((along / SLICE_M).floor(), n - 1);
+        let stands = self
+            .underside
+            .stand
+            .get(i)
+            .is_some_and(|s| s.iter().any(|(a, b)| *a <= across && across <= *b));
+        if stands {
+            Ceiling::Foot(self.reach_down)
+        } else {
+            Ceiling::Hang(
+                self.underside
+                    .hang
+                    .get(i)
+                    .or_else(|| self.underside.depth.get(i))
+                    .copied()
+                    .unwrap_or_default(),
+            )
+        }
+    }
+
+    /// Every foot of what stands, as `(along from, along to, across from, across to)` in metres: the slice's
+    /// extent along the span and the foot's across interval. In order along the span, then across.
+    pub fn stands(&self) -> impl Iterator<Item = (f64, f64, f64, f64)> + '_ {
+        let n = self.underside.depth.len();
+        self.underside
+            .stand
+            .iter()
+            .enumerate()
+            .flat_map(move |(i, feet)| {
+                let (s0, s1) = slice_bounds(i, n, self.length);
+                feet.iter().map(move |(a, b)| (s0, s1, *a, *b))
+            })
     }
 
     /// A row of `count` panels laid one after the other, each `slab.along · scale` long: a plain slab
@@ -235,8 +418,8 @@ impl PartShape {
         PartShape::level(length, depth, slab.across / 2.0 * scale)
     }
 
-    /// A part with the same `depth` and `half_width` in every slice and nothing solid: a plain slab, or a
-    /// model whose faces cannot be read.
+    /// A part with the same `depth` and `half_width` in every slice, nothing solid and nothing that stands
+    /// (everything hangs): a plain slab, a panel row, or a model whose faces cannot be read.
     #[must_use]
     pub fn level(length: f64, depth: f64, half_width: f64) -> PartShape {
         let length = if length.is_finite() {
@@ -256,10 +439,13 @@ impl PartShape {
             underside: Underside {
                 depth: vec![depth; n],
                 half_width: vec![half_width; n],
+                hang: vec![depth; n],
+                stand: vec![Vec::new(); n],
             },
             solid: Vec::new(),
             retains: (false, false),
             reach_down: depth,
+            deck_half_width: half_width,
         }
     }
 }
@@ -344,6 +530,49 @@ struct Slice {
     /// The across extent of each piece of geometry deeper than [`MAX_DECK_THICKNESS_M`].
     deep: Vec<(f64, f64)>,
     deep_half_width: f64,
+    /// The along extent of that deep geometry, `(min, max)`.
+    deep_along: Option<(f64, f64)>,
+    /// The clipped pieces of triangles in the slice.
+    pieces: Vec<Piece>,
+}
+
+/// What of one triangle lies in a slice.
+#[derive(Clone, Copy)]
+struct Piece {
+    /// Its deepest point.
+    deepest: f64,
+    /// Whether its triangle reaches the foot anywhere (then the piece never hangs).
+    reaches: bool,
+    /// If the piece itself reaches the foot, the across interval of its foot.
+    foot: Option<(f64, f64)>,
+}
+
+/// `spans` sorted and merged where they overlap or touch.
+fn merged(mut spans: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in spans {
+        match out.last_mut() {
+            Some(last) if a <= last.1 + EDGE_M => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    out
+}
+
+/// The `(min, max)` of axis `axis` over `points`; `None` for no points.
+fn range_of(points: &[[f64; 3]], axis: usize) -> Option<(f64, f64)> {
+    let lo = points
+        .iter()
+        .filter_map(|p| p.get(axis))
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let hi = points
+        .iter()
+        .filter_map(|p| p.get(axis))
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    (lo <= hi).then_some((lo, hi))
 }
 
 /// Whether the intervals `spans` cover `-half..half` with gaps of at most [`WALL_GAP_M`].
@@ -381,13 +610,16 @@ fn solids(
             (true, None) => run = Some(i),
             (false, Some(start)) => {
                 let part = slices.get(start..i).unwrap_or_default();
+                let (s_from, _) = slice_bounds(start, n, length);
+                let (_, s_to) = slice_bounds(i - 1, n, length);
+                let first = part
+                    .first()
+                    .and_then(|s| s.deep_along)
+                    .map_or(s_from, |r| r.0);
+                let last = part.last().and_then(|s| s.deep_along).map_or(s_to, |r| r.1);
                 solid.push(Solid {
-                    from: slice_start(start),
-                    to: if i == n {
-                        length
-                    } else {
-                        slice_start(i).min(length)
-                    },
+                    from: first.clamp(0.0, length),
+                    to: last.clamp(0.0, length),
                     half_width: part.iter().map(|s| s.deep_half_width).fold(0.0, f64::max),
                     depth: part.iter().filter_map(|s| s.depth).fold(0.0, f64::max),
                     wall: part.iter().any(|s| closes(&s.deep, deck_half_width)),
@@ -400,6 +632,115 @@ fn solids(
     solid
 }
 
+/// The slices of a part `length` long that a triangle with along extent `lo..hi` adds to: half open, so a
+/// slice the face only touches at its start does not get it; a face across the span (no along extent) on a
+/// whole metre between two slices gets none.
+fn slices_of(lo: f64, hi: f64, n: usize, length: f64) -> Option<std::ops::RangeInclusive<usize>> {
+    let last = n.checked_sub(1)?;
+    if hi < 0.0 || lo > length {
+        return None;
+    }
+    if hi - lo > EDGE_M {
+        return Some(
+            clamp_index((lo / SLICE_M).floor(), last)
+                ..=clamp_index((hi / SLICE_M).ceil() - 1.0, last),
+        );
+    }
+    let at = f64::midpoint(lo, hi);
+    let k = (at / SLICE_M).round();
+    if (at - k * SLICE_M).abs() <= EDGE_M && k > 0.0 && k * SLICE_M < length - EDGE_M {
+        return None;
+    }
+    let i = clamp_index((at / SLICE_M).floor(), last);
+    Some(i..=i)
+}
+
+/// Adds the part of `triangle` (local coordinates) in each slice to `slices`. `foot` is the depth from which
+/// geometry stands.
+fn add_face(slices: &mut [Slice], length: f64, triangle: &[[f64; 3]; 3], foot: f64) {
+    let n = slices.len();
+    let along = range_of(triangle, 0);
+    let Some((lo, hi)) = along else {
+        return;
+    };
+    let Some(range) = slices_of(lo, hi, n, length) else {
+        return;
+    };
+    // a face that reaches the foot anywhere is part of what stands: its pieces that do not reach the foot in a
+    // slice (the slanted half of a block's side) do not hang
+    let reaches = range_of(triangle, 2).is_some_and(|(_, d)| d >= foot);
+    for i in range {
+        let (s0, s1) = slice_bounds(i, n, length);
+        if hi - lo > EDGE_M && hi.min(s1) - lo.max(s0) <= EDGE_M {
+            continue;
+        }
+        let piece = clip(&clip(triangle, 0, s0, true), 0, s1, false);
+        let (Some(slice), Some((_, deepest))) = (slices.get_mut(i), range_of(&piece, 2)) else {
+            continue;
+        };
+        slice.depth = Some(slice.depth.map_or(deepest, |d| d.max(deepest)));
+        let across = piece.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
+        slice.half_width = slice.half_width.max(across);
+        let foot_span = (deepest >= foot)
+            .then(|| range_of(&clip(&piece, 2, foot, true), 1))
+            .flatten();
+        slice.pieces.push(Piece {
+            deepest,
+            reaches,
+            foot: foot_span,
+        });
+        if deepest > MAX_DECK_THICKNESS_M {
+            let deep = clip(&piece, 2, MAX_DECK_THICKNESS_M, true);
+            if let Some((low, high)) = range_of(&deep, 1) {
+                slice.deep.push((low, high));
+                slice.deep_half_width = slice.deep_half_width.max(low.abs()).max(high.abs());
+            }
+            if let Some((a0, a1)) = range_of(&deep, 0) {
+                slice.deep_along = Some(
+                    slice
+                        .deep_along
+                        .map_or((a0, a1), |(x, y)| (x.min(a0), y.max(a1))),
+                );
+            }
+        }
+    }
+}
+
+/// The underside of `slices` for a part whose deepest point is `reach_down`.
+fn underside_of(slices: &[Slice], reach_down: f64) -> Underside {
+    let depth: Vec<f64> = slices
+        .iter()
+        .map(|s| s.depth.map_or(0.0, |d| d.max(0.0)))
+        .collect();
+    // a part that reaches nowhere deeper than its shallowest slice (a plain slab) has nothing that stands
+    let shallowest = depth.iter().copied().fold(f64::INFINITY, f64::min);
+    let can_stand = reach_down > shallowest + STAND_TOL_M;
+    Underside {
+        hang: slices
+            .iter()
+            .map(|s| {
+                s.pieces
+                    .iter()
+                    .filter(|p| !can_stand || !p.reaches)
+                    .map(|p| p.deepest)
+                    .fold(0.0, f64::max)
+            })
+            .collect(),
+        stand: slices
+            .iter()
+            .map(|s| {
+                if can_stand {
+                    merged(s.pieces.iter().filter_map(|p| p.foot).collect())
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect(),
+        depth,
+        half_width: slices.iter().map(|s| s.half_width).collect(),
+    }
+}
+
 /// Measures a part on the `vertices` and `faces` of its Geometry LOD, with a deck `deck_half_width` to either
 /// side of its axis. The caller has checked the span and that the vertices are [`sane`]. A face that names a
 /// vertex that does not exist is skipped.
@@ -410,11 +751,10 @@ pub(crate) fn measure(
     faces: &[[u32; 3]],
 ) -> PartShape {
     let length = span.length;
-    let n = slice_count(length);
-    let last = n.saturating_sub(1);
+    let count = slice_count(length);
     let local: Vec<[f64; 3]> = vertices.iter().map(|p| span.local(*p)).collect();
     let reach_down = local.iter().map(|p| p[2]).fold(0.0, f64::max);
-    let mut slices = vec![Slice::default(); n];
+    let mut slices = vec![Slice::default(); count];
     for face in faces {
         let corner = |i: usize| {
             face.get(i)
@@ -422,59 +762,20 @@ pub(crate) fn measure(
                 .and_then(|v| local.get(v))
                 .copied()
         };
-        let (Some(a), Some(b), Some(c)) = (corner(0), corner(1), corner(2)) else {
-            continue;
-        };
-        let triangle = [a, b, c];
-        let lo = a[0].min(b[0]).min(c[0]);
-        let hi = a[0].max(b[0]).max(c[0]);
-        if n == 0 || hi < 0.0 || lo > length {
-            continue;
-        }
-        // a slice is closed at both ends: a face on a boundary belongs to both slices
-        let first = clamp_index((lo / SLICE_M).ceil() - 1.0, last);
-        let end = clamp_index((hi / SLICE_M).floor(), last);
-        for i in first..=end {
-            let s1 = if i == last {
-                length
-            } else {
-                slice_start(i + 1).min(length)
-            };
-            let s0 = slice_start(i);
-            let piece = clip(&clip(&triangle, 0, s0, true), 0, s1, false);
-            let Some(slice) = slices.get_mut(i) else {
-                continue;
-            };
-            if piece.is_empty() {
-                continue;
-            }
-            let deepest = piece.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
-            slice.depth = Some(slice.depth.map_or(deepest, |d| d.max(deepest)));
-            let across = piece.iter().map(|p| p[1].abs()).fold(0.0, f64::max);
-            slice.half_width = slice.half_width.max(across);
-            if deepest > MAX_DECK_THICKNESS_M {
-                let deep = clip(&piece, 2, MAX_DECK_THICKNESS_M, true);
-                let low = deep.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
-                let high = deep.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
-                if low <= high {
-                    slice.deep.push((low, high));
-                    slice.deep_half_width = slice.deep_half_width.max(low.abs()).max(high.abs());
-                }
-            }
+        if let (Some(p0), Some(p1), Some(p2)) = (corner(0), corner(1), corner(2)) {
+            add_face(&mut slices, length, &[p0, p1, p2], reach_down - STAND_TOL_M);
         }
     }
-    let underside = Underside {
-        depth: slices
-            .iter()
-            .map(|s| s.depth.map_or(0.0, |d| d.max(0.0)))
-            .collect(),
-        half_width: slices.iter().map(|s| s.half_width).collect(),
-    };
+    let underside = underside_of(&slices, reach_down);
     let solid = solids(&slices, &underside, length, deck_half_width);
     let holds = |s: &Solid| s.wall && s.half_width + WALL_GAP_M >= deck_half_width;
+    let first_end = slice_bounds(0, count, length).1;
+    let last_start = slice_bounds(count.saturating_sub(1), count, length).0;
     let retains = (
-        solid.first().is_some_and(|s| s.from <= 0.0 && holds(s)),
-        solid.last().is_some_and(|s| s.to >= length && holds(s)),
+        solid
+            .first()
+            .is_some_and(|s| s.from < first_end && holds(s)),
+        solid.last().is_some_and(|s| s.to > last_start && holds(s)),
     );
     PartShape {
         length,
@@ -482,6 +783,7 @@ pub(crate) fn measure(
         solid,
         retains,
         reach_down,
+        deck_half_width,
     }
 }
 
@@ -573,12 +875,10 @@ pub(crate) fn pipe(
     })
 }
 
-/// Whether a part with no solid part stands on posts: some slice's deck hangs less than half of the deepest
-/// point (the posts reach further down than the deck between them).
-pub(crate) fn on_posts(underside: &Underside, solid: &[Solid], reach_down: f64) -> bool {
-    solid.is_empty()
-        && reach_down > 0.0
-        && underside.depth.iter().any(|d| *d < POST_SHARE * reach_down)
+/// Whether a part with no solid part stands on posts: nothing deeper than [`MAX_DECK_THICKNESS_M`], and
+/// something stands.
+pub(crate) fn on_posts(underside: &Underside, solid: &[Solid]) -> bool {
+    solid.is_empty() && underside.stand.iter().any(|s| !s.is_empty())
 }
 
 #[cfg(test)]

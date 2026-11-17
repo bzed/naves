@@ -32,8 +32,8 @@ d7cb864; `/var/tmp/naves-bridgerecon/report.md` and `report2.md`) show where the
   seven rows of posts 2.6 m long, no abutments. Four spans cross a road; eight solid parts stand on a road below.
 - **Shorter parts exist in the game:** concrete panels (`panel_concrete_1`, `_2`, `_dam`: a slab 6.0 × 3.0 m, 0.24 m
   thick, with a roadway, nothing below), `bridge_wood2` (a plain deck 19.7 × 7.6 m, 0.9 m thick, no supports, with
-  ports), `bridge_concrete3` (a concrete deck 21.1 × 7.6 m on cross walls), a concrete pipe (`misc_concretepipe`,
-  2.46 m across, 3.04 m long). The catalog reads only `dz\structures\roads\bridges\` today. Pictures and sizes of
+  ports), `bridge_concrete3` (a concrete deck 21.1 × 7.6 m on cross walls about every 3 m), a concrete pipe
+  (`misc_concretepipe`, 2.63 m across and 3.13 m long in its collision geometry; 2.46 × 3.04 m is its visual box). The catalog reads only `dz\structures\roads\bridges\` today. Pictures and sizes of
   all of them: the public dataset of samsobjectfinder.com (`/api/v1/objects.full.json`).
 
 ## Goal
@@ -109,9 +109,9 @@ applies:
 | `L` | built as |
 |---|---|
 | at most `FILL_MAX_M = 3.0` | plain road on the terrain. No finding; the report counts them. |
-| up to `CULVERT_MAX_M = 6.0`, and the original ground under the span lies at least `PIPE_M + COVER_M` (2.46 + 0.5) below the road at both ends | **culvert**: plain road on a fill, and pipes laid end to end across under it at the lowest ground, as many as the fill is wide there. *(this document's call; the maintainer named the pipe as an option)* |
+| up to `CULVERT_MAX_M = 6.0`, and the original ground under the span lies at least the pipe's diameter (`Pipe::diameter` of the catalog, 2.63 m measured) plus `COVER_M` (0.5) below the road at both ends | **culvert**: plain road on a fill, and pipes laid end to end across under it at the lowest ground, as many as the fill is wide there. *(this document's call; the maintainer named the pipe as an option)* |
 | below two thirds of the shortest model that fits `W` | **panel row**: panels laid crosswise (the 6 m side across the road), scaled by `W / 6.0` (never below 1), `ceil(L / (3.0 · scale))` of them along the bridge's line, centred on the bridge. |
-| at least two thirds of a model that fits `W` | **that model**, the shortest that fits: `bridge_wood2` (19.7 m, a plank deck: Grav, Mud), `bridge_concrete3` (21.1 m, a concrete deck 7.6 m wide on cross walls 4.8 m deep: Asf3), `bridge_wood_25` (31.6 m with its end ramps; Grav, Mud, and only where the original ground under each post row is within the posts' 2.6 m of the deck), `bridge_metal_25` (Asf1, City), `bridge_stone_25` (Asf2, Asf3). Longer bridges are chains of the family's model as today. |
+| at least two thirds of a model that fits `W` | **that model**, the shortest that fits: `bridge_wood2` (19.7 m, a plank deck: Grav, Mud), `bridge_concrete3` (21.1 m, a concrete deck 7.6 m wide on cross walls 4.8 m deep about every 3 m, so it never spans a road: Asf3), `bridge_wood_25` (31.6 m with its end ramps; Grav, Mud, and only where the original ground under each post row is within the posts' 2.6 m of the deck), `bridge_metal_25` (Asf1, City), `bridge_stone_25` (Asf2, Asf3). Longer bridges are chains of the family's model as today. |
 
 - "Two thirds" is `MODEL_FILL = 2.0 / 3.0`, one constant. On the example: 5 fills, 24 culverts or short panel rows, 37
   panel rows, and 18 with a model (about 6 `bridge_wood2`, the rest metal, stone or panels by width).
@@ -192,3 +192,19 @@ the work in `conform`, the wording of findings and report lines, and the order o
 - The wooden models' decks are not in their Geometry LOD; `bridge_wood_25`'s thickness is unknown (2.6 m is its posts).
 - A road that is on a fill where it passes under a bridge (Silbergstraße, 1.3 m above its ground) needs no cutting; the
   run of the walls is then counted from the fill's foot.
+
+## Changes during implementation (2026-11-17)
+
+- `bridge_concrete3` has cross walls 4.8 m deep and 1.26 m thick about every 3 m (gaps of 1.73 m), not every
+  6 m: it never spans a road below, and the ground under it is held at the walls' foot.
+- The pipe is sized from the catalog: 2.63 m across and 3.13 m long measured on its collision geometry. `PIPE_M`
+  is not a constant; the culvert rule uses `Pipe::diameter` and `Pipe::length`.
+- The underside is stored per slice of 1 m as what hangs (the deepest point of geometry that does not reach the
+  part's foot, `Underside::hang`) and what stands (the across intervals of the feet of geometry that reaches to
+  within `STAND_TOL_M = 0.3` of the part's deepest point, `Underside::stand`), besides the deepest point over the
+  whole width. Solid parts and the opening are exact to the ends of the deep geometry. `PartShape::passable`,
+  `ceiling` and `stands` are the queries for a road below and for the terrain; standing slices never pass a road.
+  Limitation: one foot depth per part; a model whose piers stand at different depths would need one per pier.
+- A road below needs `BRIDGE_CLEARANCE_M` at its centre line and `PASS_CLEARANCE_M = 3.0` over its footprint
+  (decided by the controller; Task 6 implements it).
+- Under standing geometry the ground is held at its foot, not cut below it.

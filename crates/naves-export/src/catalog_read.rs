@@ -23,7 +23,7 @@ use crate::bridge::{Finished, run_supervised};
 use crate::tools::{ToolError, Tools};
 
 /// Bumped when the cached shape changes.
-const CACHE_FORMAT: u32 = 5;
+const CACHE_FORMAT: u32 = 6;
 /// How long unpacking the PBO may take.
 const UNPACK_TIMEOUT: Duration = Duration::from_mins(5);
 /// How long listing an archive or taking one file out of it may take.
@@ -235,6 +235,7 @@ fn stamp(pbo: &Path) -> Result<Stamp, CatalogReadError> {
 pub fn road_catalog(tools: &Tools, cache_dir: &Path) -> Result<PieceCatalog, CatalogReadError> {
     let mut found = Vec::new();
     let mut stamps = Vec::new();
+    let mut early = Vec::new();
     for archive in &ARCHIVES {
         let label = archive.path.join("/");
         let file = find_ci(&tools.dayz_server, archive.path);
@@ -243,20 +244,36 @@ pub fn road_catalog(tools: &Tools, cache_dir: &Path) -> Result<PieceCatalog, Cat
                 tools.dayz_server.join(archive.path.join("/")),
             ));
         }
-        stamps.push((label.clone(), file.as_deref().map(stamp).transpose()?));
+        let (file, stamped) = match file.as_deref().map(stamp).transpose() {
+            Ok(stamped) => (file, stamped),
+            Err(e) if !archive.required => {
+                // an optional archive whose metadata cannot be read is treated as absent, with a warning
+                early.push(format!(
+                    "{label} cannot be read: the bridge parts it holds are not used: {e}"
+                ));
+                (None, None)
+            }
+            Err(e) => return Err(e),
+        };
+        stamps.push((label.clone(), stamped));
         found.push((archive, label, file));
     }
     let cache_file = cache_dir.join("catalog").join("roads.json");
-    if let Some(catalog) = cached(&cache_file, &stamps) {
+    if let Some(mut catalog) = cached(&cache_file, &stamps) {
+        for warning in early {
+            catalog.warn(warning);
+        }
         return Ok(catalog);
     }
     let mut models = BTreeMap::new();
-    let mut warnings = Vec::new();
+    let mut warnings = early;
     for (archive, label, file) in found {
         let Some(pbo) = file else {
-            warnings.push(format!(
-                "{label} is not in the DayZ Server install: the bridge parts it holds are not used"
-            ));
+            if !warnings.iter().any(|w| w.starts_with(&label)) {
+                warnings.push(format!(
+                    "{label} is not in the DayZ Server install: the bridge parts it holds are not used"
+                ));
+            }
             continue;
         };
         match read_archive(tools, &pbo, archive.needs, &mut models, &mut warnings) {

@@ -129,12 +129,9 @@ Open until Task 1 steps 2 to 7 of the roads plan have been run. What is known:
 - Hypothesis from vanilla data, **not tested in the game**: road pieces have a vertical up axis (97.9 % of
   Livonia's records, 100 % of the sample), so the engine probably drapes them on the terrain. See
   `docs/research/2026-11-06-road-pieces.md`.
-- A bridge model narrower than its road is scaled up uniformly to the road's width, at most 1.5 times (the bridge
-  gets longer and taller by the same factor; the narrowest model that is wide enough is taken first and is never
-  scaled). The scale is written into the rotation: the nine rotation entries of the object's transform are
-  multiplied by it. It is derived at every build and not stored in `edits/overrides.toml`; a moved bridge keeps
-  it, a replaced one has scale 1. **Scaled bridges are not tested in the game**: whether vehicles drive and
-  collide correctly on them is open. Wooden models are used for gravel and dirt, the others for paved roads.
+- Bridge models are not scaled: a road gets the models of its family (`roadplace::BRIDGE_MODELS`) that are at
+  most 1 m narrower than its piece. A scale other than 1 would be written into the rotation (the nine rotation
+  entries of the object's transform multiplied by it); the world writer keeps that for objects that carry one.
 
 To be measured, none done: whether binarize needs the models below `P:`, what the height of an object means,
 what a piece does over a crest, whether overlapping pieces flicker, the surface under the wheels, how steep a

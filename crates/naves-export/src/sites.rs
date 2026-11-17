@@ -70,7 +70,7 @@ pub struct Site {
     /// Number in the list, from 1; the shots are named after it.
     pub id: u32,
     /// What the site shows: `slight-angle`, `tight-arc`, `hairpin`, `junction`, `end-cap`, `bridge-<material>`,
-    /// `bridge-scaled`, `bridge-over-dip`, `high-embankment`, `deep-cutting`, `rock-face`, `painted-path`,
+    /// `bridge-over-dip`, `high-embankment`, `deep-cutting`, `rock-face`, `painted-path`,
     /// `steep-path`, `finding-<rule>`, or the category of a fixed site.
     pub category: String,
     /// East, map metres.
@@ -422,19 +422,14 @@ fn objects_sites(objects: &[PlacedRoad], picker: &mut Picker<'_>) {
             );
         }
     }
-    // one bridge per material and one per scaled model
+    // one bridge per material (bridges are not scaled)
     let mut by_material: BTreeMap<String, &PlacedRoad> = BTreeMap::new();
-    let mut scaled: Option<&PlacedRoad> = None;
     for o in objects.iter().filter(|o| o.kind == PlacedKind::Bridge) {
         by_material
             .entry(format!("bridge-{}", material(&o.model)))
             .or_insert(o);
-        if o.scale > 1.0 + 1e-6 && scaled.is_none() {
-            scaled = Some(o);
-        }
     }
-    let scaled = scaled.map(|o| ("bridge-scaled".to_string(), o));
-    for (category, o) in by_material.into_iter().chain(scaled) {
+    for (category, o) in by_material {
         let numbers = [("scale", o.scale), ("width_m", o.width)];
         picker.try_add(
             &category,
@@ -537,7 +532,7 @@ fn finding_sites(report: &Value, objects: &[PlacedRoad], picker: &mut Picker<'_>
 }
 
 /// Picks the sites of the check: slight angles between straight pieces, the tightest arcs and hairpins, a
-/// junction, a dead end and a bridge of each material and a scaled one from `objects`, the worst of each
+/// junction, a dead end and a bridge of each material from `objects`, the worst of each
 /// terrain fault (embankment, cutting, rock face, bridge over a dip, steep and gentle painted path) from
 /// `terrain`, the worst two
 /// findings of each rule from `report` (`build/report.json`, untrusted), then `fixed` sites that are always

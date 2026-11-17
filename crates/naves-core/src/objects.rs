@@ -91,8 +91,8 @@ pub struct GeneratedObject {
     pub y: f64,
     /// Rotation in radians clockwise from north.
     pub yaw: f64,
-    /// Uniform scale of the model: 1 for everything but a bridge made as wide as its road. Derived at
-    /// every build, never stored in the overrides.
+    /// Uniform scale of the model: 1 for everything the build places (bridges are not scaled); a moved object
+    /// keeps the scale of what it was generated from. Never stored in the overrides.
     pub scale: f64,
 }
 

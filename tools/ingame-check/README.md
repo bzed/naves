@@ -18,7 +18,7 @@ it, because it needs the game.
 
    Sites are picked from the build's own data (`naves_export::sites`): straight pieces that meet at a slight
    angle (interior angle 150 to 180 degrees), the tightest arcs and hairpins, a junction, a dead end, a bridge
-   of each material and a scaled one, a bridge over a dip (a bridge that OpenStreetMap does not have), the
+   of each material, a bridge over a dip (a bridge that OpenStreetMap does not have), the
    highest embankment, the deepest cutting and the steepest side slope (rock face) from the height profiles
    against the original ground, the steepest painted path and a long gentle one, the two worst findings of each
    road rule, and fixed sites of the Berchtesgaden example (the roundabout, Hammerstielstrasse, the two bridges

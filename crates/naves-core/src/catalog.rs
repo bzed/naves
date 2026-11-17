@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use shape::{
-    MAX_COORDINATE_M, MAX_PART_LENGTH_M, PartShape, Pipe, SLICE_M, Slab, Solid, Underside,
+    Ceiling, MAX_COORDINATE_M, MAX_PART_LENGTH_M, PartShape, Pipe, SLICE_M, STAND_TOL_M, Slab,
+    Solid, Underside,
 };
 
 /// The folder of the road pieces inside the game, as a model path prefix.
@@ -244,6 +245,7 @@ pub struct BridgeModel {
     #[serde(default)]
     pub solid: Vec<Solid>,
     /// Whether the model holds the ground back at `start` and at `end` (a solid wall across the deck there).
+    /// Only geometry between the ports is seen: an abutment wholly behind a port does not retain.
     #[serde(default)]
     pub retains: (bool, bool),
     /// The deepest point of the Geometry LOD below the deck surface, also beyond the ports.
@@ -274,14 +276,15 @@ impl BridgeModel {
             solid: self.solid.clone(),
             retains: self.retains,
             reach_down: self.reach_down,
+            deck_half_width: self.width / 2.0,
         }
     }
 
-    /// Whether the model stands on posts that must reach the ground (`bridge_wood_25`): nothing solid, and its
-    /// deck hangs less than half its reach in some slice, so what reaches down are posts, not the deck.
+    /// Whether the model stands on posts that must reach the ground (`bridge_wood_25`): nothing deeper than
+    /// [`MAX_DECK_THICKNESS_M`], and something stands (see [`Underside::stand`]).
     #[must_use]
     pub fn posts(&self) -> bool {
-        shape::on_posts(&self.underside, &self.solid, self.reach_down)
+        shape::on_posts(&self.underside, &self.solid)
     }
 }
 
@@ -366,17 +369,23 @@ fn fill_thickness(bridges: &mut [BridgeModel]) -> Vec<String> {
         let kind = bridge_type(&b.model);
         let same = thickest(&mut measured.iter().filter(|m| m.0 == kind).map(|m| m.1));
         let model = &b.model;
+        // a Geometry LOD that reads but holds nothing within reach of the deck and no faces is not unreadable
+        let why = if b.reach_down > 0.0 {
+            "its Geometry LOD has no faces and no vertex within 4 m below the deck"
+        } else {
+            "its Geometry LOD cannot be read"
+        };
         if let Some(value) = same {
             b.deck_thickness = value;
             b.thickness_source = ThicknessSource::SameType;
             warnings.push(format!(
-                "bridge model {model}: its Geometry LOD cannot be read; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
+                "bridge model {model}: {why}; the thickest deck of its type, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
             ));
         } else if let Some(value) = overall {
             b.deck_thickness = value;
             b.thickness_source = ThicknessSource::Thickest;
             warnings.push(format!(
-                "bridge model {model}: its Geometry LOD cannot be read and no model of its type can be; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
+                "bridge model {model}: {why}, and no model of its type can be measured; the thickest deck of all bridge models, {value:.2} m, is used for the clearance over a road below, and it is taken as open over its whole length"
             ));
         } else {
             warnings.push(format!(
@@ -1066,24 +1075,31 @@ pub mod testing {
         )
     }
 
-    /// A single arch, like `bridge_stone_25`: the intrados `crown` below the deck at mid-span and `spring` at the
-    /// ports, growing with the square of the distance from mid-span, in steps of half a metre.
+    /// A single arch, like `bridge_stone_25`: an abutment 2 m long at each port standing `spring` below the deck,
+    /// and between them the intrados `crown` below the deck at mid-span, growing with the square of the distance
+    /// from mid-span to 2 m short of `spring` at the abutments, in steps of half a metre.
     #[must_use]
     pub fn arch_bridge(length: f64, width: f64, deck: f64, crown: f64, spring: f64) -> OdolModel {
-        let mut blocks = Vec::new();
-        let mut a = 0.0;
-        while a < length - 1e-9 {
-            let a1 = (a + 0.5).min(length);
-            let mid = f64::midpoint(a, a1);
-            let t = (mid - length / 2.0) / (length / 2.0);
-            blocks.push(Block {
-                a0: a,
-                a1,
-                c0: -(width / 2.0 + 0.5),
-                c1: width / 2.0 + 0.5,
-                top: 0.0,
-                depth: crown + (spring - crown) * t * t,
-            });
+        let half = width / 2.0 + 0.5;
+        let block = |a0: f64, a1: f64, depth: f64| Block {
+            a0,
+            a1,
+            c0: -half,
+            c1: half,
+            top: 0.0,
+            depth,
+        };
+        let abutment = 2.0;
+        let mut blocks = vec![
+            block(0.0, abutment, spring),
+            block(length - abutment, length, spring),
+        ];
+        let span = length / 2.0 - abutment;
+        let mut a = abutment;
+        while a < length - abutment - 1e-9 {
+            let a1 = (a + 0.5).min(length - abutment);
+            let t = (f64::midpoint(a, a1) - length / 2.0) / span;
+            blocks.push(block(a, a1, crown + (spring - 2.0 - crown) * t * t));
             a = a1;
         }
         bridge_of_blocks(length, width, deck, false, &blocks)

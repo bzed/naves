@@ -443,7 +443,7 @@ fn run_line(graph: &RoadGraph, i: usize) -> Option<(Vec<(f64, f64)>, f64)> {
     Some((points, offset))
 }
 
-/// What to do about `dip`; `model_length` is the scaled length of the bridge model the road would get, if
+/// What to do about `dip`; `model_length` is the length of the bridge model the road would get, if
 /// any.
 ///
 /// A bridge when the dip is at least [`BRIDGE_DIP_M`] deep, a model exists, the run is at least half a
