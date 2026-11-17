@@ -46,7 +46,7 @@ const ROADWAY_RESOLUTION: std::ops::Range<f32> = 2.5e15..3.5e15;
 const GEOMETRY_ONLY: std::ops::Range<f32> = 9.5e12..1.05e13;
 
 /// What went wrong while reading an ODOL file.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum OdolError {
     /// The file does not start with `ODOL`.
     #[error("not an ODOL file: the first four bytes are not \"ODOL\"")]
@@ -115,7 +115,7 @@ pub enum OdolError {
     #[error("a face of the Geometry LOD names vertex {index}, but the LOD has {count}")]
     FaceIndex {
         /// The vertex index.
-        index: u16,
+        index: u32,
         /// How many vertices the LOD has.
         count: usize,
     },
@@ -146,11 +146,18 @@ pub struct OdolModel {
     /// Named properties of the geometry-type LODs; the first LOD that sets a key wins.
     pub properties: BTreeMap<String, String>,
     /// Vertices of the Geometry LOD (resolution 10¹³ exactly, not the other geometry-type LODs such as the
-    /// roadway or the land contact), in model coordinates; `None` if there is none or it cannot be read.
+    /// roadway or the land contact), in model coordinates. `None` if there is none, or if the LOD cannot be
+    /// read up to its vertices; `Some` of an empty list if the LOD reads but its vertices cannot be read.
     pub geometry: Option<Vec<[f32; 3]>>,
     /// The faces of the Geometry LOD as triangles: indices into [`OdolModel::geometry`]. A quad `a b c d` is
-    /// the triangles `a b c` and `a c d`. Empty if there is no Geometry LOD or its vertices cannot be read.
+    /// the triangles `a b c` and `a c d`; a face with repeated indices gives a zero-area triangle, which is
+    /// kept. Empty if there is no Geometry LOD, its vertices cannot be read, or its faces cannot be read (then
+    /// [`OdolModel::geometry_faces_error`] says why).
     pub geometry_faces: Vec<[u32; 3]>,
+    /// Why the faces of the Geometry LOD could not be read (a face with other than 3 or 4 corners, an index
+    /// past the vertices, a count or a face cut short). Such a face section does not fail the model: it is
+    /// recorded here and [`OdolModel::geometry_faces`] is left empty. `None` if they read or there are none.
+    pub geometry_faces_error: Option<OdolError>,
     /// Vertices of the Roadway LOD (resolution 3·10¹⁵) in model coordinates; empty if the model has none or
     /// it cannot be read (the wooden bridges' roadway LODs hold embedded materials).
     pub roadway: Vec<[f32; 3]>,
@@ -186,6 +193,7 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
         properties: BTreeMap::new(),
         geometry: None,
         geometry_faces: Vec::new(),
+        geometry_faces_error: None,
         roadway: Vec::new(),
     };
     let mut memory_done = false;
@@ -217,12 +225,25 @@ pub fn read_odol(bytes: &[u8]) -> Result<OdolModel, OdolError> {
                     model.memory = lod.memory;
                 } else if is_geometry {
                     model.geometry = Some(lod.points);
-                    model.geometry_faces = lod.faces;
+                    if let Some(error) = lod.faces_error {
+                        model.geometry_faces = Vec::new();
+                        model.geometry_faces_error = Some(error);
+                    } else {
+                        model.geometry_faces = lod.faces;
+                        model.geometry_faces_error = None;
+                    }
                 } else if ROADWAY_RESOLUTION.contains(resolution) && model.roadway.is_empty() {
                     model.roadway = lod.points;
                 }
             }
-            Err(e) if is_memory || (is_geometry && e.faces) => return Err(e.error),
+            Err(e) if is_memory => return Err(e.error),
+            // a face section that cannot be read past (a count or a face cut short) loses the rest of the
+            // Geometry LOD, but not the model: it is recorded
+            Err(e) if is_geometry && e.faces => {
+                model.geometry = None;
+                model.geometry_faces = Vec::new();
+                model.geometry_faces_error = Some(e.error);
+            }
             // A geometry-type LOD only contributes its properties. If it holds something this
             // reader does not know (a compressed array, an embedded material), the model is still
             // good for its memory points, so the LOD is left out instead of failing the file.
@@ -319,12 +340,14 @@ fn read_lod_table(
 
 struct Lod {
     faces: Vec<[u32; 3]>,
+    /// Why the kept faces are not usable (they are then empty), if they are not.
+    faces_error: Option<OdolError>,
     points: Vec<[f32; 3]>,
     memory: BTreeMap<String, Vec<[f32; 3]>>,
     properties: BTreeMap<String, String>,
 }
 
-/// Why a LOD could not be read, and whether it was in its faces (which the Geometry LOD must get right).
+/// Why a LOD could not be read, and whether it was in its faces (which the Geometry LOD records).
 struct LodFailure {
     error: OdolError,
     faces: bool,
@@ -367,7 +390,7 @@ fn read_lod(bytes: &[u8], is_memory: bool, keep_faces: bool) -> Result<Lod, LodF
     }
     c.compressed(2, "the point-to-vertex map")?;
     c.compressed(2, "the vertex-to-point map")?;
-    let faces =
+    let (faces, faces_error) =
         read_faces(&mut c, keep_faces).map_err(|error| LodFailure { error, faces: true })?;
     for _ in 0..c.count(34, "the sections")? {
         c.skip(5 * 4 + 2 + 4, W)?;
@@ -392,6 +415,7 @@ fn read_lod(bytes: &[u8], is_memory: bool, keep_faces: bool) -> Result<Lod, LodF
         Err(_) => {
             return Ok(Lod {
                 faces: Vec::new(),
+                faces_error: None,
                 points: Vec::new(),
                 memory: BTreeMap::new(),
                 properties,
@@ -400,23 +424,11 @@ fn read_lod(bytes: &[u8], is_memory: bool, keep_faces: bool) -> Result<Lod, LodF
     };
     // a LOD without readable vertices (some models have a Geometry LOD with faces and no vertices) has no
     // faces to map
-    let faces = if points.is_empty() { Vec::new() } else { faces };
-    if let Some(&index) = faces
-        .iter()
-        .flatten()
-        .find(|i| usize_from(**i) >= points.len())
-    {
-        return Err(LodFailure {
-            error: OdolError::FaceIndex {
-                index: u16::try_from(index).unwrap_or(u16::MAX),
-                count: points.len(),
-            },
-            faces: true,
-        });
-    }
+    let (faces, faces_error) = checked_faces(faces, faces_error, points.len());
     if !is_memory {
         return Ok(Lod {
             faces,
+            faces_error,
             points,
             memory: BTreeMap::new(),
             properties,
@@ -439,25 +451,57 @@ fn read_lod(bytes: &[u8], is_memory: bool, keep_faces: bool) -> Result<Lod, LodF
     }
     Ok(Lod {
         faces,
+        faces_error,
         points,
         memory,
         properties,
     })
 }
 
+/// The faces checked against the `vertices` of their LOD: none if an earlier error says they are not usable or
+/// one names a vertex that does not exist (then the error says why).
+fn checked_faces(
+    faces: Vec<[u32; 3]>,
+    error: Option<OdolError>,
+    vertices: usize,
+) -> (Vec<[u32; 3]>, Option<OdolError>) {
+    if error.is_some() {
+        return (Vec::new(), error);
+    }
+    if vertices == 0 {
+        return (Vec::new(), None);
+    }
+    match faces.iter().flatten().find(|i| usize_from(**i) >= vertices) {
+        Some(&index) => (
+            Vec::new(),
+            Some(OdolError::FaceIndex {
+                index,
+                count: vertices,
+            }),
+        ),
+        None => (faces, None),
+    }
+}
+
 /// The faces: count, two unused fields, then per face a corner count (a byte) and that many 16-bit vertex
-/// indices. With `keep` they are returned as triangles (a quad `a b c d` as `a b c` and `a c d`; any other
-/// corner count is an error), else they are skipped. The indices are checked later, against the vertices.
-fn read_faces(c: &mut Cursor<'_>, keep: bool) -> Result<Vec<[u32; 3]>, OdolError> {
+/// indices. With `keep` they are returned as triangles (a quad `a b c d` as `a b c` and `a c d`), else they
+/// are skipped. A face with another corner count is returned as the second value, with no triangles; the
+/// faces after it are skipped, so the reader stays in step. An error is a face section that cannot be read
+/// past. The indices are checked later, against the vertices.
+fn read_faces(
+    c: &mut Cursor<'_>,
+    keep: bool,
+) -> Result<(Vec<[u32; 3]>, Option<OdolError>), OdolError> {
     const W: &str = "the faces";
     let faces = c.count(1, W)?;
     c.skip(4 + 2, W)?;
     let mut triangles = Vec::new();
+    let mut bad = None;
     for _ in 0..faces {
         let at = c.pos;
         let corners = c.u8(W)?;
         let raw = c.take(usize::from(corners) * 2, W)?;
-        if !keep {
+        if !keep || bad.is_some() {
             continue;
         }
         let index = |i: usize| {
@@ -471,10 +515,13 @@ fn read_faces(c: &mut Cursor<'_>, keep: bool) -> Result<Vec<[u32; 3]>, OdolError
                 triangles.push([index(0), index(1), index(2)]);
                 triangles.push([index(0), index(2), index(3)]);
             }
-            count => return Err(OdolError::FaceCorners { at, count }),
+            count => {
+                triangles = Vec::new();
+                bad = Some(OdolError::FaceCorners { at, count });
+            }
         }
     }
-    Ok(triangles)
+    Ok((triangles, bad))
 }
 
 /// The named selections: a lower-cased name and the vertex indices it holds.

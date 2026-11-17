@@ -642,6 +642,7 @@ pub mod testing {
             properties: BTreeMap::new(),
             geometry: None,
             geometry_faces: Vec::new(),
+            geometry_faces_error: None,
             roadway: Vec::new(),
         }
     }

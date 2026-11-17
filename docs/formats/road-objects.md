@@ -70,9 +70,12 @@ bridge deck is measured on them.
 unused bytes, then per face a corner count (u8) and that many u16 indices **into the vertices of the same LOD**
 (the vertex array above, in the order the reader returns it). Every face of the 265 models has 3 or 4 corners; the
 largest index is the vertex count minus one in all six bridges and in the panels. The reader keeps the faces of the
-Geometry LOD as triangles (`OdolModel::geometry_faces`; a quad `a b c d` becomes `a b c` and `a c d`) and rejects
-a face with other than 3 or 4 corners or an index past the vertices. A Geometry LOD with faces and no vertices
-(some models) reads with no faces. Faces are what shows a solid block: an end block has faces across its middle
+Geometry LOD as triangles (`OdolModel::geometry_faces`; a quad `a b c d` becomes `a b c` and `a c d`; repeated
+indices give a zero-area triangle, which is kept). A face section it cannot use (a face with other than 3 or 4
+corners, an index past the vertices, a count or a face cut short) does not fail the model: the reader records why in
+`OdolModel::geometry_faces_error` and leaves the faces empty; the rest of the model reads. A Geometry LOD with faces
+and no vertices (some models) reads with no faces. Indices are 16 bit in version 56, so a LOD addresses at most
+65 535 vertices; a LOD with more has not been observed (how the format would store it is not known). Faces are what shows a solid block: an end block has faces across its middle
 and no vertices there. Example: `Bridge_Stone_25` has 476 vertices and 824 triangles, `Bridge_Metal_25` 232 and
 356, `Panel_Concrete_1` 8 and 12.
 

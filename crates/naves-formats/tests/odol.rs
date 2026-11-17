@@ -674,54 +674,131 @@ fn triangles_are_kept_and_a_quad_is_split_in_two() {
     assert_eq!(m.geometry.map(|g| g.len()), Some(5));
 }
 
-#[test]
-fn a_face_index_past_the_vertices_is_an_error() {
-    let geometry = geometry_with_faces(&[[0.0; 3]; 3], &[&[0, 1, 3]]);
-    let e = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory_lod())])).unwrap_err();
-    assert!(
-        matches!(e, OdolError::FaceIndex { index: 3, count: 3 }),
-        "{e}"
-    );
+/// Reads a file with `geometry` as its Geometry LOD and a memory LOD, which must read.
+fn read_with_geometry(geometry: Vec<u8>) -> naves_formats::odol::OdolModel {
+    read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory_lod())])).unwrap()
 }
 
 #[test]
-fn a_face_with_two_or_five_corners_is_an_error() {
+fn a_face_index_past_the_vertices_is_recorded_and_the_model_still_reads() {
+    let geometry = geometry_with_faces(&[[0.0; 3]; 3], &[&[0, 1, 2], &[0, 1, 3]]);
+    let m = read_with_geometry(geometry);
+    assert!(
+        matches!(
+            m.geometry_faces_error,
+            Some(OdolError::FaceIndex { index: 3, count: 3 })
+        ),
+        "{:?}",
+        m.geometry_faces_error
+    );
+    assert_eq!(m.geometry_faces.len(), 0);
+    assert_eq!(m.geometry.map(|g| g.len()), Some(3));
+    assert_eq!(m.memory["lb"], vec![[7.0, 8.0, 9.0]]);
+}
+
+#[test]
+fn a_face_with_two_or_five_corners_is_recorded_and_the_model_still_reads() {
     for corners in [&[0u16, 1][..], &[0, 1, 2, 0, 1][..], &[][..]] {
-        let geometry = geometry_with_faces(&[[0.0; 3]; 3], &[corners]);
-        let e = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory_lod())])).unwrap_err();
+        let geometry = geometry_with_faces(&[[0.0; 3]; 3], &[&[0, 1, 2], corners, &[2, 1, 0]]);
+        let m = read_with_geometry(geometry);
         assert!(
-            matches!(e, OdolError::FaceCorners { count, .. } if usize::from(count) == corners.len()),
-            "{e}"
+            matches!(m.geometry_faces_error, Some(OdolError::FaceCorners { count, .. }) if usize::from(count) == corners.len()),
+            "{:?}",
+            m.geometry_faces_error
         );
+        assert_eq!(m.geometry_faces.len(), 0);
+        // the corner bytes are skipped, so the vertices after the faces still read
+        assert_eq!(m.geometry.map(|g| g.len()), Some(3));
+        assert_eq!(m.memory["lb"], vec![[7.0, 8.0, 9.0]]);
     }
 }
 
 #[test]
-fn a_face_count_larger_than_the_file_is_an_error_before_allocating() {
+fn a_face_count_larger_than_the_file_is_recorded_before_allocating() {
     let mut geometry = geometry_with_faces(&[[0.0; 3]; 3], &[&[0, 1, 2]]);
     // proxies, sub-skeletons, skeleton map (12), 56, textures, materials and the two maps (16): the face count
     geometry[84..88].copy_from_slice(&i32::MAX.to_le_bytes());
-    let e = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory_lod())])).unwrap_err();
+    let m = read_with_geometry(geometry);
     assert!(
         matches!(
-            e,
-            OdolError::Count {
+            m.geometry_faces_error,
+            Some(OdolError::Count {
                 what: "the faces",
                 ..
-            }
+            })
         ),
-        "{e}"
+        "{:?}",
+        m.geometry_faces_error
     );
+    assert_eq!(m.geometry_faces.len(), 0);
+    assert_eq!(m.memory["lb"], vec![[7.0, 8.0, 9.0]]);
 }
 
 #[test]
-fn a_cut_face_is_an_error() {
+fn a_cut_face_is_recorded() {
     let mut geometry = geometry_with_faces(&[], &[&[0, 1, 2]]);
     // a face that says 4 corners, but the LOD ends after 3 indices' worth of bytes: shorten its length
     geometry[84 + 4 + 6] = 4;
     geometry.truncate(84 + 4 + 6 + 1 + 6);
-    let e = read_odol(&file(56, &[(GEOMETRY, geometry), (MEMORY, memory_lod())])).unwrap_err();
-    assert!(matches!(e, OdolError::Truncated { .. }), "{e}");
+    let m = read_with_geometry(geometry);
+    assert!(
+        matches!(m.geometry_faces_error, Some(OdolError::Truncated { .. })),
+        "{:?}",
+        m.geometry_faces_error
+    );
+    assert_eq!(m.geometry_faces.len(), 0);
+    assert_eq!(m.memory["lb"], vec![[7.0, 8.0, 9.0]]);
+}
+
+#[test]
+fn readable_faces_record_no_error() {
+    let geometry = geometry_with_faces(&[[0.0; 3]; 3], &[&[0, 1, 2]]);
+    assert!(read_with_geometry(geometry).geometry_faces_error.is_none());
+    assert!(read_odol(&sample()).unwrap().geometry_faces_error.is_none());
+}
+
+#[test]
+fn of_two_roadway_lods_the_first_with_vertices_wins() {
+    let empty = lod_bytes(&LodSpec::default());
+    let first = lod_bytes(&LodSpec {
+        points: &[[1.0, 2.0, 3.0]],
+        ..LodSpec::default()
+    });
+    let second = lod_bytes(&LodSpec {
+        points: &[[4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
+        ..LodSpec::default()
+    });
+    let m = read_odol(&file(
+        56,
+        &[
+            (ROADWAY, empty),
+            (ROADWAY, first),
+            (ROADWAY, second),
+            (MEMORY, memory_lod()),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(m.roadway, vec![[1.0, 2.0, 3.0]]);
+}
+
+#[test]
+fn an_unreadable_roadway_lod_before_a_geometry_lod_with_faces_leaves_the_faces() {
+    let mut roadway = lod_bytes(&LodSpec::default());
+    roadway[72..76].copy_from_slice(&1u32.to_le_bytes()); // materials: 1
+    let geometry =
+        geometry_with_faces(&[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], &[&[0, 1, 2]]);
+    let m = read_odol(&file(
+        56,
+        &[
+            (ROADWAY, roadway),
+            (GEOMETRY, geometry),
+            (MEMORY, memory_lod()),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(m.roadway.len(), 0);
+    assert_eq!(m.geometry_faces, vec![[0, 1, 2]]);
+    assert!(m.geometry_faces_error.is_none());
 }
 
 #[test]

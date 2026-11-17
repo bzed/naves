@@ -36,6 +36,7 @@ fn empty_model(points: &[(&str, [f32; 3])]) -> OdolModel {
         properties: BTreeMap::new(),
         geometry: None,
         geometry_faces: Vec::new(),
+        geometry_faces_error: None,
         roadway: Vec::new(),
     }
 }
