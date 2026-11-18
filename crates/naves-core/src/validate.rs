@@ -500,40 +500,119 @@ fn stretch_parts(net: &PlacedNetwork, slot: usize) -> impl Iterator<Item = &str>
         .flat_map(|r| r.slot.stretch.split('|'))
 }
 
-/// What a deck's end joins, with its height there: the junction it belongs to within its reach, or the end of
-/// another road within [`END_JOIN_M`]. The one with the largest step from `deck`, if any has a finite height.
+/// Where a strip passes closest to `target` on its way out from joint `from`, heading `forward` (towards higher
+/// joint indices) or back, up to `reach` metres of strip: the point and the strip's height there.
+fn strip_near(
+    strip: &crate::profile::RoadStrip,
+    from: usize,
+    forward: bool,
+    target: (f64, f64),
+    reach: f64,
+) -> Option<((f64, f64), f64)> {
+    let mut best: Option<(f64, (f64, f64), f64)> = None;
+    let mut walked = 0.0;
+    let mut here = *strip.joints.get(from)?;
+    let mut index = from;
+    while walked <= reach {
+        let stepped = if forward {
+            index.checked_add(1)
+        } else {
+            index.checked_sub(1)
+        };
+        let Some((next_index, next)) =
+            stepped.and_then(|i| strip.joints.get(i).map(|joint| (i, *joint)))
+        else {
+            break;
+        };
+        index = next_index;
+        let (dx, dy) = (next.0 - here.0, next.1 - here.1);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 {
+            (((target.0 - here.0) * dx + (target.1 - here.1) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let point = (here.0 + dx * t, here.1 + dy * t);
+        let height = here.2 + (next.2 - here.2) * t;
+        let d = (point.0 - target.0).hypot(point.1 - target.1);
+        if best.is_none_or(|(b, _, _)| d < b) {
+            best = Some((d, point, height));
+        }
+        walked += len2.sqrt();
+        here = next;
+    }
+    best.map(|(_, point, height)| (point, height))
+}
+
+/// What a deck's end joins, as the step to it (its height less the deck's, see [`EndStep::step`]): the junction
+/// it belongs to within its reach, or the end of another road within [`END_JOIN_M`]. The one with the largest
+/// step, if any has a finite height.
 fn end_neighbour(
     net: &PlacedNetwork,
     profiles: &Profiles,
     junctions: &Junctions,
-    own: (usize, usize, bool),
+    own: (usize, usize, bool, bool),
     ports: ((f64, f64), (f64, f64)),
     deck: f64,
     ids: &[&str],
 ) -> Option<(f64, String)> {
     let (port, other_port) = ports;
-    let chain_end = own.2;
+    let (chain_end, forward) = (own.2, own.3);
     let mut found: Vec<(f64, String)> = Vec::new();
-    // the nearest junction that belongs to the bridge and is nearer this end than the deck's other end, within its
-    // patch and, for the end of a chain, the reach of the end rule: what the height solve holds the deck to (a deck
-    // inside a chain is held only within the patch)
-    let junction = junctions
+    // the junctions that belong to the bridge, with their distance from this end and from the deck's other end
+    let named: Vec<(&crate::junctions::Junction, f64, f64)> = junctions
         .points
         .iter()
         .filter(|j| ids.iter().any(|id| j.stretches.contains(*id)))
-        .map(|j| (j, (j.at.0 - port.0).hypot(j.at.1 - port.1)))
-        .filter(|(j, d)| {
-            *d <= j.patch_m + if chain_end { HOLD_M } else { 0.0 }
-                && *d < (j.at.0 - other_port.0).hypot(j.at.1 - other_port.1)
+        .map(|j| {
+            (
+                j,
+                (j.at.0 - port.0).hypot(j.at.1 - port.1),
+                (j.at.0 - other_port.0).hypot(j.at.1 - other_port.1),
+            )
+        })
+        .collect();
+    // The nearest one within its patch and, for the end of a chain, the reach of the end rule: what the height
+    // solve holds the deck to (a deck inside a chain is held only within the patch). Beyond the patch it must
+    // also be nearer this end than the deck's other end.
+    let junction = named
+        .iter()
+        .filter(|(j, d, other)| {
+            *d <= j.patch_m || (chain_end && *d <= j.patch_m + HOLD_M && *d < *other)
         })
         .min_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((j, _)) = junction {
+    if let Some((j, _, _)) = junction {
         let under = j.kind == JunctionKind::Overlay && ids.iter().any(|id| j.lower.contains(*id));
         let height = j.height_at(port) - if under { OVERLAY_DROP_M } else { 0.0 };
         found.push((
-            height,
+            height - deck,
             format!("junction at ({:.0}, {:.0})", j.at.0, j.at.1),
         ));
+    } else if !chain_end {
+        // A deck inside a chain is not held to a junction beyond the patch, but the strip may run through the
+        // junction's patch there, held to nothing: compare the strip with the junction's plane where it passes
+        // closest to the junction, inside the patch.
+        let near = named
+            .iter()
+            .filter(|(j, d, other)| *d <= j.patch_m + HOLD_M && *d < *other)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((j, d, _)) = near
+            && let Some(strip) = profiles.strips.get(own.0)
+            && let Some((point, strip_height)) =
+                strip_near(strip, own.1, forward, j.at, d + j.patch_m)
+            && (point.0 - j.at.0).hypot(point.1 - j.at.1) <= j.patch_m
+        {
+            let under =
+                j.kind == JunctionKind::Overlay && ids.iter().any(|id| j.lower.contains(*id));
+            let height = j.height_at(point) - if under { OVERLAY_DROP_M } else { 0.0 };
+            found.push((
+                height - strip_height,
+                format!(
+                    "junction at ({:.0}, {:.0}), where the road enters it,",
+                    j.at.0, j.at.1
+                ),
+            ));
+        }
     }
     // a road that ends at the deck's end (another road, or the other end of the bridge's own road)
     for (index, strip) in profiles.strips.iter().enumerate() {
@@ -551,14 +630,14 @@ fn end_neighbour(
                     .first()
                     .and_then(|s| stretch_parts(net, *s).next())
                     .unwrap_or("?");
-                found.push((at.2, format!("road {id}")));
+                found.push((at.2 - deck, format!("road {id}")));
             }
         }
     }
     found
         .into_iter()
-        .filter(|(height, _)| height.is_finite())
-        .max_by(|a, b| (a.0 - deck).abs().total_cmp(&(b.0 - deck).abs()))
+        .filter(|(step, _)| step.is_finite())
+        .max_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
 }
 
 /// The deck of a bridge at one end and what it joins there (see [`bridge_end_steps`]).
@@ -570,7 +649,9 @@ pub struct EndStep {
     pub end: usize,
     /// The end of the deck, in map metres.
     pub at: (f64, f64),
-    /// The height of what it joins less the deck's height, in metres: positive where the deck is below it.
+    /// The height of what it joins less the deck's height, in metres: positive where the deck is below it. For a deck
+    /// inside a chain whose junction lies beyond the junction's patch, it is the junction's plane less the strip's
+    /// height where the strip passes closest to the junction (inside the patch).
     pub step: f64,
     /// What it joins, for people.
     pub what: String,
@@ -581,9 +662,13 @@ pub struct EndStep {
 ///
 /// A deck is level and one variable of the height solve. An end of it is compared with the junction of the
 /// bridge's roads that the solve holds the deck to (within the junction's patch, and for the end of a chain also
-/// [`HOLD_M`] beyond it, and nearer this end than the deck's other end): the junction's plane (an overlay's lower
+/// [`HOLD_M`] beyond it if it is nearer this end than the deck's other end): the junction's plane (an overlay's lower
 /// road is [`OVERLAY_DROP_M`] below it); or with a road that ends within 1.5 m of it. What is not joined
-/// to the bridge is not compared. Heights that are not numbers give nothing.
+/// to the bridge is not compared. A deck inside a chain whose junction lies beyond the patch is not held to it,
+/// but the strip beyond the deck may run through the patch held to nothing: then the strip's height where it
+/// passes closest to the junction (inside the patch) is compared with the junction's plane there, and not the
+/// plane read beyond its patch at the deck's port (a ramp between the deck and the patch is `road_grade`'s).
+/// Heights that are not numbers give nothing.
 #[must_use]
 pub fn bridge_end_steps(
     net: &PlacedNetwork,
@@ -617,18 +702,17 @@ pub fn bridge_end_steps(
                 let chain_end = joint == 0 || joint + 1 == strip.joints.len();
                 let at = (port.0, port.1);
                 let ports = (at, (other.0, other.1));
-                let Some((height, what)) = end_neighbour(
+                let Some((step, what)) = end_neighbour(
                     net,
                     profiles,
                     junctions,
-                    (index, joint, chain_end),
+                    (index, joint, chain_end, end == 1),
                     ports,
                     port.2,
                     &ids,
                 ) else {
                     continue;
                 };
-                let step = height - port.2;
                 if step.is_finite() {
                     out.push(EndStep {
                         stretch: name.to_string(),

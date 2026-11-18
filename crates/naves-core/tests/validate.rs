@@ -1269,9 +1269,12 @@ fn a_short_decks_far_end_is_not_compared_with_the_junction_at_its_near_end() {
     assert_eq!(found[0].at, (100.0, 106.0));
 }
 
-#[test]
-fn a_deck_inside_a_chain_is_compared_only_within_the_junctions_patch() {
-    // the deck is the middle of three roads: the solve holds it to a junction within its patch (3 m), not 6 m away
+/// A chain of three roads "s": a piece, the bridge from (100, 100) to (100, 125), a piece, the strip through
+/// `joints`, and the end steps of it over the tolerance with `junctions`.
+fn chain_steps(
+    joints: &[(f64, f64, f64)],
+    junctions: Vec<Junction>,
+) -> Vec<naves_core::validate::EndStep> {
     let mut roads = vec![
         road(0, PlacedKind::Piece, (100.0, 75.0)),
         road(1, PlacedKind::Bridge, (100.0, 100.0)),
@@ -1282,24 +1285,113 @@ fn a_deck_inside_a_chain_is_compared_only_within_the_junctions_patch() {
     }
     let n = net(roads);
     let profiles = Profiles {
-        strips: vec![strip(
-            &[0, 1, 2],
-            &[
-                (100.0, 75.0, 105.0),
-                (100.0, 100.0, 105.0),
-                (100.0, 125.0, 105.0),
-                (100.0, 150.0, 105.0),
-            ],
-            &[false, true, false],
-        )],
+        strips: vec![strip(&[0, 1, 2], joints, &[false, true, false])],
         ..Profiles::default()
     };
-    for (y, expected) in [(128.0, 1), (131.0, 0)] {
-        let junctions = Junctions {
-            points: vec![join((100.0, y), 107.0, &["s"])],
-            ..Junctions::default()
-        };
-        let steps = naves_core::validate::bridge_end_steps(&n, &profiles, &junctions);
-        assert_eq!(steps.len(), expected, "junction at {y}: {steps:?}");
-    }
+    let junctions = Junctions {
+        points: junctions,
+        ..Junctions::default()
+    };
+    naves_core::validate::bridge_end_steps(&n, &profiles, &junctions)
+        .into_iter()
+        .filter(|e| e.step.abs() > naves_core::validate::END_STEP_TOL_M)
+        .collect()
+}
+
+/// The chain's joints with the strip at `h` beyond the deck, plus `extra` joints in between.
+fn flat_chain(h: f64, extra: &[(f64, f64, f64)]) -> Vec<(f64, f64, f64)> {
+    let mut joints = vec![
+        (100.0, 75.0, 105.0),
+        (100.0, 100.0, 105.0),
+        (100.0, 125.0, 105.0),
+    ];
+    joints.extend_from_slice(extra);
+    joints.push((100.0, 150.0, h));
+    joints
+}
+
+#[test]
+fn a_deck_inside_a_chain_is_compared_within_the_junctions_patch() {
+    // the deck is the middle of three roads: held to a junction within its patch (3 m)
+    let steps = chain_steps(
+        &flat_chain(105.0, &[]),
+        vec![join((100.0, 128.0), 107.0, &["s"])],
+    );
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    // a junction 15 m away is out of reach altogether
+    let steps = chain_steps(
+        &flat_chain(105.0, &[]),
+        vec![join((100.0, 140.0), 107.0, &["s"])],
+    );
+    assert_eq!(steps, Vec::new());
+}
+
+#[test]
+fn a_deck_inside_a_chain_whose_strip_enters_the_junction_beyond_the_patch_off_its_plane_is_a_step()
+{
+    // the junction lies 6 m from the deck end, 3 m beyond its patch, and the strip passes through it 2 m below
+    // the plane, held to nothing there: the break the deck's own joint does not show
+    let steps = chain_steps(
+        &flat_chain(105.0, &[]),
+        vec![join((100.0, 131.0), 107.0, &["s"])],
+    );
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0].end, 1);
+    assert!((steps[0].step - 2.0).abs() < 1e-6, "{steps:?}");
+    assert!(
+        steps[0].what.contains("junction at (100, 131)"),
+        "{steps:?}"
+    );
+}
+
+#[test]
+fn the_strip_is_read_backwards_at_the_first_end_of_a_deck_and_over_a_joint_that_repeats() {
+    // the junction 6 m before the deck's first end, the strip 2 m under its plane there
+    let steps = chain_steps(
+        &flat_chain(105.0, &[]),
+        vec![join((100.0, 94.0), 107.0, &["s"])],
+    );
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(steps[0].end, 0);
+    assert!((steps[0].step - 2.0).abs() < 1e-6, "{steps:?}");
+    // a joint twice at one place (a segment without length) changes nothing
+    let joints = flat_chain(105.0, &[(100.0, 125.0, 105.0)]);
+    let steps = chain_steps(&joints, vec![join((100.0, 131.0), 107.0, &["s"])]);
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    // the strip ends 4 m from the junction, outside its patch: it does not run through it, nothing to compare
+    let ends = [
+        (100.0, 75.0, 105.0),
+        (100.0, 100.0, 105.0),
+        (100.0, 125.0, 105.0),
+        (100.0, 127.0, 105.0),
+    ];
+    let steps = chain_steps(&ends, vec![join((100.0, 131.0), 107.0, &["s"])]);
+    assert_eq!(steps, Vec::new());
+}
+
+#[test]
+fn a_strip_that_is_on_the_junctions_plane_where_it_enters_the_patch_is_no_step_however_it_ramps_before()
+ {
+    // a ramp of 1 m in 3 m from the deck to the edge of the patch (road_grade's business), then on the plane
+    let joints = flat_chain(106.0, &[(100.0, 128.0, 106.0)]);
+    let steps = chain_steps(&joints, vec![join((100.0, 131.0), 106.0, &["s"])]);
+    assert_eq!(steps, Vec::new());
+}
+
+#[test]
+fn a_junction_plane_extrapolated_beyond_its_patch_is_no_step() {
+    // the plane rises 0.5 m per metre: 3 m below the junction it would be 1.5 m under the junction's height, but
+    // the strip is on it where it enters the patch
+    let mut j = join((100.0, 131.0), 107.0, &["s"]);
+    j.gradient = (0.0, 0.5);
+    let joints = flat_chain(107.0, &[(100.0, 129.0, 107.0)]);
+    let steps = chain_steps(&joints, vec![j]);
+    assert_eq!(steps, Vec::new());
+}
+
+#[test]
+fn a_deck_with_both_ends_in_one_patch_is_compared_at_both_ends() {
+    // a 2 m deck with a junction between its ends, 1 m from each: neither end is "nearer"
+    let found = end_steps_of(2.0, 105.0, vec![join((100.0, 101.0), 107.0, &["s"])], &[]);
+    assert_eq!(found.len(), 2, "{found:?}");
 }

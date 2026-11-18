@@ -1381,6 +1381,97 @@ fn main() {
             e.stretch, e.end, e.step, e.what, e.at.0, e.at.1
         );
     }
+    // ENDJOINT: for every deck end, the deck, the strip joint beyond it, and the junction that names the bridge
+    for (index, strip) in profiles.strips.iter().enumerate() {
+        let segments = strip.joints.len().saturating_sub(1);
+        let is_deck = |i: usize| strip.bridge.get(i).copied().unwrap_or(false);
+        let mut i = 0;
+        while i < segments {
+            if !is_deck(i) {
+                i += 1;
+                continue;
+            }
+            let first = i;
+            while i < segments && is_deck(i) {
+                i += 1;
+            }
+            let ids: Vec<String> = (first..i)
+                .filter_map(|k| strip.slots.get(k))
+                .filter_map(|s| net.roads.get(*s))
+                .flat_map(|r| {
+                    r.slot
+                        .stretch
+                        .split('|')
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let (Some(start), Some(finish)) = (strip.joints.get(first), strip.joints.get(i)) else {
+                continue;
+            };
+            for (end, joint, port, beyond) in [
+                (0, first, start, first.checked_sub(1)),
+                (1, i, finish, Some(i + 1)),
+            ] {
+                let far = beyond.and_then(|b| strip.joints.get(b));
+                let far_text = far.map_or_else(
+                    || "none".to_string(),
+                    |f| {
+                        format!(
+                            "h {:.2} at ({:.1}, {:.1}) gap {:.2} m",
+                            f.2,
+                            f.0,
+                            f.1,
+                            (f.0 - port.0).hypot(f.1 - port.1)
+                        )
+                    },
+                );
+                let mut near: Vec<_> = junctions
+                    .points
+                    .iter()
+                    .filter(|j| ids.iter().any(|id| j.stretches.contains(id)))
+                    .map(|j| (j, (j.at.0 - port.0).hypot(j.at.1 - port.1)))
+                    .collect();
+                near.sort_by(|a, b| a.1.total_cmp(&b.1));
+                let chain_end = joint == 0 || joint + 1 == strip.joints.len();
+                let jtext = near.first().map_or_else(
+                    || "no junction".to_string(),
+                    |(j, d)| {
+                        let t = if *d > 0.0 {
+                            (j.patch_m / d).min(1.0)
+                        } else {
+                            0.0
+                        };
+                        let edge = (
+                            j.at.0 + (port.0 - j.at.0) * t,
+                            j.at.1 + (port.1 - j.at.1) * t,
+                        );
+                        format!(
+                            "junction ({:.0}, {:.0}) d {:.1} patch {:.1} h_port {:.2} h_edge {:.2}",
+                            j.at.0,
+                            j.at.1,
+                            d,
+                            j.patch_m,
+                            j.height_at((port.0, port.1)),
+                            j.height_at(edge)
+                        )
+                    },
+                );
+                println!(
+                    "ENDJOINT {} strip {} end {} chain_end {} deck {:.2} at ({:.1}, {:.1}); beyond {}; {}",
+                    ids.first().map_or("?", String::as_str),
+                    index,
+                    end,
+                    chain_end,
+                    port.2,
+                    port.0,
+                    port.1,
+                    far_text,
+                    jtext
+                );
+            }
+        }
+    }
     {
         // dips of the first placement by what was decided, and those of the final one
         let describe = |label: &str,

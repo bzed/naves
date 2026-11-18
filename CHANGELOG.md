@@ -25,7 +25,7 @@ All notable changes to this project are documented here. The format follows
   that is the new finding `bridge_end_step` (the deck and the junction or road it joins differ by more than 0.5 m; also in
   the MCP rule list). On the Berchtesgaden example at `terrain_size = 2048`: `bridge_buried` 20 to 6 (the four sites of the
   game check: three are free of ground, 48450084 keeps 0.81 m from a wide road that leaves the end node at an acute angle),
-  `bridge_end_step` 2 (0.5 and 0.6 m, not reported before; compared only with the junction the solve holds the deck to), `road_conflict` 905 to 900, `road_not_drivable` 186 to 185 and
+  `bridge_end_step` 2 (0.5 and 0.6 m, not reported before; a deck end is compared with the junction the solve holds it to and, for a deck inside a chain, with the junction's plane where the road runs through its patch), `road_conflict` 905 to 900, `road_not_drivable` 186 to 185 and
   `road_misses_terrain` 4292 to 4286. **Worse:** Silbergstraße (1341010238) has 0.27 m of ground in its deck (0.14 m before), road pieces missing the terrain by more than 2 m are 156 (150 before), and `bridge_clearance` 0 to 1 and `road_grade` 3 to 4 are both at bridge 299428041,
   whose road below starts at the bridge's end node: it had an unreported 5.7 m step and now starts at the deck's
   height and keeps 2.3 m of the 4.5 m clearance, with a sharp crest. The deck stays level; pitched decks are not part of this.

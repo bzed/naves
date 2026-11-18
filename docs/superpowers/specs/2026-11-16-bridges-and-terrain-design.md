@@ -175,7 +175,7 @@ The clearance row of the height solve takes its thickness from `underside` over 
 - `bridge_buried`: after `conform`, ground above the ceiling under a span (another road's core stopped the cut).
 - `bridge_post_floats`: a post row or pier that does not reach the ground by more than 0.5 m.
 - `bridge_end_step`: the deck's height and the height of the junction of the bridge's roads at its end, or of a road that
-  ends there, differ by more than `END_STEP_TOL_M` = 0.5 m (Task 8b).
+  ends there, differ by more than `END_STEP_TOL_M` = 0.5 m (Task 8b); for a deck inside a chain with its junction beyond the junction's patch, the road's height where it runs through the patch against the junction's plane.
 - `bridge_not_built`: an OpenStreetMap bridge laid as plain road because the install has no part for it (no panels
   and no fitting model); a fill of at most `FILL_MAX_M` is none.
 - The warning "no room for a bridge model" goes; the report says for every OpenStreetMap bridge what it was built from.
