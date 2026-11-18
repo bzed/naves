@@ -232,6 +232,15 @@ fn main() {
         ] {
             println!("CLEAN {rule} {count}");
         }
+        // what no rule reports: the speck points removed, and the clusters of close junctions that were left alone
+        println!("CLEAN specks {}", clean.specks);
+        println!("CLEAN not_merged {}", clean.not_merged.len());
+        for n in &clean.not_merged {
+            println!(
+                "CLEAN not_merged nodes {:?} at ({:.0}, {:.0}): {}",
+                n.nodes, n.at.0, n.at.1, n.reason
+            );
+        }
         println!(
             "COMPONENTS {} {}",
             clean.components_before, clean.components_after

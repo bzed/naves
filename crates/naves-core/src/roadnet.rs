@@ -862,7 +862,7 @@ fn circle_of(members: &[&Stretch]) -> ((f64, f64), f64) {
 }
 
 /// The placement rank of a family: lower is more important.
-fn family_rank(f: Family) -> u8 {
+pub(crate) fn family_rank(f: Family) -> u8 {
     match f {
         Family::Asf1 => 0,
         Family::Asf2 => 1,

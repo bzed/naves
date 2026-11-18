@@ -222,7 +222,12 @@ Use a bridge that does not stand on the ground (a panel grid).
 The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map, or tighter than the
 tightest arc of its surface, became a plain crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
 left out or merged, or a junction was moved off the end of a bridge. Nothing to do; look at the place if the result is
-not what you want and change the data (OpenStreetMap) there. The position is the place of the change.
+not what you want and change the data (OpenStreetMap) there. The position is the place of the change. For
+`road_stub_dropped` the message names the stretch and its length (a dead end shorter than 6 m that is not drivable, or
+shorter than its own width); for `road_junctions_merged` it names the junction that stays and those that went into it (nodes
+of the data, joined by a stretch shorter than 6 m, all within 12 m of each other). Clusters of close junctions that were
+left alone (a roundabout, two bridge ends, a longer road between them, or too wide a group) are listed by the
+`road-analysis` example (`CLEAN not_merged`), not as a finding.
 
 **`bridge_end_at_junction` (warning)**
 A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road

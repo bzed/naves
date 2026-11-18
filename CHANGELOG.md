@@ -18,6 +18,13 @@ All notable changes to this project are documented here. The format follows
   roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
   `road_junctions_merged`, `bridge_approach_made` (information) and `bridge_end_at_junction` (warning), also in the MCP
   rule list. The tag `foot` is read from OpenStreetMap (`foot=use_sidepath` on a road).
+- Short dead ends and junctions too close to tell apart are cleaned up before bridges are fitted. A dead-end stretch
+  shorter than 6 m that is not drivable, or drivable and shorter than its own width, is not placed
+  (`road_stub_dropped`); points of a road closer than 0.5 m to the point before are merged. Junctions joined by a
+  stretch shorter than 6 m become one junction on the node whose roads rank highest, or on the end of a bridge or
+  tunnel (`road_junctions_merged`); the roads that met there end at the merged junction. Groups that cannot be merged
+  (a roundabout, two bridge ends, wider than 12 m) are left as they are and listed by the `road-analysis` example.
+  Stretch ids of roads whose end moved keep their old node ids, and an edit on a stretch that went is orphaned.
 
 ### Changed
 
