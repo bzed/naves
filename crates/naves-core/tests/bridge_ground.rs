@@ -143,7 +143,7 @@ fn flat_ground_at_deck_level_is_cut_under_a_panel_row_open_to_both_sides() {
 }
 
 #[test]
-fn a_truss_with_end_blocks_is_cut_to_the_foot_under_the_blocks() {
+fn a_truss_with_end_blocks_is_cut_to_the_hang_ceiling_also_under_the_blocks() {
     // 20 m long: the deck hangs 1.7 m, an abutment block stands 2 m deep at each end, foot 5 m below the deck
     let n = 20;
     let mut stand = vec![Vec::new(); n];
@@ -875,14 +875,16 @@ fn ground_in_the_end_guard_and_under_a_short_deck_is_measured_against_the_deck_s
         std::slice::from_ref(&span),
     )
     .unwrap();
-    assert_eq!(out.buried.len(), 1, "{:?}", out.buried);
-    let found = &out.buried[0];
-    assert_eq!(found.holder, Holder::None);
-    assert!((found.above_m - 2.0).abs() < 0.05, "{found:?}");
-    // the analysis counts the same ground the same way
-    let above = spans_above_underside(&out.heightmap, std::slice::from_ref(&span));
+    // the ground standing in the guard is cut to the deck: nothing is left to report
+    assert!(matches!(out.buried.as_slice(), []), "{:?}", out.buried);
+    // the analysis of the unshaped ground counts it: 2 m above the surface
+    let above = spans_above_underside(&base, std::slice::from_ref(&span));
     assert_eq!(above.len(), 1, "{above:?}");
-    assert!((above[0].above_m - found.above_m).abs() < 1e-9 && above[0].vertices == found.vertices);
+    assert!((above[0].above_m - 2.0).abs() < 0.05, "{above:?}");
+    assert!(matches!(
+        spans_above_underside(&out.heightmap, std::slice::from_ref(&span)).as_slice(),
+        []
+    ));
     // ground below the deck's surface there is none
     assert!(matches!(
         spans_above_underside(&flat(97.0), std::slice::from_ref(&span)).as_slice(),
@@ -902,4 +904,168 @@ fn a_deck_height_that_is_not_a_number_gives_no_finding() {
         spans_above_underside(&out.heightmap, &[span]).as_slice(),
         []
     ));
+}
+
+#[test]
+fn a_road_that_runs_only_beside_a_deck_keeps_its_shoulder() {
+    let base = flat(100.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    // a road 3 m half width 8 m beside the deck's axis: its ring reaches the vertex at x = 104, which is beside the
+    // deck (3.5 m half width), not under it
+    let beside = strip(&[(108.0, 20.0, 100.0), (108.0, 120.0, 100.0)], &[], 3.0);
+    let out = conform_bridges(&base, &[road_over(90.0), beside], &[], &[span]).unwrap();
+    for y in [62.0, 70.0, 78.0] {
+        assert!(
+            (at(&out.heightmap, 104.0, y) - 100.0).abs() < 1e-3,
+            "{y}: {}",
+            at(&out.heightmap, 104.0, y)
+        );
+    }
+    // under the deck the cut stays
+    assert!(at(&out.heightmap, 100.0, 70.0) <= 98.75 + 1e-3);
+}
+
+#[test]
+fn a_guard_survives_a_neighbouring_span_that_is_cut_there() {
+    let base = flat(100.0);
+    // two steps that fold back: the second ends free at (104, 76); (104, 78) is in its end guard and in the first
+    // step's band, which has no guard there
+    let first = level((100.0, 50.0, 100.0), (100.0, 80.0, 100.0), 0.25, 3.5);
+    let second = level((100.0, 80.0, 100.0), (104.0, 76.0, 100.0), 0.25, 3.5);
+    let out = conform_bridges(&base, &[], &[], &[first, second]).unwrap();
+    assert!(
+        (at(&out.heightmap, 104.0, 78.0) - 100.0).abs() < 1e-3,
+        "{}",
+        at(&out.heightmap, 104.0, 78.0)
+    );
+}
+
+#[test]
+fn a_guard_survives_where_the_spans_of_a_fork_overlap() {
+    let base = flat(100.0);
+    // two grids from one node; the short one ends free at (106, 56), its end guard overlaps the long one's band
+    let long = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let short = level((100.0, 50.0, 100.0), (106.0, 56.0, 100.0), 0.25, 3.5);
+    let out = conform_bridges(&base, &[], &[], &[long, short]).unwrap();
+    assert!(
+        (at(&out.heightmap, 104.0, 56.0) - 100.0).abs() < 1e-3,
+        "{}",
+        at(&out.heightmap, 104.0, 56.0)
+    );
+}
+
+#[test]
+fn only_a_free_end_has_a_guard_not_the_joint_of_two_steps() {
+    let base = flat(100.0);
+    let steps = [
+        level((100.0, 50.0, 100.0), (100.0, 62.0, 100.0), 0.25, 3.5),
+        level((100.0, 62.0, 100.0), (100.0, 78.0, 100.0), 0.25, 3.5),
+        level((100.0, 78.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5),
+    ];
+    let out = conform_bridges(&base, &[], &[], &steps).unwrap();
+    // the middle step and both sides of both joints are cut; the free ends are not
+    for y in [58.0, 60.0, 62.0, 64.0, 70.0, 76.0, 78.0, 80.0] {
+        for x in [98.0, 100.0, 102.0] {
+            assert!(at(&out.heightmap, x, y) <= 98.75 + 1e-3, "{x},{y}");
+        }
+    }
+    for y in [50.0, 52.0, 88.0, 90.0] {
+        assert!((at(&out.heightmap, 100.0, y) - 100.0).abs() < 1e-3, "{y}");
+    }
+}
+
+#[test]
+fn ground_standing_on_a_decks_end_is_cut_to_the_deck_and_never_below() {
+    // a bank 2 m above the deck
+    let base = flat(102.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let out = conform_bridges(&base, &[], &[], std::slice::from_ref(&span)).unwrap();
+    for y in [50.0, 52.0, 88.0, 90.0] {
+        for x in [98.0, 100.0, 102.0] {
+            assert!(
+                (at(&out.heightmap, x, y) - 100.0).abs() < 1e-3,
+                "{x},{y}: {}",
+                at(&out.heightmap, x, y)
+            );
+        }
+    }
+    assert!(out.buried.is_empty(), "{:?}", out.buried);
+    // ground lower than the deck's surface stays where it is
+    let out = conform_bridges(&flat(99.4), &[], &[], &[span]).unwrap();
+    for y in [50.0, 52.0, 88.0, 90.0] {
+        assert!((at(&out.heightmap, 100.0, y) - 99.4).abs() < 1e-3, "{y}");
+    }
+}
+
+#[test]
+fn another_roads_core_in_the_guard_is_left_and_reported() {
+    let base = flat(102.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let other = road_across(88.0, 101.5, 3.0);
+    let out = conform_bridges(&base, &[other], &[], &[span]).unwrap();
+    assert!(
+        (at(&out.heightmap, 100.0, 88.0) - 101.5).abs() < 1e-3,
+        "{}",
+        at(&out.heightmap, 100.0, 88.0)
+    );
+    assert_eq!(out.buried.len(), 1, "{:?}", out.buried);
+    assert_eq!(out.buried[0].holder, Holder::Strip(0));
+}
+
+#[test]
+fn the_first_step_of_a_grid_starts_where_the_placed_panel_starts_not_at_the_junction_before_it() {
+    use naves_core::catalog::Family;
+    use naves_core::roadfit::Pose;
+    use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
+
+    let catalog = synthetic_catalog();
+    let slab = catalog
+        .panels()
+        .iter()
+        .min_by(|a, b| a.model.cmp(&b.model))
+        .unwrap()
+        .clone();
+    let pose = |x: f64| Pose {
+        x,
+        y: 500.0,
+        heading: std::f64::consts::FRAC_PI_2,
+    };
+    // a grid lengthened over the end of the road before it: the panel starts at 398, but the strip's joint before it
+    // is the end of the junction piece at 399.5, inside the deck
+    let panel = |x0: f64, x1: f64, index: u32| PlacedRoad {
+        slot: Slot {
+            stretch: "7:1-2".to_string(),
+            index,
+        },
+        kind: PlacedKind::Bridge,
+        family: Family::Grav,
+        drivable: true,
+        model: slab.model.clone(),
+        origin: pose(f64::midpoint(x0, x1)),
+        start: pose(x0),
+        end: pose(x1),
+        width: 6.0,
+        scale: 1.0,
+        abreast: 1,
+    };
+    let net = PlacedNetwork {
+        roads: vec![panel(398.0, 401.0, 0), panel(401.0, 404.0, 1)],
+        ..PlacedNetwork::default()
+    };
+    let strips = vec![strip_of(
+        &[0, 1],
+        &[
+            (399.5, 500.0, 10.0),
+            (401.0, 500.0, 10.0),
+            (404.0, 500.0, 10.0),
+        ],
+    )];
+    let spans = bridge_spans(&net, &strips, &catalog);
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    assert_eq!(
+        (spans[0].first, spans[0].second),
+        ((398.0, 500.0, 10.0), (401.0, 500.0, 10.0))
+    );
+    assert!((spans[0].length() - 3.0).abs() < 1e-9);
+    assert_eq!(spans[1].first, (401.0, 500.0, 10.0));
 }

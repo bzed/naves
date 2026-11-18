@@ -116,15 +116,18 @@ pub struct Conformed {
 pub struct Buried {
     /// The id of the bridge stretch.
     pub stretch: String,
-    /// The vertex with the most ground above the underside of the deck, in map metres.
+    /// The vertex with the most ground above the reference, in map metres.
     pub at: (f64, f64),
-    /// How far the ground there is above the underside of the deck (the deck less what hangs below it there), in
-    /// metres.
+    /// How far the ground there is above the reference, in metres: beyond the end guard the underside of the deck
+    /// (the deck less what hangs below it there), within the guard of a free end its surface.
     pub above_m: f64,
-    /// How many vertices under the deck are above its underside.
+    /// How many vertices within the deck's width are above the reference.
     pub vertices: usize,
     /// What holds the ground at the worst vertex.
     pub holder: Holder,
+    /// Whether the worst vertex lies in the end guard of a free end, so that `above_m` is measured from the deck's
+    /// surface and not from its underside.
+    pub guarded: bool,
 }
 
 /// What holds the ground that another road keeps under a bridge's deck.
@@ -320,6 +323,31 @@ struct Under {
     at_port: bool,
     /// Within the end guard of a free end: under the deck but not cut for it.
     guarded: bool,
+    /// Within the deck's width, not only in the band beside it.
+    inside: bool,
+    /// The deck's surface at the vertex's own place (the lowest where spans overlap): the ground inside the guard is
+    /// cut down to it where no road holds it.
+    surface: f32,
+}
+
+impl Under {
+    /// What a vertex that lies in the bands of two spans is held to: the lower ceiling, but guarded, at a port and
+    /// inside if either span says so (a guard is lost to nobody: only a free end guards, and a joint of two steps
+    /// is none).
+    fn merge(self, other: Under) -> Under {
+        let kept = if self.ceiling <= other.ceiling {
+            self
+        } else {
+            other
+        };
+        Under {
+            guarded: self.guarded || other.guarded,
+            at_port: self.at_port || other.at_port,
+            inside: self.inside || other.inside,
+            surface: self.surface.min(other.surface),
+            ..kept
+        }
+    }
 }
 
 /// Calls `visit(vertex, along, across, half_width)` for every vertex between the ports of `span` and within
@@ -466,7 +494,7 @@ fn bridge_ceilings(spans: &[BridgeSpan], grid: Grid) -> Vec<Option<Under>> {
             first && !span.shape.retains.0,
             second && !span.shape.retains.1,
         );
-        band(span, grid, |vertex, along, across, _half| {
+        band(span, grid, |vertex, along, across, half| {
             // within the guard of a free end the ground is not cut for the deck: a terrain cell that straddles the
             // port line would slope the road's last piece down to the cut (the terrain cannot show a ramp shorter
             // than a cell), and what lies there is the abutment. It is still under the deck: no level patch claims
@@ -501,12 +529,11 @@ fn bridge_ceilings(spans: &[BridgeSpan], grid: Grid) -> Vec<Option<Under>> {
                 span: number,
                 guarded,
                 at_port: guarded || along <= PORT_LINE_M || along >= length - PORT_LINE_M,
+                inside: across.abs() <= half,
+                surface: narrow(span.deck_at(along)),
             };
             if let Some(slot) = found.get_mut(vertex) {
-                *slot = Some(match *slot {
-                    Some(old) if old.ceiling <= under.ceiling => old,
-                    _ => under,
-                });
+                *slot = Some(slot.map_or(under, |old| old.merge(under)));
             }
         });
     }
@@ -648,7 +675,21 @@ fn sweep(cores: &[Option<Core>], under: &[Option<Under>], base: &Heightmap, grid
         }
         if let Some(upper) = fields.upper.get_mut(index) {
             *upper = if held.guarded {
-                f32::INFINITY
+                // the abutment is not cut for the deck, but ground standing in the deck is cut down to its
+                // surface (never below it: the approach's fill is at the deck's height and is a core)
+                if held.inside {
+                    if let Some(lower) = fields.lower.get_mut(index) {
+                        *lower = base
+                            .h
+                            .get(index)
+                            .copied()
+                            .unwrap_or(f32::NEG_INFINITY)
+                            .min(held.surface);
+                    }
+                    held.surface
+                } else {
+                    f32::INFINITY
+                }
             } else {
                 // the cut aims at the ceiling; another road's cutting may take the ground lower, but not below the
                 // foot of what stands
@@ -721,6 +762,7 @@ fn candidates(
                 if let Some(held) = held
                     && !own_road
                     && !held.guarded
+                    && held.inside
                     && narrow(hit.height) > held.underside
                     && hit.distance - strip.half_width > 0.0
                 {
@@ -1076,6 +1118,8 @@ struct InDeck {
     vertex: usize,
     /// How far the ground is above the reference, in metres.
     above: f64,
+    /// Whether the reference is the deck's surface (the vertex is in the end guard).
+    guarded: bool,
 }
 
 /// The ground that is in a deck: the vertices within the width of a part, where `ground` is more than
@@ -1107,6 +1151,7 @@ fn in_decks(spans: &[BridgeSpan], ground: &dyn Fn(usize) -> f64, grid: Grid) -> 
                     span: number,
                     vertex,
                     above,
+                    guarded,
                 });
             }
         });
@@ -1147,12 +1192,14 @@ fn buried_under(
             above_m: hit.above,
             vertices: 0,
             holder,
+            guarded: hit.guarded,
         });
         entry.vertices += 1;
         if hit.above > entry.above_m {
             entry.at = grid.position(hit.vertex);
             entry.above_m = hit.above;
             entry.holder = holder;
+            entry.guarded = hit.guarded;
         }
     }
     found.into_values().collect()

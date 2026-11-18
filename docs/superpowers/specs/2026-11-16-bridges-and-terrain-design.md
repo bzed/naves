@@ -291,10 +291,14 @@ the work in `conform`, the wording of findings and report lines, and the order o
   none (the first version cut to the foot: a trench 16 m deep at 39674984). Ground within the end guard of a free end
   (`cell * (|ax| + |ay|)` along the deck; the whole of a deck shorter than two guards) is under the deck but not cut for it,
   because a terrain cell that straddles a port line would slope the road's last piece down to the cut: never cut, and no
-  level patch claims it. The road of the bridge up to the next junction at each end (its chain, plus any strip with a deck
+  level patch claims it, except that ground above the deck's surface within the deck's width that no other road holds
+  within its own width is cut down to the surface (never below it, never raised; a core of another road is left and
+  reported). Where spans overlap (steps of a grid, forks) a vertex guarded by any span's free end stays guarded; a joint
+  of two steps or of two joined bridges is not a free end. The road of the bridge up to the next junction at each end (its chain, plus any strip with a deck
   joint at a port) holds nothing under the deck beyond the guard; inside it, it may hold or raise ground up to its road
   height (the abutment's fill). Beyond the guard ground under a deck is never raised. A road above the underside of the
-  deck claims a vertex under it only within its own width; a road below keeps its ring. Other roads' cores win.
+  deck claims a vertex under it, beyond the guard and within the deck's outline, only within its own width (the
+  neighbour's-ring rule; inside the guard and beside the deck the ring stays); a road below keeps its ring. Other roads' cores win.
   `bridge_buried` is the one measure of the finding and of `spans_above_underside`: ground more than `BURIED_TOL_M` = 0.1 m
   above the underside (deck less what hangs, never the foot, no air) beyond the guard, above the deck's surface inside
   it, whoever holds it; the holder is named or "no road".

@@ -198,11 +198,12 @@ pieces) is not reported; one whose placed pieces run under the deck is, wherever
 **`bridge_buried`: "The ground under bridge ... is 1.3 m above the underside of its deck at 7 places, held by the road ..."**
 After the terrain was shaped, ground in the deck of a bridge is higher than the underside of the deck (its height less
 what hangs below it there; the metre of air the cut aims at and the foot of what stands are not counted) by more than
-0.1 m, or, within a cell of a free end of the bridge (the end guard: the whole of a deck shorter than two cells), higher
-than the deck's surface. The cut never changes the core of a road that is not the bridge's own, so a road that runs
+0.1 m, or, within the end guard of a free end of the bridge (a cell along the deck, a little more for a deck turned
+against the grid; the whole of a deck shorter than two guards), higher than the deck's surface. The message says which
+reference its number is above ("above the deck" in the guard, "above the underside of its deck" beyond it). The cut never changes the core of a road that is not the bridge's own, so a road that runs
 under the deck (or an arm of a junction next to a lengthened deck end, or a level patch where roads meet) keeps its
 ground and it sticks into the deck. The message names the road or patch that holds it; "no road" means that nothing
-holds it and the ground was not cut there (the end guard, a short deck over ground higher than the deck). The position
+holds it and the ground was not cut there. The position
 is the vertex with the most ground above the reference. Move the other road in the data, or raise the bridge; the build
 leaves it as it is.
 

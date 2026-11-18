@@ -502,6 +502,51 @@ fn main() {
     crossing_report(&net, &profiles, &graph, &base, &junctions);
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
     let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    // SPANS_OF=<stretch id prefix>: the spans of a bridge next to the placed roads they come from
+    if let Ok(list) = std::env::var("SPANS_OF") {
+        let matches = |id: &str| list.split(',').any(|p| id.starts_with(p));
+        for (n, sp) in spans
+            .iter()
+            .enumerate()
+            .filter(|(_, sp)| matches(&sp.stretch))
+        {
+            println!(
+                "SPANS span {n} ({:.1},{:.1}) -> ({:.1},{:.1}) len {:.2}",
+                sp.first.0,
+                sp.first.1,
+                sp.second.0,
+                sp.second.1,
+                sp.length()
+            );
+        }
+        for (n, r) in net
+            .roads
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches(&r.slot.stretch))
+        {
+            println!(
+                "SPANS road {n} {:?} start ({:.1},{:.1}) end ({:.1},{:.1}) origin ({:.1},{:.1})",
+                r.kind, r.start.x, r.start.y, r.end.x, r.end.y, r.origin.x, r.origin.y
+            );
+        }
+        for (i, st) in profiles.strips.iter().enumerate() {
+            for (k, w) in st.joints.windows(2).enumerate() {
+                if st.bridge.get(k).copied().unwrap_or(false)
+                    && st
+                        .slots
+                        .get(k)
+                        .and_then(|j| net.roads.get(*j))
+                        .is_some_and(|r| matches(&r.slot.stretch))
+                {
+                    println!(
+                        "SPANS strip {i} seg {k} road {} joints ({:.1},{:.1}) -> ({:.1},{:.1})",
+                        st.slots[k], w[0].0, w[0].1, w[1].0, w[1].1
+                    );
+                }
+            }
+        }
+    }
     let conformed = conform_bridges(&base, &profiles.strips, &patches, &spans).expect("conform");
     let t_conform = t0.elapsed();
     ring_report(
@@ -1419,6 +1464,21 @@ fn main() {
     for rule in Rule::ALL {
         let n = violations.iter().filter(|v| v.rule == rule).count();
         println!("RULE {:24} {n}", rule.id());
+    }
+    // RULES_OUT=file: every finding as tab-separated rule, x, y, message, for comparing two runs
+    if let Ok(path) = std::env::var("RULES_OUT") {
+        let mut text = String::new();
+        for v in &violations {
+            let _ = writeln!(
+                text,
+                "{}\t{:.1}\t{:.1}\t{}",
+                v.rule.id(),
+                v.at.0,
+                v.at.1,
+                v.message
+            );
+        }
+        std::fs::write(&path, text).expect("write RULES_OUT");
     }
     for v in violations
         .iter()

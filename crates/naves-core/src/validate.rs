@@ -466,11 +466,16 @@ fn buried_violations(
                     format!("the road {}", ids.join(", "))
                 }
             };
+            let reference = if b.guarded {
+                "the deck"
+            } else {
+                "the underside of its deck"
+            };
             violation(
                 Rule::BridgeBuried,
                 b.at,
                 format!(
-                    "The ground under bridge {} is {:.1} m above the underside of its deck at {} places, held by {holder}: another road's earthwork there could not be cut",
+                    "The ground under bridge {} is {:.1} m above {reference} at {} places, held by {holder}",
                     b.stretch, b.above_m, b.vertices
                 ),
             )

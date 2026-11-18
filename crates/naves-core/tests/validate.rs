@@ -690,6 +690,7 @@ fn buried_ground_and_floating_posts_are_findings_with_their_place_and_numbers() 
         above_m: 1.26,
         vertices: 7,
         holder: Holder::Patch((300.0, 41.0)),
+        guarded: false,
     }];
     c.floating = vec![
         PostFloat {
@@ -712,10 +713,32 @@ fn buried_ground_and_floating_posts_are_findings_with_their_place_and_numbers() 
         buried[0].message.contains("9:1-2")
             && buried[0].message.contains("1.3 m")
             && buried[0].message.contains("7 places")
-            && buried[0].message.contains("level patch at (300, 41)"),
+            && buried[0]
+                .message
+                .contains("above the underside of its deck")
+            && buried[0]
+                .message
+                .contains("held by a level patch at (300, 41)")
+            && !buried[0].message.contains("could not be cut"),
         "{}",
         buried[0].message
     );
+    // within the end guard the number is above the deck's surface; nobody holding it is said once
+    c.buried[0].guarded = true;
+    c.buried[0].holder = Holder::None;
+    let v = run(&n, &Profiles::default(), &c, &[], &[], &[], &[]);
+    let guarded = only(Rule::BridgeBuried, &v);
+    assert!(
+        guarded[0]
+            .message
+            .contains("1.3 m above the deck at 7 places, held by no road")
+            && !guarded[0].message.contains("underside")
+            && !guarded[0].message.contains("could not be cut"),
+        "{}",
+        guarded[0].message
+    );
+    c.buried[0].guarded = false;
+    c.buried[0].holder = Holder::Patch((300.0, 41.0));
     let floats = only(Rule::BridgePostFloats, &v);
     // sorted by position
     assert_eq!(floats.len(), 2, "{v:?}");
@@ -725,7 +748,8 @@ fn buried_ground_and_floating_posts_are_findings_with_their_place_and_numbers() 
         "{}",
         floats[1].message
     );
-    assert_eq!(v, run(&n, &Profiles::default(), &c, &[], &[], &[], &[]));
+    let again = run(&n, &Profiles::default(), &c, &[], &[], &[], &[]);
+    assert_eq!(again, run(&n, &Profiles::default(), &c, &[], &[], &[], &[]));
 }
 
 #[test]

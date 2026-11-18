@@ -312,11 +312,15 @@ guard of a free end of the bridge (a cell along the deck, `cell * (|ax| + |ay|)`
 that the whole of a deck shorter than two guards is in it) the ground is under the deck but not cut for it, because a
 terrain cell that straddles the port line would slope the road's last piece down to the cut: it keeps its height and
 no level patch claims it. Beyond the guard ground under a deck is never raised above the original ground. Inside the
+guard, ground that stands above the deck's surface within the deck's width and that no other road holds within its own
+width is cut down to the deck's surface (never below it, and never raised), so that a bank at a deck's end does not
+stand in the lane. Inside the
 guard the bridge's own road (the strips of the road the bridge is part of, up to the next junction at each end) may hold
 or raise ground up to its road height, as the abutment's fill; beyond the guard it holds nothing under the deck. A road
 that passes under the deck keeps its core and the ground around it, and its cutting spreads under the open parts of
 the deck. A road above the underside of the deck (a junction arm, a road beside the deck end) claims a vertex under the
-deck only within its own width, never with the shoulder ring of its earthwork. The core of another road is never
+deck beyond the end guard only within its own width, not with the shoulder ring of its earthwork (inside the guard the
+ring stays, and a road that only runs beside the deck keeps its shoulder). The core of another road is never
 changed. Ground that is in the deck is the finding `bridge_buried`: more than 0.1 m above the underside of the deck
 (the deck's height less what hangs under it there, without the metre of air and never the foot of what stands) beyond
 the end guard, more than 0.1 m above the deck's surface inside it; whoever holds it (the message names the road or the
