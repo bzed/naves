@@ -172,7 +172,8 @@ The clearance row of the height solve takes its thickness from `underside` over 
   74208396: 0.8 m). Such a junction now holds the strip's interpolated height where it runs nearest the junction in the
   patch (`holds::crossings`, a row in `model::add_crossing`, with the weight of the grade limits, so that an
   impossible grade shows as `road_grade`). A junction within the patch of a deck's end is left to the deck rules; the
-  deck stays one level variable.
+  deck stays one level variable. At Berchtesgaden it removes the break at 240795460; 74208396 (0.76 m) stays, where the pin
+would need a grade over the ceiling and the solve gives up the pin, which has the same weight.
 - **Never** is ground under a span raised above the original ground, and never is a vertex of another road's core
   changed: there the cut stops, and what stays above the ceiling is a finding.
 
