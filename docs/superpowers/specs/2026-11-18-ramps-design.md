@@ -133,3 +133,33 @@ bridge_post_floats 0, join_without_junction 65.
   `road_misses_terrain`. Every finding that appears or disappears is listed.
 - The largest grade and the largest grade break inside ramp zones, before and after.
 - A game check of 74208396 and of the ten sites where heights moved most.
+
+### Results (Berchtesgaden, terrain size 2048, the commit of the fix round)
+
+| rule | `main` (da88a23) | ramps first version | ramps with the fix round |
+|---|---|---|---|
+| road_not_drivable | 185 | 182 | 182 |
+| road_misses_terrain | 4285 | 4180 | 4175 |
+| path_too_steep | 174 | 172 | 172 |
+| road_grade | 4 | 11 | 11 |
+| road_conflict | 899 | 848 | 845 |
+| bridge_buried | 6 | 9 | 8 |
+| bridge_end_step | 3 | 4 | 3 |
+| all others | equal | equal | equal |
+
+`bridge_end_step`: 74208396 is not gone but changed. The deck and the junction it faces (patch 0.7 m from the deck's
+end) now meet (deck 320.12 to 320.39 m, the plane at the port 320.90 to 320.39 m, step 0.00 m); a step of 0.56 m
+remains against the next junction (6764, 7378), 22 m on, whose plane the road is above where it enters the patch. The
+junction at the deck's far end is 0.79 m above its ground (0.52 m before). 39605281 (a new one in the first version)
+is gone: step 0.00 m. 130047131 (0.52 m) and 39663890 (0.63 m) are chain ends and unchanged.
+
+Findings: against the first version only `road_misses_terrain` (3 appear, 4 disappear), `road_conflict` (3 gone),
+`bridge_buried` (one gone) and `bridge_end_step` (39605281 gone) differ. 157 of 26376 joints moved by more than 0.1 m
+against the first version, none by more than 0.5 m (largest 0.38 m, at (5038, 6589)). Breaks of the grade over 10 %
+near a junction or a deck end (a measure that is the same for any version, not the solver's zone): 35, one over
+20 % (0.208 at (2356, 6551), a vertical-bend finding that was already there; the steepest grade in a zone is 0.450
+at (6840, 6479), as before). The three vertical bends at (5302, 6761), (5308, 6778) and (5311, 6758) that are no
+longer reported have the same heights as before; the zone limit now covers them, nothing was fixed. The zone
+covers 9457 of 26376 segments (36 %).
+
+Not done: a game check of 74208396 and of the sites where heights moved most.

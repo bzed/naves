@@ -32,7 +32,12 @@ All notable changes to this project are documented here. The format follows
   between them) is tied to that junction's plane where the road enters the patch, even if the junction already holds
   another joint of the road: the junction or the deck gives way, a junction less than about a metre off its ground
   before a step is left, and `bridge_end_step` measures the step there too (it measured at the closest approach to the
-  junction's centre before, which hid a step at the patch's edge).
+  junction's centre before, which hid a step at the patch's edge). On the example (terrain size 2048): 186 joints added;
+  `road_misses_terrain` 4285 to 4175, `road_conflict` 899 to 845, `road_not_drivable` 185 to 182; `road_grade` 4 to 11
+  (ten of the new wording, at breaks of 11 to 18 %), `bridge_buried` 6 to 8 (two new ones of 0.2 m each, ground a road
+  next to the deck holds) and `bridge_end_step` 3, as before: at 74208396 and 39605281 the deck and the junction at its end now
+  meet (at the first the deck rose 0.27 m and the junction's plane fell 0.51 m, the junction at the deck's other end is
+  0.79 m above its ground), what remains of 74208396 is a step of 0.6 m against the next junction, 22 m on.
 
 ### Fixed
 
