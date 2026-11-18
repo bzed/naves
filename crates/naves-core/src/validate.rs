@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::bridgekind::Fallback;
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
-use crate::conform::Conformed;
+use crate::conform::{Buried, Conformed, Holder, POST_FLOATS_M, PostFloat};
 use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::Junctions;
@@ -71,11 +71,15 @@ pub enum Rule {
     /// no bridge model that fits (a bridge of at most [`crate::bridgekind::FILL_MAX_M`] is filled on purpose and
     /// is none).
     BridgeNotBuilt,
+    /// Ground above the underside of a bridge's deck after the shaping: another road's core stopped the cut.
+    BridgeBuried,
+    /// Posts, piers or walls of a bridge that stand more than [`crate::conform::POST_FLOATS_M`] above the ground.
+    BridgePostFloats,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 19] = [
+    pub const ALL: [Rule; 21] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -95,6 +99,8 @@ impl Rule {
         Rule::BridgeClearance,
         Rule::BridgeBlocksRoad,
         Rule::BridgeNotBuilt,
+        Rule::BridgeBuried,
+        Rule::BridgePostFloats,
     ];
 
     /// The stable id of the rule.
@@ -120,6 +126,8 @@ impl Rule {
             Rule::BridgeClearance => "bridge_clearance",
             Rule::BridgeBlocksRoad => "bridge_blocks_road",
             Rule::BridgeNotBuilt => "bridge_not_built",
+            Rule::BridgeBuried => "bridge_buried",
+            Rule::BridgePostFloats => "bridge_post_floats",
         }
     }
 }
@@ -429,6 +437,66 @@ fn blocks_violations(net: &PlacedNetwork) -> Vec<Violation> {
         .collect()
 }
 
+/// Bridges with ground left above the underside of their deck: one violation for each, where the ground is highest
+/// above it, naming what holds it.
+fn buried_violations(
+    buried: &[Buried],
+    net: &PlacedNetwork,
+    profiles: &Profiles,
+) -> Vec<Violation> {
+    buried
+        .iter()
+        .map(|b| {
+            let holder = match b.holder {
+                Holder::Patch(at) => {
+                    format!("a level patch at ({:.0}, {:.0})", at.0, at.1)
+                }
+                Holder::Strip(i) => {
+                    let mut ids: Vec<&str> = profiles
+                        .strips
+                        .get(i)
+                        .into_iter()
+                        .flat_map(|s| s.slots.iter())
+                        .filter_map(|r| net.roads.get(*r))
+                        .map(|r| r.slot.stretch.as_str())
+                        .collect();
+                    ids.dedup();
+                    ids.truncate(3);
+                    format!("the road {}", ids.join(", "))
+                }
+            };
+            violation(
+                Rule::BridgeBuried,
+                b.at,
+                format!(
+                    "The ground under bridge {} is {:.1} m above the underside of its deck at {} places, held by {holder}: another road's earthwork there could not be cut",
+                    b.stretch, b.above_m, b.vertices
+                ),
+            )
+        })
+        .collect()
+}
+
+/// Bridges whose posts, piers or walls do not reach the ground: one violation for each, where the foot is
+/// furthest from it.
+fn post_violations(floating: &[PostFloat]) -> Vec<Violation> {
+    floating
+        .iter()
+        .map(|f| {
+            violation(
+                Rule::BridgePostFloats,
+                f.at,
+                format!(
+                    "The posts of bridge {} stand {:.1} m above the ground at the furthest ({:.1} m is allowed): the model does not reach it",
+                    f.stretch,
+                    f.by_m + POST_FLOATS_M,
+                    POST_FLOATS_M
+                ),
+            )
+        })
+        .collect()
+}
+
 /// A road left standing over water: one violation for each dip that is reported, where it is.
 fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
     dips.iter()
@@ -548,6 +616,8 @@ pub fn check_roads(
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));
     out.extend(blocks_violations(net));
+    out.extend(buried_violations(&conformed.buried, net, profiles));
+    out.extend(post_violations(&conformed.floating));
     out.sort_by(|a, b| {
         a.rule
             .cmp(&b.rule)

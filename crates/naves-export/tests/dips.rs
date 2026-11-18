@@ -228,13 +228,14 @@ fn a_road_over_a_hollow_gets_bridges_and_the_ground_under_them_is_left_alone() {
     for &i in &bridges {
         let id = generated.objects[i].id.as_ref().unwrap();
         assert!(id.feature.contains("/bridge0"), "{id}");
-        // the ground under a bridge is the original ground
+        // the ground under a bridge is never raised; it is cut only where it would be above the deck's ceiling
         let o = &generated.objects[i];
         let (shaped, original) = (
             generated.heightmap.sample(o.x, o.y).height,
             generated.base.sample(o.x, o.y).height,
         );
-        assert!((shaped - original).abs() < 0.01, "{shaped} {original}");
+        assert!(shaped <= original + 0.01, "{shaped} {original}");
+        assert!(original - shaped < 0.5, "{shaped} {original}");
     }
     // the dip is bridged: nothing is reported over water and the ground is not filled up to the road
     assert!(

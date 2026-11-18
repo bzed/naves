@@ -10,8 +10,9 @@
 //! engine splits a cell. Where the DEM is too coarse to show a valley the road crosses, the road gets a
 //! bench.
 //!
-//! The ground under a bridge span is left alone: the cores of the approaches end flat at the abutments and
-//! the earthworks do not spread under the span.
+//! The ground under a bridge span is shaped for the bridge ([`conform_bridges`]): held to a ceiling under the
+//! deck, cut open to both sides, never raised, and never changed where another road's core holds it (see
+//! [`Buried`]).
 //!
 //! The earthworks reach only as far as they are connected to the road: a flood from the road through the
 //! vertices that break the limits stops where the ground meets the slope again, so that a cliff beyond that
@@ -19,6 +20,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::bridgeground::BridgeSpan;
+use crate::bridgekind::samples;
+use crate::catalog::{Ceiling, SLICE_M};
 use crate::heightmap::Heightmap;
 use crate::profile::RoadStrip;
 
@@ -45,6 +49,16 @@ const CONFLICT_M: f64 = 0.3;
 const ROUNDING_PASSES: usize = 4;
 /// Impossible limits are reported once per square of this many metres.
 const CONFLICT_REGION_M: f64 = 50.0;
+/// The air kept between the ground and the underside of a bridge's deck, in metres.
+pub const BRIDGE_AIR_M: f64 = 1.0;
+/// A post, pier or wall foot that stands further than this above the ground does not reach it, in metres.
+pub const POST_FLOATS_M: f64 = 0.5;
+/// Two parts of a bridge whose ports are this close are joined there, in metres.
+const PORT_JOIN_M: f64 = 1.0;
+/// A vertex this close to a port's line is on it, in metres.
+const PORT_LINE_M: f64 = 1e-6;
+/// Ground less than this above the underside of a deck is not buried (rounding), in metres.
+const BURIED_TOL_M: f64 = 0.1;
 
 /// A circle of ground levelled to one plane, where roads meet without a junction piece or a roundabout lies.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,6 +101,48 @@ pub struct Conformed {
     pub conflicts: Vec<RoadConflict>,
     /// Places where the earthworks hit [`MAX_EARTHWORK_M`] and a step is left.
     pub capped: Vec<(f64, f64)>,
+    /// Bridges with ground above the underside of their deck that the shaping could not cut (another road's core
+    /// stops the cut), one for each bridge, in the order of their ids.
+    pub buried: Vec<Buried>,
+    /// Bridges whose posts, piers or walls stand more than [`POST_FLOATS_M`] above the shaped ground, one for each
+    /// bridge, in the order of their ids.
+    pub floating: Vec<PostFloat>,
+}
+
+/// Ground that another road's core keeps above the underside of a bridge's deck.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Buried {
+    /// The id of the bridge stretch.
+    pub stretch: String,
+    /// The vertex with the most ground above the underside of the deck, in map metres.
+    pub at: (f64, f64),
+    /// How far the ground there is above the underside of the deck (the deck less what hangs below it there), in
+    /// metres.
+    pub above_m: f64,
+    /// How many vertices under the deck are above its underside.
+    pub vertices: usize,
+    /// What holds the ground at the worst vertex.
+    pub holder: Holder,
+}
+
+/// What holds the ground that another road keeps under a bridge's deck.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Holder {
+    /// The core of a road: the index of its strip.
+    Strip(usize),
+    /// A level patch (where roads meet without a junction piece), at this place.
+    Patch((f64, f64)),
+}
+
+/// Posts, piers or walls of a bridge that do not reach the ground.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostFloat {
+    /// The id of the bridge stretch.
+    pub stretch: String,
+    /// The sample under the foot that is furthest from the ground, in map metres.
+    pub at: (f64, f64),
+    /// How far the foot is above the ground there, less [`POST_FLOATS_M`], in metres.
+    pub by_m: f64,
 }
 
 /// Why the terrain cannot be shaped.
@@ -163,6 +219,8 @@ impl Grid {
 #[derive(Clone, Copy)]
 struct Core {
     height: f32,
+    /// The owner of the claim, as in [`Candidate::owner`].
+    owner: usize,
     /// Rise over run of the cutting this vertex's hillside needs.
     cut: f32,
     /// Rise over run of the embankment this vertex's hillside needs.
@@ -240,49 +298,218 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, V
     found
 }
 
-/// The vertices under a bridge span: within `reach` of a bridge segment's centre line and between its
-/// abutments. The earthworks of the approaches do not spread into them.
-fn bridge_shadow(strips: &[RoadStrip], grid: Grid) -> Vec<bool> {
-    let mut shadow = vec![false; grid.count()];
+/// A vertex under a bridge's deck, or within one and a half cells of its width: what it is held to.
+#[derive(Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four independent properties of one vertex under a deck"
+)]
+struct Under {
+    /// The ground here stays at or below this height: the lowest ceiling within half a cell along the span.
+    ceiling: f32,
+    /// The underside of the deck at the vertex's own place (the deck less what hangs there, no air, never the foot
+    /// of what stands), for what is reported as buried.
+    underside: f32,
+    /// The lowest ceiling comes from what stands (a post, pier, wall): the ground is held at its foot and the
+    /// cutting of another road does not go below it.
+    stand: bool,
+    /// Within the deck's width, not only in the band beside it.
+    inside: bool,
+    /// The span that gave the ceiling.
+    span: usize,
+    /// Whether the vertex lies on the line of one of the span's ports.
+    at_port: bool,
+    /// Within a cell of a free end: under the deck but not cut for it.
+    guarded: bool,
+}
+
+/// Calls `visit(vertex, along, across, half_width)` for every vertex between the ports of `span` and within
+/// one and a half cells of the width of what is below it there.
+fn band(span: &BridgeSpan, grid: Grid, mut visit: impl FnMut(usize, f64, f64, f64)) {
+    let length = span.length();
+    if !(length.is_finite() && length > 0.0)
+        || span.axes().is_none()
+        || span.shape.underside.depth.is_empty()
+        || !(span.first.0.is_finite() && span.first.1.is_finite())
+    {
+        return;
+    }
+    let widest = span
+        .shape
+        .underside
+        .half_width
+        .iter()
+        .fold(span.shape.deck_half_width, |a, b| a.max(*b));
+    let reach = widest.max(0.0) + 1.5 * grid.cell;
     let last = grid.size.saturating_sub(1);
-    for strip in strips {
-        let reach = strip.half_width + 1.5 * grid.cell;
-        for (segment, pair) in strip.joints.windows(2).enumerate() {
-            let [from, to] = pair else { continue };
-            if !strip.bridge.get(segment).copied().unwrap_or(false) {
+    let cols = (
+        grid.nearest(span.first.0.min(span.second.0) - reach)
+            .saturating_sub(1),
+        (grid.nearest(span.first.0.max(span.second.0) + reach) + 1).min(last),
+    );
+    let rows = (
+        grid.nearest(span.first.1.min(span.second.1) - reach)
+            .saturating_sub(1),
+        (grid.nearest(span.first.1.max(span.second.1) + reach) + 1).min(last),
+    );
+    for row in rows.0..=rows.1 {
+        for col in cols.0..=cols.1 {
+            let vertex = row * grid.size + col;
+            let Some((along, across)) = span.locate(grid.position(vertex)) else {
+                continue;
+            };
+            if !(0.0..=length).contains(&along) {
                 continue;
             }
-            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-            let length2 = dx * dx + dy * dy;
-            if length2 <= 0.0 {
-                continue;
-            }
-            let cols = (
-                grid.nearest(from.0.min(to.0) - reach).saturating_sub(1),
-                (grid.nearest(from.0.max(to.0) + reach) + 1).min(last),
-            );
-            let rows = (
-                grid.nearest(from.1.min(to.1) - reach).saturating_sub(1),
-                (grid.nearest(from.1.max(to.1) + reach) + 1).min(last),
-            );
-            for row in rows.0..=rows.1 {
-                for col in cols.0..=cols.1 {
-                    let (px, py) = (Grid::coord(col) * grid.cell, Grid::coord(row) * grid.cell);
-                    let raw = ((px - from.0) * dx + (py - from.1) * dy) / length2;
-                    if !(0.0..=1.0).contains(&raw) {
-                        continue;
-                    }
-                    let distance = (px - from.0 - raw * dx).hypot(py - from.1 - raw * dy);
-                    if distance <= reach
-                        && let Some(flag) = shadow.get_mut(row * grid.size + col)
-                    {
-                        *flag = true;
-                    }
-                }
+            let half = span.half_width_at(along);
+            if across.abs() <= half + 1.5 * grid.cell {
+                visit(vertex, along, across, half);
             }
         }
     }
-    shadow
+}
+
+/// Whether each end of each span is a free end of its bridge: no other span begins or ends there.
+fn free_ends(spans: &[BridgeSpan]) -> Vec<(bool, bool)> {
+    let meets = |i: usize, p: (f64, f64)| {
+        spans.iter().enumerate().any(|(j, other)| {
+            j != i
+                && [other.first, other.second]
+                    .iter()
+                    .any(|q| (q.0 - p.0).hypot(q.1 - p.1) < PORT_JOIN_M)
+        })
+    };
+    spans
+        .iter()
+        .enumerate()
+        .map(|(i, span)| {
+            (
+                !meets(i, (span.first.0, span.first.1)),
+                !meets(i, (span.second.0, span.second.1)),
+            )
+        })
+        .collect()
+}
+
+/// For each span the strips of its own road: those of its chain up to the next junction ([`BridgeSpan::own_strips`])
+/// and those with a deck joint at one of its ports. The road of a bridge is
+/// not another road under its deck.
+fn own_strips(spans: &[BridgeSpan], strips: &[RoadStrip]) -> Vec<Vec<usize>> {
+    spans
+        .iter()
+        .map(|span| {
+            strips
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| {
+                    span.own_strips.contains(i)
+                        || (s.bridge.iter().any(|b| *b)
+                            && s.joints.iter().any(|j| {
+                                [span.first, span.second]
+                                    .iter()
+                                    .any(|p| (p.0 - j.0).hypot(p.1 - j.1) < PORT_JOIN_M)
+                            }))
+                })
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect()
+}
+
+/// The height the ground at `along`, `across` under `span` is held to, and whether that is the foot of
+/// something that stands. Where a port holds nothing back (`ramps`) the ceiling rises to the deck's height at
+/// the port, [`FILL_SLOPE_MAX`] over run, never lower than it is further in.
+fn ceiling_at(
+    span: &BridgeSpan,
+    length: f64,
+    ramps: (bool, bool),
+    along: f64,
+    across: f64,
+) -> (f64, bool) {
+    let half = span.half_width_at(along);
+    let deck = span.deck_at(along);
+    match span.shape.ceiling(along, across.clamp(-half, half)) {
+        Ceiling::Foot(foot) => (deck - foot.max(0.0), true),
+        Ceiling::Hang(hang) => {
+            let depth = hang.max(0.0) + BRIDGE_AIR_M;
+            let mut height = deck - depth;
+            if ramps.0 {
+                height = height.max(deck - depth.min(FILL_SLOPE_MAX * along));
+            }
+            if ramps.1 {
+                height = height.max(deck - depth.min(FILL_SLOPE_MAX * (length - along)));
+            }
+            (height, false)
+        }
+    }
+}
+
+/// What every vertex under a deck, or beside it within one and a half cells, and more than a cell from a free end of
+/// the bridge, is held to: per vertex the lowest
+/// ceiling that a half cell along the span (the ground between vertices is interpolated, and under cross walls
+/// every few metres a vertex stands for a stretch of the span) gives.
+fn bridge_ceilings(spans: &[BridgeSpan], grid: Grid) -> Vec<Option<Under>> {
+    let mut found: Vec<Option<Under>> = vec![None; grid.count()];
+    let free = free_ends(spans);
+    for (number, span) in spans.iter().enumerate() {
+        let length = span.length();
+        let (first, second) = free.get(number).copied().unwrap_or((false, false));
+        let ramps = (
+            first && !span.shape.retains.0,
+            second && !span.shape.retains.1,
+        );
+        band(span, grid, |vertex, along, across, half| {
+            // within a cell of a free end the ground is not cut for the deck: a terrain cell that straddles the port
+            // line would slope the road's last piece down to the cut (the terrain cannot show a ramp shorter than a
+            // cell), and what lies there is the abutment. It is still under the deck: never raised, and no level
+            // patch claims it.
+            let guarded = (first && along <= grid.cell) || (second && along >= length - grid.cell);
+            let (lo, hi) = (
+                (along - grid.cell / 2.0).max(0.0),
+                (along + grid.cell / 2.0).min(length),
+            );
+            let mut lowest = (f64::INFINITY, false);
+            let mut at = lo;
+            if !guarded {
+                loop {
+                    let (height, stand) = ceiling_at(span, length, ramps, at, across);
+                    if height < lowest.0 {
+                        lowest = (height, stand);
+                    }
+                    if at >= hi {
+                        break;
+                    }
+                    at = (at + SLICE_M).min(hi);
+                }
+            }
+            if !guarded && !lowest.0.is_finite() {
+                return;
+            }
+            let under = Under {
+                ceiling: narrow(lowest.0),
+                underside: narrow(span.deck_at(along) - span.hang_at(along)),
+                stand: lowest.1,
+                inside: across.abs() <= half,
+                span: number,
+                guarded,
+                at_port: guarded || along <= PORT_LINE_M || along >= length - PORT_LINE_M,
+            };
+            if let Some(slot) = found.get_mut(vertex) {
+                *slot = Some(match *slot {
+                    Some(old) if old.ceiling <= under.ceiling => Under {
+                        inside: old.inside || under.inside,
+                        ..old
+                    },
+                    Some(old) => Under {
+                        inside: old.inside || under.inside,
+                        ..under
+                    },
+                    None => under,
+                });
+            }
+        });
+    }
+    found
 }
 
 /// The fields the earthworks are held to.
@@ -339,7 +566,7 @@ const FORWARD: [(i64, i64); 4] = [(-1, 0), (-1, -1), (0, -1), (1, -1)];
 const BACKWARD: [(i64, i64); 4] = [(1, 0), (1, 1), (0, 1), (-1, 1)];
 
 /// Two sweeps of an eight-neighbour chamfer over the grid.
-fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
+fn sweep(cores: &[Option<Core>], under: &[Option<Under>], base: &Heightmap, grid: Grid) -> Fields {
     let count = grid.count();
     let mut fields = Fields {
         dist: vec![f32::INFINITY; count],
@@ -367,6 +594,26 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
             *f = core.fill;
         }
     }
+    // the ground under a deck is held to its ceiling, and the cutting spreads from it like from a core
+    for (index, held) in under.iter().enumerate() {
+        let (Some(held), None) = (held, cores.get(index).copied().flatten()) else {
+            continue;
+        };
+        let (cut, fill) = hillside_slopes(base, grid, index);
+        if let (Some(d), Some(u), Some(n), Some(c), Some(f)) = (
+            fields.dist.get_mut(index),
+            fields.upper.get_mut(index),
+            fields.nearest.get_mut(index),
+            fields.cut.get_mut(index),
+            fields.fill.get_mut(index),
+        ) {
+            *d = 0.0;
+            *u = held.ceiling;
+            *n = u32::MAX;
+            *c = cut;
+            *f = fill;
+        }
+    }
     let straight = narrow(grid.cell);
     let diagonal = narrow(grid.cell * std::f64::consts::SQRT_2);
     for backward in [false, true] {
@@ -387,6 +634,25 @@ fn sweep(cores: &[Option<Core>], grid: Grid) -> Fields {
                     fields.relax(vertex, from, step);
                 }
             }
+        }
+    }
+    // under a deck the ground is never raised, and what stands there holds it at its foot whatever another
+    // road's cutting wants
+    for (index, held) in under.iter().enumerate() {
+        let (Some(held), None) = (held, cores.get(index).copied().flatten()) else {
+            continue;
+        };
+        if let Some(lower) = fields.lower.get_mut(index) {
+            *lower = f32::NEG_INFINITY;
+        }
+        if let Some(upper) = fields.upper.get_mut(index) {
+            *upper = if held.guarded {
+                f32::INFINITY
+            } else if held.stand {
+                held.ceiling
+            } else {
+                upper.min(held.ceiling)
+            };
         }
     }
     fields
@@ -427,12 +693,21 @@ fn candidates(
     patches: &[LevelPatch],
     grid: Grid,
     base: &Heightmap,
-    shadow: &[bool],
+    under: &[Option<Under>],
+    own: &[Vec<usize>],
 ) -> BTreeMap<usize, Vec<Candidate>> {
     let mut found: BTreeMap<usize, Vec<Candidate>> = BTreeMap::new();
     for (index, strip) in strips.iter().enumerate() {
         let reach = strip.half_width + 1.5 * grid.cell;
         for (vertex, hits) in core_vertices(strip, grid, reach) {
+            // the road of a bridge does not claim the ground under its deck beyond the port line: the ceiling
+            // with the end ramp holds there
+            if let Some(held) = under.get(vertex).copied().flatten()
+                && !held.at_port
+                && own.get(held.span).is_some_and(|o| o.contains(&index))
+            {
+                continue;
+            }
             let (cut, fill) = hillside_slopes(base, grid, vertex);
             for hit in hits {
                 let steep =
@@ -479,7 +754,7 @@ fn candidates(
                 let distance = (px - patch.at.0).hypot(py - patch.at.1);
                 if distance > patch.radius
                     || distance < patch.inner_radius
-                    || shadow.get(vertex).copied().unwrap_or(false)
+                    || under.get(vertex).is_some_and(Option::is_some)
                 {
                     continue;
                 }
@@ -557,14 +832,15 @@ fn claim_cores(
     patches: &[LevelPatch],
     grid: Grid,
     base: &Heightmap,
-    shadow: &[bool],
+    under: &[Option<Under>],
+    own: &[Vec<usize>],
 ) -> (
     Vec<Option<Core>>,
     BTreeMap<(usize, usize), (f64, (f64, f64))>,
 ) {
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
     let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
-    for (vertex, mut wanting) in candidates(strips, patches, grid, base, shadow) {
+    for (vertex, mut wanting) in candidates(strips, patches, grid, base, under, own) {
         let contested = order_wanting(&mut wanting);
         let Some(&winner) = wanting.first() else {
             continue;
@@ -584,6 +860,7 @@ fn claim_cores(
         if let Some(slot) = cores.get_mut(vertex) {
             *slot = Some(Core {
                 height: winner.height,
+                owner: winner.owner,
                 // between two roads at different heights the step is a face, as steep as the grid allows
                 cut: if contested {
                     narrow(FACE_SLOPE)
@@ -601,27 +878,36 @@ fn claim_cores(
     (cores, clashes)
 }
 
-/// The vertices connected to a core through ground that breaks the limits, and the places where that
-/// reaches [`MAX_EARTHWORK_M`].
+/// The vertices connected to a core, or to ground under a deck, through ground that breaks the limits, and the
+/// places where that reaches [`MAX_EARTHWORK_M`]. The ground under a deck is in it where it is above its
+/// ceiling.
 fn flood(
     base: &Heightmap,
     cores: &[Option<Core>],
     fields: &Fields,
-    shadow: &[bool],
+    under: &[Option<Under>],
     grid: Grid,
 ) -> (Vec<bool>, Vec<(f64, f64)>) {
     let mut flooded = vec![false; grid.count()];
-    // the ground under a bridge is never entered, so nothing is filled or cut there
+    let held = |index: usize| under.get(index).is_some_and(Option::is_some);
     let mut seen: Vec<bool> = cores
         .iter()
         .enumerate()
-        .map(|(index, core)| core.is_some() || shadow.get(index).copied().unwrap_or(false))
+        .map(|(index, core)| core.is_some() || held(index))
         .collect();
-    let mut queue: VecDeque<usize> = cores
-        .iter()
-        .enumerate()
-        .filter_map(|(index, core)| core.map(|_| index))
-        .collect();
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    for (index, core) in cores.iter().enumerate() {
+        if core.is_some() {
+            queue.push_back(index);
+        } else if held(index) {
+            let ground = base.h.get(index).copied().unwrap_or(0.0);
+            let upper = fields.upper.get(index).copied().unwrap_or(f32::INFINITY);
+            if let Some(flag) = flooded.get_mut(index) {
+                *flag = ground > upper;
+            }
+            queue.push_back(index);
+        }
+    }
     let mut capped = Vec::new();
     while let Some(vertex) = queue.pop_front() {
         for dr in -1..=1_i64 {
@@ -667,6 +953,19 @@ pub fn conform(
     strips: &[RoadStrip],
     patches: &[LevelPatch],
 ) -> Result<Conformed, ConformError> {
+    conform_bridges(base, strips, patches, &[])
+}
+
+/// Shapes `base` to fit `strips` and to the decks of `bridges`; `base` itself is not changed.
+///
+/// # Errors
+/// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.
+pub fn conform_bridges(
+    base: &Heightmap,
+    strips: &[RoadStrip],
+    patches: &[LevelPatch],
+    bridges: &[BridgeSpan],
+) -> Result<Conformed, ConformError> {
     let size = usize::try_from(base.size).unwrap_or(0);
     if base.h.len() != size * size {
         return Err(ConformError::BadHeightmap {
@@ -681,25 +980,30 @@ pub fn conform(
             max_fill_m: 0.0,
             conflicts: Vec::new(),
             capped: Vec::new(),
+            buried: Vec::new(),
+            floating: Vec::new(),
         });
     }
     let grid = Grid {
         size,
         cell: f64::from(base.cell_m),
     };
-    let shadow = bridge_shadow(strips, grid);
-    let (cores, clashes) = claim_cores(strips, patches, grid, base, &shadow);
-    if cores.iter().all(Option::is_none) {
+    let under = bridge_ceilings(bridges, grid);
+    let own = own_strips(bridges, strips);
+    let (cores, clashes) = claim_cores(strips, patches, grid, base, &under, &own);
+    if cores.iter().all(Option::is_none) && under.iter().all(Option::is_none) {
         return Ok(Conformed {
             heightmap: base.clone(),
             max_cut_m: 0.0,
             max_fill_m: 0.0,
             conflicts: Vec::new(),
             capped: Vec::new(),
+            buried: Vec::new(),
+            floating: Vec::new(),
         });
     }
-    let fields = sweep(&cores, grid);
-    let (flooded, capped) = flood(base, &cores, &fields, &shadow, grid);
+    let fields = sweep(&cores, &under, base, grid);
+    let (flooded, capped) = flood(base, &cores, &fields, &under, grid);
     let mut heights = base.h.clone();
     for (vertex, core) in cores.iter().enumerate() {
         if let (Some(core), Some(height)) = (core, heights.get_mut(vertex)) {
@@ -708,6 +1012,15 @@ pub fn conform(
     }
     let impossible = clamp_flooded(base, &cores, &fields, &flooded, grid, &mut heights);
     round(base, &fields, &flooded, grid, &mut heights);
+    // the ground under a deck is never raised above the original ground, whatever the rounding did
+    for (vertex, held) in under.iter().enumerate() {
+        if held.is_some()
+            && cores.get(vertex).is_some_and(Option::is_none)
+            && let (Some(height), Some(ground)) = (heights.get_mut(vertex), base.h.get(vertex))
+        {
+            *height = height.min(*ground);
+        }
+    }
     let mut max_cut = 0.0_f32;
     let mut max_fill = 0.0_f32;
     for (new, old) in heights.iter().zip(&base.h) {
@@ -722,17 +1035,129 @@ pub fn conform(
         })
         .collect();
     conflicts.extend(impossible);
+    let buried = buried_under(
+        bridges,
+        &own,
+        patches,
+        strips.len(),
+        &under,
+        &cores,
+        &heights,
+        grid,
+    );
+    let shaped = Heightmap {
+        size: base.size,
+        cell_m: base.cell_m,
+        h: heights,
+    };
+    let floating = floating_posts(bridges, &shaped);
     Ok(Conformed {
-        heightmap: Heightmap {
-            size: base.size,
-            cell_m: base.cell_m,
-            h: heights,
-        },
+        heightmap: shaped,
         max_cut_m: max_cut,
         max_fill_m: max_fill,
         conflicts,
         capped,
+        buried,
+        floating,
     })
+}
+
+/// The bridges that have ground above the underside of their deck after the shaping: the core of a road that is
+/// not the bridge's own (the strips of its chain, see [`BridgeSpan::own_strips`], hold nothing under its deck)
+/// stopped the cut. One for each stretch, in the order of the ids. The cut itself aims at the ceiling (the
+/// underside less [`BRIDGE_AIR_M`], the foot of what stands); only ground above the underside is reported,
+/// and never the foot of what stands.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the state of the shaping, read once"
+)]
+fn buried_under(
+    spans: &[BridgeSpan],
+    own: &[Vec<usize>],
+    patches: &[LevelPatch],
+    strips: usize,
+    under: &[Option<Under>],
+    cores: &[Option<Core>],
+    heights: &[f32],
+    grid: Grid,
+) -> Vec<Buried> {
+    let mut found: BTreeMap<&str, Buried> = BTreeMap::new();
+    for (vertex, held) in under.iter().enumerate() {
+        let (Some(held), Some(height), Some(core)) = (
+            held,
+            heights.get(vertex),
+            cores.get(vertex).copied().flatten(),
+        ) else {
+            continue;
+        };
+        let above = f64::from(*height) - f64::from(held.underside);
+        let Some(span) = spans.get(held.span) else {
+            continue;
+        };
+        if !held.inside
+            || above <= BURIED_TOL_M
+            || own.get(held.span).is_some_and(|o| o.contains(&core.owner))
+        {
+            continue;
+        }
+        let holder = if core.owner < strips {
+            Holder::Strip(core.owner)
+        } else {
+            patches
+                .get(core.owner - strips)
+                .map_or(Holder::Patch(grid.position(vertex)), |p| {
+                    Holder::Patch(p.at)
+                })
+        };
+        let entry = found.entry(span.stretch.as_str()).or_insert(Buried {
+            stretch: span.stretch.clone(),
+            at: grid.position(vertex),
+            above_m: above,
+            vertices: 0,
+            holder,
+        });
+        entry.vertices += 1;
+        if above > entry.above_m {
+            entry.at = grid.position(vertex);
+            entry.above_m = above;
+            entry.holder = holder;
+        }
+    }
+    found.into_values().collect()
+}
+
+/// The bridges with a post, pier or wall foot more than [`POST_FLOATS_M`] above the shaped ground, one for each
+/// stretch, in the order of the ids. The feet are sampled as the choice of a model on posts samples them (at the
+/// corners and every [`crate::bridgekind::GROUND_STEP_M`] along and across each standing rectangle, see
+/// [`crate::bridgekind`]), against the deck's height as placed.
+fn floating_posts(spans: &[BridgeSpan], shaped: &Heightmap) -> Vec<PostFloat> {
+    let mut found: BTreeMap<&str, PostFloat> = BTreeMap::new();
+    for span in spans {
+        for (a0, a1, c0, c1) in span.shape.stands() {
+            for along in samples(a0, a1) {
+                for across in samples(c0, c1) {
+                    let Some(at) = span.point(along, across) else {
+                        continue;
+                    };
+                    let ground = f64::from(shaped.sample(at.0, at.1).height);
+                    let by = span.deck_at(along) - ground - span.shape.reach_down - POST_FLOATS_M;
+                    if !(by > 0.0 && by.is_finite()) {
+                        continue;
+                    }
+                    let entry = found.entry(span.stretch.as_str()).or_insert(PostFloat {
+                        stretch: span.stretch.clone(),
+                        at,
+                        by_m: by,
+                    });
+                    if by > entry.by_m {
+                        entry.at = at;
+                        entry.by_m = by;
+                    }
+                }
+            }
+        }
+    }
+    found.into_values().collect()
 }
 
 /// The flooded vertices take the base height clamped into the limits. Between two roads that cannot both be
@@ -844,4 +1269,76 @@ fn round(base: &Heightmap, fields: &Fields, flooded: &[bool], grid: Grid, height
             }
         }
     }
+}
+
+/// A bridge with ground above the underside of its deck.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AboveUnderside {
+    /// The id of the bridge stretch.
+    pub stretch: String,
+    /// The vertex with the most ground above the underside, in map metres.
+    pub at: (f64, f64),
+    /// How far the ground there is above the underside, in metres.
+    pub above_m: f64,
+    /// How many vertices within the deck's width are above the underside.
+    pub vertices: usize,
+}
+
+/// The bridges of `bridges` that have ground above the underside of their deck (what hangs below it, no air
+/// kept) at a vertex within the deck's width and more than a cell from a free end, in the order of their ids.
+#[must_use]
+pub fn spans_above_underside(heightmap: &Heightmap, bridges: &[BridgeSpan]) -> Vec<AboveUnderside> {
+    let size = usize::try_from(heightmap.size).unwrap_or(0);
+    if size == 0 || heightmap.h.len() != size * size {
+        return Vec::new();
+    }
+    let grid = Grid {
+        size,
+        cell: f64::from(heightmap.cell_m),
+    };
+    let mut found: BTreeMap<&str, AboveUnderside> = BTreeMap::new();
+    let free = free_ends(bridges);
+    for (number, span) in bridges.iter().enumerate() {
+        let length = span.length();
+        let (first, second) = free.get(number).copied().unwrap_or((false, false));
+        band(span, grid, |vertex, along, across, half| {
+            // the ground at a free end of the bridge is the abutment's, within a cell of the port, and where the end
+            // holds nothing back it may rise to the road along the ramp
+            let hang = span.hang_at(along);
+            let zone = |retains: bool| {
+                if retains {
+                    grid.cell
+                } else {
+                    grid.cell.max(hang + BRIDGE_AIR_M)
+                }
+            };
+            if across.abs() > half
+                || (first && along < zone(span.shape.retains.0))
+                || (second && along > length - zone(span.shape.retains.1))
+            {
+                return;
+            }
+            let underside = span.deck_at(along) - hang;
+            let ground = f64::from(heightmap.h.get(vertex).copied().unwrap_or(0.0));
+            let above = ground - underside;
+            if !(above > BURIED_TOL_M && along <= length) {
+                return;
+            }
+            let at = grid.position(vertex);
+            let entry = found
+                .entry(span.stretch.as_str())
+                .or_insert(AboveUnderside {
+                    stretch: span.stretch.clone(),
+                    at,
+                    above_m: above,
+                    vertices: 0,
+                });
+            entry.vertices += 1;
+            if above > entry.above_m {
+                entry.at = at;
+                entry.above_m = above;
+            }
+        });
+    }
+    found.into_values().collect()
 }

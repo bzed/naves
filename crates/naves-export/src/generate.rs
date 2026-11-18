@@ -13,10 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use naves_core::bridgefit::mark_placed;
+use naves_core::bridgeground::bridge_spans;
 use naves_core::bridgekind::{BridgeFit, choose, crossing_thickness, fit_bridges};
 use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
-use naves_core::conform::{Conformed, LevelPatch, conform};
+use naves_core::conform::{Conformed, LevelPatch, conform_bridges};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
@@ -364,7 +365,9 @@ fn place_roads(
         ..
     } = plan.placed;
     let patches = level_patches(&junctions, f64::from(base.cell_m));
-    let conformed = conform(base, &profiles.strips, &patches)?;
+    // the ground under every placed deck is shaped for it, from the deck as placed
+    let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    let conformed = conform_bridges(base, &profiles.strips, &patches, &spans)?;
     Ok(Roads {
         net,
         graph: plan.graph,
@@ -730,6 +733,8 @@ pub fn generate(
         max_fill_m: 0.0,
         conflicts: Vec::new(),
         capped: Vec::new(),
+        buried: Vec::new(),
+        floating: Vec::new(),
     };
     let water = sources
         .osm

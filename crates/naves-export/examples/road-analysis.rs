@@ -32,10 +32,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
+use naves_core::bridgeground::bridge_spans;
 use naves_core::checks::{
     DriveState, MAX_MISS_M, PieceCheck, check_roads_on_terrain, check_walkable,
 };
-use naves_core::conform::{FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform};
+use naves_core::conform::{
+    FILL_SLOPE_MAX, MAX_EARTHWORK_M, conform_bridges, spans_above_underside,
+};
 use naves_core::dem::Dem;
 use naves_core::dips::DipAction;
 use naves_core::features::{road_features, water_lines};
@@ -498,7 +501,8 @@ fn main() {
     }
     crossing_report(&net, &profiles, &graph, &base, &junctions);
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
-    let conformed = conform(&base, &profiles.strips, &patches).expect("conform");
+    let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    let conformed = conform_bridges(&base, &profiles.strips, &patches, &spans).expect("conform");
     let t_conform = t0.elapsed();
     ring_report(
         &features,
@@ -1421,6 +1425,46 @@ fn main() {
         .filter(|v| v.rule == Rule::BridgeBlocksRoad)
     {
         println!("BLOCKS at ({:.0}, {:.0}): {}", v.at.0, v.at.1, v.message);
+    }
+    for v in violations
+        .iter()
+        .filter(|v| matches!(v.rule, Rule::BridgeBuried | Rule::BridgePostFloats))
+    {
+        println!(
+            "{} at ({:.0}, {:.0}): {}",
+            v.rule.id().to_uppercase(),
+            v.at.0,
+            v.at.1,
+            v.message
+        );
+    }
+    // the spans with ground above the underside of their deck (no air kept), on the original ground and after
+    // the shaping
+    {
+        let before = spans_above_underside(&base, &spans);
+        let after = spans_above_underside(&conformed.heightmap, &spans);
+        let stretches: std::collections::BTreeSet<&str> =
+            spans.iter().map(|s| s.stretch.as_str()).collect();
+        println!(
+            "ABOVE bridges with decks {}, spans parts {}: bridges with ground above the underside before {} after {}",
+            stretches.len(),
+            spans.len(),
+            before.len(),
+            after.len()
+        );
+        println!(
+            "ABOVE bridge_buried findings {} (same measure: another road's core above the underside)",
+            violations
+                .iter()
+                .filter(|v| v.rule == Rule::BridgeBuried)
+                .count()
+        );
+        for a in &after {
+            println!(
+                "ABOVE after {} at ({:.0}, {:.0}): {:.2} m, {} vertices",
+                a.stretch, a.at.0, a.at.1, a.above_m, a.vertices
+            );
+        }
     }
     // every bridge over a road: what it is built from, whether it was slid, what the road needs and the
     // clearance measured at the crossing

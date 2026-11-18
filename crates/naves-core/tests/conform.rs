@@ -10,8 +10,11 @@
     reason = "test helper code; failing loudly is the point and the numbers are tiny"
 )]
 
+use naves_core::bridgeground::BridgeSpan;
+use naves_core::catalog::PartShape;
 use naves_core::conform::{
     CUT_SLOPE, CUT_SLOPE_MAX, FILL_SLOPE, FILL_SLOPE_MAX, LevelPatch, MAX_EARTHWORK_M, conform,
+    conform_bridges,
 };
 use naves_core::heightmap::Heightmap;
 use naves_core::profile::RoadStrip;
@@ -60,6 +63,17 @@ fn road(a: (f64, f64), b: (f64, f64), ha: f64, hb: f64, half_width: f64, rank: u
         })
         .collect();
     strip(&joints, half_width, rank)
+}
+
+/// The deck of a bridge along x = 300 from `y0` to `y1` at 100 m, as thick as a panel.
+fn deck(y0: f64, y1: f64) -> BridgeSpan {
+    BridgeSpan {
+        stretch: "deck".to_string(),
+        first: (300.0, y0, 100.0),
+        second: (300.0, y1, 100.0),
+        shape: PartShape::level(y1 - y0, 0.25, 3.5),
+        own_strips: Vec::new(),
+    }
 }
 
 fn at(hm: &Heightmap, col: u32, row: u32) -> f64 {
@@ -454,7 +468,13 @@ fn the_ground_under_a_bridge_keeps_its_height() {
     joints.dedup();
     let mut road = strip(&joints, 3.5, 3);
     road.bridge = vec![false, true, false];
-    let out = conform(&base, std::slice::from_ref(&road), &[]).unwrap();
+    let out = conform_bridges(
+        &base,
+        std::slice::from_ref(&road),
+        &[],
+        &[deck(300.0, 500.0)],
+    )
+    .unwrap();
     // in the middle of the span the ground is as it was
     for row in 63..69 {
         for col in 40..56 {
@@ -493,7 +513,13 @@ fn short_bridge(cell: f32, span: f64, depth: f64) {
     ];
     let mut road = strip(&joints, 3.5, 3);
     road.bridge = vec![false, true, false];
-    let out = conform(&base, std::slice::from_ref(&road), &[]).unwrap();
+    let out = conform_bridges(
+        &base,
+        std::slice::from_ref(&road),
+        &[],
+        &[deck(300.0, 300.0 + span)],
+    )
+    .unwrap();
     let c = |m: f64| (m / f64::from(cell)).round() as u32;
     // the ground under the span, around the centre line, is as it was
     for row in 0..size {
@@ -734,7 +760,7 @@ fn a_patch_does_not_level_the_ground_under_a_bridge_span() {
         gradient: (0.0, 0.0),
         inner_radius: 0.0,
     };
-    let out = conform(&base, &[road], &[patch]).unwrap();
+    let out = conform_bridges(&base, &[road], &[patch], &[deck(300.0, 500.0)]).unwrap();
     assert!((sample(&out.heightmap, 300.0, 400.0) - 70.0).abs() < 1e-3);
 }
 

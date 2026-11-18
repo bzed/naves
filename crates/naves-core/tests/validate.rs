@@ -83,6 +83,8 @@ fn conformed() -> Conformed {
         max_fill_m: 0.0,
         conflicts: Vec::new(),
         capped: Vec::new(),
+        buried: Vec::new(),
+        floating: Vec::new(),
     }
 }
 
@@ -488,6 +490,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeClearance,
         Rule::BridgeBlocksRoad,
         Rule::BridgeNotBuilt,
+        Rule::BridgeBuried,
+        Rule::BridgePostFloats,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -503,6 +507,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::BridgeClearance.id(), "bridge_clearance");
     assert_eq!(Rule::BridgeNotBuilt.id(), "bridge_not_built");
     assert_eq!(Rule::BridgeBlocksRoad.id(), "bridge_blocks_road");
+    assert_eq!(Rule::BridgeBuried.id(), "bridge_buried");
+    assert_eq!(Rule::BridgePostFloats.id(), "bridge_post_floats");
     assert_eq!(Rule::RoadKink.id(), "road_kink");
 }
 
@@ -671,6 +677,54 @@ fn a_bridge_on_the_road_below_is_a_finding_with_the_missing_metres_where_the_roa
     // the same input gives the same list
     let again = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     assert_eq!(v, again);
+}
+
+#[test]
+fn buried_ground_and_floating_posts_are_findings_with_their_place_and_numbers() {
+    use naves_core::conform::{Buried, Holder, PostFloat};
+    let mut c = conformed();
+    c.buried = vec![Buried {
+        stretch: "9:1-2".to_string(),
+        at: (300.0, 40.0),
+        above_m: 1.26,
+        vertices: 7,
+        holder: Holder::Patch((300.0, 41.0)),
+    }];
+    c.floating = vec![
+        PostFloat {
+            stretch: "4:3-4".to_string(),
+            at: (100.0, 20.0),
+            by_m: 3.5,
+        },
+        PostFloat {
+            stretch: "5:3-4".to_string(),
+            at: (100.0, 10.0),
+            by_m: 0.2,
+        },
+    ];
+    let n = net(vec![]);
+    let v = run(&n, &Profiles::default(), &c, &[], &[], &[], &[]);
+    let buried = only(Rule::BridgeBuried, &v);
+    assert_eq!(buried.len(), 1, "{v:?}");
+    assert_eq!(buried[0].at, (300.0, 40.0));
+    assert!(
+        buried[0].message.contains("9:1-2")
+            && buried[0].message.contains("1.3 m")
+            && buried[0].message.contains("7 places")
+            && buried[0].message.contains("level patch at (300, 41)"),
+        "{}",
+        buried[0].message
+    );
+    let floats = only(Rule::BridgePostFloats, &v);
+    // sorted by position
+    assert_eq!(floats.len(), 2, "{v:?}");
+    assert_eq!(floats[0].at, (100.0, 10.0));
+    assert!(
+        floats[1].message.contains("4:3-4") && floats[1].message.contains("4.0 m"),
+        "{}",
+        floats[1].message
+    );
+    assert_eq!(v, run(&n, &Profiles::default(), &c, &[], &[], &[], &[]));
 }
 
 #[test]

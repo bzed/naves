@@ -373,7 +373,7 @@ fn turn_over(bends: &[(f64, f64)], d: f64) -> f64 {
 }
 
 /// `from`, `to` and the points every [`GROUND_STEP_M`] between them (at most [`MAX_POST_SAMPLES`]).
-fn samples(from: f64, to: f64) -> Vec<f64> {
+pub(crate) fn samples(from: f64, to: f64) -> Vec<f64> {
     let mut out = vec![from, to];
     let mut at = from + GROUND_STEP_M;
     while at < to && out.len() < MAX_POST_SAMPLES {

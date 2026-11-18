@@ -198,8 +198,7 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
     assert!((f64::from(transform[4]) - 1.0).abs() < 1e-6);
 
     assert!(object.model.contains("bridge_wood2"), "{}", object.model);
-    // the height is the deck level less the model's deck height; the deck follows the ground at the bridge's
-    // ends, which is flat enough here to compare with its middle
+    // the height is the deck level less the model's deck height; the deck follows the ground at the bridge's ends
     let deck = synthetic_catalog()
         .bridges()
         .iter()
@@ -208,8 +207,11 @@ fn an_osm_bridge_reaches_the_object_transform_unscaled() {
         .deck_height;
     let ground = f64::from(generated.heightmap.sample(object.x, object.y).height);
     let height = f64::from(generated.heights[i]);
+    // the ground under the middle of the deck is cut to the deck's ceiling (the deck's thickness and a metre of
+    // air below it); it is not above the deck, and not further below than that
+    let clearance = height + deck - ground;
     assert!(
-        (height + deck - ground).abs() < 1.5,
+        (0.0..4.0).contains(&clearance),
         "height {height}, deck {deck}, ground {ground}"
     );
     assert!(

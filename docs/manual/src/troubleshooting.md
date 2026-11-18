@@ -195,6 +195,20 @@ the placement with the least missing. Straighten the crossing in the data or acc
 it crosses squarely is a later task. A road below that the placement laid away from the deck (a bend too tight for the
 pieces) is not reported; one whose placed pieces run under the deck is, wherever its OpenStreetMap line crosses.
 
+**`bridge_buried`: "The ground under bridge ... is 1.3 m above the underside of its deck at 7 places, held by the road ..."**
+After the terrain was shaped, ground under the deck of a bridge is higher than the underside of the deck (its height less
+what hangs below it there; the metre of air the cut aims at and the foot of what stands are not counted) by more than
+0.1 m. The cut never changes the core of a road that is not the bridge's own, so a road that runs under the deck (or an
+arm of a junction next to a lengthened deck end, or a level patch where roads meet) keeps its ground and it sticks into
+the deck. The message names the road or patch that holds it and the position is the vertex with the most ground above the
+underside. Move the other road in the data, or raise the bridge; the build leaves it as it is.
+
+**`bridge_post_floats`: "The posts of bridge ... stand 4.0 m above the ground at the furthest (0.5 m is allowed)"**
+A post, pier or wall foot of a bridge model is more than 0.5 m above the shaped ground, so the model hangs in the air
+there. The choice of `bridge_wood_25` looks at the original ground; this finding looks at the ground after the shaping
+under the deck as it was placed (with the height the road got). The position is the sample furthest from the ground.
+Use a bridge that does not stand on the ground (a panel grid), or change the road's height there.
+
 **`road_kink`: "Road ... meets its bridge 17.5 degrees off the deck's heading"**
 The road reaches the end of an OpenStreetMap bridge, but its heading there differs from the deck's by more than
 5 degrees, so a vehicle meets a corner at the bridge. The bridge's line turns at its node and the road before it had
