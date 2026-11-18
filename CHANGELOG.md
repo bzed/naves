@@ -25,14 +25,14 @@ All notable changes to this project are documented here. The format follows
   that is the new finding `bridge_end_step` (the deck and the junction or road it joins differ by more than 0.5 m; also in
   the MCP rule list). On the Berchtesgaden example at `terrain_size = 2048`: `bridge_buried` 20 to 6 (the four sites of the
   game check: three are free of ground, 48450084 keeps 0.81 m from a wide road that leaves the end node at an acute angle),
-  `bridge_end_step` 6 (0.5 to 2.6 m, not reported before), `road_conflict` 905 to 900, `road_not_drivable` 186 to 185 and
-  `road_misses_terrain` 4292 to 4286. **Worse:** `bridge_clearance` 0 to 1 and `road_grade` 3 to 4, both at bridge 299428041,
+  `bridge_end_step` 2 (0.5 and 0.6 m, not reported before; compared only with the junction the solve holds the deck to), `road_conflict` 905 to 900, `road_not_drivable` 186 to 185 and
+  `road_misses_terrain` 4292 to 4286. **Worse:** Silbergstraße (1341010238) has 0.27 m of ground in its deck (0.14 m before), road pieces missing the terrain by more than 2 m are 156 (150 before), and `bridge_clearance` 0 to 1 and `road_grade` 3 to 4 are both at bridge 299428041,
   whose road below starts at the bridge's end node: it had an unreported 5.7 m step and now starts at the deck's
   height and keeps 2.3 m of the 4.5 m clearance, with a sharp crest. The deck stays level; pitched decks are not part of this.
 - Bridges, as measured on the Berchtesgaden example at `terrain_size = 2048` (`docs/research/2026-11-18-bridges.md`):
   79 of 84 OpenStreetMap bridges are built from a part (a bridge of at most 3 m is plain road on purpose; 65 were built
   before), 6 bridges have ground in their deck (`bridge_buried`, 64 spans before; 20 before a deck was held from its end), 3 solid parts stand on a road
-  below (`bridge_blocks_road`, 8 before), five of the six bridges over roads are measured and keep 4.5 m (Silbergstraße, way 1341010238, is
+  below (`bridge_blocks_road`, 8 before), four of the six bridges over roads are measured and keep 4.5 m, one (299428041) reaches 2.3 m (Silbergstraße, way 1341010238, is
   not measured, so its clearance is not shown), and the road findings are `road_misses_terrain` 4286 (15 more than
   before the ground work, 4271; the baseline is 4317), `road_conflict` 900 (the baseline is 900) and
   `road_not_drivable` 185 (the baseline is 189); `road_grade` is 4 and `bridge_clearance` 1, both one worse than before
