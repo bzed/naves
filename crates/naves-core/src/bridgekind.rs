@@ -585,7 +585,8 @@ fn panel_row(catalog: &PieceCatalog, site: &BridgeSite, mut fallback: Vec<Fallba
 /// solid part or outside the deck, which [`Choice::below`] reports. Standing geometry (the cross walls of
 /// `bridge_concrete3`) never passes a road. A panel grid not over a road is never lengthened; over a road it is
 /// lengthened into the road beside the bridge until the road passes (by exactly what each end lacks, at most [`GRID_GROW_MAX_M`]). A bridge of at most
-/// [`FILL_MAX_M`] over a road is such a grid, not plain road.
+/// [`FILL_MAX_M`] over a road is such a grid, not plain road; without panels it is plain road with
+/// [`Fallback::NoParts`].
 #[must_use]
 pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
     let choice = choose_part(catalog, site);
@@ -593,12 +594,14 @@ pub fn choose(catalog: &PieceCatalog, site: &BridgeSite) -> Choice {
         return choice;
     }
     if matches!(choice.kind, BridgeKind::Fill) {
-        // a bridge of at most FILL_MAX_M over a road is never plain road (a fill for lack of parts stays one)
+        // a bridge of at most FILL_MAX_M over a road is never plain road (a fill for lack of parts stays one, with its reason)
         if choice.fallback.is_empty() && site.length.is_finite() && site.length > EPS_M {
             let grid = panel_row(catalog, site, Vec::new());
             if matches!(grid.kind, BridgeKind::Panels { .. }) {
                 return lengthened_grid(catalog, site, grid);
             }
+            // no panels in the install: the fill would be a wall across the road below, reported as plain road
+            return Choice::fill(vec![Fallback::NoParts]);
         }
         return choice;
     }

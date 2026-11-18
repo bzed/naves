@@ -911,7 +911,7 @@ fn an_end_grows_by_exactly_what_it_lacks_and_at_most_fifteen_metres() {
 }
 
 #[test]
-fn a_bridge_of_three_metres_or_less_over_a_road_is_a_panel_grid_and_without_one_it_is_plain_road() {
+fn a_bridge_of_three_metres_or_less_over_a_road_is_a_panel_grid() {
     let catalog = synthetic_catalog();
     let features = over_road(
         Family::Asf1,
@@ -935,6 +935,30 @@ fn a_bridge_of_three_metres_or_less_over_a_road_is_a_panel_grid_and_without_one_
     alone.pop();
     let (_, fits) = fits_of(&alone, &catalog);
     assert!(matches!(fits[0].kind, BridgeKind::Fill));
+}
+
+#[test]
+fn a_short_bridge_over_a_road_without_panels_is_plain_road_with_a_reason() {
+    // no panels in the install: the fill would be a wall across the road below, and the plain road must be
+    // reported (`bridge_not_built` is raised for every fit with `Fallback::NoParts`), never silent
+    use naves_core::catalog::PANELS_PREFIX;
+    let mut models = synthetic_models();
+    models.retain(|path, _| !path.starts_with(PANELS_PREFIX));
+    let catalog = PieceCatalog::from_models(&models).unwrap();
+    let features = over_road(
+        Family::Asf1,
+        2.5,
+        Family::Grav,
+        1.25,
+        std::f64::consts::FRAC_PI_2,
+    );
+    let (_, fits) = fits(&features, &catalog);
+    assert!(matches!(fits[0].kind, BridgeKind::Fill), "{:?}", fits[0]);
+    assert!(
+        fits[0].fallback.contains(&Fallback::NoParts),
+        "{:?}",
+        fits[0]
+    );
 }
 
 fn fits_of(features: &[Feature], catalog: &PieceCatalog) -> (RoadGraph, Vec<BridgeFit>) {

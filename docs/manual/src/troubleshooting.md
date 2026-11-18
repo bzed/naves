@@ -234,11 +234,11 @@ no room for the straight lead that normally takes the turn (a junction, another 
 Move the junction away from the bridge's end in the data, or accept it. Only the ends of bridges are checked.
 
 **`bridge_not_built`: "Bridge ... (12 m) is plain road: the install has no concrete panels and no bridge model that fits it"**
-An OpenStreetMap bridge longer than 3 m is built from a bridge model or a grid of concrete panels (see
+An OpenStreetMap bridge longer than 3 m, or any bridge over a road, is built from a bridge model or a grid of concrete panels (see
 [what a bridge is built from](getting-started.md#roads)). The DayZ Server install has no panels
 (`dz\structures\roads\panels\` in `addons/structures_roads.pbo` could not be read, see the warnings) and no bridge
 model of the road's surface that fits the bridge and its room, so the bridge is laid as an ordinary road. Check the
-install (Steam: verify the files of DayZ Server). A bridge of at most 3 m is filled on purpose and is no finding.
+install (Steam: verify the files of DayZ Server). A bridge of at most 3 m that crosses no road is filled on purpose and is no finding.
 
 **`bridge model ...: its Geometry LOD cannot be read ...`**
 The thickness of a bridge deck is measured on the model; where a model cannot be read, the thickest deck of its type

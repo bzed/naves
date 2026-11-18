@@ -13,6 +13,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A short bridge over a road that cannot be built is reported. A bridge of at most 3 m over a road is a grid of panels so
+  that the road below passes; in an install without the concrete panels it became plain road without a word, a wall
+  across the road below. It now gives the finding `bridge_not_built`, as a longer bridge does.
 - A road is held to a junction it crosses without a joint. The height solve held a road to a junction only at a joint of
   its strip that lies in the junction's patch (or at the nearest free joint of a piece within 13 m); a strip that runs
   through the patch between a bridge deck and a joint that is held to another junction or is the deck, with no joint of
