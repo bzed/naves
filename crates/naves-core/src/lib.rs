@@ -18,6 +18,7 @@ pub mod imagery;
 pub mod junctions;
 pub mod landcover;
 pub mod limits;
+pub mod netclean;
 pub mod objects;
 pub mod osm;
 pub mod prefs;

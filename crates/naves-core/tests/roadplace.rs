@@ -32,6 +32,8 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             tunnel: false,
             roundabout: false,
             layer: 0,
+            sidepath_hint: false,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1184,7 +1186,8 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     let as_roads = place(&features);
     assert_eq!(as_roads.rings.len(), 0);
     // collapsed first, as the build does: the three streets meet at one crossing at the centre
-    let graph = collapse_small_rings(&build_graph(&features), &tightest);
+    let (graph, collapsed) = collapse_small_rings(&build_graph(&features), &tightest);
+    assert_eq!(collapsed.len(), 1);
     assert!(graph.stretches.iter().all(|s| !s.roundabout));
     assert_eq!(graph.stretches.len(), 3);
     assert_eq!(graph.crossings.len(), 1);
@@ -1200,10 +1203,11 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
             || !net.joins_without_junction.is_empty()
     );
     // a ring that is big enough is left alone
-    let big = collapse_small_rings(
+    let (big, none) = collapse_small_rings(
         &build_graph(&roundabout(12.0, Family::City, &[0, 8, 16])),
         &tightest,
     );
+    assert_eq!(none.len(), 0);
     assert!(big.stretches.iter().any(|s| s.roundabout));
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }
@@ -1668,4 +1672,35 @@ fn two_higher_roads_leaving_on_one_side_do_not_cut_the_lower_road() {
             "a hole in the Mud road"
         );
     }
+}
+
+#[test]
+fn a_roundabout_stays_only_above_the_keep_radius_and_the_tightest_arc() {
+    use naves_core::roadnet::ROUNDABOUT_KEEP_M;
+    assert!((ROUNDABOUT_KEEP_M - 10.0).abs() < 1e-9);
+    let ring = |radius: f64, arc: f64| {
+        let tightest = move |_| Some(arc);
+        collapse_small_rings(
+            &build_graph(&roundabout(radius, Family::City, &[0, 8, 16])),
+            &tightest,
+        )
+    };
+    // 9 m, the family's tightest arc is 8 m: below the keep radius, collapsed and reported
+    let (graph, collapsed) = ring(9.0, 8.0);
+    assert_eq!(collapsed.len(), 1);
+    assert!((collapsed[0].radius - 9.0).abs() < 0.5);
+    assert!(graph.stretches.iter().all(|s| !s.roundabout));
+    // 12 m, tightest arc 8 m: stays
+    let (graph, collapsed) = ring(12.0, 8.0);
+    assert_eq!(collapsed.len(), 0);
+    assert!(graph.stretches.iter().any(|s| s.roundabout));
+    // 12 m, but the arc needs 14 m: collapsed as before
+    let (_, collapsed) = ring(12.0, 14.0);
+    assert_eq!(collapsed.len(), 1);
+    // a family without an arc: any ring is collapsed, as before
+    let (_, collapsed) = collapse_small_rings(
+        &build_graph(&roundabout(12.0, Family::City, &[0, 8, 16])),
+        &|_| None,
+    );
+    assert_eq!(collapsed.len(), 1);
 }

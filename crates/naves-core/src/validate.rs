@@ -15,6 +15,7 @@ use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
+use crate::netclean::CleanReport;
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
@@ -88,11 +89,26 @@ pub enum Rule {
     /// The end of a bridge's deck and the road or junction it joins differ in height by more than
     /// [`END_STEP_TOL_M`]: the deck is level and the roads on its two sides want different heights.
     BridgeEndStep,
+    /// A roundabout too small to be built (a radius below [`crate::roadnet::ROUNDABOUT_KEEP_M`] or the tightest
+    /// arc of its surface) that became a plain junction.
+    RoadRoundaboutCollapsed,
+    /// A part of a road that runs beside a road of higher rank, and was not placed (the clean-up of the graph).
+    RoadSidepathDropped,
+    /// A short dead end that was not placed (the clean-up of the graph).
+    RoadStubDropped,
+    /// Junctions so close together that they became one (the clean-up of the graph).
+    RoadJunctionsMerged,
+    /// A junction that was moved off the end of a bridge, so that the bridge's end touches only the road that
+    /// goes on.
+    BridgeApproachMade,
+    /// A junction on the end of a bridge that could not be moved off it: the bridge is too short, a road passes
+    /// below, or there is no room.
+    BridgeEndAtJunction,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 22] = [
+    pub const ALL: [Rule; 28] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -115,6 +131,12 @@ impl Rule {
         Rule::BridgeBuried,
         Rule::BridgePostFloats,
         Rule::BridgeEndStep,
+        Rule::RoadRoundaboutCollapsed,
+        Rule::RoadSidepathDropped,
+        Rule::RoadStubDropped,
+        Rule::RoadJunctionsMerged,
+        Rule::BridgeApproachMade,
+        Rule::BridgeEndAtJunction,
     ];
 
     /// The stable id of the rule.
@@ -143,6 +165,12 @@ impl Rule {
             Rule::BridgeBuried => "bridge_buried",
             Rule::BridgePostFloats => "bridge_post_floats",
             Rule::BridgeEndStep => "bridge_end_step",
+            Rule::RoadRoundaboutCollapsed => "road_roundabout_collapsed",
+            Rule::RoadSidepathDropped => "road_sidepath_dropped",
+            Rule::RoadStubDropped => "road_stub_dropped",
+            Rule::RoadJunctionsMerged => "road_junctions_merged",
+            Rule::BridgeApproachMade => "bridge_approach_made",
+            Rule::BridgeEndAtJunction => "bridge_end_at_junction",
         }
     }
 }
@@ -405,6 +433,65 @@ fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
             )
         })
         .collect()
+}
+
+/// One violation for each change the clean-up of the graph made, at the place of the change. Nothing is changed
+/// silently.
+fn clean_violations(clean: &CleanReport) -> Vec<Violation> {
+    let mut out = Vec::new();
+    out.extend(clean.roundabouts.iter().map(|r| {
+        violation(
+            Rule::RoadRoundaboutCollapsed,
+            r.centre,
+            format!(
+                "A roundabout of {:.1} m radius is too small: it is a plain junction",
+                r.radius
+            ),
+        )
+    }));
+    out.extend(clean.sidepaths.iter().map(|d| {
+        violation(
+            Rule::RoadSidepathDropped,
+            d.at,
+            format!(
+                "Road {} runs beside {} for {:.0} m: this part is not placed",
+                d.stretch,
+                d.road,
+                d.to_m - d.from_m
+            ),
+        )
+    }));
+    out.extend(clean.stubs.iter().map(|d| {
+        violation(
+            Rule::RoadStubDropped,
+            d.at,
+            format!(
+                "Road {} is a dead end of {:.1} m: it is not placed",
+                d.stretch, d.length_m
+            ),
+        )
+    }));
+    out.extend(clean.merged.iter().map(|m| {
+        violation(
+            Rule::RoadJunctionsMerged,
+            m.at,
+            format!(
+                "The junctions {:?} are close to {}: they are one junction",
+                m.merged, m.kept
+            ),
+        )
+    }));
+    out.extend(clean.approaches.iter().map(|a| {
+        violation(
+            Rule::BridgeApproachMade,
+            a.at,
+            format!(
+                "A junction was moved off the end {} of bridge {}",
+                a.end, a.bridge
+            ),
+        )
+    }));
+    out
 }
 
 /// An OpenStreetMap bridge that the install has no part for: one violation in its middle.
@@ -985,6 +1072,7 @@ pub fn check_roads(
     }));
     out.extend(clearance_violations(profiles));
     out.extend(duplicate_violations(&net.duplicates));
+    out.extend(clean_violations(&net.clean));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));

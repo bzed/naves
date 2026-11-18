@@ -28,6 +28,8 @@ fn stretch(id: &str, a: (f64, f64), b: (f64, f64), bridge: bool, tunnel: bool) -
         end: 2,
         bridge_kind: None,
         bridge_offset: 0.0,
+        sidepath_hint: false,
+        use_sidepath: false,
     }
 }
 

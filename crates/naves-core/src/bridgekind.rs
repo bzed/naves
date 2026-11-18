@@ -1553,6 +1553,8 @@ fn join(graph: &RoadGraph, chain: &[usize]) -> Option<Stretch> {
         family: longest.map_or(first.family, |l| l.1),
         drivable: parts.iter().any(|p| p.drivable),
         layer: parts.iter().map(|p| p.layer).max().unwrap_or(first.layer),
+        sidepath_hint: parts.iter().any(|p| p.sidepath_hint),
+        use_sidepath: parts.iter().any(|p| p.use_sidepath),
         points,
         start,
         end,

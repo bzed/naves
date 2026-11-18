@@ -254,8 +254,21 @@ a ring on a steep street needs no large flat bench, and the roads that join it e
 own roads) cannot be laid out with the game's pieces; it is taken as a **plain crossing**: the ring is left out and the
 roads that joined it meet at one point at its centre, with a junction piece where the game has one and the overlay
 rule elsewhere. This is the common case on a map at a small scale (a mini roundabout of 9 m radius is 4.6 m at half
-scale). An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
+scale). A ring is also taken as a plain crossing when its radius is below 10 m on the map (about 20 m in reality at
+the usual scale), whatever the pieces allow, so that "small roundabout" is one number: a 9 m ring of a surface whose
+tightest arc is 8 m is a plain crossing, a 12 m ring stays. Each ring that is turned into a crossing is the finding
+`road_roundabout_collapsed`, at its centre. An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
 roundabout way leaves, and one with several surfaces are not rings; they stay ordinary roads.
+
+**The clean-up of the road graph.** After the roads that are drawn twice have been dropped and before anything is
+built on the graph, the build cleans it in four steps: sidepaths that run beside a road, short dead ends, junctions
+that lie close together, and junctions on the end of a bridge. Each change is a finding of its own (information, at the
+place of the change) and nothing is changed that is not reported; no step ever splits the network into more connected
+pieces than it had. The steps are being added one at a time; until a step exists it changes nothing and reports
+nothing. The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged` and
+`bridge_approach_made` (information), and `bridge_end_at_junction` (warning: a junction on a bridge's end that could
+not be moved off it). The tags `foot=use_sidepath` on a road and `footway=sidewalk` on a way are read from
+OpenStreetMap for the sidepath step.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its

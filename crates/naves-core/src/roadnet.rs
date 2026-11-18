@@ -53,6 +53,10 @@ pub struct Stretch {
     /// stored start the model's first end lies, in metres (decided by [`crate::bridgekind::fit_bridges`]); 0
     /// otherwise.
     pub bridge_offset: f64,
+    /// A path tagged `footway=sidewalk` (any of the ways it is made of): it says it is the sidewalk of a road.
+    pub sidepath_hint: bool,
+    /// A road tagged `foot=use_sidepath` (any of the ways it is made of): its pedestrians use a path beside it.
+    pub use_sidepath: bool,
 }
 
 /// A node where stretches meet.
@@ -114,6 +118,9 @@ struct Seg {
     pb: (f64, f64),
     attrs: Attrs,
     way: i64,
+    /// Not part of `attrs`: the tags must not cut a stretch.
+    sidepath_hint: bool,
+    use_sidepath: bool,
 }
 
 fn segments(features: &[Feature]) -> Vec<Seg> {
@@ -126,7 +133,8 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             tunnel,
             roundabout,
             layer,
-            ..
+            sidepath_hint,
+            use_sidepath,
         } = feature.kind
         else {
             continue;
@@ -149,6 +157,8 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
                     pb,
                     attrs,
                     way: feature.way_id,
+                    sidepath_hint,
+                    use_sidepath,
                 });
             }
         }
@@ -162,6 +172,8 @@ struct Walked {
     points: Vec<(f64, f64)>,
     attrs: Attrs,
     way: i64,
+    sidepath_hint: bool,
+    use_sidepath: bool,
     /// Every node on it is a plain joint: nothing marks where it starts.
     ring: bool,
 }
@@ -313,6 +325,12 @@ fn walk(
             layer: 0,
         }),
         way,
+        sidepath_hint: seq
+            .iter()
+            .any(|&(i, _)| segs.get(i).is_some_and(|x| x.sidepath_hint)),
+        use_sidepath: seq
+            .iter()
+            .any(|&(i, _)| segs.get(i).is_some_and(|x| x.use_sidepath)),
         ring,
     }
 }
@@ -363,6 +381,8 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         end,
         bridge_kind: None,
         bridge_offset: 0.0,
+        sidepath_hint: w.sidepath_hint,
+        use_sidepath: w.use_sidepath,
     })
 }
 
@@ -741,22 +761,27 @@ pub fn rings(graph: &RoadGraph) -> Vec<Ring> {
     found
 }
 
-/// The graph with every ring of a radius below `tightest(family)` (its family's tightest arc; no arc: any ring)
-/// replaced by a plain crossing: the ring's stretches go, and the roads that joined it end at one node at the
+/// A roundabout whose radius is below this stays no roundabout, whatever the pieces allow, in map metres (about
+/// 20 m in reality at scale 0.5).
+pub const ROUNDABOUT_KEEP_M: f64 = 10.0;
+
+/// The graph with every ring of a radius below [`ROUNDABOUT_KEEP_M`] or below `tightest(family)` (its family's
+/// tightest arc; no arc: any ring) replaced by a plain crossing: the ring's stretches go, and the roads that joined it end at one node at the
 /// ring's centre, where the usual rules for roads that meet (a junction piece or the overlay rule) apply. A road
 /// that joined the ring at two of its nodes is a chord of nothing and goes with it. A stretch whose end is
-/// moved keeps its id; it is turned round if its ends are no longer in the order of their node ids.
+/// moved keeps its id; it is turned round if its ends are no longer in the order of their node ids. The collapsed
+/// rings are returned with the graph, for the report.
 #[must_use]
 pub fn collapse_small_rings(
     graph: &RoadGraph,
     tightest: &dyn Fn(Family) -> Option<f64>,
-) -> RoadGraph {
+) -> (RoadGraph, Vec<Ring>) {
     let small: Vec<Ring> = rings(graph)
         .into_iter()
-        .filter(|r| tightest(r.family).is_none_or(|t| r.radius < t))
+        .filter(|r| r.radius < ROUNDABOUT_KEEP_M || tightest(r.family).is_none_or(|t| r.radius < t))
         .collect();
     if small.is_empty() {
-        return graph.clone();
+        return (graph.clone(), small);
     }
     let gone: BTreeSet<usize> = small
         .iter()
@@ -808,10 +833,13 @@ pub fn collapse_small_rings(
         stretches.push(s);
     }
     let crossings = crossings(&stretches);
-    RoadGraph {
-        stretches,
-        crossings,
-    }
+    (
+        RoadGraph {
+            stretches,
+            crossings,
+        },
+        small,
+    )
 }
 
 /// The centre and mean radius of the closed line of `members`, every point weighted by half the length of the

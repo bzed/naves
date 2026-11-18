@@ -23,6 +23,7 @@ use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
+use naves_core::netclean::{self, CleanReport};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     panel_object_height, road_object_id, road_objects,
@@ -207,6 +208,9 @@ pub struct FittedGraph {
     pub graph: RoadGraph,
     /// The parts of roads that were dropped as drawn twice.
     pub duplicates: Vec<DroppedDuplicate>,
+    /// What the clean-up of the graph did after that (see [`netclean::clean`]), and the roundabouts that were
+    /// collapsed before it.
+    pub clean: CleanReport,
     /// What every OpenStreetMap bridge was built from, and why.
     pub bridges: Vec<BridgeFit>,
 }
@@ -216,14 +220,19 @@ pub struct FittedGraph {
 #[must_use]
 pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightmap) -> FittedGraph {
     // a roundabout too small for the tightest arc of its surface is a plain crossing
-    let flat = collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
-    let (built, duplicates) = drop_duplicates(&flat);
+    let (flat, roundabouts) =
+        collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
+    let (deduplicated, duplicates) = drop_duplicates(&flat);
+    let (built, mut clean) =
+        netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
+    clean.roundabouts = roundabouts;
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
     let (graph, bridges) = fit_bridges(&built, &|site| choose(catalog, site), &ground);
     FittedGraph {
         built,
         graph,
         duplicates,
+        clean,
         bridges,
     }
 }
@@ -269,6 +278,7 @@ pub fn plan_roads(
     let FittedGraph {
         graph: widened,
         duplicates,
+        clean,
         bridges,
         ..
     } = fitted_graph(features, catalog, base);
@@ -311,6 +321,7 @@ pub fn plan_roads(
         (graph, placed, left, true)
     };
     placed.net.duplicates = duplicates;
+    placed.net.clean = clean;
     placed.net.bridge_fits = bridges;
     mark_placed(&mut placed.net.bridge_fits, &placed.net.roads);
     Ok(RoadPlan {

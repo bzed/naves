@@ -175,6 +175,7 @@ fn main() {
         graph: widened,
         built,
         duplicates,
+        clean,
         bridges,
     } = fitted_graph(&features, &catalog, &base);
     if let Ok(spot) = std::env::var("NEARDUMP") {
@@ -217,6 +218,22 @@ fn main() {
                 d.at.1
             );
         }
+    }
+    {
+        // what the clean-up of the graph did: one count per rule, and the connected components
+        for (rule, count) in [
+            ("road_roundabout_collapsed", clean.roundabouts.len()),
+            ("road_sidepath_dropped", clean.sidepaths.len()),
+            ("road_stub_dropped", clean.stubs.len()),
+            ("road_junctions_merged", clean.merged.len()),
+            ("bridge_approach_made", clean.approaches.len()),
+        ] {
+            println!("CLEAN {rule} {count}");
+        }
+        println!(
+            "COMPONENTS {} {}",
+            clean.components_before, clean.components_after
+        );
     }
     {
         // what every OpenStreetMap bridge is built from (one line each, for a table)

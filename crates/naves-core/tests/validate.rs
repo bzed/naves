@@ -494,6 +494,12 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeBuried,
         Rule::BridgePostFloats,
         Rule::BridgeEndStep,
+        Rule::RoadRoundaboutCollapsed,
+        Rule::RoadSidepathDropped,
+        Rule::RoadStubDropped,
+        Rule::RoadJunctionsMerged,
+        Rule::BridgeApproachMade,
+        Rule::BridgeEndAtJunction,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -513,6 +519,65 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::BridgePostFloats.id(), "bridge_post_floats");
     assert_eq!(Rule::BridgeEndStep.id(), "bridge_end_step");
     assert_eq!(Rule::RoadKink.id(), "road_kink");
+    assert_eq!(
+        Rule::RoadRoundaboutCollapsed.id(),
+        "road_roundabout_collapsed"
+    );
+    assert_eq!(Rule::RoadSidepathDropped.id(), "road_sidepath_dropped");
+    assert_eq!(Rule::RoadStubDropped.id(), "road_stub_dropped");
+    assert_eq!(Rule::RoadJunctionsMerged.id(), "road_junctions_merged");
+    assert_eq!(Rule::BridgeApproachMade.id(), "bridge_approach_made");
+    assert_eq!(Rule::BridgeEndAtJunction.id(), "bridge_end_at_junction");
+}
+
+#[test]
+fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
+    use naves_core::catalog::Family;
+    use naves_core::netclean::{Approach, DroppedSidepath, DroppedStub, MergedJunction};
+    use naves_core::roadnet::Ring;
+    let mut n = net(vec![]);
+    n.clean.roundabouts.push(Ring {
+        stretches: vec![0],
+        centre: (1.0, 2.0),
+        radius: 6.0,
+        family: Family::City,
+    });
+    n.clean.sidepaths.push(DroppedSidepath {
+        stretch: "7:1-2".to_string(),
+        road: "8:3-4".to_string(),
+        from_m: 10.0,
+        to_m: 90.0,
+        at: (3.0, 4.0),
+    });
+    n.clean.stubs.push(DroppedStub {
+        stretch: "9:5-6".to_string(),
+        length_m: 4.0,
+        at: (5.0, 6.0),
+    });
+    n.clean.merged.push(MergedJunction {
+        kept: 10,
+        merged: vec![11],
+        removed: vec![],
+        at: (7.0, 8.0),
+    });
+    n.clean.approaches.push(Approach {
+        bridge: "12:1-2".to_string(),
+        end: 1,
+        at: (9.0, 10.0),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    for (rule, at) in [
+        (Rule::RoadRoundaboutCollapsed, (1.0, 2.0)),
+        (Rule::RoadSidepathDropped, (3.0, 4.0)),
+        (Rule::RoadStubDropped, (5.0, 6.0)),
+        (Rule::RoadJunctionsMerged, (7.0, 8.0)),
+        (Rule::BridgeApproachMade, (9.0, 10.0)),
+    ] {
+        let found = only(rule, &v);
+        assert_eq!(found.len(), 1, "{rule:?}");
+        assert_eq!(found[0].at, at);
+    }
+    assert_eq!(only(Rule::BridgeEndAtJunction, &v).len(), 0);
 }
 
 #[test]
@@ -958,6 +1023,8 @@ fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
             tunnel: false,
             roundabout: false,
             layer: 0,
+            sidepath_hint: false,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1015,6 +1082,8 @@ fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
             tunnel: false,
             roundabout: false,
             layer: 0,
+            sidepath_hint: false,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

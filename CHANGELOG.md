@@ -11,8 +11,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four
+  steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
+  roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
+  `road_junctions_merged`, `bridge_approach_made` (information) and `bridge_end_at_junction` (warning), also in the MCP
+  rule list. The tags `foot` and `footway` are read from OpenStreetMap.
+
 ### Changed
 
+- A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road
+  pieces allow; before, only a ring tighter than the tightest arc of its surface was. Each collapsed roundabout is a
+  new finding, `road_roundabout_collapsed`, at its centre.
 - A short ramp instead of a step next to junctions and bridge ends, where the geometry allows one. Where a road has to
   change height over a short length next to a junction or the end of a bridge deck, the height solve gives it a ramp
   inside its family's grade ceiling instead of a step. A road that passes through the patch of a junction it belongs

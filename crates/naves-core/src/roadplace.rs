@@ -238,6 +238,8 @@ pub struct PlacedNetwork {
     pub warnings: Vec<String>,
     /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
     pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
+    /// What the clean-up of the graph did (set by the build after the placement, like `duplicates`).
+    pub clean: crate::netclean::CleanReport,
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,

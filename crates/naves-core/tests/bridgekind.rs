@@ -386,6 +386,8 @@ fn feature(
             tunnel: false,
             roundabout: false,
             layer,
+            sidepath_hint: false,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

@@ -218,6 +218,17 @@ there. The choice of `bridge_wood_25` looks at the original ground; this finding
 under the deck as it was placed (with the height the road got). The position is the sample furthest from the ground.
 Use a bridge that does not stand on the ground (a panel grid).
 
+**`road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made` (information)**
+The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map became a plain
+crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
+left out or merged, or a junction was moved off the end of a bridge. Nothing to do; look at the place if the result is
+not what you want and change the data (OpenStreetMap) there. The position is the place of the change.
+
+**`bridge_end_at_junction` (warning)**
+A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road
+passes below the part that would be cut off, or there is no room). The bridge is left as it is. Move the junction
+away from the bridge's end in the data (OpenStreetMap).
+
 **`bridge_end_step`: "The deck of bridge ... ends 1.1 m below the junction at (100, 200) it joins: nothing in the project sets heights, look at the site"**
 A bridge's deck is level, and one end of it lies at a junction of the bridge's roads (or at the end of another road) that
 the height solve put more than 0.5 m above or below it. The deck is held to one junction at the end that faces it; where
