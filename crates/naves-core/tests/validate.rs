@@ -498,6 +498,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::RoadSidepathDropped,
         Rule::RoadStubDropped,
         Rule::RoadJunctionsMerged,
+        Rule::RoadJunctionsNotMerged,
         Rule::BridgeApproachMade,
         Rule::BridgeEndAtJunction,
     ];
@@ -526,6 +527,10 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::RoadSidepathDropped.id(), "road_sidepath_dropped");
     assert_eq!(Rule::RoadStubDropped.id(), "road_stub_dropped");
     assert_eq!(Rule::RoadJunctionsMerged.id(), "road_junctions_merged");
+    assert_eq!(
+        Rule::RoadJunctionsNotMerged.id(),
+        "road_junctions_not_merged"
+    );
     assert_eq!(Rule::BridgeApproachMade.id(), "bridge_approach_made");
     assert_eq!(Rule::BridgeEndAtJunction.id(), "bridge_end_at_junction");
 }
@@ -533,7 +538,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
 #[test]
 fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
     use naves_core::catalog::Family;
-    use naves_core::netclean::{Approach, DroppedSidepath, DroppedStub, MergedJunction};
+    use naves_core::netclean::{Approach, DroppedSidepath, DroppedStub, MergedJunction, NotMerged};
     use naves_core::roadnet::Ring;
     let mut n = net(vec![]);
     n.clean.roundabouts.push(Ring {
@@ -560,6 +565,11 @@ fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
         removed: vec![],
         at: (7.0, 8.0),
     });
+    n.clean.not_merged.push(NotMerged {
+        nodes: vec![20, 21],
+        reason: "a roundabout is among the junctions",
+        at: (11.0, 12.0),
+    });
     n.clean.approaches.push(Approach {
         bridge: "12:1-2".to_string(),
         end: 1,
@@ -571,6 +581,7 @@ fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
         (Rule::RoadSidepathDropped, (3.0, 4.0)),
         (Rule::RoadStubDropped, (5.0, 6.0)),
         (Rule::RoadJunctionsMerged, (7.0, 8.0)),
+        (Rule::RoadJunctionsNotMerged, (11.0, 12.0)),
         (Rule::BridgeApproachMade, (9.0, 10.0)),
     ] {
         let found = only(rule, &v);

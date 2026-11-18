@@ -18,6 +18,7 @@ use naves_core::conform::{
 };
 use naves_core::heightmap::Heightmap;
 use naves_core::profile::RoadStrip;
+use naves_core::roadnet::{RoadGraph, Stretch};
 
 const CELL: f32 = 2.0;
 const SIZE: u32 = 101;
@@ -595,7 +596,7 @@ fn the_placed_parts_of_a_bridge_are_its_spans_with_the_heights_of_the_joints() {
         strip_of(&[2], &[(p0.0, p0.1, 20.0), (p1.0, p1.1, 21.0)]),
         strip_of(&[3], &[(p1.0, p1.1, 21.0), (p0.0, p0.1, 20.0)]),
     ];
-    let spans = bridge_spans(&net, &strips, &catalog);
+    let spans = bridge_spans(&net, &strips, &catalog, &RoadGraph::default());
     assert_eq!(spans.len(), 4, "{spans:?}");
     assert_eq!(spans[0].stretch, "7:1-2");
     assert_eq!(
@@ -613,9 +614,15 @@ fn the_placed_parts_of_a_bridge_are_its_spans_with_the_heights_of_the_joints() {
     // a model that is not in the catalog is left out, a strip with no deck has none
     let mut other = net.clone();
     other.roads[2].model = "no/such/model.p3d".to_string();
-    assert_eq!(bridge_spans(&other, &strips, &catalog).len(), 3);
+    assert_eq!(
+        bridge_spans(&other, &strips, &catalog, &RoadGraph::default()).len(),
+        3
+    );
     let idle = [strip(&[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], &[], 1.0)];
-    assert!(matches!(bridge_spans(&net, &idle, &catalog).as_slice(), []));
+    assert!(matches!(
+        bridge_spans(&net, &idle, &catalog, &RoadGraph::default()).as_slice(),
+        []
+    ));
 }
 
 fn strip_of(slots: &[usize], joints: &[(f64, f64, f64)]) -> RoadStrip {
@@ -1123,7 +1130,7 @@ fn the_first_step_of_a_grid_starts_where_the_placed_panel_starts_not_at_the_junc
             (404.0, 500.0, 10.0),
         ],
     )];
-    let spans = bridge_spans(&net, &strips, &catalog);
+    let spans = bridge_spans(&net, &strips, &catalog, &RoadGraph::default());
     assert_eq!(spans.len(), 2, "{spans:?}");
     assert_eq!(
         (spans[0].first, spans[0].second),
@@ -1175,7 +1182,7 @@ fn a_panel_steps_shape_is_as_long_as_the_step_not_as_the_strips_old_joints() {
         &[0],
         &[(401.0, 500.0, 10.0), (401.0, 500.0, 10.0)],
     )];
-    let spans = bridge_spans(&net, &strips, &catalog);
+    let spans = bridge_spans(&net, &strips, &catalog, &RoadGraph::default());
     assert_eq!(spans.len(), 1, "{spans:?}");
     assert!((spans[0].length() - 3.0).abs() < 1e-9);
     assert!(
@@ -1188,4 +1195,80 @@ fn a_panel_steps_shape_is_as_long_as_the_step_not_as_the_strips_old_joints() {
         "{:?}",
         spans[0].shape
     );
+}
+
+fn stretch_of(id: &str, start: i64, end: i64, bridge: bool) -> Stretch {
+    Stretch {
+        id: id.to_string(),
+        family: naves_core::catalog::Family::Grav,
+        drivable: true,
+        bridge,
+        tunnel: false,
+        roundabout: false,
+        layer: 0,
+        points: vec![(0.0, 0.0), (10.0, 0.0)],
+        start,
+        end,
+        bridge_kind: None,
+        bridge_offset: 0.0,
+        use_sidepath: false,
+    }
+}
+
+#[test]
+fn the_chain_of_a_bridge_follows_the_ends_of_the_stretches_not_the_node_ids_in_their_names() {
+    use naves_core::catalog::Family;
+    use naves_core::roadfit::Pose;
+    use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, Slot};
+
+    let catalog = synthetic_catalog();
+    let slab = catalog
+        .panels()
+        .iter()
+        .min_by(|a, b| a.model.cmp(&b.model))
+        .unwrap()
+        .clone();
+    let pose = |x: f64| Pose {
+        x,
+        y: 500.0,
+        heading: std::f64::consts::FRAC_PI_2,
+    };
+    let road = |stretch: &str, kind: PlacedKind, x: f64| PlacedRoad {
+        slot: Slot {
+            stretch: stretch.to_string(),
+            index: 0,
+        },
+        kind,
+        family: Family::Grav,
+        drivable: true,
+        model: slab.model.clone(),
+        origin: pose(x + 1.5),
+        start: pose(x),
+        end: pose(x + 3.0),
+        width: 6.0,
+        scale: 1.5,
+        abreast: 1,
+    };
+    let net = PlacedNetwork {
+        roads: vec![
+            road("7:1-2", PlacedKind::Bridge, 400.0),
+            road("9:5-6", PlacedKind::Piece, 403.0),
+        ],
+        ..PlacedNetwork::default()
+    };
+    let strips = vec![
+        strip_of(&[0], &[(400.0, 500.0, 10.0), (403.0, 500.0, 10.5)]),
+        strip_of(&[1], &[(403.0, 500.0, 10.5), (406.0, 500.0, 11.0)]),
+    ];
+    // the road after the bridge was named when it ended at node 5; a merge moved its end: it starts at node 2
+    let graph = RoadGraph {
+        stretches: vec![
+            stretch_of("7:1-2", 1, 2, true),
+            stretch_of("9:5-6", 2, 6, false),
+        ],
+        crossings: Vec::new(),
+    };
+    let spans = bridge_spans(&net, &strips, &catalog, &graph);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].own_strips, vec![0, 1]);
 }

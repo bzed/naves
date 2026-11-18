@@ -218,16 +218,18 @@ there. The choice of `bridge_wood_25` looks at the original ground; this finding
 under the deck as it was placed (with the height the road got). The position is the sample furthest from the ground.
 Use a bridge that does not stand on the ground (a panel grid).
 
-**`road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made` (information)**
+**`road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged`, `bridge_approach_made` (information)**
 The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map, or tighter than the
 tightest arc of its surface, became a plain crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
 left out or merged, or a junction was moved off the end of a bridge. Nothing to do; look at the place if the result is
 not what you want and change the data (OpenStreetMap) there. The position is the place of the change. For
 `road_stub_dropped` the message names the stretch and its length (a dead end shorter than 6 m that is not drivable, or
 shorter than its own width); for `road_junctions_merged` it names the junction that stays and those that went into it (nodes
-of the data, joined by a stretch shorter than 6 m, all within 12 m of each other). Clusters of close junctions that were
-left alone (a roundabout, two bridge ends, a longer road between them, or too wide a group) are listed by the
-`road-analysis` example (`CLEAN not_merged`), not as a finding.
+of the data, joined by a stretch shorter than 6 m, all within 12 m of each other). `road_junctions_not_merged` names the close
+junctions that were left as they are and why (a roundabout among them, two bridge ends or junctions next to them, a longer
+road between them, a straightened road that would cross another road, too wide a group, or junctions that a merge itself brought
+closer than 6 m). The points of a line that were merged because they lay closer than 0.5 m are not a finding; the
+`road-analysis` example lists each (`CLEAN speck`).
 
 **`bridge_end_at_junction` (warning)**
 A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road

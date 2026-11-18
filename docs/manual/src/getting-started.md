@@ -265,14 +265,14 @@ built on the graph, the build cleans it in four steps: sidepaths that run beside
 that lie close together, and junctions on the end of a bridge. Each change is a finding of its own (information, at the
 place of the change) and nothing is changed that is not reported; no step ever splits the network into more connected
 pieces than it had. The steps are being added one at a time; until a step exists it changes nothing and reports
-nothing. Two exist so far. **Dead ends:** a dead-end stretch shorter than 6 m that is not drivable, or is drivable and
-shorter than its own width, is not placed (`road_stub_dropped`); a short stretch that stands alone, a bridge and a
-roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay).
+nothing. Two exist so far. **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
+shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
+roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).
 **Close junctions:** junctions joined by a stretch shorter than 6 m become one junction (`road_junctions_merged`),
-on the node whose roads rank highest (or on the end of a bridge or tunnel, which never moves); the short stretch between
+on the node whose roads rank highest (or on the end of a bridge or tunnel, which never moves, or on a junction that is joined to such an end by a stretch shorter than 6 m); the short stretch between
 them goes and the roads that met there end at the merged junction, straight for their last 6 m. A group of such junctions
 is merged only if they all lie within 12 m of each other and no roundabout, no longer stretch between them and not two bridge ends
-are among them; otherwise it is left as it is. The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged` and
+are among them, and none of the straightened roads would cross another road; otherwise it is left as it is and reported (`road_junctions_not_merged`, information). Junctions that a merge itself brings closer than 6 m are reported the same way. The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged` and
 `bridge_approach_made` (information), and `bridge_end_at_junction` (warning: a junction on a bridge's end that could
 not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to

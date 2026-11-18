@@ -226,14 +226,22 @@ fn main() {
             ("road_sidepath_dropped", clean.sidepaths.len()),
             ("road_stub_dropped", clean.stubs.len()),
             ("road_junctions_merged", clean.merged.len()),
+            ("road_junctions_not_merged", clean.not_merged.len()),
             ("bridge_approach_made", clean.approaches.len()),
             // no step reports this yet: the bridge approach step will
             ("bridge_end_at_junction", 0),
         ] {
             println!("CLEAN {rule} {count}");
         }
-        // what no rule reports: the speck points removed, and the clusters of close junctions that were left alone
-        println!("CLEAN specks {}", clean.specks);
+        // what no rule reports: the speck points removed (each with its stretch), the clusters of close junctions
+        // that were left alone, the components after each step and the drivable length
+        println!("CLEAN specks {}", clean.specks.len());
+        for d in &clean.specks {
+            println!(
+                "CLEAN speck {} at ({:.1}, {:.1})",
+                d.stretch, d.at.0, d.at.1
+            );
+        }
         println!("CLEAN not_merged {}", clean.not_merged.len());
         for n in &clean.not_merged {
             println!(
@@ -241,6 +249,11 @@ fn main() {
                 n.nodes, n.at.0, n.at.1, n.reason
             );
         }
+        println!("CLEAN components_by_step {:?}", clean.components_by_step);
+        println!(
+            "CLEAN drivable_m before {:.0} after {:.0}",
+            clean.drivable_m_before, clean.drivable_m_after
+        );
         println!(
             "COMPONENTS {} {}",
             clean.components_before, clean.components_after
@@ -531,7 +544,7 @@ fn main() {
     }
     crossing_report(&net, &profiles, &graph, &base, &junctions);
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
-    let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    let spans = bridge_spans(&net, &profiles.strips, &catalog, &graph);
     // SPANS_OF=<stretch id prefix>: the spans of a bridge next to the placed roads they come from
     if let Ok(list) = std::env::var("SPANS_OF") {
         let matches = |id: &str| list.split(',').any(|p| id.starts_with(p));

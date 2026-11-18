@@ -98,6 +98,8 @@ pub enum Rule {
     RoadStubDropped,
     /// Junctions so close together that they became one (the clean-up of the graph).
     RoadJunctionsMerged,
+    /// Close junctions that were left as they are, with the reason (the clean-up of the graph).
+    RoadJunctionsNotMerged,
     /// A junction that was moved off the end of a bridge, so that the bridge's end touches only the road that
     /// goes on.
     BridgeApproachMade,
@@ -108,7 +110,7 @@ pub enum Rule {
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 28] = [
+    pub const ALL: [Rule; 29] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -135,6 +137,7 @@ impl Rule {
         Rule::RoadSidepathDropped,
         Rule::RoadStubDropped,
         Rule::RoadJunctionsMerged,
+        Rule::RoadJunctionsNotMerged,
         Rule::BridgeApproachMade,
         Rule::BridgeEndAtJunction,
     ];
@@ -169,6 +172,7 @@ impl Rule {
             Rule::RoadSidepathDropped => "road_sidepath_dropped",
             Rule::RoadStubDropped => "road_stub_dropped",
             Rule::RoadJunctionsMerged => "road_junctions_merged",
+            Rule::RoadJunctionsNotMerged => "road_junctions_not_merged",
             Rule::BridgeApproachMade => "bridge_approach_made",
             Rule::BridgeEndAtJunction => "bridge_end_at_junction",
         }
@@ -478,6 +482,16 @@ fn clean_violations(clean: &CleanReport) -> Vec<Violation> {
             format!(
                 "The junctions {:?} are close to {}: they are one junction",
                 m.merged, m.kept
+            ),
+        )
+    }));
+    out.extend(clean.not_merged.iter().map(|n| {
+        violation(
+            Rule::RoadJunctionsNotMerged,
+            n.at,
+            format!(
+                "The junctions {:?} are close together but were left as they are: {}",
+                n.nodes, n.reason
             ),
         )
     }));

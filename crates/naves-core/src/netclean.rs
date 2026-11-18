@@ -13,7 +13,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::Family;
-use crate::roadnet::{Ring, RoadGraph, Stretch, crossings_of, family_rank, polyline_length};
+use crate::roadnet::{
+    Ring, RoadGraph, Stretch, crossings_of, family_rank, line_crossings, polyline_length,
+};
 
 /// The furthest a sidepath runs from its road, in map metres.
 pub const SIDEPATH_MAX_M: f64 = 15.0;
@@ -63,6 +65,15 @@ pub struct DroppedStub {
     pub at: (f64, f64),
 }
 
+/// A point of a line that was closer than [`SPECK_M`] to the point before and was removed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DroppedSpeck {
+    /// The id of the stretch.
+    pub stretch: String,
+    /// Where the point was, in map metres.
+    pub at: (f64, f64),
+}
+
 /// Close junctions that were made one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergedJunction {
@@ -109,8 +120,8 @@ pub struct CleanReport {
     pub merged: Vec<MergedJunction>,
     /// Clusters of close junctions that were left as they are.
     pub not_merged: Vec<NotMerged>,
-    /// Points that were closer than [`SPECK_M`] to the point before and were removed (not listed one by one).
-    pub specks: usize,
+    /// Points that were closer than [`SPECK_M`] to the point before and were removed.
+    pub specks: Vec<DroppedSpeck>,
     /// Bridge ends that got an approach.
     pub approaches: Vec<Approach>,
     /// Roundabouts that were turned into plain junctions (set by the caller that collapses them).
@@ -119,6 +130,12 @@ pub struct CleanReport {
     pub components_before: usize,
     /// The connected components of the graph after it.
     pub components_after: usize,
+    /// The connected components after each step, in the order of the steps (no step makes more).
+    pub components_by_step: Vec<usize>,
+    /// The length of the drivable stretches before the clean-up, in metres.
+    pub drivable_m_before: f64,
+    /// The length of the drivable stretches after it, in metres.
+    pub drivable_m_after: f64,
 }
 
 /// The root of `i` in the union-find `parent`.
@@ -243,28 +260,37 @@ fn middle(points: &[(f64, f64)]) -> (f64, f64) {
     points.first().copied().unwrap_or_default()
 }
 
+/// A position in map metres.
+type Point = (f64, f64);
+
 /// The points without those closer than [`SPECK_M`] to the one before; the first and the last point stay (a line
-/// of two points is kept whole). A point that is not a number is kept. Also the number of points removed.
-fn without_specks(points: &[(f64, f64)]) -> (Vec<(f64, f64)>, usize) {
+/// of two points is kept whole). A point that is not a number is kept. Also the points that were removed.
+fn without_specks(points: &[Point]) -> (Vec<Point>, Vec<Point>) {
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
-        return (Vec::new(), 0);
+        return (Vec::new(), Vec::new());
     };
     if points.len() < 3 {
-        return (points.to_vec(), 0);
+        return (points.to_vec(), Vec::new());
     }
     let apart = |a: (f64, f64), b: (f64, f64)| !known_less((a.0 - b.0).hypot(a.1 - b.1), SPECK_M);
     let mut kept = vec![first];
+    let mut removed = Vec::new();
     for &p in points.iter().skip(1).take(points.len() - 2) {
         if kept.last().is_none_or(|&q| apart(q, p)) {
             kept.push(p);
+        } else {
+            removed.push(p);
         }
     }
     // the last point stays where it is: a point just before it goes instead
-    if kept.len() > 1 && kept.last().is_some_and(|&q| !apart(q, last)) {
+    if kept.len() > 1
+        && let Some(&q) = kept.last()
+        && !apart(q, last)
+    {
         kept.pop();
+        removed.push(q);
     }
     kept.push(last);
-    let removed = points.len() - kept.len();
     (kept, removed)
 }
 
@@ -282,16 +308,19 @@ pub fn drop_stubs(
     (out, stubs)
 }
 
-/// [`drop_stubs`] with the number of specks removed, and the switch as an argument.
+/// [`drop_stubs`] with the specks that were removed, and the switch as an argument.
 fn stubs_and_specks_if(
     enabled: bool,
     graph: &RoadGraph,
     widths: &dyn Fn(Family) -> f64,
-) -> (RoadGraph, Vec<DroppedStub>, usize) {
+) -> (RoadGraph, Vec<DroppedStub>, Vec<DroppedSpeck>) {
     if !enabled {
-        return (graph.clone(), Vec::new(), 0);
+        return (graph.clone(), Vec::new(), Vec::new());
     }
-    let mut degree = degrees(graph);
+    // a dead end is decided on the graph as it was given; the count that goes down as stubs go only keeps the
+    // pieces that are left of one road together
+    let input = degrees(graph);
+    let mut degree = input.clone();
     let mut gone: Vec<bool> = vec![false; graph.stretches.len()];
     let mut stubs = Vec::new();
     for i in by_id(graph) {
@@ -303,15 +332,16 @@ fn stubs_and_specks_if(
         if !short || s.bridge || s.tunnel || s.roundabout || s.start == s.end {
             continue;
         }
-        let at = |n: i64| degree.get(&n).copied().unwrap_or(0);
-        let hangs_on = if at(s.start) == 1 {
+        let was = |n: i64| input.get(&n).copied().unwrap_or(0);
+        // a free end that is a node of the map: a negative id is a road cut at the edge, which goes on outside
+        let hangs_on = if was(s.start) == 1 && s.start > 0 {
             s.end
-        } else if at(s.end) == 1 {
+        } else if was(s.end) == 1 && s.end > 0 {
             s.start
         } else {
             continue;
         };
-        if at(hangs_on) < 2 {
+        if degree.get(&hangs_on).copied().unwrap_or(0) < 2 {
             continue;
         }
         if let Some(d) = degree.get_mut(&hangs_on) {
@@ -326,22 +356,31 @@ fn stubs_and_specks_if(
             at: middle(&s.points),
         });
     }
-    let mut specks = 0;
+    let mut specks = Vec::new();
     let mut stretches = Vec::new();
     for (s, &dropped) in graph.stretches.iter().zip(&gone) {
         if dropped {
             continue;
         }
         let (points, removed) = without_specks(&s.points);
-        specks += removed;
+        specks.extend(removed.into_iter().map(|at| DroppedSpeck {
+            stretch: s.id.clone(),
+            at,
+        }));
         stretches.push(Stretch {
             points,
             ..s.clone()
         });
     }
-    if stubs.is_empty() && specks == 0 {
-        return (graph.clone(), stubs, 0);
+    if stubs.is_empty() && specks.is_empty() {
+        return (graph.clone(), stubs, specks);
     }
+    specks.sort_by(|a, b| {
+        a.stretch
+            .cmp(&b.stretch)
+            .then(a.at.0.total_cmp(&b.at.0))
+            .then(a.at.1.total_cmp(&b.at.1))
+    });
     (rebuilt(stretches), stubs, specks)
 }
 
@@ -395,6 +434,9 @@ struct NodeFacts {
     at: BTreeMap<i64, (f64, f64)>,
     degree: BTreeMap<i64, usize>,
     bridge_end: BTreeSet<i64>,
+    /// For a node joined to a bridge or tunnel end by a stretch of its own shorter than [`JUNCTION_MERGE_M`]: those
+    /// ends.
+    near_deck: BTreeMap<i64, BTreeSet<i64>>,
     roundabout: BTreeSet<i64>,
 }
 
@@ -415,28 +457,57 @@ fn node_facts(graph: &RoadGraph, order: &[usize]) -> NodeFacts {
             }
         }
     }
+    let mut near_deck: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for s in &graph.stretches {
+        if s.start == s.end
+            || s.bridge
+            || s.tunnel
+            || !known_less(polyline_length(&s.points), JUNCTION_MERGE_M)
+        {
+            continue;
+        }
+        for (node, deck) in [(s.start, s.end), (s.end, s.start)] {
+            if bridge_end.contains(&deck) {
+                near_deck.entry(node).or_default().insert(deck);
+            }
+        }
+    }
     NodeFacts {
         at,
         degree: degrees(graph),
         bridge_end,
+        near_deck,
         roundabout,
     }
 }
 
-/// Why a cluster is not merged, or the node that stays if it is. `inside` says whether a stretch has both its ends
-/// in the cluster.
+/// The cluster's nodes that are, or hang by a short stretch on, a bridge or tunnel end that is not itself in the
+/// cluster: a junction there is as good as the end of the deck, and none may be moved off it.
+fn deck_nodes(facts: &NodeFacts, cluster: &Cluster) -> Vec<i64> {
+    cluster
+        .nodes
+        .iter()
+        .copied()
+        .filter(|n| {
+            facts.bridge_end.contains(n)
+                || facts
+                    .near_deck
+                    .get(n)
+                    .is_some_and(|decks| decks.iter().any(|d| !cluster.nodes.contains(d)))
+        })
+        .collect()
+}
+
+/// Why a cluster is not merged, or the node that stays if it is.
 fn judge(graph: &RoadGraph, facts: &NodeFacts, cluster: &Cluster) -> Result<i64, &'static str> {
     if cluster.nodes.iter().any(|n| facts.roundabout.contains(n)) {
         return Err("a roundabout is among the junctions");
     }
-    let bridge_ends: Vec<i64> = cluster
-        .nodes
-        .iter()
-        .copied()
-        .filter(|n| facts.bridge_end.contains(n))
-        .collect();
-    if bridge_ends.len() > 1 {
-        return Err("two ends of bridges or tunnels are among the junctions");
+    let deck_nodes = deck_nodes(facts, cluster);
+    if deck_nodes.len() > 1 {
+        return Err(
+            "two ends of bridges or tunnels, or junctions next to them, are among the junctions",
+        );
     }
     let place = |n: &i64| facts.at.get(n).copied();
     let limit = 2.0 * JUNCTION_MERGE_M;
@@ -458,8 +529,8 @@ fn judge(graph: &RoadGraph, facts: &NodeFacts, cluster: &Cluster) -> Result<i64,
             return Err("a longer stretch joins junctions of the cluster");
         }
     }
-    if let Some(&bridge_end) = bridge_ends.first() {
-        return Ok(bridge_end);
+    if let Some(&deck) = deck_nodes.first() {
+        return Ok(deck);
     }
     // the node whose roads rank highest (the others' stretches within the cluster do not count), lowest id on a tie
     let rank = |n: i64| {
@@ -489,7 +560,7 @@ fn clusters_of(graph: &RoadGraph, facts: &NodeFacts) -> BTreeMap<i64, Cluster> {
             && !s.roundabout
             && junction(s.start)
             && junction(s.end)
-            && polyline_length(&s.points) < JUNCTION_MERGE_M
+            && known_less(polyline_length(&s.points), JUNCTION_MERGE_M)
     }) {
         parent.entry(s.start).or_insert(s.start);
         parent.entry(s.end).or_insert(s.end);
@@ -513,6 +584,66 @@ fn clusters_of(graph: &RoadGraph, facts: &NodeFacts) -> BTreeMap<i64, Cluster> {
     clusters
 }
 
+/// The mean of `places` (the origin for none).
+fn mean_of(places: &[(f64, f64)]) -> (f64, f64) {
+    let count = f64::from(u32::try_from(places.len()).unwrap_or(u32::MAX)).max(1.0);
+    (
+        places.iter().map(|p| p.0).sum::<f64>() / count,
+        places.iter().map(|p| p.1).sum::<f64>() / count,
+    )
+}
+
+/// Where the nodes of `cluster` that go (`moved`: node to the node that stays and its place) are moved to, the
+/// stretch as it is after: its ends at the kept nodes, the last [`JUNCTION_MERGE_M`] at each straight, in the order of
+/// its node ids.
+fn moved_stretch(s: &Stretch, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> Stretch {
+    let mut s = s.clone();
+    if let Some(&(node, at)) = moved.get(&s.start) {
+        s.start = node;
+        s.points = reaimed(&s.points, at);
+    }
+    if let Some(&(node, at)) = moved.get(&s.end) {
+        s.end = node;
+        let mut back: Vec<(f64, f64)> = s.points.iter().rev().copied().collect();
+        back = reaimed(&back, at);
+        back.reverse();
+        s.points = back;
+    }
+    if s.start > s.end {
+        std::mem::swap(&mut s.start, &mut s.end);
+        s.points.reverse();
+    }
+    s
+}
+
+/// Whether straightening the ends of the stretches that meet the nodes in `moved` makes one of them cross a road it
+/// did not cross before: the crossings with the stretches that share no node with it are counted before and after.
+fn crosses_more(graph: &RoadGraph, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> bool {
+    let kept: BTreeSet<i64> = moved.values().map(|v| v.0).collect();
+    let count = |line: &[(f64, f64)], nodes: [i64; 2], own: &str| {
+        graph
+            .stretches
+            .iter()
+            .filter(|o| {
+                o.id != own
+                    && ![o.start, o.end]
+                        .iter()
+                        .any(|n| nodes.contains(n) || kept.contains(n) || moved.contains_key(n))
+            })
+            .map(|o| line_crossings(line, &o.points).len())
+            .sum::<usize>()
+    };
+    graph
+        .stretches
+        .iter()
+        .filter(|s| moved.contains_key(&s.start) || moved.contains_key(&s.end))
+        .any(|s| {
+            let now = moved_stretch(s, moved);
+            let nodes = [s.start, s.end];
+            count(&now.points, nodes, &s.id) > count(&s.points, nodes, &s.id)
+        })
+}
+
 fn merge_junctions_if(
     enabled: bool,
     graph: &RoadGraph,
@@ -525,7 +656,7 @@ fn merge_junctions_if(
     let clusters = clusters_of(graph, &facts);
     let mut merged = Vec::new();
     let mut not_merged = Vec::new();
-    // node -> where the node that stays is, and the stretches that go
+    // node -> the node that stays and its place
     let mut moved: BTreeMap<i64, (i64, (f64, f64))> = BTreeMap::new();
     let mut removed_ids: BTreeSet<String> = BTreeSet::new();
     for cluster in clusters.values() {
@@ -534,73 +665,76 @@ fn merge_junctions_if(
             .iter()
             .filter_map(|n| facts.at.get(n).copied())
             .collect();
-        match judge(graph, &facts, cluster) {
-            Err(reason) => {
-                let count = f64::from(u32::try_from(places.len()).unwrap_or(u32::MAX));
-                let mean = |f: fn(&(f64, f64)) -> f64| places.iter().map(f).sum::<f64>() / count;
-                not_merged.push(NotMerged {
-                    nodes: cluster.nodes.iter().copied().collect(),
-                    reason,
-                    at: (mean(|p| p.0), mean(|p| p.1)),
-                });
+        let verdict = judge(graph, &facts, cluster).and_then(|kept| {
+            let at = *facts.at.get(&kept).ok_or("a junction has no place")?;
+            let here: BTreeMap<i64, (i64, (f64, f64))> = cluster
+                .nodes
+                .iter()
+                .filter(|&&n| n != kept)
+                .map(|&n| (n, (kept, at)))
+                .collect();
+            if crosses_more(graph, &here) {
+                return Err("a straightened road would cross another road");
             }
-            Ok(kept) => {
-                let Some(&at) = facts.at.get(&kept) else {
-                    continue;
-                };
-                let others: Vec<i64> = cluster
-                    .nodes
-                    .iter()
-                    .copied()
-                    .filter(|&n| n != kept)
-                    .collect();
+            Ok((kept, at, here))
+        });
+        match verdict {
+            Err(reason) => not_merged.push(NotMerged {
+                nodes: cluster.nodes.iter().copied().collect(),
+                reason,
+                at: mean_of(&places),
+            }),
+            Ok((kept, at, here)) => {
                 let removed: Vec<String> = order
                     .iter()
                     .filter_map(|&i| graph.stretches.get(i))
                     .filter(|s| cluster.nodes.contains(&s.start) && cluster.nodes.contains(&s.end))
                     .map(|s| s.id.clone())
                     .collect();
-                for &n in &others {
-                    moved.insert(n, (kept, at));
-                }
-                removed_ids.extend(removed.iter().cloned());
                 merged.push(MergedJunction {
                     kept,
-                    merged: others,
-                    removed,
+                    merged: here.keys().copied().collect(),
+                    removed: removed.clone(),
                     at,
                 });
+                removed_ids.extend(removed);
+                moved.extend(here);
             }
         }
     }
     if merged.is_empty() {
         return (graph.clone(), merged, not_merged);
     }
-    let mut stretches = Vec::new();
-    for s in &graph.stretches {
-        if removed_ids.contains(&s.id) {
+    let stretches: Vec<Stretch> = graph
+        .stretches
+        .iter()
+        .filter(|s| !removed_ids.contains(&s.id))
+        .map(|s| moved_stretch(s, &moved))
+        .collect();
+    merged.sort_by_key(|m| m.kept);
+    let out = rebuilt(stretches);
+    // short pairs that the merge made (a straightened road got shorter): reported, not merged again, so that a
+    // cluster never grows past what was measured on the input
+    let after = node_facts(&out, &by_id(&out));
+    for cluster in clusters_of(&out, &after).values() {
+        if not_merged
+            .iter()
+            .any(|n| cluster.nodes.iter().all(|c| n.nodes.contains(c)))
+        {
             continue;
         }
-        let mut s = s.clone();
-        if let Some(&(node, at)) = moved.get(&s.start) {
-            s.start = node;
-            s.points = reaimed(&s.points, at);
-        }
-        if let Some(&(node, at)) = moved.get(&s.end) {
-            s.end = node;
-            let mut back: Vec<(f64, f64)> = s.points.iter().rev().copied().collect();
-            back = reaimed(&back, at);
-            back.reverse();
-            s.points = back;
-        }
-        if s.start > s.end {
-            std::mem::swap(&mut s.start, &mut s.end);
-            s.points.reverse();
-        }
-        stretches.push(s);
+        let places: Vec<(f64, f64)> = cluster
+            .nodes
+            .iter()
+            .filter_map(|n| after.at.get(n).copied())
+            .collect();
+        not_merged.push(NotMerged {
+            nodes: cluster.nodes.iter().copied().collect(),
+            reason: "junctions that a merge made close to each other",
+            at: mean_of(&places),
+        });
     }
-    merged.sort_by_key(|m| m.kept);
-    (rebuilt(stretches), merged, not_merged)
+    (out, merged, not_merged)
 }
 
 /// Step 4: a junction on the end of a bridge is moved [`APPROACH_M`] off the deck. Not done yet.
@@ -614,6 +748,16 @@ fn make_approaches_if(enabled: bool, graph: &RoadGraph) -> (RoadGraph, Vec<Appro
         return unchanged(graph);
     }
     unchanged(graph)
+}
+
+/// The length of the drivable stretches, in metres.
+fn drivable_m(graph: &RoadGraph) -> f64 {
+    graph
+        .stretches
+        .iter()
+        .filter(|s| s.drivable)
+        .map(|s| polyline_length(&s.points))
+        .sum()
 }
 
 /// Cleans the graph: sidepaths, stubs, close junctions and bridge approaches, in this order. `widths` is the
@@ -639,6 +783,12 @@ pub fn clean(
         roundabouts: Vec::new(),
         components_before: components(graph),
         components_after: components(&graph4),
+        components_by_step: [&graph1, &graph2, &graph3, &graph4]
+            .iter()
+            .map(|g| components(g))
+            .collect(),
+        drivable_m_before: drivable_m(graph),
+        drivable_m_after: drivable_m(&graph4),
     };
     (graph4, report)
 }
@@ -742,9 +892,9 @@ mod tests {
         let g = with_stub_and_close_junctions();
         let w = |f: Family| f.width_m();
         let (out, stubs, specks) = stubs_and_specks_if(true, &g, &w);
-        assert_eq!((stubs.len(), specks, out.stretches.len()), (1, 0, 5));
+        assert_eq!((stubs.len(), specks.len(), out.stretches.len()), (1, 0, 5));
         let (out, stubs, specks) = stubs_and_specks_if(false, &g, &w);
-        assert_eq!((&out, stubs.len(), specks), (&g, 0, 0));
+        assert_eq!((&out, stubs.len(), specks.len()), (&g, 0, 0));
         let (out, merged, _) = merge_junctions_if(true, &g);
         assert_eq!((merged.len(), out.stretches.len()), (1, 5));
         let (out, merged, not_merged) = merge_junctions_if(false, &g);

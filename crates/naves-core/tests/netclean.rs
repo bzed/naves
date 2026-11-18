@@ -6,7 +6,9 @@
 
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::netclean::{CleanReport, clean, components, drop_stubs, merge_junctions};
+use naves_core::netclean::{
+    CleanReport, DroppedSpeck, clean, components, drop_stubs, merge_junctions,
+};
 use naves_core::roadnet::{RoadGraph, build_graph};
 
 fn road(way: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
@@ -84,6 +86,9 @@ fn clean_with_empty_steps_returns_the_same_graph_and_an_empty_report() {
             CleanReport {
                 components_before: components(g),
                 components_after: components(g),
+                components_by_step: vec![components(g); 4],
+                drivable_m_before: report.drivable_m_before,
+                drivable_m_after: report.drivable_m_before,
                 ..CleanReport::default()
             }
         );
@@ -307,7 +312,13 @@ fn clean_counts_the_specks_it_removes() {
         Family::Asf3,
     )]);
     let (_, report) = clean(&g, &widths, 8.0);
-    assert_eq!(report.specks, 1);
+    assert_eq!(
+        report.specks,
+        [DroppedSpeck {
+            stretch: "1:1-2".to_string(),
+            at: (10.2, 0.0)
+        }]
+    );
 }
 
 // ---- junctions ----
@@ -571,7 +582,7 @@ fn a_stretch_that_runs_between_two_cluster_nodes_the_long_way_stops_the_merge() 
 }
 
 #[test]
-fn degenerate_input_does_not_panic_and_changes_nothing() {
+fn degenerate_input_changes_no_junction_and_drops_only_the_short_dead_ends() {
     let g = build_graph(&[
         plain(1, &[1, 2], &[(0.0, 0.0), (0.0, 0.0)], Family::Asf3),
         plain(2, &[2, 3], &[(f64::NAN, 0.0), (5.0, 0.0)], Family::Asf3),
@@ -579,9 +590,22 @@ fn degenerate_input_does_not_panic_and_changes_nothing() {
         plain(4, &[2, 5], &[(0.0, 0.0), (3.0, 0.0)], Family::Asf3),
         plain(5, &[6, 6], &[(9.0, 9.0), (9.0, 9.0)], Family::Asf3),
     ]);
-    let _ = drop_stubs(&g, &widths);
-    let _ = merge_junctions(&g);
-    let _ = clean(&g, &widths, 8.0);
+    let (out, dropped) = drop_stubs(&g, &widths);
+    // the three short dead ends of node 2 (also the one of no length) go; the line with a NaN stays
+    let ids: Vec<&str> = dropped.iter().map(|d| d.stretch.as_str()).collect();
+    assert_eq!(ids, ["1:1-2", "3:2-4", "4:2-5"]);
+    assert_eq!(out.stretches.len(), g.stretches.len() - 3);
+    // (a line with a NaN is not equal to itself, so the graph is compared by its ids)
+    let (same, merged, not_merged) = merge_junctions(&g);
+    assert_eq!((merged.len(), not_merged.len()), (0, 0));
+    assert_eq!(stretch_ids(&same), stretch_ids(&g));
+    let (_, report) = clean(&g, &widths, 8.0);
+    assert!(
+        report
+            .components_by_step
+            .iter()
+            .all(|&c| c <= report.components_before)
+    );
 }
 
 #[test]
@@ -610,4 +634,223 @@ fn clean_runs_the_stubs_and_the_merge_and_reports_both() {
     assert_eq!(report.merged.len(), 1);
     assert_eq!(report.components_before, report.components_after);
     assert_eq!(out.stretches.len(), g.stretches.len() - 2);
+}
+
+// ---- fix round 1 ----
+
+#[test]
+fn a_stretch_that_goes_on_outside_the_map_is_not_a_stub() {
+    // a negative node id: the road is cut at the edge of the map
+    let g = road_with_stub(plain(
+        2,
+        &[2, -77],
+        &[(50.0, 0.0), (50.0, 4.0)],
+        Family::Mud,
+    ));
+    let (out, dropped) = drop_stubs(&g, &widths);
+    assert_eq!(dropped, Vec::new());
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_stretch_that_was_not_a_dead_end_in_the_input_is_not_taken_with_the_ones_that_are() {
+    // road - S1 (mud) - node 5 - S2 (gravel, dead end): S1 only becomes free when S2 goes
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)],
+            Family::Asf3,
+        ),
+        way(
+            3,
+            &[2, 5],
+            &[(50.0, 0.0), (50.0, 4.0)],
+            Family::Mud,
+            false,
+            false,
+            false,
+        ),
+        way(
+            2,
+            &[5, 6],
+            &[(50.0, 4.0), (50.0, 8.0)],
+            Family::Grav,
+            false,
+            false,
+            false,
+        ),
+    ]);
+    assert_eq!(g.stretches.len(), 4);
+    let (out, dropped) = drop_stubs(&g, &widths);
+    let ids: Vec<&str> = dropped.iter().map(|d| d.stretch.as_str()).collect();
+    assert_eq!(ids, ["2:5-6"]);
+    assert_eq!(out.stretches.len(), 3);
+}
+
+#[test]
+fn of_three_short_pieces_in_a_star_two_go_and_the_last_one_stays_joined() {
+    let g = build_graph(&[
+        way(
+            1,
+            &[1, 2],
+            &[(0.0, 0.0), (0.0, 4.0)],
+            Family::Mud,
+            false,
+            false,
+            false,
+        ),
+        way(
+            2,
+            &[1, 3],
+            &[(0.0, 0.0), (4.0, 0.0)],
+            Family::Mud,
+            false,
+            false,
+            false,
+        ),
+        way(
+            3,
+            &[1, 4],
+            &[(0.0, 0.0), (-4.0, 0.0)],
+            Family::Mud,
+            false,
+            false,
+            false,
+        ),
+    ]);
+    let (out, dropped) = drop_stubs(&g, &widths);
+    assert_eq!(dropped.len(), 2);
+    assert_eq!(out.stretches.len(), 1);
+    assert_eq!(components(&out), components(&g));
+}
+
+/// A deck end D (node 10) joined by a 5 m stretch to the junction N (node 11) of two gravel roads; M (node 12), 5 m
+/// further on, is the junction of two motorway pieces. `second_deck` puts another deck end 5 m beyond M.
+fn deck_beside_a_junction(second_deck: bool) -> RoadGraph {
+    let mut features = vec![
+        way(
+            50,
+            &[10, 60],
+            &[(45.0, 0.0), (10.0, 0.0)],
+            Family::Grav,
+            true,
+            true,
+            false,
+        ),
+        plain(51, &[10, 11], &[(45.0, 0.0), (50.0, 0.0)], Family::Grav),
+        plain(
+            20,
+            &[20, 11, 21],
+            &[(50.0, -30.0), (50.0, 0.0), (50.0, 30.0)],
+            Family::Grav,
+        ),
+        plain(52, &[11, 12], &[(50.0, 0.0), (55.0, 0.0)], Family::Grav),
+        plain(
+            22,
+            &[22, 12, 23],
+            &[(55.0, -30.0), (55.0, 0.0), (55.0, 30.0)],
+            Family::Asf1,
+        ),
+    ];
+    if second_deck {
+        features.push(plain(
+            53,
+            &[12, 13],
+            &[(55.0, 0.0), (60.0, 0.0)],
+            Family::Grav,
+        ));
+        features.push(way(
+            54,
+            &[13, 61],
+            &[(60.0, 0.0), (95.0, 0.0)],
+            Family::Grav,
+            true,
+            true,
+            false,
+        ));
+    }
+    build_graph(&features)
+}
+
+#[test]
+fn a_junction_joined_to_a_deck_end_by_a_short_stretch_counts_as_that_deck_end() {
+    let g = deck_beside_a_junction(false);
+    let (out, merged, not_merged) = merge_junctions(&g);
+    assert_eq!(not_merged, Vec::new());
+    // the motorway junction ranks higher, but the junction next to the deck end is the one that stays
+    assert_eq!((merged[0].kept, merged[0].merged.clone()), (11, vec![12]));
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn two_junctions_that_each_hang_on_a_deck_end_are_not_merged_and_are_reported() {
+    let g = deck_beside_a_junction(true);
+    let (out, merged, not_merged) = merge_junctions(&g);
+    assert_eq!(merged, Vec::new());
+    assert_eq!(not_merged.len(), 1);
+    assert_eq!(not_merged[0].nodes, [11, 12]);
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_short_pair_that_a_merge_makes_is_reported() {
+    // A (2) and B (3) merge; B's side road to the junction J (7) was 8.6 m and is now 5.8 m from A
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3, 4],
+            &[(0.0, 0.0), (50.0, 0.0), (54.0, 0.0), (100.0, 0.0)],
+            Family::Asf1,
+        ),
+        plain(2, &[2, 5], &[(50.0, 0.0), (50.0, -40.0)], Family::Grav),
+        plain(3, &[3, 7], &[(54.0, 0.0), (47.0, 5.0)], Family::Grav),
+        plain(
+            4,
+            &[8, 7, 9],
+            &[(47.0, 40.0), (47.0, 5.0), (30.0, 5.0)],
+            Family::Grav,
+        ),
+    ]);
+    let (out, merged, not_merged) = merge_junctions(&g);
+    assert_eq!(merged.len(), 1);
+    assert_eq!(not_merged.len(), 1);
+    assert_eq!(not_merged[0].nodes, [2, 7]);
+    assert!(not_merged[0].reason.contains("merge"));
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn a_cluster_whose_straightened_road_would_cross_another_road_is_not_merged() {
+    // the road from B bends away and runs up at x = 59; straight from A it would cut across the road at y = 20
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3, 4],
+            &[(0.0, 0.0), (50.0, 0.0), (54.0, 0.0), (100.0, 0.0)],
+            Family::Asf1,
+        ),
+        plain(2, &[2, 5], &[(50.0, 0.0), (50.0, -40.0)], Family::Grav),
+        plain(
+            3,
+            &[3, 30, 6],
+            &[(54.0, 0.0), (59.0, 3.0), (59.0, 40.0)],
+            Family::Grav,
+        ),
+        plain(4, &[70, 71], &[(52.0, 20.0), (57.0, 20.0)], Family::Grav),
+    ]);
+    let (out, merged, not_merged) = merge_junctions(&g);
+    assert_eq!(merged, Vec::new());
+    assert_eq!(not_merged.len(), 1);
+    assert!(not_merged[0].reason.contains("cross"));
+    assert_eq!(out, g);
+}
+
+#[test]
+fn clean_reports_the_components_after_every_step_and_the_drivable_length() {
+    let g = road_with_stub(plain(2, &[2, 4], &[(50.0, 0.0), (50.0, 4.0)], Family::Asf3));
+    let (_, report) = clean(&g, &widths, 8.0);
+    assert_eq!(report.components_by_step, vec![components(&g); 4]);
+    assert!((report.drivable_m_before - 104.0).abs() < 1e-9);
+    assert!((report.drivable_m_after - 100.0).abs() < 1e-9);
 }

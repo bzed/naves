@@ -80,7 +80,10 @@ In `generate::fitted_graph`: `build_graph` → `drop_duplicates` → **clean-up 
 - The reports become findings of severity "information", one rule per step, so they appear in the build report, the
   `road-analysis` example and the GUI.
 - Each step has one constant that switches it off (`…_ENABLED`), used by the measurement and by tests.
-- Stretch ids stay `<lowest way id>:<start node>-<end node>`. New nodes and cut pieces follow what
+- A stretch id is a stable name given when the stretch is built (`<lowest way id>:<start node>-<end node>`). A step
+  that moves an end of a stretch (a merged junction) keeps the id, so that edits keyed by it survive; the id then no
+  longer spells the end nodes. `Stretch::start` and `Stretch::end` are the truth, and nothing may read nodes out of
+  an id (`bridgeground` reads them from the graph). New nodes and cut pieces follow what
   `drop_duplicates` already does: a new node gets an id above all others, handed out in sorted order, and a cut piece
   is named `<id>/<step word><n>`, so the same input gives the same ids.
 
@@ -133,8 +136,12 @@ Finding: `road_sidepath_dropped` (stretch, kept road, from/to along the stretch,
 ### Step 2: stubs and specks
 
 - A dead-end stretch shorter than `STUB_MAX_M` (6 m) that is not drivable, or is drivable and shorter than its own
-  width, is removed. (A service road of 20 m stays.)
-- Points of a stretch closer than `SPECK_M` (0.5 m) to the point before are dropped; the end nodes stay.
+  width, is removed. (A service road of 20 m stays.) A dead end is decided on the graph as the step got it, and its
+  free end must be a node of the map: a stretch cut at the map edge (negative node id) goes on outside and is never a
+  stub. A stretch that stands alone is not a stub. Of pieces that hang on one node, the last one stays, so that no
+  road disappears whole.
+- Points of a stretch closer than `SPECK_M` (0.5 m) to the point before are dropped; the end nodes stay. Each is
+  reported with its stretch and place (in the report and the `road-analysis` log; no finding).
 
 Finding: `road_stub_dropped`.
 
@@ -149,11 +156,16 @@ one junction.
   move.
 - The short stretches between the cluster's nodes are removed; every other stretch that ended at a cluster node ends
   at the merged node, with its last `JUNCTION_MERGE_M` re-aimed in a straight line.
-- A bridge end node or a tunnel end node is never moved; if one is in a cluster, it is the merged node. Two of them
-  in one cluster: no merge, reported.
+- A bridge end node or a tunnel end node is never moved; if one is in a cluster, it is the merged node. A node that is
+  joined to a bridge or tunnel end by a stretch shorter than `JUNCTION_MERGE_M` counts as that end. Two of them in
+  one cluster: no merge, reported.
 - Roundabouts and rings are left to `collapse_small_rings`.
+- A cluster is also not merged, and reported, if a longer stretch joins two of its nodes (it would become a loop) or
+  if a straightened road would cross another road that it did not cross before.
+- One pass: a short pair that a merge itself makes (a straightened road became shorter than `JUNCTION_MERGE_M`) is not
+  merged, so that a cluster never grows past what was measured on the input; it is reported.
 
-Finding: `road_junctions_merged` (the node ids, where).
+Findings: `road_junctions_merged` (the node ids, where) and `road_junctions_not_merged` (the nodes, the reason).
 
 ### Step 4: a bridge gets an approach
 
@@ -221,7 +233,7 @@ every step shows what it alone changed:
 
 - what the step did: how many sidepaths, stubs, merged junctions, approaches; the full list in the log;
 - connected components before and after (must not grow); total drivable length (must not fall by more than the
-  removed stubs);
+  removed stubs and the connector stretches that merged junctions replace);
 - all findings, in particular `road_conflict`, `road_gap`, `road_kink`, `road_not_drivable`,
   `road_misses_terrain`, `road_grade`, `bridge_buried`, `bridge_end_step`, `bridge_clearance`, `bridge_blocks_road`;
 - the named sites: Bergwerkstraße 39674984 (sidepath gone, the stretch that joined it still connected, the T-junction off the

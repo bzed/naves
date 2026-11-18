@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use crate::bridgekind::panel_slab;
 use crate::catalog::{PartShape, PieceCatalog};
 use crate::profile::RoadStrip;
+use crate::roadnet::RoadGraph;
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
 /// Ground points less than this from an end of a span are the end.
@@ -160,26 +161,73 @@ fn stretch_ids(slot: &str) -> Vec<String> {
         .collect()
 }
 
-/// The node ids of a stretch id (`<way>:<start>-<end>`); the ids of the map's edge (negative) are left out.
+/// The node ids in a stretch id (`<way>:<start>-<end>`), for a stretch that the graph does not have; the ids of the
+/// map's edge (negative) are left out. A negative id is written with its own minus sign: `-5--6` is the ids -5 and -6.
 fn node_ids(id: &str) -> Vec<String> {
-    id.split_once(':')
-        .map(|(_, nodes)| {
-            nodes
-                .split('-')
-                .filter(|n| !n.is_empty())
-                .map(str::to_string)
-                .collect()
+    let Some((_, nodes)) = id.split_once(':') else {
+        return Vec::new();
+    };
+    let (start_is_edge, rest) = match nodes.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, nodes),
+    };
+    let Some((start, end)) = rest.split_once('-') else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if !start_is_edge && !start.is_empty() {
+        out.push(start.to_string());
+    }
+    if !end.is_empty() && !end.starts_with('-') {
+        out.push(end.to_string());
+    }
+    out
+}
+
+/// The nodes of every stretch of the placed network, by the id of the stretch a slot names (without the `/...` of
+/// a piece cut from it): the nodes of the graph's stretch as it is, which is not what its id spells after a
+/// clean-up moved an end. A stretch that was cut into pieces has the ends of the pieces that no other piece of it
+/// shares. A stretch the graph does not have is read from its id. The ids of the map's edge (negative) are left
+/// out.
+fn nodes_of_stretches(graph: &RoadGraph) -> BTreeMap<String, Vec<String>> {
+    let mut count: BTreeMap<String, BTreeMap<i64, usize>> = BTreeMap::new();
+    for s in &graph.stretches {
+        let base = s.id.split('/').next().unwrap_or(&s.id).to_string();
+        let nodes = count.entry(base).or_default();
+        for node in [s.start, s.end] {
+            *nodes.entry(node).or_default() += 1;
+        }
+    }
+    count
+        .into_iter()
+        .map(|(base, nodes)| {
+            let pieces = graph
+                .stretches
+                .iter()
+                .filter(|s| s.id.split('/').next() == Some(base.as_str()))
+                .count();
+            let ends = nodes
+                .into_iter()
+                // the ends of one piece are all there is; of several, the nodes that only one piece has
+                .filter(|&(node, n)| node > 0 && (pieces == 1 || n == 1))
+                .map(|(node, _)| node.to_string())
+                .collect();
+            (base, ends)
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// The stretches of the road `bridge` is part of: itself and, through every node where exactly two stretches
 /// meet, the stretches beyond it, up to the next junction at each end.
-fn chain_of(bridge: &str, at_node: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet<String> {
+fn chain_of(
+    bridge: &str,
+    nodes_of: &dyn Fn(&str) -> Vec<String>,
+    at_node: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
     let mut chain = BTreeSet::from([bridge.to_string()]);
     let mut queue = VecDeque::from([bridge.to_string()]);
     while let Some(id) = queue.pop_front() {
-        for node in node_ids(&id) {
+        for node in nodes_of(&id) {
             let here = at_node.get(&node);
             if let Some(here) = here.filter(|h| h.len() == 2) {
                 for other in here {
@@ -201,12 +249,18 @@ pub fn bridge_spans(
     net: &PlacedNetwork,
     strips: &[RoadStrip],
     catalog: &PieceCatalog,
+    graph: &RoadGraph,
 ) -> Vec<BridgeSpan> {
     let slab = panel_slab(catalog);
+    let known = nodes_of_stretches(graph);
+    let nodes_of = |id: &str| {
+        let base = id.split('/').next().unwrap_or(id);
+        known.get(base).cloned().unwrap_or_else(|| node_ids(base))
+    };
     let mut at_node: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for road in &net.roads {
         for id in stretch_ids(&road.slot.stretch) {
-            for node in node_ids(&id) {
+            for node in nodes_of(&id) {
                 at_node.entry(node).or_default().insert(id.clone());
             }
         }
@@ -258,7 +312,7 @@ pub fn bridge_spans(
             let own_strips = own
                 .entry(road.slot.stretch.clone())
                 .or_insert_with(|| {
-                    let chain = chain_of(&road.slot.stretch, &at_node);
+                    let chain = chain_of(&road.slot.stretch, &nodes_of, &at_node);
                     strips
                         .iter()
                         .enumerate()
@@ -287,4 +341,18 @@ pub fn bridge_spans(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::node_ids;
+
+    #[test]
+    fn the_nodes_of_an_id_leave_out_the_ids_of_the_maps_edge() {
+        assert_eq!(node_ids("7:12-34"), ["12", "34"]);
+        assert_eq!(node_ids("7:-12-34"), ["34"]);
+        assert_eq!(node_ids("7:12--34"), ["12"]);
+        assert_eq!(node_ids("7:-12--34"), Vec::<String>::new());
+        assert_eq!(node_ids("no colon"), Vec::<String>::new());
+    }
 }

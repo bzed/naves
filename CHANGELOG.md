@@ -23,8 +23,16 @@ All notable changes to this project are documented here. The format follows
   (`road_stub_dropped`); points of a road closer than 0.5 m to the point before are merged. Junctions joined by a
   stretch shorter than 6 m become one junction on the node whose roads rank highest, or on the end of a bridge or
   tunnel (`road_junctions_merged`); the roads that met there end at the merged junction. Groups that cannot be merged
-  (a roundabout, two bridge ends, wider than 12 m) are left as they are and listed by the `road-analysis` example.
-  Stretch ids of roads whose end moved keep their old node ids, and an edit on a stretch that went is orphaned.
+  (a roundabout, two bridge ends, wider than 12 m, a straightened road that would cross another) are left as they
+  are and reported (`road_junctions_not_merged`, information). A road cut at the edge of the map is never a dead
+  end; a junction next to the end of a bridge counts as that end. Stretch ids of roads whose end moved are kept (edits
+  keyed by them survive); an edit on a stretch that went is orphaned. The `road-analysis` example lists every point that was
+  merged away, the components after each step and the drivable length.
+
+### Fixed
+
+- The ground under a bridge reads the stretches' ends from the road graph, not from the node numbers in their ids
+  (the numbers are stale once a clean-up moved an end), and leaves map-edge nodes out as its comment says.
 
 ### Changed
 

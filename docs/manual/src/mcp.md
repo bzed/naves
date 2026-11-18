@@ -68,7 +68,7 @@ does.
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,
 `road_misses_terrain`, `path_too_steep`, `road_grade`, `road_gap`, `road_kink`, `road_in_water`, `road_conflict`,
-`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`, `road_over_water`, `road_duplicate_dropped`, `bridge_clearance`, `bridge_blocks_road`, `bridge_not_built`, `bridge_buried`, `bridge_post_floats`, `bridge_end_step`, `road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made`, `bridge_end_at_junction`) and then lists only that rule. If
+`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`, `road_over_water`, `road_duplicate_dropped`, `bridge_clearance`, `bridge_blocks_road`, `bridge_not_built`, `bridge_buried`, `bridge_post_floats`, `bridge_end_step`, `road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged`, `bridge_approach_made`, `bridge_end_at_junction`) and then lists only that rule. If
 the tools are missing, the error starts with "Roads need dayzmake" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the

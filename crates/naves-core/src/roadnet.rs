@@ -24,8 +24,10 @@ use crate::features::{Feature, FeatureKind};
     reason = "independent tags of the road, as in the feature they come from"
 )]
 pub struct Stretch {
-    /// `<lowest way id>:<start node>-<end node>`: the stable part of the identity of everything placed on
-    /// this stretch. It does not depend on the order of the ways.
+    /// `<lowest way id>:<start node>-<end node>` as it was when the stretch was built: the stable part of the
+    /// identity of everything placed on this stretch. It does not depend on the order of the ways. A clean-up step
+    /// that moves an end of the stretch (a merged junction) keeps the id, so it then no longer spells the end
+    /// nodes: read them from `start` and `end`, never from the id.
     pub id: String,
     /// The surface.
     pub family: Family,
@@ -523,7 +525,10 @@ fn crossings_of_pair(
 
 /// Where two polylines cross: the point, the distance along each, and the angle between the lines there in
 /// radians (0 along each other, a right angle square).
-fn line_crossings(first: &[(f64, f64)], second: &[(f64, f64)]) -> Vec<((f64, f64), f64, f64, f64)> {
+pub(crate) fn line_crossings(
+    first: &[(f64, f64)],
+    second: &[(f64, f64)],
+) -> Vec<((f64, f64), f64, f64, f64)> {
     let mut found = Vec::new();
     let mut along_first = 0.0;
     for pair in first.windows(2) {

@@ -377,7 +377,7 @@ fn place_roads(
     } = plan.placed;
     let patches = level_patches(&junctions, f64::from(base.cell_m));
     // the ground under every placed deck is shaped for it, from the deck as placed
-    let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    let spans = bridge_spans(&net, &profiles.strips, &catalog, &plan.graph);
     let conformed = conform_bridges(base, &profiles.strips, &patches, &spans)?;
     Ok(Roads {
         net,
