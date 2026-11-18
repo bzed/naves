@@ -292,11 +292,8 @@ fn main() {
             let why: Vec<String> = b.fallback.iter().map(ToString::to_string).collect();
             // the row's width against the road's
             let road_w = catalog.pieces(b.family).first().map_or(0.0, |p| p.width);
-            let panel_across = catalog
-                .panels()
-                .iter()
-                .min_by(|x, y| x.model.cmp(&y.model))
-                .map_or(0.0, |p| p.across);
+            let panel_across =
+                naves_core::bridgekind::panel_slab(&catalog).map_or(0.0, |p| p.across);
             let row_w = if kind == "panels" {
                 f64::from(u32::try_from(abreast).unwrap_or(0)) * scale * panel_across
             } else {

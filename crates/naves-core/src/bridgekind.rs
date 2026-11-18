@@ -490,7 +490,8 @@ fn abreast(scale: f64, road_width: f64, slab: &Slab) -> (usize, f64, bool) {
 /// else the nearest of all; on a tie the fewest panels, then the fewest along. Where no count along gives a
 /// scale in range (not above [`FILL_MAX_M`] with the catalog's panel, but the input is untrusted), the count
 /// nearest `length / slab.along`. A road width that is not a number counts as 0; at most [`MAX_PARTS`] along and
-/// abreast; never a panic.
+/// abreast; never a panic. A length that is not finite or not positive gives [`MAX_PARTS`] (or one) along and a scale
+/// that is NaN, infinite or not positive: the callers filter it first ([`choose`] never asks for such a bridge).
 #[must_use]
 pub fn panel_grid(length: f64, road_width: f64, slab: &Slab) -> (usize, usize, f64) {
     let width = clean(road_width);

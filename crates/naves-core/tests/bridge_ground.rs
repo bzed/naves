@@ -1041,13 +1041,21 @@ fn another_roads_core_cuts_ground_standing_above_it_in_the_guard_and_is_left_the
         at(&out.heightmap, 100.0, 88.0)
     );
     assert!(!out.buried.is_empty(), "{:?}", out.buried);
+    assert!(
+        out.buried
+            .iter()
+            .all(|b| b.guarded && b.holder == Holder::Strip(0)),
+        "{:?}",
+        out.buried
+    );
 }
 
 #[test]
 fn another_roads_shoulder_ring_in_the_guard_is_cut_to_the_deck_while_its_core_is_not() {
     // a bank 2 m above the deck; a road at 101.5 across y = 94 with a core of 3 m half width: the vertices at
-    // y = 88 and 90 are in its ring (4 to 6 m away), not in its core, and in the deck's guard: they take at most
-    // the deck's surface. The road's own width keeps its height.
+    // y = 88 and 90 are in its ring (4 to 6 m away; y = 88 is the ring's last vertex), not in its core, and in the
+    // deck's guard: they take at most the deck's surface, so nothing is held and `buried` stays empty (no holder
+    // to assert). The road's own width keeps its height.
     let base = flat(102.0);
     let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
     let other = road_across(94.0, 101.5, 3.0);

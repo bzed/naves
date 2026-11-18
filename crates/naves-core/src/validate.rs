@@ -25,7 +25,9 @@ use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 pub const END_STEP_TOL_M: f64 = 0.5;
 /// How far beyond a junction's patch a junction of a bridge's roads may lie from the end of its deck, inside a
 /// chain, for the strip that runs through the patch to be compared with the junction's plane: the run from the
-/// deck to the next variable of the height solve is at most a piece (25 m) long.
+/// deck to the next variable of the height solve is at most a piece (25 m) long. The 25 m is set by hand from the
+/// longest piece of the catalog, not derived from it: a longer piece would put its junction out of reach and its break
+/// would not be compared.
 pub const CROSSING_REACH_M: f64 = 25.0;
 /// A chain end this close (metres) to the end of a deck is where the deck ends.
 const END_JOIN_M: f64 = 1.5;
@@ -488,8 +490,11 @@ fn buried_violations(
                 Rule::BridgeBuried,
                 b.at,
                 format!(
-                    "The ground under bridge {} is {:.1} m above {reference} at {} places, held by {holder}",
-                    b.stretch, b.above_m, b.vertices
+                    "The ground under bridge {} is {:.1} m above {reference} at {} {}, held by {holder}",
+                    b.stretch,
+                    b.above_m,
+                    b.vertices,
+                    if b.vertices == 1 { "place" } else { "places" }
                 ),
             )
         })
@@ -559,10 +564,10 @@ fn end_neighbour(
     ports: ((f64, f64), (f64, f64)),
     deck: f64,
     ids: &[&str],
-) -> Option<(f64, String)> {
+) -> Option<(f64, String, bool)> {
     let (port, other_port) = ports;
     let (chain_end, forward) = (own.2, own.3);
-    let mut found: Vec<(f64, String)> = Vec::new();
+    let mut found: Vec<(f64, String, bool)> = Vec::new();
     // the junctions that belong to the bridge, with their distance from this end and from the deck's other end
     let named: Vec<(&crate::junctions::Junction, f64, f64)> = junctions
         .points
@@ -591,12 +596,13 @@ fn end_neighbour(
         found.push((
             height - deck,
             format!("junction at ({:.0}, {:.0})", j.at.0, j.at.1),
+            false,
         ));
     }
     if !chain_end {
         // A deck inside a chain is not held to a junction beyond its patch, but the strip may run through the
         // junction's patch there: the height solve holds it to the junction's plane (a crossing row) and may give
-        // that up where the grade limits forbid it. Compare the strip with the junction's plane where it passes
+        // that up where keeping it costs more than the break (the vertical-bend rows next to the level deck). Compare the strip with the junction's plane where it passes
         // closest to the junction, inside the patch, for every junction of the bridge's roads within
         // [`CROSSING_REACH_M`] of the patch and nearer this end than the deck's other end.
         for (j, d, _) in named.iter().filter(|(j, d, other)| {
@@ -615,10 +621,8 @@ fn end_neighbour(
             let height = j.height_at(point) - if under { OVERLAY_DROP_M } else { 0.0 };
             found.push((
                 height - strip_height,
-                format!(
-                    "junction at ({:.0}, {:.0}), where the road enters it,",
-                    j.at.0, j.at.1
-                ),
+                format!("junction at ({:.0}, {:.0})", j.at.0, j.at.1),
+                true,
             ));
         }
     }
@@ -638,13 +642,13 @@ fn end_neighbour(
                     .first()
                     .and_then(|s| stretch_parts(net, *s).next())
                     .unwrap_or("?");
-                found.push((at.2 - deck, format!("road {id}")));
+                found.push((at.2 - deck, format!("road {id}"), false));
             }
         }
     }
     found
         .into_iter()
-        .filter(|(step, _)| step.is_finite())
+        .filter(|(step, _, _)| step.is_finite())
         .max_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
 }
 
@@ -663,6 +667,9 @@ pub struct EndStep {
     pub step: f64,
     /// What it joins, for people.
     pub what: String,
+    /// Whether the step is the road beyond the deck against the plane of a junction it runs through (the deck's end is
+    /// not at that junction), not the deck against what it joins.
+    pub crossing: bool,
 }
 
 /// Every end of a bridge's deck that joins a junction of the bridge's roads or the end of another road, with the
@@ -674,9 +681,11 @@ pub struct EndStep {
 /// road is [`OVERLAY_DROP_M`] below it); or with a road that ends within 1.5 m of it. What is not joined
 /// to the bridge is not compared. A deck inside a chain whose junction lies beyond the patch is not held to it,
 /// but the strip beyond the deck may run through the patch (the height solve holds it to the junction's plane
-/// there, and gives that up where the grade limits forbid it): then the strip's height where it passes closest to
+/// there, and gives that up where keeping it costs more than the break, the vertical-bend rows next to the level
+/// deck): then the strip's height where it passes closest to
 /// the junction (inside the patch) is compared with the junction's plane there, for every junction of the bridge's
-/// roads within [`CROSSING_REACH_M`] of the patch and nearer this end than the deck's other end; the plane is not
+/// roads within [`CROSSING_REACH_M`] of the patch and nearer this end than the deck's other end (a break with a
+/// junction farther than that beyond its patch is not compared); the plane is not
 /// read beyond its patch at the deck's port (a ramp between the deck and the patch is `road_grade`'s).
 /// Heights that are not numbers give nothing.
 #[must_use]
@@ -712,7 +721,7 @@ pub fn bridge_end_steps(
                 let chain_end = joint == 0 || joint + 1 == strip.joints.len();
                 let at = (port.0, port.1);
                 let ports = (at, (other.0, other.1));
-                let Some((step, what)) = end_neighbour(
+                let Some((step, what, crossing)) = end_neighbour(
                     net,
                     profiles,
                     junctions,
@@ -730,6 +739,7 @@ pub fn bridge_end_steps(
                         at,
                         step,
                         what,
+                        crossing,
                     });
                 }
             }
@@ -750,16 +760,22 @@ fn end_step_violations(
         .filter(|e| e.step.abs() > END_STEP_TOL_M)
         .map(|e| {
             let side = if e.step > 0.0 { "below" } else { "above" };
-            violation(
-                Rule::BridgeEndStep,
-                e.at,
+            let message = if e.crossing {
+                format!(
+                    "The road beyond the deck of bridge {} is {:.1} m {side} the plane of the {} where it enters its patch: nothing in the project sets heights, look at the site",
+                    e.stretch,
+                    e.step.abs(),
+                    e.what
+                )
+            } else {
                 format!(
                     "The deck of bridge {} ends {:.1} m {side} the {} it joins: nothing in the project sets heights, look at the site",
                     e.stretch,
                     e.step.abs(),
                     e.what
-                ),
-            )
+                )
+            };
+            violation(Rule::BridgeEndStep, e.at, message)
         })
         .collect()
 }
