@@ -2524,7 +2524,7 @@ fn a_level_deck_next_to_a_junction_that_is_a_little_higher_ends_in_a_ramp_not_a_
 }
 
 #[test]
-fn a_patch_that_starts_at_the_deck_is_left_by_a_ramp_across_it() {
+fn a_step_between_two_fixed_heights_at_a_deck_end_is_reported() {
     // the patch is 5 m: the road enters it 0.75 m after the deck's end, under RAMP_JOINT_MIN_M from the deck (which
     // is one level height and cannot hold the junction's plane), so no joint is added there; where it leaves the
     // patch (335.65) a joint is added and held, and the 0.87 m is closed by an 8 % ramp across the patch

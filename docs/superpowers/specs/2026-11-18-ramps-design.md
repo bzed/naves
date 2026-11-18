@@ -64,7 +64,8 @@ along the run has no room for a joint between them, and a deck's own joint holds
 then tied to that junction's plane where the run enters the patch (a `Crossing` at the patch's edge, a hard row),
 even where the junction already holds another joint of the road (first version: the row was skipped, nothing in the
 solve saw the step at 74208396). `bridge_end_step` measures the step at the same place. The deck or the junction
-gives way: a junction less than about a metre off its ground costs less than a step.
+gives way: being off its ground costs a junction far less than a step costs (there is no threshold; the junction
+gives way by as much as the row needs).
 
 - It applies to every run, not only to runs that touch a deck, if the first measurement shows no harm; otherwise it
   is limited to runs that touch a deck and that is said.
@@ -95,7 +96,9 @@ clearance may cost; above 0.20 it is not given for them lightly. Without that ba
 in an impossible case: breaks of 27 to 34 % at one joint appeared.
 
 The value is an estimate: a car with ordinary ground clearance takes a 10 % break at walking speed without
-grounding; two such breaks at least `RAMP_JOINT_MIN_M` apart give a 20 % ramp. It is one constant and will be
+grounding; two such breaks at least `RAMP_JOINT_MIN_M` apart give a 20 % ramp. **Known limit:** the solve adds no
+joint between a level deck and the ramp, so a ramp steeper than `GRADE_BREAK_MAX` right at a deck's end is one break
+and always a `road_grade` finding. It is one constant and will be
 measured in the game.
 
 ### What gives way first
@@ -149,7 +152,10 @@ bridge_post_floats 0, join_without_junction 65.
 
 `bridge_end_step`: 74208396 is not gone but changed. The deck and the junction it faces (patch 0.7 m from the deck's
 end) now meet (deck 320.12 to 320.39 m, the plane at the port 320.90 to 320.39 m, step 0.00 m); a step of 0.56 m
-remains against the next junction (6764, 7378), 22 m on, whose plane the road is above where it enters the patch. The
+remains against the next junction (6764, 7378), 22 m on, measured where the road runs closest to it: that junction
+holds one joint of the road outside its patch (the `Arm` rule), and the road's slope through the patch differs from the
+tilt of the junction's plane. That is how any road passing a junction is held, not a matter of deck ends; it is left
+as a follow-up. The
 junction at the deck's far end is 0.79 m above its ground (0.52 m before). 39605281 (a new one in the first version)
 is gone: step 0.00 m. 130047131 (0.52 m) and 39663890 (0.63 m) are chain ends and unchanged.
 

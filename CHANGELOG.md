@@ -30,8 +30,8 @@ All notable changes to this project are documented here. The format follows
   vertical bends of 5 to 6 % are no longer reported by `road_grade` because the zone limit now covers them (their
   heights are the same as before). A deck whose end faces a junction whose patch starts within 4 m of it (no joint fits
   between them) is tied to that junction's plane where the road enters the patch, even if the junction already holds
-  another joint of the road: the junction or the deck gives way, a junction less than about a metre off its ground
-  before a step is left, and `bridge_end_step` measures the step there too (it measured at the closest approach to the
+  another joint of the road: the junction or the deck gives way before a step is left (being off its ground costs a
+  junction far less than a step), and `bridge_end_step` measures the step there too (it measured at the closest approach to the
   junction's centre before, which hid a step at the patch's edge). On the example (terrain size 2048): 186 joints added;
   `road_misses_terrain` 4285 to 4175, `road_conflict` 899 to 845, `road_not_drivable` 185 to 182; `road_grade` 4 to 11
   (ten of the new wording, at breaks of 11 to 18 %), `bridge_buried` 6 to 8 (two new ones of 0.2 m each, ground a road
