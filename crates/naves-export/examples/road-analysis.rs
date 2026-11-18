@@ -1449,13 +1449,15 @@ fn main() {
                             j.at.1 + (port.1 - j.at.1) * t,
                         );
                         format!(
-                            "junction ({:.0}, {:.0}) d {:.1} patch {:.1} h_port {:.2} h_edge {:.2}",
+                            "junction ({:.0}, {:.0}) d {:.1} patch {:.1} h_port {:.2} h_edge {:.2} height {:.2} ground {:.2}",
                             j.at.0,
                             j.at.1,
                             d,
                             j.patch_m,
                             j.height_at((port.0, port.1)),
-                            j.height_at(edge)
+                            j.height_at(edge),
+                            j.height,
+                            j.ground
                         )
                     },
                 );
@@ -1639,9 +1641,17 @@ fn main() {
                     if k > 0
                         && let Some(before) = grade_of(k - 1)
                         && near(along[k])
-                        && (g - before).abs() > change.0
                     {
-                        change = ((g - before).abs(), (strip.joints[k].0, strip.joints[k].1));
+                        let jump = (g - before).abs();
+                        if jump > 0.10 {
+                            println!(
+                                "RAMPBREAK ({:.0}, {:.0}) {jump:.3}",
+                                strip.joints[k].0, strip.joints[k].1
+                            );
+                        }
+                        if jump > change.0 {
+                            change = (jump, (strip.joints[k].0, strip.joints[k].1));
+                        }
                     }
                 }
             }
