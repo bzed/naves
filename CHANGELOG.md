@@ -25,7 +25,11 @@ All notable changes to this project are documented here. The format follows
   gives way is: the grade ceiling (firmer than before inside the zone), the junction's hold and the deck's join, the
   grade break, the ground. A break over 10 % that was needed to keep a hold is reported by `road_grade` as "The grade
   changes by 14 % at one point, the most a vehicle takes there is 10 %". The 10 % and the 25 m are estimates, not yet
-  driven in the game.
+  driven in the game. On the example (terrain size 2048): 186 joints added; `road_misses_terrain` 4285 to 4180,
+  `road_conflict` 899 to 848, `road_not_drivable` 185 to 182; `road_grade` 4 to 11 (ten of the new wording at breaks of
+  11 to 18 %, three vertical bends gone), `bridge_buried` 6 to 9 (each 0.1 to 0.2 m) and `bridge_end_step` 3 to 4: at
+  74208396 the junction 5.7 m from the deck has a patch of 5 m that starts 0.7 m after the deck's end, so no ramp fits
+  there and the step is now 0.6 m against the next junction (6764, 7378), and 39605281 has a new one of 0.6 m.
 
 ### Fixed
 
