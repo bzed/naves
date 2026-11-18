@@ -8,7 +8,9 @@
 //!
 //! Every variable of every chain (see [`Chain`]) has a height that is an affine expression ([`Expr`]) in the
 //! unknowns: its own unknown (a free variable), the plane of the junction that holds it, the plane of a ring,
-//! or the height of the road its end lies on. The unknowns are numbered, in this order: the free heights,
+//! or the height of the road its end lies on. A chain has a variable at the joints the solve adds where a road
+//! enters or leaves the patch of a junction (see `holds::ramp_joints`), and the rows (G) and (B) near junctions and
+//! deck ends are those of a ramp ([`ramp_anchors`], [`bend_limit`]). The unknowns are numbered, in this order: the free heights,
 //! chain by chain in placement order and variable by variable; then one height per junction that holds a
 //! variable (not on a ring), in the order of [`Junctions::points`]; then one tilt per such junction with a
 //! through road, in the same order; then the slacks, in the order their rows are made. Each height and tilt
@@ -19,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::heightmap::Heightmap;
 use crate::junctions::{Junction, Junctions, RingPlane};
-use crate::limits::{grade_aim, grade_ceiling, min_vertical_radius};
+use crate::limits::{GRADE_BREAK_MAX, RAMP_ZONE_M, grade_aim, grade_ceiling, min_vertical_radius};
 use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
@@ -44,6 +46,18 @@ const TILT_LEVER_M: f64 = 25.0;
 const AIM: f64 = 1.0;
 /// Weight of the slacks of the rows that are kept unless nothing else is possible.
 const HARD: f64 = 1.0e4;
+/// Weight of the slack of the grade ceiling of a segment inside a ramp zone: twenty times [`HARD`], so that a hold or a
+/// clearance, whose slacks also grow with their square, is given up before the ceiling is: the first of the order
+/// next to a junction or the end of a deck. With the breaks of a ramp cheap, the ceiling is what keeps a ramp
+/// drivable. Outside a ramp zone the slack costs [`HARD`], as before.
+const CEILING: f64 = 20.0 * HARD;
+/// What a metre of a grade break over the limit inside a ramp zone costs, per metre of the height misfit it makes
+/// at the joint (the excess of the change of grade times the length of the shorter segment next to the joint, the
+/// ramp itself): a hundred times what a metre of misfit to the ground costs at one metre (so that the limit stays firm
+/// unless a hold or the grade ceiling needs it given up), a hundredth of what a metre of a hold that is given up
+/// costs ([`HARD`]). The order of what gives way next to a junction or the end of a deck is then: the grade ceiling
+/// and the hold ([`HARD`] a metre), the grade break, the smoothing and the ground.
+const RAMP_BREAK_PER_M: f64 = 100.0;
 /// How far over a limit a grade or a change of grade may be before it is a finding.
 const EXCESS_TOLERANCE: f64 = 1.0e-4;
 
@@ -143,6 +157,9 @@ pub(crate) struct ModelChain {
     radius: f64,
     /// The slack `f` of the grade rows of each segment that has them.
     over_ceiling: Vec<Option<usize>>,
+    /// The ways along the chain, from its first joint, of the places the ramp zones are measured from (see
+    /// [`ramp_anchors`]).
+    anchors: Vec<f64>,
 }
 
 /// The unknowns of a junction: its height and, with a through road, its tilt.
@@ -242,6 +259,8 @@ struct Draft {
     radius: f64,
     /// The junctions the strip runs through the patch of between a deck and the next variable.
     crossings: Vec<holds::Crossing>,
+    /// The places the ramp zones are measured from, see [`ramp_anchors`].
+    anchors: Vec<f64>,
 }
 
 /// The height of a ring's plane at `at`; an error that says where if it is not a number.
@@ -411,7 +430,7 @@ fn drafts(
         let family = road.family;
         let count = chain.at.len();
         let mut holds =
-            holds::junction_heights(net, &chain, roads, road.width / 2.0, cell, junctions, true);
+            holds::junction_heights(net, &chain, road.width / 2.0, cell, junctions, true);
         // a junction the strip crosses where no variable lies in its patch is held by a row, not a variable
         let crossings = if ring_of(net, roads, junctions).is_some() {
             Vec::new()
@@ -452,14 +471,14 @@ fn drafts(
         let (aim_base, ceiling_base) = (grade_aim(family), grade_ceiling(family));
         let aim = limits_per_segment(
             &chain,
-            roads,
+            &chain.legs,
             net,
             &segment_grades(net, &ends, &chain, roads, aim_base, &held),
             aim_base,
         );
         let ceiling = limits_per_segment(
             &chain,
-            roads,
+            &chain.legs,
             net,
             &segment_grades(net, &ends, &chain, roads, ceiling_base, &held),
             ceiling_base,
@@ -469,12 +488,19 @@ fn drafts(
         } else {
             ground_targets(&chain, hm)?
         };
-        strips.push(strip_of(net, roads, joint_heights(&chain, &[]), &[], road));
+        strips.push(strip_of(
+            net,
+            &chain.legs,
+            joint_heights(&chain, &[]),
+            &[],
+            road,
+        ));
         if let Some(strip) = strips.last() {
             bounds.push(meeting_bounds(strip));
         }
+        let anchors = ramp_anchors(&chain, &holds, &crossings);
         drafts.push(Draft {
-            roads: roads.clone(),
+            roads: chain.legs.clone(),
             first,
             chain,
             ring: ring.is_some(),
@@ -485,6 +511,7 @@ fn drafts(
             ceiling,
             radius: min_vertical_radius(family),
             crossings,
+            anchors,
         });
     }
     Ok(drafts)
@@ -517,7 +544,7 @@ impl Builder {
     }
 
     /// The rows (G) of a segment whose height difference is `d` over `run` metres: returns `f`.
-    fn grade(&mut self, d: &Expr, run: f64, aim: f64, ceiling: f64) -> usize {
+    fn grade(&mut self, d: &Expr, run: f64, aim: f64, ceiling: f64, weight: f64) -> usize {
         let e = self.band(d, aim * run);
         let f = self.unknown();
         self.row(
@@ -527,29 +554,97 @@ impl Builder {
         );
         self.row(vec![(f, 1.0)], 0.0, f64::INFINITY);
         self.problem.add_square(AIM, &[(e, 1.0)], 0.0);
-        self.problem.add_linear(HARD, f);
-        self.problem.add_square(HARD, &[(f, 1.0)], 0.0);
+        self.problem.add_linear(weight, f);
+        self.problem.add_square(weight, &[(f, 1.0)], 0.0);
         f
     }
 
-    /// A row (B): the change of grade `change` within `limit`.
-    fn bend(&mut self, change: &Expr, limit: f64) {
+    /// A row (B): the change of grade `change` within `limit`. Outside a ramp zone the excess costs as the other
+    /// hard rows do (scaled to [`REFERENCE_M`]); inside one, where the limit is that of a ramp ([`bend_limit`]), it
+    /// costs [`RAMP_BREAK_PER_M`] a metre of the misfit it makes over `lever`, less than a hold that is given up.
+    fn bend(&mut self, change: &Expr, limit: f64, lever: f64, ramp: bool) {
         if change.terms.is_empty() {
             return;
         }
         let b = self.band(change, limit);
-        self.problem.add_linear(HARD * REFERENCE_M, b);
-        self.problem.add_square(HARD, &[(b, REFERENCE_M)], 0.0);
+        if ramp {
+            self.problem.add_linear(RAMP_BREAK_PER_M * lever, b);
+            self.problem
+                .add_square(RAMP_BREAK_PER_M, &[(b, lever)], 0.0);
+        } else {
+            self.problem.add_linear(HARD * REFERENCE_M, b);
+            self.problem.add_square(HARD, &[(b, REFERENCE_M)], 0.0);
+        }
     }
 }
 
-/// The change of grade at each bend of a chain: `(variable, where, change, run)`; a deck variable has one per
-/// deck end, between the grade of its approach and the level deck.
-fn bends_of(
+/// The places along a chain, as the way from its first joint in metres, that its ramp zones are measured from: a
+/// junction's hold (the joint the junction holds, which lies in or within reach of its patch, and the joints added
+/// at its patch), the ends of a bridge deck, and the places where a strip runs through a junction's patch without a
+/// joint (`crossings`). A change of grade within [`RAMP_ZONE_M`] of one of them is in a ramp zone.
+fn ramp_anchors(
     chain: &Chain,
-    grade: &dyn Fn(usize) -> Option<Expr>,
-) -> Vec<(usize, (f64, f64), Expr, f64)> {
+    holds: &[Option<holds::Hold>],
+    crossings: &[holds::Crossing],
+) -> Vec<f64> {
+    let stations = chain.stations();
+    let mut anchors = Vec::new();
+    for (v, span) in stations.iter().enumerate() {
+        let is_deck = chain.deck.get(v).is_some_and(Option::is_some);
+        if is_deck || holds.get(v).is_some_and(Option::is_some) {
+            anchors.extend([span.0, span.1]);
+        }
+    }
+    for crossing in crossings {
+        if let (Some(from), Some(to)) = (stations.get(crossing.from), stations.get(crossing.to)) {
+            anchors.push(from.1 + crossing.t * (to.0 - from.1));
+        }
+    }
+    anchors
+}
+
+/// The largest change of grade at a bend whose rows (B) are over `run` metres: `run / radius` outside a ramp zone;
+/// inside one (`station`, the way along the chain, within [`RAMP_ZONE_M`] of an anchor) the larger of that and
+/// [`GRADE_BREAK_MAX`]. Returns the limit and whether it is a ramp's.
+/// Whether the way `station` along a chain is within [`RAMP_ZONE_M`] of one of its `anchors` (see [`ramp_anchors`]).
+fn in_ramp_zone(anchors: &[f64], station: f64) -> bool {
+    anchors.iter().any(|a| (a - station).abs() <= RAMP_ZONE_M)
+}
+
+fn bend_limit(anchors: &[f64], station: f64, run: f64, radius: f64) -> (f64, bool) {
+    let by_radius = run / radius;
+    if in_ramp_zone(anchors, station) {
+        (by_radius.max(GRADE_BREAK_MAX), GRADE_BREAK_MAX > by_radius)
+    } else {
+        (by_radius, false)
+    }
+}
+
+/// A bend of a chain: where the grade changes, and by how much.
+struct Bend {
+    /// Where.
+    at: (f64, f64),
+    /// The way along the chain from its first joint to it.
+    station: f64,
+    /// The change of grade.
+    change: Expr,
+    /// The run the rows (B) measure it over.
+    run: f64,
+    /// The length of the shorter segment next to the bend, which an excess of the change of grade is a height
+    /// misfit over, in metres.
+    lever: f64,
+}
+
+/// The change of grade at each bend of a chain; a deck variable has one per deck end, between the grade of its
+/// approach and the level deck.
+fn bends_of(chain: &Chain, grade: &dyn Fn(usize) -> Option<Expr>) -> Vec<Bend> {
     let count = chain.at.len();
+    let stations = chain.stations();
+    let station = |v: usize, last: bool| {
+        stations
+            .get(v)
+            .map_or(0.0, |s| if last { s.1 } else { s.0 })
+    };
     let mut out = Vec::new();
     for i in 0..count {
         let at = chain.at.get(i).copied().unwrap_or_default();
@@ -557,15 +652,33 @@ fn bends_of(
             let length = deck_length(chain, i);
             if let Some(before) = i.checked_sub(1).and_then(grade) {
                 let run = f64::midpoint(run_of(chain, i - 1), length);
-                out.push((i, start, Expr::sum(&[(&before, -1.0)]), run));
+                out.push(Bend {
+                    at: start,
+                    station: station(i, false),
+                    change: Expr::sum(&[(&before, -1.0)]),
+                    run,
+                    lever: run_of(chain, i - 1),
+                });
             }
             if let Some(after) = grade(i) {
                 let run = f64::midpoint(run_of(chain, i), length);
-                out.push((i, end, after, run));
+                out.push(Bend {
+                    at: end,
+                    station: station(i, true),
+                    change: after,
+                    run,
+                    lever: run_of(chain, i),
+                });
             }
         } else if let (Some(before), Some(after)) = (i.checked_sub(1).and_then(grade), grade(i)) {
             let run = f64::midpoint(run_of(chain, i - 1), run_of(chain, i));
-            out.push((i, at, Expr::sum(&[(&after, 1.0), (&before, -1.0)]), run));
+            out.push(Bend {
+                at,
+                station: station(i, false),
+                change: Expr::sum(&[(&after, 1.0), (&before, -1.0)]),
+                run,
+                lever: run_of(chain, i - 1).min(run_of(chain, i)),
+            });
         }
     }
     out
@@ -675,6 +788,10 @@ fn plane_expr(
 /// at more than `h`, though the grade itself stays under its ceiling (74208396: 16 to 20 % against 27 %, a bend of
 /// 0.16 to 0.20 against a limit of 0.046). The break that remains is reported by `bridge_end_step`
 /// (`validate::bridge_end_steps` compares the strip with the plane from the solved heights), not by `road_grade`.
+///
+/// This row is for the runs where no joint can be added at the patch (one lies within
+/// [`crate::limits::RAMP_JOINT_MIN_M`] of where it would go, see `holds::ramp_joints`); with a joint there the
+/// junction holds that variable and a ramp closes the difference.
 fn add_crossing(
     builder: &mut Builder,
     heights: &[Expr],
@@ -805,6 +922,7 @@ pub(crate) fn build(
             ceiling: draft.ceiling,
             radius: draft.radius,
             over_ceiling,
+            anchors: draft.anchors,
         });
     }
     // the junctions: their height and tilt near the ground's, the tilt within its cap (T)
@@ -883,7 +1001,8 @@ fn add_chain(
     // one stencil across a deck would reward equal grades on both sides, the jump off one end the rows forbid
     let grade = |i: usize| grade_expr(chain, heights, i);
     let bends = bends_of(chain, &grade);
-    for (_, _, change, run) in &bends {
+    for bend in &bends {
+        let (change, run) = (&bend.change, bend.run);
         let kappa = Expr::sum(&[(change, REFERENCE_M * REFERENCE_M / run)]);
         if !kappa.terms.is_empty() {
             builder
@@ -892,6 +1011,7 @@ fn add_chain(
         }
     }
     // (G)
+    let stations = chain.stations();
     for (i, slot) in over_ceiling.iter_mut().enumerate() {
         let (Some(from), Some(to)) = (heights.get(i), heights.get(i + 1)) else {
             continue;
@@ -902,11 +1022,23 @@ fn add_chain(
         }
         let aim = draft.aim.get(i).copied().unwrap_or(0.0);
         let ceiling = draft.ceiling.get(i).copied().unwrap_or(aim);
-        *slot = Some(builder.grade(&d, run_of(chain, i), aim, ceiling));
+        // a segment within a ramp zone (any of it within RAMP_ZONE_M of an anchor) holds its ceiling firmer
+        let ramp = stations
+            .get(i)
+            .zip(stations.get(i + 1))
+            .is_some_and(|(a, b)| {
+                draft
+                    .anchors
+                    .iter()
+                    .any(|x| *x >= a.1 - RAMP_ZONE_M && *x <= b.0 + RAMP_ZONE_M)
+            });
+        let weight = if ramp { CEILING } else { HARD };
+        *slot = Some(builder.grade(&d, run_of(chain, i), aim, ceiling, weight));
     }
     // (B)
-    for (_, _, change, run) in &bends {
-        builder.bend(change, run / draft.radius);
+    for bend in &bends {
+        let (limit, ramp) = bend_limit(&draft.anchors, bend.station, bend.run, draft.radius);
+        builder.bend(&bend.change, limit, bend.lever, ramp);
     }
 }
 
@@ -1020,14 +1152,24 @@ fn excesses_of(mc: &ModelChain, heights: &[f64]) -> Vec<GradeExcess> {
     let constants: Vec<Expr> = heights.iter().map(|h| Expr::constant(*h)).collect();
     let grade = |i: usize| grade_expr(chain, &constants, i);
     let mut excesses = Vec::new();
-    for (_, at, change, run) in bends_of(chain, &grade) {
-        let change = change.constant;
-        if change.abs() > run / mc.radius + EXCESS_TOLERANCE {
-            excesses.push(GradeExcess {
-                at,
-                kind: GradeExcessKind::VerticalBend,
-                grade: change.abs() / run,
-                limit: 1.0 / mc.radius,
+    for bend in bends_of(chain, &grade) {
+        let (change, run) = (bend.change.constant, bend.run);
+        let (limit, ramp) = bend_limit(&mc.anchors, bend.station, run, mc.radius);
+        if change.abs() > limit + EXCESS_TOLERANCE {
+            excesses.push(if ramp {
+                GradeExcess {
+                    at: bend.at,
+                    kind: GradeExcessKind::GradeBreak,
+                    grade: change.abs(),
+                    limit,
+                }
+            } else {
+                GradeExcess {
+                    at: bend.at,
+                    kind: GradeExcessKind::VerticalBend,
+                    grade: change.abs() / run,
+                    limit: 1.0 / mc.radius,
+                }
             });
         }
     }
@@ -1126,4 +1268,41 @@ pub(crate) fn add_clearances(model: &mut Model, net: &PlacedNetwork, crossings: 
     }
     builder.problem.unknowns = builder.next;
     model.problem = builder.problem;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_break_outside_every_ramp_zone_is_judged_by_the_radius_alone() {
+        // 18.75 m of run on a 250 m radius allows 7.5 %; an 8 % break is over it, 40 m from the nearest anchor
+        let (limit, ramp) = bend_limit(&[0.0, 10.0], 50.5, 18.75, 250.0);
+        assert!((limit - 0.075).abs() < 1e-12 && !ramp);
+        let (limit, ramp) = bend_limit(&[], 5.0, 18.75, 250.0);
+        assert!((limit - 0.075).abs() < 1e-12 && !ramp);
+    }
+
+    #[test]
+    fn inside_a_ramp_zone_the_limit_is_the_larger_of_the_break_limit_and_the_radius() {
+        // 25 m from an anchor is inside, a little more is not
+        let (limit, ramp) = bend_limit(&[100.0], 125.0, 18.75, 250.0);
+        assert!((limit - GRADE_BREAK_MAX).abs() < 1e-12 && ramp);
+        let (limit, ramp) = bend_limit(&[100.0], 125.1, 18.75, 250.0);
+        assert!(limit < GRADE_BREAK_MAX && !ramp);
+        // a radius that allows more over the run than the break limit (a track: 12.5 m on 60 m is 21 %) keeps it, and
+        // is a bend over the radius, not a break
+        let (limit, ramp) = bend_limit(&[100.0], 100.0, 12.5, 60.0);
+        assert!((limit - 12.5 / 60.0).abs() < 1e-12 && !ramp);
+    }
+
+    #[test]
+    fn a_hold_is_worth_more_than_a_break_and_a_break_more_than_the_ground() {
+        // the order of what gives way next to a junction or the end of a deck (one named constant per weight)
+        const {
+            assert!(CEILING > HARD);
+            assert!(HARD > RAMP_BREAK_PER_M);
+            assert!(RAMP_BREAK_PER_M > 1.0);
+        }
+    }
 }

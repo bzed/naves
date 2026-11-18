@@ -2020,7 +2020,10 @@ fn steepest_on(p: &Profiles, net: &PlacedNetwork, id: &str) -> f64 {
 #[test]
 fn a_junction_the_road_below_shares_with_the_approach_leaves_both_roads_drivable() {
     // the side road links a junction on the road below to one on the approach: the approach rises for the deck,
-    // the road below dips under it, and the side road between them takes the difference
+    // the road below dips under it, and the side road between them takes the difference. Next to a junction the
+    // roads may bend by up to a tenth in a ramp zone, which lets all three share the lift: the full clearance is
+    // reached at every position of the junction (with the vertical radius alone, 15 m from the crossing the junction
+    // held the road below too close for it)
     for jx in [285.0, 260.0, 250.0] {
         let (p, _, reached, wanted) = a_t_junction_on_the_road_below_at(jx, DECK);
         assert!(
@@ -2028,13 +2031,7 @@ fn a_junction_the_road_below_shares_with_the_approach_leaves_both_roads_drivable
             "junction at x = {jx}: {:?}",
             p.excesses
         );
-        // 15 m from the crossing the junction holds the road below too close for the full clearance
-        if jx > 280.0 {
-            assert!(reached < wanted - 0.05, "x = {jx}: reached {reached}");
-            assert!(reached > wanted - 0.5, "x = {jx}: reached {reached}");
-        } else {
-            assert!(reached >= wanted - 0.05, "x = {jx}: reached {reached}");
-        }
+        assert!(reached >= wanted - 0.05, "x = {jx}: reached {reached}");
     }
 }
 
@@ -2043,49 +2040,28 @@ fn a_deck_too_thick_for_a_junction_the_roads_share_is_a_finding() {
     // This scenario cannot be solved inside the limits. The deck needs 4.5 m + 8 m (or + 16 m) over the road below,
     // and the side road from the T junction on the road below to the junction on the approach (38 m long from
     // x = 285, 53 m from x = 260, 61 m from x = 250) has to climb most of that: the approach has only 22.5 m to the
-    // deck and the road below 15 to 50 m to the crossing, and the vertical radius of 250 m keeps all three from
-    // bending into that much rise. So something gives: the clearance is short, and the side road is steeper than its
-    // ceiling (a `Grade` finding on it) and, from x = 285 and x = 260, steeper than a car can drive (30 %). The bridge's
-    // road and the road below stay within the drivable grade. These are the measured grades of the side road.
-    for (jx, deck, side) in [
-        (285.0, 8.0, 0.3976),
-        (260.0, 8.0, 0.3385),
-        (250.0, 16.0, 0.2748),
-    ] {
+    // deck and the road below 15 to 50 m to the crossing. So something gives. In a ramp zone the grade ceiling comes
+    // first (then the holds and the clearance, then the breaks of the grade, then the ground), so no road is
+    // steeper than its ceiling and the clearance is what is short (a `bridge_clearance` finding), and the breaks of
+    // the grade over a tenth are `road_grade` findings. (With the vertical radius alone the side road was steeper than
+    // its ceiling, 40 % from x = 285, more than a car can drive, and the clearance short by less.)
+    for (jx, deck) in [(285.0, 8.0), (260.0, 8.0), (250.0, 16.0)] {
         let (p, net, reached, wanted) = a_t_junction_on_the_road_below_at(jx, deck);
         assert!(
             reached < wanted - 0.05,
             "x = {jx}, deck {deck} m: reached {reached}"
         );
-        for id in ["1:", "3:"] {
+        for id in ["1:", "3:", "6:"] {
             let steepest = steepest_on(&p, &net, id);
             assert!(
-                steepest <= drive_grade(Family::Asf3),
+                steepest <= grade_ceiling(Family::Asf3) + 0.005,
                 "x = {jx}, deck {deck} m: {id} at {steepest}"
             );
         }
-        let steepest = steepest_on(&p, &net, "6:");
-        assert!(
-            (steepest - side).abs() < 0.005,
-            "x = {jx}, deck {deck} m: the side road at {steepest}"
-        );
-        assert_eq!(
-            steepest > drive_grade(Family::Asf3),
-            jx > 255.0,
-            "{steepest}"
-        );
-        // and it is reported
-        let on_side = |at: (f64, f64)| {
-            p.strips
-                .iter()
-                .filter(|s| net.roads[s.slots[0]].slot.stretch.starts_with("6:"))
-                .flat_map(|s| s.joints.iter())
-                .any(|j| (j.0 - at.0).hypot(j.1 - at.1) < 1e-6)
-        };
         assert!(
             p.excesses
                 .iter()
-                .any(|e| e.kind == GradeExcessKind::Grade && on_side(e.at)),
+                .any(|e| e.kind == GradeExcessKind::GradeBreak),
             "x = {jx}, deck {deck} m: {:?}",
             p.excesses
         );

@@ -181,8 +181,11 @@ ground lets it. Where the ground asks for more, the road becomes steeper than it
 is, but not steeper than the limit of its family, nine tenths of what vehicles manage, unless nothing else is possible;
 it is then amber in the Drivable layer, not red. The grade of a road may not change faster than the vertical radius
 of its family allows (600 m on asphalt 1 down to 60 m on a dirt track), and a bridge deck is level, so the road
-before and after it bends into it within the same radius. Where nothing else is possible, the limit is broken as
-little as possible and `road_grade` says where.
+before and after it bends into it within the same radius. Within 25 m of a junction or the end of a bridge deck a short
+ramp is fine: the grade may change by up to 10 % at one joint there (a road that passes through a junction's patch gets
+a joint where it enters the patch, held to the junction's plane), so the road closes a small height difference to the
+deck or the junction in a ramp inside its grade ceiling, not in a step; both values are estimates, not yet driven in
+the game. Where nothing else is possible, the limit is broken as little as possible and `road_grade` says where.
 
 The terrain grid is coarse (a cell is 6.25 m on a 6.4 km map at `terrain_size = 1024`, and never less than 4 m, see [the grid](project-file.md#grid)), and every cell under a road takes the road's height
 for a margin of one and a half cells beyond its edge. **Roads closer together than that** (the two legs of a hairpin,

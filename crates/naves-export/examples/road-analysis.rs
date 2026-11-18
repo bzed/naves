@@ -451,7 +451,12 @@ fn main() {
                 }
                 println!("XDEBUG {role} chain {ci} of {} pieces", roads.len());
                 let holds = chain_holds(&net, roads, f64::from(base.cell_m), &junctions);
-                let strip = profiles.strips.iter().find(|s| s.slots == *roads);
+                let strip = profiles.strips.iter().find(|s| {
+                    // a strip repeats a road for each joint the solve added inside one of its pieces
+                    let mut own = s.slots.clone();
+                    own.dedup();
+                    own == *roads
+                });
                 for (k, (at, hold)) in holds.iter().enumerate() {
                     if (at.0 - c.at.0).hypot(at.1 - c.at.1) > 60.0 {
                         continue;
@@ -1574,6 +1579,77 @@ fn main() {
             );
         }
         std::fs::write(&path, text).expect("write RULES_OUT");
+    }
+    // JOINTS_OUT=file: every joint of every strip as tab-separated x, y, height, for comparing two runs
+    if let Ok(path) = std::env::var("JOINTS_OUT") {
+        let mut text = String::new();
+        for strip in &profiles.strips {
+            for j in &strip.joints {
+                // writing to a String cannot fail, so the Result carries no error
+                let _ = writeln!(text, "{:.2}\t{:.2}\t{:.3}", j.0, j.1, j.2);
+            }
+        }
+        std::fs::write(&path, text).expect("write JOINTS_OUT");
+    }
+    // the joints the solve added inside pieces (a strip repeats a road for each), and the steepest grade and the
+    // largest break of the grade within 25 m (along the strip) of a deck end or of a joint that lies within a
+    // junction's patch and 4 m: the same measure for any version of the solve, to compare two
+    {
+        let (mut added, mut grade, mut change) =
+            (0_usize, (0.0_f64, (0.0, 0.0)), (0.0_f64, (0.0, 0.0)));
+        let mut in_zone = 0_usize;
+        for strip in &profiles.strips {
+            let mut own = strip.slots.clone();
+            own.dedup();
+            added += strip.slots.len() - own.len();
+            let mut along = vec![0.0_f64];
+            for w in strip.joints.windows(2) {
+                let last = along.last().copied().unwrap_or(0.0);
+                along.push(last + (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1));
+            }
+            let mut anchors: Vec<f64> = Vec::new();
+            for (k, a) in along.iter().enumerate() {
+                let deck = |i: Option<usize>| {
+                    i.and_then(|i| strip.bridge.get(i).copied())
+                        .unwrap_or(false)
+                };
+                let joint = strip.joints[k];
+                let at_deck_end = deck(k.checked_sub(1)) != deck(Some(k));
+                let at_junction = junctions
+                    .points
+                    .iter()
+                    .any(|j| (j.at.0 - joint.0).hypot(j.at.1 - joint.1) <= j.patch_m + 4.0);
+                if at_deck_end || at_junction {
+                    anchors.push(*a);
+                }
+            }
+            let near = |a: f64| anchors.iter().any(|x| (x - a).abs() <= 25.0);
+            let grade_of = |k: usize| {
+                let run = along[k + 1] - along[k];
+                (run >= 1.0).then(|| (strip.joints[k + 1].2 - strip.joints[k].2) / run)
+            };
+            for k in 0..strip.joints.len().saturating_sub(1) {
+                if let Some(g) = grade_of(k)
+                    && near(f64::midpoint(along[k], along[k + 1]))
+                {
+                    in_zone += 1;
+                    if g.abs() > grade.0 {
+                        grade = (g.abs(), (strip.joints[k].0, strip.joints[k].1));
+                    }
+                    if k > 0
+                        && let Some(before) = grade_of(k - 1)
+                        && near(along[k])
+                        && (g - before).abs() > change.0
+                    {
+                        change = ((g - before).abs(), (strip.joints[k].0, strip.joints[k].1));
+                    }
+                }
+            }
+        }
+        println!(
+            "RAMPZONE added joints {added}; segments in a ramp zone {in_zone}; steepest grade {:.3} at ({:.0}, {:.0}); largest break of the grade {:.3} at ({:.0}, {:.0})",
+            grade.0, grade.1.0, grade.1.1, change.0, change.1.0, change.1.1
+        );
     }
     for v in violations
         .iter()

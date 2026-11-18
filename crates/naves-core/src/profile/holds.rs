@@ -6,9 +6,10 @@
 use std::collections::BTreeSet;
 
 use crate::junctions::{ARM_REACH_M, HOLD_M, Junction, JunctionKind, Junctions};
+use crate::limits::RAMP_JOINT_MIN_M;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
-use super::{Chain, chain_of, point_segment_distance};
+use super::{Chain, chain_of, point_segment_distance, ring_of};
 
 /// Which rule holds a variable of a chain to a junction (for measuring, see [`chain_holds`]).
 #[doc(hidden)]
@@ -109,11 +110,12 @@ fn holds_of(
     let Some(chain) = chain_of(net, roads, cell, junctions) else {
         return Vec::new();
     };
-    let half_width = roads
+    let half_width = chain
+        .legs
         .first()
         .and_then(|i| net.roads.get(*i))
         .map_or(0.0, |r| r.width / 2.0);
-    let held = junction_heights(net, &chain, roads, half_width, cell, junctions, check);
+    let held = junction_heights(net, &chain, half_width, cell, junctions, check);
     chain
         .joints
         .iter()
@@ -125,15 +127,15 @@ fn holds_of(
 pub(super) fn joint_junctions(
     net: &PlacedNetwork,
     chain: &Chain,
-    roads: &[usize],
     cell: f64,
     junctions: &Junctions,
 ) -> Vec<Option<usize>> {
-    let half_width = roads
+    let half_width = chain
+        .legs
         .first()
         .and_then(|i| net.roads.get(*i))
         .map_or(0.0, |r| r.width / 2.0);
-    let held = junction_heights(net, chain, roads, half_width, cell, junctions, true);
+    let held = junction_heights(net, chain, half_width, cell, junctions, true);
     chain
         .joints
         .iter()
@@ -208,7 +210,9 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
 ///   no joint lies in the patch, at the one joint of the nearest piece that lies nearest the junction (`Arm`,
 ///   within [`ARM_REACH_M`]);
 /// - a chain that ends at a junction is held at its end (a side road ends at the port of a piece, beyond the
-///   through road's edge), and inward only as far as its joints lie on the other road's level strip, up to eight.
+///   through road's edge), and inward only as far as its joints lie on the other road's level strip, up to eight;
+/// - a joint that was added where the road enters or leaves a junction's patch is held to that junction
+///   (`Patch`, see [`ramp_joints`]).
 ///
 /// A chain is held only to the junctions it belongs to (`Junction::stretches`), unless `check` is false (for
 /// measuring what the check removes).
@@ -219,13 +223,13 @@ fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
 pub(super) fn junction_heights(
     net: &PlacedNetwork,
     chain: &Chain,
-    roads: &[usize],
     half_width: f64,
     cell: f64,
     junctions: &Junctions,
     check: bool,
 ) -> Vec<Option<Hold>> {
     let count = chain.at.len();
+    let roads = chain.legs.as_slice();
     let ids = stretch_ids(net, roads);
     let member = |index: usize| {
         !check
@@ -271,6 +275,16 @@ pub(super) fn junction_heights(
         ) {
             give(&mut held, from.2, junction, HoldRule::Piece);
             give(&mut held, to.2, junction, HoldRule::Piece);
+        }
+    }
+    // the joints added where the road enters and leaves the patch of a junction ([`ramp_joints`]): each is held
+    // to its junction (a road that passes a junction is held at one joint of its own, but these two are what
+    // makes the road lie on the junction's plane inside the patch)
+    for (var, junction) in chain.patch.iter().enumerate() {
+        if let Some(junction) = junction.filter(|j| member(*j))
+            && held.get(var).is_some_and(Option::is_none)
+        {
+            give(&mut held, var, junction, HoldRule::Patch);
         }
     }
     // a junction that a variable lies in the patch of: the variable nearest the junction of each run
@@ -502,4 +516,260 @@ pub(super) fn crossings(
         }
     }
     found
+}
+
+/// How far inside the edge of a patch a joint that is added there lies, in metres, so that the test that finds the
+/// variables in a patch finds it whatever the rounding.
+const PATCH_INSET_M: f64 = 0.05;
+
+/// A joint to add inside a piece of a chain: where the road enters or leaves the patch of a junction (see
+/// [`ramp_joints`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct RampJoint {
+    /// The segment of the chain (between joint `segment` and the next) that the joint lies on.
+    pub segment: usize,
+    /// How far along the segment, from 0 (its first joint) to 1 (its last).
+    pub t: f64,
+    /// Where it lies.
+    pub at: (f64, f64),
+    /// The junction whose patch it lies in, an index into [`Junctions::points`].
+    pub junction: usize,
+    /// For a place too close to a joint the road has (under [`RAMP_JOINT_MIN_M`]), that joint, as an index into
+    /// [`Chain::joints`]: no joint is added, the junction holds this one.
+    pub existing: Option<usize>,
+}
+
+/// The joints to add to `chain` (the chain of the roads `own` as the placement has them, with a joint at the end of
+/// each piece) where a road passes through the patch of a junction it belongs to without a joint of its own in
+/// the patch: one where it enters the patch and one where it leaves, a little inside the patch's edge. The
+/// junction's plane holds them (`Patch`), so the road lies on it inside the patch, and the height difference to
+/// the road's other joints is closed by the grades between the joints, a ramp, not by a step or by lifting a
+/// joint far away.
+///
+/// A joint is not added closer than [`RAMP_JOINT_MIN_M`] to a joint the road has: the road's joint is held to the
+/// junction instead (`RampJoint::existing`; not the start of the chain, a bridge deck or a joint another junction
+/// holds), and not closer to one added before it (the two where the road enters and leaves a patch that short are one,
+/// at the nearest approach). Where no joint can be held that way, the junction is held by the older rules (`Arm`,
+/// and for a run next to a bridge deck a crossing row, see [`crossings`]). Only the pieces of a plain road are split: not a bridge deck, a junction piece, nor the chain of
+/// a roundabout, whose joints lie on its plane. A junction that already holds a variable of the chain by another
+/// rule than `Arm` (a junction piece, a chain end, a chain that ends on this road) is not given joints.
+pub(super) fn ramp_joints(
+    net: &PlacedNetwork,
+    own: &[usize],
+    chain: &Chain,
+    cell: f64,
+    junctions: &Junctions,
+) -> Vec<RampJoint> {
+    if junctions.points.is_empty() || ring_of(net, own, junctions).is_some() {
+        return Vec::new();
+    }
+    let ids = stretch_ids(net, own);
+    let (mut low, mut high) = (
+        (f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for joint in &chain.joints {
+        low = (low.0.min(joint.0), low.1.min(joint.1));
+        high = (high.0.max(joint.0), high.1.max(joint.1));
+    }
+    let mut found: Vec<RampJoint> = Vec::new();
+    for (index, junction) in junctions.points.iter().enumerate() {
+        let (cx, cy) = junction.at;
+        let reach = junction.patch_m;
+        // a box test first: most junctions are nowhere near the chain
+        if cx < low.0 - reach
+            || cx > high.0 + reach
+            || cy < low.1 - reach
+            || cy > high.1 + reach
+            || (!junction.stretches.is_empty() && junction.stretches.is_disjoint(&ids))
+            || chain
+                .joints
+                .iter()
+                .any(|j| (j.0 - cx).hypot(j.1 - cy) <= reach)
+        {
+            continue;
+        }
+        found.extend(ramp_joints_at(net, chain, junction, index, &found));
+    }
+    if found.is_empty() {
+        return found;
+    }
+    // a junction that another rule than `Arm` holds a variable of this chain to is left to that rule
+    let half_width = chain
+        .legs
+        .first()
+        .and_then(|i| net.roads.get(*i))
+        .map_or(0.0, |r| r.width / 2.0);
+    let held = junction_heights(net, chain, half_width, cell, junctions, true);
+    let taken: BTreeSet<usize> = held
+        .iter()
+        .flatten()
+        .filter(|h| h.rule != HoldRule::Arm)
+        .map(|h| h.junction)
+        .collect();
+    found.retain(|f| !taken.contains(&f.junction));
+    // a road's own joint that another rule or another junction already holds stays as it is
+    found.retain(|f| {
+        f.existing
+            .and_then(|k| chain.joints.get(k))
+            .and_then(|j| held.get(j.2).copied().flatten())
+            .is_none_or(|h| h.rule == HoldRule::Arm && h.junction == f.junction)
+    });
+    found
+}
+
+/// The joints [`ramp_joints`] wants for the junction `index` (`found` are those of the junctions before it): where its
+/// patch is passed and no joint of the road lies in it.
+fn ramp_joints_at(
+    net: &PlacedNetwork,
+    chain: &Chain,
+    junction: &Junction,
+    index: usize,
+    found: &[RampJoint],
+) -> Vec<RampJoint> {
+    let (cx, cy) = junction.at;
+    let radius = junction.patch_m - PATCH_INSET_M;
+    let Some(Pass {
+        segment,
+        t: (t_in, t_out),
+        from: a,
+        direction: (dx, dy),
+    }) = (radius > 0.0)
+        .then(|| through_patch(net, chain, junction, radius))
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    let at = |t: f64| (a.0 + t * dx, a.1 + t * dy);
+    let chord = (t_out - t_in) * dx.hypot(dy);
+    let wanted: Vec<f64> = if chord < RAMP_JOINT_MIN_M {
+        vec![f64::midpoint(t_in, t_out)]
+    } else {
+        vec![t_in, t_out]
+    };
+    // the road's own joints that are too close for another: the junction holds the nearest one, as the older rule
+    // did, not both ends of a piece
+    let mut own_joints: Vec<usize> = Vec::new();
+    let mut added: Vec<RampJoint> = Vec::new();
+    for t in wanted {
+        let point = at(t);
+        let near = |p: (f64, f64)| (p.0 - point.0).hypot(p.1 - point.1);
+        let existing = chain
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(k, j)| (k, near((j.0, j.1))))
+            .filter(|(_, d)| *d < RAMP_JOINT_MIN_M)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((joint, _)) = existing {
+            // not the start of the chain (a chain end rule holds that) nor a joint of a bridge deck (one level height)
+            let usable = joint > 0
+                && chain
+                    .joints
+                    .get(joint)
+                    .is_some_and(|j| chain.deck.get(j.2).is_some_and(Option::is_none));
+            if usable && !own_joints.contains(&joint) {
+                own_joints.push(joint);
+            }
+        } else if !found
+            .iter()
+            .chain(&added)
+            .any(|f| near(f.at) < RAMP_JOINT_MIN_M)
+        {
+            added.push(RampJoint {
+                segment,
+                t,
+                at: point,
+                junction: index,
+                existing: None,
+            });
+        }
+    }
+    let from_junction = |k: usize| {
+        chain
+            .joints
+            .get(k)
+            .map_or(f64::INFINITY, |j| (j.0 - cx).hypot(j.1 - cy))
+    };
+    if let Some(joint) = own_joints
+        .into_iter()
+        .min_by(|a, b| from_junction(*a).total_cmp(&from_junction(*b)))
+    {
+        added.push(RampJoint {
+            segment,
+            t: 0.0,
+            at: chain.joints.get(joint).map_or((cx, cy), |j| (j.0, j.1)),
+            junction: index,
+            existing: Some(joint),
+        });
+    }
+    added
+}
+
+/// The piece of `chain` that passes nearest the centre of `junction` through a circle of `radius` around it, with no
+/// joint inside: its segment, the two parameters (from 0 at its first joint to 1 at its last) where it enters and
+/// leaves the circle, its first joint and its direction (a [`Pass`]). Only a plain piece counts, not a bridge deck or a junction
+/// piece.
+fn through_patch(
+    net: &PlacedNetwork,
+    chain: &Chain,
+    junction: &Junction,
+    radius: f64,
+) -> Option<Pass> {
+    let (cx, cy) = junction.at;
+    chain
+        .joints
+        .windows(2)
+        .enumerate()
+        .filter(|(k, _)| {
+            chain
+                .legs
+                .get(*k)
+                .and_then(|i| net.roads.get(*i))
+                .is_some_and(|r| r.kind == PlacedKind::Piece)
+        })
+        .filter_map(|(k, pair)| {
+            let [a, b] = pair else { return None };
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let (fx, fy) = (a.0 - cx, a.1 - cy);
+            let qa = dx * dx + dy * dy;
+            if qa <= 0.0 {
+                return None;
+            }
+            let qb = 2.0 * (fx * dx + fy * dy);
+            let discriminant = qb * qb - 4.0 * qa * (fx * fx + fy * fy - radius * radius);
+            if discriminant <= 0.0 {
+                return None;
+            }
+            let root = discriminant.sqrt();
+            let (t_in, t_out) = ((-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa));
+            if !(t_in > 0.0 && t_out < 1.0) {
+                return None;
+            }
+            let middle = f64::midpoint(t_in, t_out);
+            let nearest = (fx + middle * dx).hypot(fy + middle * dy);
+            Some((
+                nearest,
+                Pass {
+                    segment: k,
+                    t: (t_in, t_out),
+                    from: (a.0, a.1),
+                    direction: (dx, dy),
+                },
+            ))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, pass)| pass)
+}
+
+/// A piece's run through a circle (see [`through_patch`]).
+struct Pass {
+    /// The segment of the chain.
+    segment: usize,
+    /// Where it enters and leaves the circle, from 0 at the segment's first joint to 1 at its last.
+    t: (f64, f64),
+    /// The segment's first joint.
+    from: (f64, f64),
+    /// From the first joint to the last.
+    direction: (f64, f64),
 }

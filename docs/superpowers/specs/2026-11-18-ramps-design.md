@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # A step becomes a ramp
 
 Status: design, 2026-11-18. Written by the assistant on the maintainer's rule of the same day; no approval gate.

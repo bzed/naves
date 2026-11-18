@@ -19,7 +19,9 @@ use naves_core::conform::FILL_SLOPE_MAX;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{Junction, JunctionKind, Junctions, Link, RingPlane, find_junctions};
-use naves_core::limits::{grade_aim, grade_ceiling, min_vertical_radius};
+use naves_core::limits::{
+    GRADE_BREAK_MAX, RAMP_JOINT_MIN_M, grade_aim, grade_ceiling, min_vertical_radius,
+};
 use naves_core::profile::{
     BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, MEETING_GRADE, ProfileError,
     Profiles, chain_holds, nearby_pairs, segment_ceilings, solve_clearing, solve_clearing_with,
@@ -564,7 +566,7 @@ fn a_sharp_deck_end_is_reported() {
     let bends_at = |y: f64| {
         p.excesses
             .iter()
-            .filter(|e| e.kind == GradeExcessKind::VerticalBend)
+            .filter(|e| e.kind == GradeExcessKind::GradeBreak)
             .filter(|e| (e.at.0 - 300.0).hypot(e.at.1 - y) < 1.0)
             .count()
     };
@@ -838,7 +840,9 @@ fn deck_end_grades(p: &Profiles) -> (f64, f64, f64) {
     let grade = |a: (f64, f64, f64), b: (f64, f64, f64)| (b.2 - a.2) / (b.1 - a.1);
     let before = grade(joint_at(p, 287.5), joint_at(p, 300.0));
     let after = grade(joint_at(p, 325.0), joint_at(p, 337.5));
-    let limit = f64::midpoint(12.5, 25.0) / min_vertical_radius(Family::Asf3) + 1e-4;
+    // a deck end is in a ramp zone: the break limit there is GRADE_BREAK_MAX where the radius allows less
+    let limit =
+        (f64::midpoint(12.5, 25.0) / min_vertical_radius(Family::Asf3)).max(GRADE_BREAK_MAX) + 1e-4;
     (before, after, limit)
 }
 
@@ -894,14 +898,15 @@ fn ring_held(y: f64, stretch: &str, ring: &str) -> Junction {
 
 #[test]
 fn a_sharp_deck_end_between_held_approaches_is_reported() {
-    // the two joints before the deck lie on a plane rising 20 % to the deck, the two after it on one falling
-    // 20 %; the deck itself is free, and no height of it keeps both deck ends within the vertical radius
+    // the two joints before the deck lie on a plane rising 30 % to the deck, the two after it on one falling
+    // 30 %; the deck itself is free, and no height of it keeps both deck ends within the break limit of a ramp zone
+    // (GRADE_BREAK_MAX, 10 %: the deck at 15 % to each side makes two breaks of 15 %)
     let hm = terrain(128, 6.25, |_, _| 100.0);
     let net = network(vec![deck_chain()]);
     let mut up = level_ring("r1", (300.0, 275.0), 100.0);
-    up.gradient = (0.0, 0.2);
+    up.gradient = (0.0, 0.3);
     let mut down = level_ring("r2", (300.0, 350.0), 100.0);
-    down.gradient = (0.0, -0.2);
+    down.gradient = (0.0, -0.3);
     let junctions = Junctions {
         rings: vec![up, down],
         points: vec![
@@ -913,12 +918,12 @@ fn a_sharp_deck_end_between_held_approaches_is_reported() {
         ..Junctions::default()
     };
     let (p, _) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
-    assert!((joint_at(&p, 287.5).2 - 102.5).abs() < 1e-9);
-    assert!((joint_at(&p, 337.5).2 - 102.5).abs() < 1e-9);
+    assert!((joint_at(&p, 287.5).2 - 103.75).abs() < 1e-9);
+    assert!((joint_at(&p, 337.5).2 - 103.75).abs() < 1e-9);
     let bends_at = |y: f64| {
         p.excesses
             .iter()
-            .filter(|e| e.kind == GradeExcessKind::VerticalBend)
+            .filter(|e| e.kind == GradeExcessKind::GradeBreak)
             .filter(|e| (e.at.0 - 300.0).hypot(e.at.1 - y) < 1.0)
             .count()
     };
@@ -2310,9 +2315,11 @@ fn a_junction_off_the_run_or_that_the_road_does_not_belong_to_holds_nothing() {
 }
 
 #[test]
-fn a_plain_road_is_held_to_a_junction_it_passes_by_its_arm_not_by_a_crossing_row() {
-    // 12.5 m pieces; the junction 3 m from the strip between two joints, 6 m from each: the existing rule holds
-    // the nearer joint (`Arm`); the crossing rows are for runs that touch a deck and change nothing here
+fn a_plain_road_is_held_to_a_junction_it_passes_at_a_joint_of_its_own_not_by_a_crossing_row() {
+    // 12.5 m pieces; the junction 3 m from the strip between two joints, 6 m from each, patch 5 m: where the road
+    // enters and leaves the patch is 2.3 m from a joint (under RAMP_JOINT_MIN_M) on either side, so none is added and
+    // the nearer of the two joints holds the junction, one not both (the crossing rows are for runs that touch a
+    // deck and change nothing here)
     let net = network(vec![pieces(
         "a",
         Family::Asf3,
@@ -2331,7 +2338,7 @@ fn a_plain_road_is_held_to_a_junction_it_passes_by_its_arm_not_by_a_crossing_row
     let holds = chain_holds(&net, &net.chains[0], 4.0, &junctions);
     let held: Vec<_> = holds.iter().filter_map(|(_, h)| h.as_ref()).collect();
     assert_eq!(held.len(), 1, "{held:?}");
-    assert_eq!(held[0].rule, naves_core::profile::HoldRule::Arm);
+    assert_eq!(held[0].rule, naves_core::profile::HoldRule::Patch);
 }
 
 /// The ring-held version of the run: the junction at (300, `at_y`) lies on a level ring at `ring` metres, so its
@@ -2398,3 +2405,291 @@ fn a_crossing_row_does_not_pin_a_run_end_that_another_junction_holds() {
     assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
     assert!((strip_height_at(&p, 300.0) - 100.0).abs() < 0.01);
 }
+
+// ---- ramps: a short drivable ramp instead of a step next to junctions and bridge ends ----
+// (`docs/superpowers/specs/2026-11-18-ramps-design.md`)
+
+/// A level deck on x = 300 from y = 300 to 325 that a ring-held junction at its start holds at 100 m, 12.5 m pieces
+/// before it, one 17 m piece after it (to y = 342) and 12.5 m pieces on to y = 530. A second junction at
+/// (300, 330.7), 5.7 m beyond the deck's end, with the patch `patch_m`, lies on a level ring `rise` metres above the
+/// deck: its height is fixed, no joint lies in its patch, and the next joint is 17 m from the deck's end (the shape
+/// at way 74208396).
+fn ramp_case(rise: f64, patch_m: f64) -> (PlacedNetwork, Junctions) {
+    let mut chain = pieces("a", Family::Asf3, (300.0, 100.0), (300.0, 300.0), 12.5);
+    chain.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 300.0),
+        (300.0, 325.0),
+    ));
+    chain.extend(pieces(
+        "c",
+        Family::Asf3,
+        (300.0, 325.0),
+        (300.0, 342.0),
+        17.0,
+    ));
+    chain.extend(pieces(
+        "c",
+        Family::Asf3,
+        (300.0, 342.0),
+        (300.0, 530.0),
+        12.5,
+    ));
+    let mut ahead = ring_held(330.7, "c", "r2");
+    ahead.patch_m = patch_m;
+    ahead.stretches.insert("b".to_string());
+    ahead.ground = 100.0 + rise;
+    ahead.height = 100.0 + rise;
+    let junctions = Junctions {
+        rings: vec![
+            level_ring("r1", (300.0, 300.0), 100.0),
+            level_ring("r2", (320.0, 330.7), 100.0 + rise),
+        ],
+        points: vec![ahead, ring_held(300.0, "b", "r1")],
+        ..Junctions::default()
+    };
+    (network(vec![chain]), junctions)
+}
+
+fn flat_100() -> Heightmap {
+    terrain(250, 4.0, |_, _| 100.0)
+}
+
+#[test]
+fn a_level_deck_next_to_a_junction_that_is_a_little_higher_ends_in_a_ramp_not_a_step() {
+    // the junction's plane is 0.87 m above the deck (the deck is held at 100 m); its patch is 2 m, so the road gets
+    // one joint at its centre (the road is in the patch for 3.9 m, less than RAMP_JOINT_MIN_M, which is one joint),
+    // 5.7 m from the deck's end: a 15 % ramp, under the 27 % of an asphalt road
+    let hm = flat_100();
+    let (net, junctions) = ramp_case(0.87, 2.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let plane = 100.87;
+    // on the junction's plane inside the patch
+    let strip = strip_height_at(&p, 330.7);
+    assert!((strip - plane).abs() < 0.01, "{strip} against {plane}");
+    // the ramp between the deck's end and the patch is within the family's ceiling
+    let ceiling = grade_ceiling(Family::Asf3);
+    for w in p.strips[0].joints.windows(2) {
+        let run = (w[1].1 - w[0].1).abs();
+        if run > 1e-6 {
+            let grade = ((w[1].2 - w[0].2) / run).abs();
+            assert!(grade <= ceiling + 1e-3, "{w:?}: {grade}");
+        }
+    }
+    // no hump like the one the pin on the line to the next joint made (2.4 m above the plane there): the road is
+    // brought down again as the smoothing allows. It still rises above the plane for a joint or two, because a
+    // break of more than GRADE_BREAK_MAX at the patch would be a finding and the smoothing prefers a long crest
+    // (about 1.2 m here); that is what the smoothing weight, which this change does not touch, makes of it
+    let far = joint_at(&p, 342.0);
+    assert!(far.2 <= plane + 1.3, "{far:?}");
+    let farther = joint_at(&p, 353.75);
+    assert!(farther.2 <= plane + 1.7, "{farther:?}");
+    // the deck is still level and where it was held
+    let (start, end) = (joint_at(&p, 300.0), joint_at(&p, 325.0));
+    assert!((start.2 - 100.0).abs() < 1e-6 && (end.2 - 100.0).abs() < 1e-6);
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
+        "{steps:?}"
+    );
+}
+
+#[test]
+fn a_patch_that_starts_at_the_deck_is_left_by_a_ramp_across_it() {
+    // the patch is 5 m: the road enters it 0.75 m after the deck's end, under RAMP_JOINT_MIN_M from the deck (which
+    // is one level height and cannot hold the junction's plane), so no joint is added there; where it leaves the
+    // patch (335.65) a joint is added and held, and the 0.87 m is closed by an 8 % ramp across the patch
+    let hm = flat_100();
+    let (net, junctions) = ramp_case(0.87, 5.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let ys: Vec<f64> = p.strips[0].joints.iter().map(|j| j.1).collect();
+    assert!(ys.iter().any(|y| (y - 335.65).abs() < 0.1), "{ys:?}");
+    assert!((strip_height_at(&p, 335.65) - 100.87).abs() < 0.01);
+    let grades = grades(&p, 0);
+    assert!(
+        grades
+            .iter()
+            .all(|g| g.abs() <= grade_ceiling(Family::Asf3) + 1e-3),
+        "{grades:?}"
+    );
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
+        "{steps:?}"
+    );
+}
+
+#[test]
+fn a_height_difference_that_needs_more_than_the_ceiling_is_reported_not_hidden() {
+    // 3 m in 3.7 m is 81 %: no ramp makes that, so a step or a grade over the ceiling is in the findings
+    let hm = flat_100();
+    let (net, junctions) = ramp_case(3.0, 2.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    let step = steps
+        .iter()
+        .any(|s| s.step.abs() > naves_core::validate::END_STEP_TOL_M);
+    let grade = p.excesses.iter().any(|e| e.kind == GradeExcessKind::Grade);
+    assert!(step || grade, "{steps:?} {:?}", p.excesses);
+}
+
+#[test]
+fn a_kept_hold_beats_a_grade_break_over_the_limit_and_the_break_is_reported() {
+    // 0.6 m in 3.7 m is a 16 % ramp: both its ends break the grade by more than GRADE_BREAK_MAX, which costs less
+    // than giving the hold up, so the road is on the plane and the breaks are findings of their own kind
+    let hm = flat_100();
+    let (net, junctions) = ramp_case(0.6, 2.0);
+    let (p, _) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let strip = strip_height_at(&p, 330.7);
+    assert!((strip - 100.6).abs() < 0.01, "{strip}");
+    let breaks: Vec<_> = p
+        .excesses
+        .iter()
+        .filter(|e| e.kind == GradeExcessKind::GradeBreak)
+        .collect();
+    assert!(!breaks.is_empty(), "{:?}", p.excesses);
+    for b in breaks {
+        assert!(
+            b.grade > GRADE_BREAK_MAX && (b.limit - GRADE_BREAK_MAX).abs() < 1e-9,
+            "{b:?}"
+        );
+    }
+}
+
+/// The chain of `deck_chain` on a ring whose plane rises `grade` to the north: the level deck makes a break of
+/// `grade` at each of its ends.
+fn deck_on_plane(grade: f64) -> Profiles {
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![deck_chain()]);
+    let plane = RingPlane {
+        at: (300.0, 300.0),
+        radius: 10.0,
+        inner_radius: 3.0,
+        height: 160.0,
+        gradient: (0.0, grade),
+        rank: 3,
+        stretches: ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect(),
+    };
+    let junctions = Junctions {
+        rings: vec![plane],
+        ..Junctions::default()
+    };
+    solve_plain(&net, &hm, &junctions, &[]).unwrap().0
+}
+
+#[test]
+fn a_grade_break_of_8_percent_next_to_a_deck_end_is_no_finding_but_14_percent_is() {
+    // the deck is one level height, held at the plane's height at its middle: on a plane that rises `g` the road
+    // meets it at 2 g, so each deck end breaks the grade by 2 g and the joints beside the deck by g. The radius of an
+    // asphalt road allows 7.5 % over the 18.75 m run of a deck end; inside the ramp zone the limit is 10 %.
+    let eight = deck_on_plane(0.04);
+    assert!(eight.excesses.is_empty(), "{:?}", eight.excesses);
+    let fourteen = deck_on_plane(0.07);
+    assert_eq!(fourteen.excesses.len(), 2, "{:?}", fourteen.excesses);
+    for e in &fourteen.excesses {
+        assert_eq!(e.kind, GradeExcessKind::GradeBreak);
+        assert!((e.grade - 0.14).abs() < 1e-6 && (e.limit - GRADE_BREAK_MAX).abs() < 1e-9);
+    }
+}
+
+/// A 25 m-piece road along x = 300 from y = 100 to 300 (joints every 25 m) and a junction of a junction piece
+/// at `(300, y)` with the patch `patch_m` at the ground height.
+fn passing_junction(y: f64, patch_m: f64) -> (PlacedNetwork, Junctions) {
+    let net = network(vec![pieces(
+        "a",
+        Family::Asf3,
+        (300.0, 100.0),
+        (300.0, 300.0),
+        25.0,
+    )]);
+    let junctions = Junctions {
+        points: vec![junction_on_x300(y, 100.0, patch_m, &["a"])],
+        ..Junctions::default()
+    };
+    (net, junctions)
+}
+
+#[test]
+fn a_road_that_passes_through_a_patch_without_a_joint_gets_joints_where_it_enters_and_leaves() {
+    let hm = flat_100();
+    let (net, junctions) = passing_junction(137.5, 3.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    // nine joints and two more, 3 m either side of the junction (a little inside the patch)
+    let ys: Vec<f64> = p.strips[0].joints.iter().map(|j| j.1).collect();
+    assert_eq!(ys.len(), 11, "{ys:?}");
+    assert!(
+        (ys[2] - 134.5).abs() < 0.1 && (ys[3] - 140.5).abs() < 0.1,
+        "{ys:?}"
+    );
+    // the slots of the strip are the pieces the joints belong to, one per segment
+    assert_eq!(p.strips[0].slots.len() + 1, p.strips[0].joints.len());
+    let plane = solved.points[0].height;
+    for y in [134.6, 137.5, 140.4] {
+        assert!((strip_height_at(&p, y) - plane).abs() < 0.01, "{y}");
+    }
+    let holds = chain_holds(&net, &net.chains[0], 4.0, &junctions);
+    let held: Vec<_> = holds.iter().filter_map(|(_, h)| h.as_ref()).collect();
+    assert_eq!(held.len(), 2, "{held:?}");
+    assert!(
+        held.iter()
+            .all(|h| h.rule == naves_core::profile::HoldRule::Patch)
+    );
+}
+
+#[test]
+fn a_new_joint_is_not_added_within_the_minimum_distance_of_an_existing_one() {
+    // the junction 2 m from the joint at y = 125, patch 1.5 m: where the road enters (125.5) and leaves (128.5) the
+    // patch is 0.5 m and 3.5 m from that joint, under RAMP_JOINT_MIN_M, so none is added and the road's own joint is
+    // the one the junction holds
+    assert!((RAMP_JOINT_MIN_M - 4.0).abs() < 1e-9);
+    let hm = flat_100();
+    let (net, junctions) = passing_junction(127.0, 1.5);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    assert_eq!(p.strips[0].joints.len(), 9, "{:?}", p.strips[0].joints);
+    let holds = chain_holds(&net, &net.chains[0], 4.0, &junctions);
+    let held: Vec<(usize, _)> = holds
+        .iter()
+        .enumerate()
+        .filter_map(|(k, (_, h))| h.as_ref().map(|h| (k, h)))
+        .collect();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].0, 1, "the joint at y = 125: {held:?}");
+    assert_eq!(held[0].1.rule, naves_core::profile::HoldRule::Patch);
+    let plane = solved.points[0].height;
+    assert!((p.strips[0].joints[1].2 - plane).abs() < 0.01);
+}
+
+#[test]
+fn a_plain_road_away_from_junctions_and_decks_keeps_the_heights_it_had() {
+    // golden heights of the solve before the ramps: a rolling terrain, a road of 12.5 m pieces, no junction, no deck
+    let hm = terrain(128, 6.25, |x, y| {
+        100.0 + 6.0 * (y / 40.0).sin() + 0.05 * x + 3.0 * (y / 17.0).cos()
+    });
+    let net = network(vec![pieces(
+        "a",
+        Family::Asf3,
+        (300.0, 100.0),
+        (300.0, 300.0),
+        12.5,
+    )]);
+    let p = solve_alone(&net, &hm);
+    let heights: Vec<f64> = p.strips[0].joints.iter().map(|j| j.2).collect();
+    let golden: Vec<f64> = GOLDEN_PLAIN.to_vec();
+    assert_eq!(heights.len(), golden.len());
+    for (h, g) in heights.iter().zip(&golden) {
+        assert!((h - g).abs() < 1e-3, "{heights:?}");
+    }
+}
+
+/// Recorded from the solve at da88a23 (before the ramps).
+const GOLDEN_PLAIN: [f64; 17] = [
+    119.496, 117.340, 115.224, 113.270, 111.651, 110.525, 109.969, 109.954, 110.362, 111.047,
+    111.897, 112.865, 113.965, 115.231, 116.668, 118.235, 119.860,
+];

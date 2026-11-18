@@ -64,9 +64,13 @@ pub(crate) fn rank(family: Family) -> u8 {
 /// The height of one chain at the joints of its pieces; linear between them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoadStrip {
-    /// The roads of the strip, as indices into [`PlacedNetwork::roads`].
+    /// The road of each segment between two joints, as indices into [`PlacedNetwork::roads`]: segment `k` runs from
+    /// `joints[k]` to `joints[k + 1]` and belongs to road `slots[k]`. A road comes more than once, in a row, where the
+    /// solve added a joint inside one of its pieces (where the road enters or leaves the patch of a junction, see
+    /// [`solve_clearing`]); the segments are then parts of the piece.
     pub slots: Vec<usize>,
-    /// Position and height at the start of the first piece and the end of each piece.
+    /// Position and height at the start of the first piece, at the end of each piece and at the joints the solve added
+    /// inside pieces.
     pub joints: Vec<(f64, f64, f64)>,
     /// For each segment between two joints, whether it is a bridge deck; the ground below a span is left
     /// alone. May be shorter than the segments, which then are not bridges.
@@ -89,8 +93,14 @@ pub enum GradeExcessKind {
     /// The road is steeper than its limit: `grade` and `limit` are rise over run.
     Grade,
     /// The grade changes faster than the minimum vertical radius allows (a crest or a sag that is too
-    /// sharp): `grade` is the change of grade per metre and `limit` is `1 / minimum radius`, both per metre.
+    /// sharp): `grade` is the change of grade per metre and `limit` is `1 / minimum radius`, both per metre. Not
+    /// inside a ramp zone, where [`GradeExcessKind::GradeBreak`] is judged instead.
     VerticalBend,
+    /// The grade changes by more than a vehicle takes at one point inside a ramp zone, next to a junction or the
+    /// end of a bridge deck (see [`crate::limits::RAMP_ZONE_M`]): `grade` is the change of grade (rise over run)
+    /// and `limit` the largest one allowed there, [`crate::limits::GRADE_BREAK_MAX`] or, where the family's
+    /// vertical radius allows more over the run, that.
+    GradeBreak,
 }
 
 /// A place where the limits could not be kept.
@@ -152,6 +162,10 @@ type ChainEnd = (usize, (f64, f64));
 /// The variables of a chain: one per joint, except that joints less than a metre apart share one variable
 /// and the two joints of a junction piece are held to its plane.
 struct Chain {
+    /// The road each segment between two joints belongs to, as an index into [`PlacedNetwork::roads`]: the roads
+    /// of the chain, one road repeated for each joint that was added inside one of its pieces (see
+    /// [`holds::ramp_joints`]). Segment `k` runs from joint `k` to joint `k + 1`.
+    legs: Vec<usize>,
     /// (x, y, variable) of each joint.
     joints: Vec<(f64, f64, usize)>,
     /// Position of each variable.
@@ -161,17 +175,102 @@ struct Chain {
     /// For a variable that is a bridge deck, the two ends of the deck: the ground there, not the ground under
     /// the span, is what the deck is held to.
     deck: Vec<Option<DeckEnds>>,
+    /// For a variable of a joint that was added where the road enters or leaves the patch of a junction, that
+    /// junction (an index into [`Junctions::points`]); it holds the variable by [`holds::HoldRule::Patch`].
+    patch: Vec<Option<usize>>,
 }
 
-/// The chain of the roads `roads`, with joints less than [`MERGE_JOINT_M`] apart merged into one variable
-/// (never into a bridge deck's variable, nor across joints held to two different junctions).
+impl Chain {
+    /// The way along the chain, in metres, from the first joint to the first and the last joint of each variable
+    /// (the joints of a bridge deck share one variable; the way is along the straight lines between joints).
+    fn stations(&self) -> Vec<(f64, f64)> {
+        let mut out: Vec<Option<(f64, f64)>> = vec![None; self.at.len()];
+        let mut along = 0.0;
+        let mut before: Option<(f64, f64)> = None;
+        for joint in &self.joints {
+            if let Some(p) = before {
+                along += (joint.0 - p.0).hypot(joint.1 - p.1);
+            }
+            before = Some((joint.0, joint.1));
+            if let Some(slot) = out.get_mut(joint.2) {
+                *slot = Some(slot.map_or((along, along), |(first, _)| (first, along)));
+            }
+        }
+        out.into_iter().map(Option::unwrap_or_default).collect()
+    }
+}
+
+/// One segment of a chain as its joints are built: the road, and the point where the segment ends (the end of the
+/// road's piece, or a point inside it where a joint is added), with the junction that wants a joint there.
+#[derive(Debug, Clone, Copy)]
+struct Leg {
+    road: usize,
+    end: (f64, f64),
+    patch: Option<usize>,
+}
+
+/// The chain of the roads `roads`: a joint at the end of each piece, joints less than [`MERGE_JOINT_M`] apart
+/// merged into one variable (never into a bridge deck's variable, nor across joints held to two different
+/// junctions), and, where a road passes through the patch of a junction without a joint of its own there, a
+/// joint where it enters and one where it leaves ([`holds::ramp_joints`]). A road that comes twice in a row in
+/// `roads` (the `slots` of a strip that has such joints) is one.
 fn chain_of(
     net: &PlacedNetwork,
     roads: &[usize],
     cell: f64,
     junctions: &Junctions,
 ) -> Option<Chain> {
-    let plain = build_chain(net, roads, None)?;
+    let mut own = roads.to_vec();
+    own.dedup();
+    let whole: Vec<Leg> = own
+        .iter()
+        .map(|&road| {
+            net.roads.get(road).map(|r| Leg {
+                road,
+                end: (r.end.x, r.end.y),
+                patch: None,
+            })
+        })
+        .collect::<Option<_>>()?;
+    let chain = merged_chain(net, &whole, cell, junctions)?;
+    let splits = holds::ramp_joints(net, &own, &chain, cell, junctions);
+    if splits.is_empty() {
+        return Some(chain);
+    }
+    let mut legs = Vec::with_capacity(whole.len() + splits.len());
+    for (k, whole_leg) in whole.iter().enumerate() {
+        let mut inside: Vec<&holds::RampJoint> = splits
+            .iter()
+            .filter(|s| s.segment == k && s.existing.is_none())
+            .collect();
+        inside.sort_by(|a, b| a.t.total_cmp(&b.t));
+        legs.extend(inside.into_iter().map(|s| Leg {
+            road: whole_leg.road,
+            end: s.at,
+            patch: Some(s.junction),
+        }));
+        // the junction that holds the joint at the end of this piece (a road's own joint that was too close to add one)
+        let holder = splits
+            .iter()
+            .find(|s| s.existing == Some(k + 1))
+            .map(|s| s.junction);
+        legs.push(Leg {
+            patch: holder,
+            ..*whole_leg
+        });
+    }
+    merged_chain(net, &legs, cell, junctions)
+}
+
+/// The chain of the `legs`, with the joints that are less than [`MERGE_JOINT_M`] apart merged where the junctions
+/// that hold them allow.
+fn merged_chain(
+    net: &PlacedNetwork,
+    legs: &[Leg],
+    cell: f64,
+    junctions: &Junctions,
+) -> Option<Chain> {
+    let plain = build_chain(net, legs, None)?;
     let close = plain
         .joints
         .windows(2)
@@ -179,73 +278,80 @@ fn chain_of(
     if !close {
         return Some(plain);
     }
-    let held = holds::joint_junctions(net, &plain, roads, cell, junctions);
-    build_chain(net, roads, Some(&held))
+    let held = holds::joint_junctions(net, &plain, cell, junctions);
+    build_chain(net, legs, Some(&held))
 }
 
-/// [`chain_of`] with `merge` (the junction each joint is held to) deciding what is merged; `None` merges nothing.
+/// [`merged_chain`] with `merge` (the junction each joint is held to) deciding what is merged; `None` merges nothing.
 fn build_chain(
     net: &PlacedNetwork,
-    roads: &[usize],
+    legs: &[Leg],
     merge: Option<&[Option<usize>]>,
 ) -> Option<Chain> {
-    let first = net.roads.get(*roads.first()?)?;
+    let first = net.roads.get(legs.first()?.road)?;
     let mut joints = vec![(first.start.x, first.start.y, 0)];
     let mut at = vec![(first.start.x, first.start.y)];
     let mut spacing = Vec::new();
     let mut deck: Vec<Option<DeckEnds>> = vec![None];
+    let mut patch: Vec<Option<usize>> = vec![None];
     // the joint that opened the last variable, and the way along the chain from it
     let (mut opener, mut since) = (0_usize, 0.0_f64);
-    for &i in roads {
-        let r = net.roads.get(i)?;
+    for leg in legs {
+        let r = net.roads.get(leg.road)?;
+        let end = leg.end;
         // the run between the joints, not the length of the piece: a piece that starts a little before or after
         // the end of the one before it (the pieces of a chain do not all meet end to start) is a run of the
         // profile from one joint to the next, and the grades are measured on that
         let length = joints
             .last()
-            .map_or(0.0, |(x, y, _)| (r.end.x - x).hypot(r.end.y - y));
+            .map_or(0.0, |(x, y, _)| (end.0 - x).hypot(end.1 - y));
         if r.kind == PlacedKind::Bridge {
             let v = at.len() - 1;
-            joints.push((r.end.x, r.end.y, v));
+            joints.push((end.0, end.1, v));
             if let (Some(first_joint), Some(slot), Some(ends)) = (
                 joints.iter().find(|j| j.2 == v),
                 at.get_mut(v),
                 deck.get_mut(v),
             ) {
                 *slot = (
-                    f64::midpoint(first_joint.0, r.end.x),
-                    f64::midpoint(first_joint.1, r.end.y),
+                    f64::midpoint(first_joint.0, end.0),
+                    f64::midpoint(first_joint.1, end.1),
                 );
                 let start = ends.map_or((first_joint.0, first_joint.1), |(start, _)| start);
-                *ends = Some((start, (r.end.x, r.end.y)));
+                *ends = Some((start, end));
             }
         } else {
             let var = at.len() - 1;
             let joint = joints.len();
-            let mergeable = merge.is_some_and(|held| {
-                let opener_hold = held.get(opener).copied().flatten();
-                let joint_hold = held.get(joint).copied().flatten();
-                since + length < MERGE_JOINT_M
-                    && deck.get(var).is_some_and(Option::is_none)
-                    && !matches!((opener_hold, joint_hold), (Some(first), Some(second)) if first != second)
-            });
+            let mergeable = leg.patch.is_none()
+                && merge.is_some_and(|held| {
+                    let opener_hold = held.get(opener).copied().flatten();
+                    let joint_hold = held.get(joint).copied().flatten();
+                    since + length < MERGE_JOINT_M
+                        && deck.get(var).is_some_and(Option::is_none)
+                        && patch.get(var).is_some_and(Option::is_none)
+                        && !matches!((opener_hold, joint_hold), (Some(first), Some(second)) if first != second)
+                });
             if mergeable {
                 since += length;
-                joints.push((r.end.x, r.end.y, var));
+                joints.push((end.0, end.1, var));
             } else {
-                joints.push((r.end.x, r.end.y, at.len()));
-                at.push((r.end.x, r.end.y));
+                joints.push((end.0, end.1, at.len()));
+                at.push(end);
                 deck.push(None);
+                patch.push(leg.patch);
                 spacing.push(length);
                 (opener, since) = (joint, 0.0);
             }
         }
     }
     Some(Chain {
+        legs: legs.iter().map(|l| l.road).collect(),
         joints,
         at,
         spacing,
         deck,
+        patch,
     })
 }
 
@@ -368,7 +474,8 @@ fn meets_another_chain(
     )
 }
 
-/// The grade limit of each segment of a chain: the family's aim, lowered at a meeting (not between two junction
+/// The grade limit of each segment of a chain (`roads` are the roads of the chain as the placement has them, the
+/// segments are those of `chain.legs`): the family's aim, lowered at a meeting (not between two junction
 /// heights) and in a tight bend.
 fn segment_grades(
     net: &PlacedNetwork,
@@ -380,13 +487,14 @@ fn segment_grades(
 ) -> Vec<f64> {
     let mut limits = Vec::new();
     // the chain's surface, for the ends that meet it
-    let strip = roads
+    let strip = chain
+        .legs
         .first()
         .and_then(|i| net.roads.get(*i))
-        .map(|first| strip_of(net, roads, joint_heights(chain, &[]), &[], first));
+        .map(|first| strip_of(net, &chain.legs, joint_heights(chain, &[]), &[], first));
     let first_held = held.iter().position(Option::is_some);
     let last_held = held.iter().rposition(Option::is_some);
-    for (k, &index) in roads.iter().enumerate() {
+    for (k, &index) in chain.legs.iter().enumerate() {
         let Some(road) = net.roads.get(index) else {
             continue;
         };
@@ -759,7 +867,19 @@ pub fn solve_profiles(
 /// pulled to the ground and kept smooth; it is steeper than its grade aim only at a cost, steeper than its grade
 /// ceiling or bent sharper than its vertical radius only where nothing else is possible, and that is reported in
 /// [`Profiles::excesses`]. Roads that share terrain cells are tied to one height as far as the ground lets them.
-/// The returned junctions have the solved heights and tilts. `unresolved` lists the links between the nearest
+/// The returned junctions have the solved heights and tilts.
+///
+/// **Ramps** (`docs/superpowers/specs/2026-11-18-ramps-design.md`). A road that passes through the patch of a junction it
+/// belongs to without a joint of its own there gets a joint where it enters the patch and one where it leaves it
+/// (not closer than [`crate::limits::RAMP_JOINT_MIN_M`] to a joint it has, which is held instead; the strip's `slots` repeat the piece's road), held to the
+/// junction's plane, so a small height difference to the road's other joints or to a bridge deck is closed by the grades
+/// between joints, a ramp, and not by a step or by lifting a joint far away. Within [`crate::limits::RAMP_ZONE_M`] along
+/// the road of such a joint, of any joint a junction holds or of the end of a deck, the change of grade at a joint may be
+/// [`crate::limits::GRADE_BREAK_MAX`] where the vertical radius allows less (a break over that is a
+/// [`GradeExcessKind::GradeBreak`] excess), and a segment holds its grade ceiling firmer than elsewhere. Next to a junction
+/// or a deck end the order of what gives way is: the grade ceiling, the junction's hold and the deck's join (and the
+/// clearance under a bridge), the break of the grade, the ground. The limit and the zone are estimates, not driven in the
+/// game. `unresolved` lists the links between the nearest
 /// junction-held joints on both sides of a segment over its ceiling that has a held end; a segment over its
 /// ceiling whose other end is a ring's constant or a meeting with another road, or whose two ends one junction
 /// holds, is a [`GradeExcessKind::Grade`] excess without an entry.

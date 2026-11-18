@@ -11,6 +11,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A short ramp instead of a step next to junctions and bridge ends. Where a road has to change height over a short
+  length next to a junction or the end of a bridge deck, the height solve now gives it a ramp inside its family's
+  grade ceiling instead of a step (`bridge_end_step`, 74208396 at Berchtesgaden: a level deck ending 5.7 m from a junction
+  whose plane is 0.87 m higher). A road that passes through the patch of a junction it belongs to without a joint
+  of its own there gets a joint where it enters the patch and one where it leaves it (where one would lie within 4 m of a joint the road has, that joint is held instead, unless it is a bridge deck's or the
+  start of the chain; the junction's plane holds them, so the road lies on it inside the patch), instead of being held at a joint
+  further away or by a pin on the line to the next joint. Within 25 m (along the road) of such a joint or of the
+  end of a bridge deck the grade may change by up to 10 % at one joint, or by what the family's vertical radius allows
+  over the run where that is more; outside that zone nothing changes. Next to a junction or a deck end the order of what
+  gives way is: the grade ceiling (firmer than before inside the zone), the junction's hold and the deck's join, the
+  grade break, the ground. A break over 10 % that was needed to keep a hold is reported by `road_grade` as "The grade
+  changes by 14 % at one point, the most a vehicle takes there is 10 %". The 10 % and the 25 m are estimates, not yet
+  driven in the game.
+
 ### Fixed
 
 - A short bridge over a road that cannot be built is reported. A bridge of at most 3 m over a road is a grid of panels so

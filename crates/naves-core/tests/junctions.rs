@@ -455,9 +455,10 @@ fn the_links_are_the_spans_between_the_joints_that_are_held() {
 }
 
 #[test]
-fn a_junction_between_two_joints_holds_the_nearer_one() {
+fn a_junction_between_two_joints_holds_a_joint_where_the_road_passes_through_its_patch() {
     // two side tracks end on a through road 12 m after one of its joints: no joint lies in either patch, so the
-    // nearer joint of the piece holds the height (one joint each, not both ends of the piece)
+    // solve adds one where the road passes through each patch (the road lies 3 m from the junction's point, in a
+    // patch of 3.5 m: a 3.4 m run, one joint at the nearest approach) and holds that, not an end of the piece
     let through: Vec<PlacedRoad> = (0..12)
         .map(|i| {
             let x = 25.0 * f64::from(i);
@@ -501,7 +502,7 @@ fn a_junction_between_two_joints_holds_the_nearer_one() {
         .filter(|(_, (_, h))| h.is_some())
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(held, vec![4, 8], "{j:?}");
+    assert_eq!(held, vec![5, 10], "{j:?}");
     let spans: Vec<f64> = j.links.iter().map(|l| l.length).collect();
     assert!(spans.iter().any(|s| (s - 100.0).abs() < 1e-6), "{spans:?}");
     assert_links_are_the_spans(&net, &j);

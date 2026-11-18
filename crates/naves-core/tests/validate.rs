@@ -1402,3 +1402,23 @@ fn a_deck_with_both_ends_in_one_patch_is_compared_at_both_ends() {
     let found = end_steps_of(2.0, 105.0, vec![join((100.0, 101.0), 107.0, &["s"])], &[]);
     assert_eq!(found.len(), 2, "{found:?}");
 }
+
+#[test]
+fn a_grade_break_in_a_ramp_zone_is_worded_as_a_change_of_grade() {
+    let profiles = Profiles {
+        excesses: vec![GradeExcess {
+            at: (5.0, 6.0),
+            kind: GradeExcessKind::GradeBreak,
+            grade: 0.14,
+            limit: 0.10,
+        }],
+        ..Profiles::default()
+    };
+    let v = run(&net(vec![]), &profiles, &conformed(), &[], &[], &[], &[]);
+    let found = only(Rule::RoadGrade, &v);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0].message,
+        "The grade changes by 14 % at one point, the most a vehicle takes there is 10 %"
+    );
+}

@@ -102,3 +102,21 @@ pub fn earthwork_allowance_m(side_slope: f64) -> f64 {
     }
     30.0 + (side_slope.clamp(0.20, 0.60) - 0.20) / 0.40 * 70.0
 }
+
+/// How far from a junction's patch or from the end of a bridge deck, measured along the road, a short ramp is
+/// allowed to bend more sharply than the comfort radius of the family says, in metres: one long road piece.
+///
+/// An estimate, **not driven in the game**: `docs/superpowers/specs/2026-11-18-ramps-design.md`.
+pub const RAMP_ZONE_M: f64 = 25.0;
+
+/// The largest change of grade at one joint inside a ramp zone (see [`RAMP_ZONE_M`]), rise over run: 0.10, about
+/// 5.7 degrees. A car with ordinary ground clearance is expected to take such a break at walking speed without
+/// grounding; two of them [`RAMP_JOINT_MIN_M`] apart make a 20 % ramp.
+///
+/// The limit used in a ramp zone is the larger of this and what the family's vertical radius allows over the run.
+/// An estimate, **not driven in the game**: `docs/superpowers/specs/2026-11-18-ramps-design.md`.
+pub const GRADE_BREAK_MAX: f64 = 0.10;
+
+/// A joint that the height solve adds where a road enters a junction's patch is not added closer than this to a
+/// joint the road already has, in metres (one terrain cell at terrain size 2048).
+pub const RAMP_JOINT_MIN_M: f64 = 4.0;

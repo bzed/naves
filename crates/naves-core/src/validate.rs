@@ -17,7 +17,7 @@ use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
-use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcessKind, Profiles};
+use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
@@ -748,6 +748,29 @@ pub fn bridge_end_steps(
     out
 }
 
+/// The message of a [`GradeExcess`]: a grade over its ceiling, a bend sharper than the vertical radius allows, or
+/// a break of the grade over what a vehicle takes in a ramp zone.
+fn excess_message(e: &GradeExcess) -> String {
+    match e.kind {
+        GradeExcessKind::Grade => format!(
+            "Grade {:.0} % exceeds the limit of {:.0} %",
+            e.grade * 100.0,
+            e.limit * 100.0
+        ),
+        // the change of grade per metre is 1 / radius
+        GradeExcessKind::VerticalBend => format!(
+            "Crest or dip too sharp: vertical radius {:.0} m, the minimum is {:.0} m",
+            1.0 / e.grade,
+            1.0 / e.limit
+        ),
+        GradeExcessKind::GradeBreak => format!(
+            "The grade changes by {:.0} % at one point, the most a vehicle takes there is {:.0} %",
+            e.grade * 100.0,
+            e.limit * 100.0
+        ),
+    }
+}
+
 /// Bridges whose deck ends at another height than the road or junction it joins: one violation for each such end
 /// (see [`bridge_end_steps`]), at the end of the deck, where the step is over [`END_STEP_TOL_M`].
 fn end_step_violations(
@@ -860,22 +883,12 @@ pub fn check_roads(
             ),
         )
     }));
-    out.extend(profiles.excesses.iter().map(|e| {
-        let message = match e.kind {
-            GradeExcessKind::Grade => format!(
-                "Grade {:.0} % exceeds the limit of {:.0} %",
-                e.grade * 100.0,
-                e.limit * 100.0
-            ),
-            // the change of grade per metre is 1 / radius
-            GradeExcessKind::VerticalBend => format!(
-                "Crest or dip too sharp: vertical radius {:.0} m, the minimum is {:.0} m",
-                1.0 / e.grade,
-                1.0 / e.limit
-            ),
-        };
-        violation(Rule::RoadGrade, e.at, message)
-    }));
+    out.extend(
+        profiles
+            .excesses
+            .iter()
+            .map(|e| violation(Rule::RoadGrade, e.at, excess_message(e))),
+    );
     out.extend(meeting_violations(net));
     out.extend(water_violations(net, water, frame));
     out.extend(conformed.conflicts.iter().map(|c| {
