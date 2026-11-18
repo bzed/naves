@@ -2277,7 +2277,9 @@ fn a_deck_whose_junction_lies_beyond_its_patch_is_held_to_it_where_the_strip_cro
         let (net, junctions) = junction_on_the_run(306.3, reversed);
         let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
         let plane = solved.points[0].height;
-        let strip = strip_height_at(&p, m(306.3));
+        // the strip is tied to the plane where it enters the patch, 1.2 m from the deck's end (5 m patch around
+        // 306.3), where no joint fits between the deck and the patch
+        let strip = strip_height_at(&p, m(311.3));
         assert!(
             (strip - plane).abs() < 0.01,
             "reversed {reversed}: the strip is at {strip}, the plane at {plane}"
@@ -2462,7 +2464,8 @@ fn flat_100() -> Heightmap {
 fn a_level_deck_next_to_a_junction_that_is_a_little_higher_ends_in_a_ramp_not_a_step() {
     // the junction's plane is 0.87 m above the deck (the deck is held at 100 m); its patch is 2 m, so the road gets
     // one joint at its centre (the road is in the patch for 3.9 m, less than RAMP_JOINT_MIN_M, which is one joint),
-    // 5.7 m from the deck's end: a 15 % ramp, under the 27 % of an asphalt road
+    // 5.7 m from the deck's end: a 15 % ramp, under the 27 % of an asphalt road, entered by a break of grade that is
+    // over the limit of a ramp (see below)
     let hm = flat_100();
     let (net, junctions) = ramp_case(0.87, 2.0);
     let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
@@ -2479,14 +2482,35 @@ fn a_level_deck_next_to_a_junction_that_is_a_little_higher_ends_in_a_ramp_not_a_
             assert!(grade <= ceiling + 1e-3, "{w:?}: {grade}");
         }
     }
-    // no hump like the one the pin on the line to the next joint made (2.4 m above the plane there): the road is
-    // brought down again as the smoothing allows. It still rises above the plane for a joint or two, because a
-    // break of more than GRADE_BREAK_MAX at the patch would be a finding and the smoothing prefers a long crest
-    // (about 1.2 m here); that is what the smoothing weight, which this change does not touch, makes of it
+    // What comes out is not a clean ramp, and this test says so. The 0.87 m is closed in 5.7 m, a 15.3 % grade, and the
+    // change of grade where the level deck ends is 15.3 %: over GRADE_BREAK_MAX, so a `GradeBreak` finding at the
+    // deck's end (measured 0.1526, the limit 0.1). That is the price of keeping the junction's plane; the findings say
+    // it. Beyond the junction the road does not come down at once: a break over GRADE_BREAK_MAX at the patch would be
+    // a second finding, and the smoothing (30, which this change does not touch) prefers a long crest. Measured:
+    // 1.16 m over the plane at the next joint (342), 1.62 m at 353.75 (the crest, 102.49 m), and 100.50 m again only
+    // 94 m after the patch. The pin on the line to the next joint made 2.4 m. The bounds are the measured values
+    // plus a margin of 0.1 m.
+    let breaks: Vec<_> = p
+        .excesses
+        .iter()
+        .filter(|e| e.kind == GradeExcessKind::GradeBreak)
+        .collect();
+    assert_eq!(breaks.len(), 1, "{:?}", p.excesses);
+    assert!(
+        (breaks[0].at.1 - 325.0).abs() < 1e-6
+            && (0.15..0.16).contains(&breaks[0].grade)
+            && (breaks[0].limit - GRADE_BREAK_MAX).abs() < 1e-9,
+        "{breaks:?}"
+    );
     let far = joint_at(&p, 342.0);
-    assert!(far.2 <= plane + 1.3, "{far:?}");
-    let farther = joint_at(&p, 353.75);
-    assert!(farther.2 <= plane + 1.7, "{farther:?}");
+    assert!(far.2 <= plane + 1.26, "{far:?}");
+    let crest = p.strips[0]
+        .joints
+        .iter()
+        .filter(|j| j.1 > 330.0)
+        .map(|j| j.2)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(crest <= plane + 1.72, "the crest is {crest}");
     // the deck is still level and where it was held
     let (start, end) = (joint_at(&p, 300.0), joint_at(&p, 325.0));
     assert!((start.2 - 100.0).abs() < 1e-6 && (end.2 - 100.0).abs() < 1e-6);
@@ -2517,13 +2541,16 @@ fn a_patch_that_starts_at_the_deck_is_left_by_a_ramp_across_it() {
             .all(|g| g.abs() <= grade_ceiling(Family::Asf3) + 1e-3),
         "{grades:?}"
     );
+    // the deck's height and the junction's plane are both fixed here (rings), so the 0.87 m cannot be closed at the
+    // patch's edge, 0.7 m after the deck's end: the report says so (the step is measured where the road enters the
+    // patch, not at the middle of it, where the ramp has already come up half way)
     let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
-    assert!(
-        steps
-            .iter()
-            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
-        "{steps:?}"
-    );
+    let big: Vec<_> = steps
+        .iter()
+        .filter(|s| s.step.abs() > naves_core::validate::END_STEP_TOL_M)
+        .collect();
+    assert_eq!(big.len(), 1, "{steps:?}");
+    assert!((big[0].step - 0.81).abs() < 0.05, "{big:?}");
 }
 
 #[test]
@@ -2561,6 +2588,61 @@ fn a_kept_hold_beats_a_grade_break_over_the_limit_and_the_break_is_reported() {
             "{b:?}"
         );
     }
+}
+
+/// The shape of way 74208396 with junctions that can move: the chain of [`ramp_case`], but the deck's own junction at
+/// y = 300 (index 1, 3 m patch, ground 0.9 m below the terrain) and the one 5.7 m beyond the deck's end (index 0,
+/// patch 5 m, no joint of the road within 4 m of where the road enters it, a plane 0.78 m above the deck at the port
+/// that tilts 6 % down away from the deck) are on soft planes, each pulled to its ground. The terrain is level at 100.
+fn tilted_neighbour_case() -> (PlacedNetwork, Junctions) {
+    let (net, _) = ramp_case(0.0, 5.0);
+    let mut near = join_at((300.0, 330.7), 100.48, 5.0, &["b", "c"]);
+    near.gradient = (0.0, -0.06);
+    near.tilt_axis = Some((0.0, 1.0));
+    near.tilt_cap = 0.08;
+    let far = join_at((300.0, 300.0), 99.1, 3.0, &["a", "b"]);
+    let junctions = Junctions {
+        points: vec![near, far],
+        ..Junctions::default()
+    };
+    (net, junctions)
+}
+
+#[test]
+fn a_deck_end_is_tied_to_the_plane_of_the_junction_whose_patch_starts_next_to_it() {
+    // the patch starts 0.7 m after the deck's end, so no joint fits between them; the junction's plane at the port is
+    // 0.78 m above the deck. Before the row that ties the deck's end to that plane nothing in the solve compared the
+    // two (the strip ended 0.66 m below the plane). Now a junction that is less than a metre off its ground gives
+    // way instead of leaving a step, the junction at the deck's other end stays under a metre off its ground, and no
+    // road is over its ceiling
+    let hm = flat_100();
+    let (net, junctions) = tilted_neighbour_case();
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let entry = 325.7;
+    let strip = strip_height_at(&p, entry);
+    let plane = solved.points[0].height_at((300.0, entry));
+    assert!(
+        (strip - plane).abs() < 0.1,
+        "the strip is at {strip}, the plane at {plane}"
+    );
+    let far = solved.points[1].height - junctions.points[1].ground;
+    assert!(
+        far.abs() < 1.0,
+        "the far junction is {far} m off its ground"
+    );
+    // measured: the near junction comes down to the deck (0.5 m below its ground, its tilt flattens), the far one is
+    // 0.92 m above its ground
+    let near = solved.points[0].height - junctions.points[0].ground;
+    assert!(
+        (-0.7..-0.3).contains(&near),
+        "the near junction is {near} m off its ground"
+    );
+    let ceiling = grade_ceiling(Family::Asf3);
+    for g in grades(&p, 0) {
+        assert!(g.abs() <= ceiling + 1e-3, "{g}");
+    }
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    assert!(steps.iter().all(|s| s.step.abs() < 0.1), "{steps:?}");
 }
 
 /// The chain of `deck_chain` on a ring whose plane rises `grade` to the north: the level deck makes a break of

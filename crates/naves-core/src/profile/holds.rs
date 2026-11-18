@@ -460,11 +460,13 @@ pub(super) fn crossings(
         return found;
     }
     for (index, junction) in junctions.points.iter().enumerate() {
-        if (!junction.stretches.is_empty() && junction.stretches.is_disjoint(ids))
-            || held.iter().flatten().any(|h| h.junction == index)
-        {
+        if !junction.stretches.is_empty() && junction.stretches.is_disjoint(ids) {
             continue;
         }
+        // a junction that holds a variable of the chain has its plane there, but a run that leaves a deck's end and
+        // enters its patch within `RAMP_JOINT_MIN_M` of the deck (no joint fits between them) is still tied to the
+        // plane where it enters
+        let holds_a_variable = held.iter().flatten().any(|h| h.junction == index);
         let nearest = (0..chain.at.len().saturating_sub(1))
             .filter(|&v| is_deck(v) || is_deck(v + 1))
             .filter_map(|v| {
@@ -492,12 +494,23 @@ pub(super) fn crossings(
                 if length2 <= 0.0 {
                     return None;
                 }
-                let t = (((junction.at.0 - from.0) * dx + (junction.at.1 - from.1) * dy) / length2)
-                    .clamp(0.0, 1.0);
+                let entry = patch_entry_at_deck(
+                    (from, to),
+                    (is_deck(v), is_deck(v + 1)),
+                    junction.at,
+                    junction.patch_m - PATCH_INSET_M,
+                );
+                if entry.is_none() && holds_a_variable {
+                    return None;
+                }
+                let t = entry.unwrap_or_else(|| {
+                    (((junction.at.0 - from.0) * dx + (junction.at.1 - from.1) * dy) / length2)
+                        .clamp(0.0, 1.0)
+                });
                 // a run's end variable that another junction already holds is not pinned to this one's plane
                 let var_held =
                     |var: usize| held.get(var).is_some_and(Option::is_some) && !is_deck(var);
-                if (t <= 0.0 && var_held(v)) || (t >= 1.0 && var_held(v + 1)) {
+                if entry.is_none() && ((t <= 0.0 && var_held(v)) || (t >= 1.0 && var_held(v + 1))) {
                     return None;
                 }
                 let at = (from.0 + t * dx, from.1 + t * dy);
@@ -516,6 +529,39 @@ pub(super) fn crossings(
         }
     }
     found
+}
+
+/// Where the run `(from, to)` enters the circle of `radius` around `centre` next to a deck: as a parameter from 0 at
+/// `from` to 1 at `to`. The run's end that is a deck's end (`decks`: `from`, `to`) lies outside the circle, and the
+/// circle's edge lies within [`RAMP_JOINT_MIN_M`] of it along the run, so that no joint fits between the deck and
+/// the patch; the edge nearer the deck is the answer. `None` where no end is a deck or the edge is further away.
+fn patch_entry_at_deck(
+    (from, to): ((f64, f64), (f64, f64)),
+    decks: (bool, bool),
+    centre: (f64, f64),
+    radius: f64,
+) -> Option<f64> {
+    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+    let length = dx.hypot(dy);
+    let qa = dx * dx + dy * dy;
+    if qa <= 0.0 || radius <= 0.0 {
+        return None;
+    }
+    let (fx, fy) = (from.0 - centre.0, from.1 - centre.1);
+    let qb = 2.0 * (fx * dx + fy * dy);
+    let discriminant = qb * qb - 4.0 * qa * (fx * fx + fy * fy - radius * radius);
+    if discriminant <= 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let (t_in, t_out) = ((-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa));
+    if decks.0 && t_in > 0.0 && t_in < 1.0 && t_in * length < RAMP_JOINT_MIN_M {
+        return Some(t_in);
+    }
+    if decks.1 && t_out > 0.0 && t_out < 1.0 && (1.0 - t_out) * length < RAMP_JOINT_MIN_M {
+        return Some(t_out);
+    }
+    None
 }
 
 /// How far inside the edge of a patch a joint that is added there lies, in metres, so that the test that finds the

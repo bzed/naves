@@ -14,7 +14,7 @@ use crate::conform::{Buried, Conformed, Holder, POST_FLOATS_M, PostFloat};
 use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
-use crate::limits::{CROSS_FALL_LIMIT, earthwork_allowance_m};
+use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
@@ -553,6 +553,52 @@ fn strip_near(
     best.map(|(_, point, height)| (point, height))
 }
 
+/// Where a strip first enters the circle `(centre, radius)` on its way out from joint `from`, heading `forward` or
+/// back, within [`RAMP_JOINT_MIN_M`] of strip: the point, the strip's height there and how far along the strip it
+/// is from joint `from`. `None` where it does not (or if joint `from` is already inside).
+fn strip_enter(
+    strip: &crate::profile::RoadStrip,
+    from: usize,
+    forward: bool,
+    (centre, radius): ((f64, f64), f64),
+) -> Option<((f64, f64), f64, f64)> {
+    let mut walked = 0.0;
+    let mut here = *strip.joints.get(from)?;
+    let mut index = from;
+    while walked < RAMP_JOINT_MIN_M {
+        let stepped = if forward {
+            index.checked_add(1)
+        } else {
+            index.checked_sub(1)
+        };
+        let (next_index, next) =
+            stepped.and_then(|i| strip.joints.get(i).map(|joint| (i, *joint)))?;
+        index = next_index;
+        let (dx, dy) = (next.0 - here.0, next.1 - here.1);
+        let qa = dx * dx + dy * dy;
+        if qa > 0.0 {
+            let (fx, fy) = (here.0 - centre.0, here.1 - centre.1);
+            let qb = 2.0 * (fx * dx + fy * dy);
+            let discriminant = qb * qb - 4.0 * qa * (fx * fx + fy * fy - radius * radius);
+            if discriminant > 0.0 {
+                let t = (-qb - discriminant.sqrt()) / (2.0 * qa);
+                // a tolerance, as a joint may lie on the circle's edge
+                if (-1e-9..=1.0 + 1e-9).contains(&t) {
+                    let height = here.2 + (next.2 - here.2) * t;
+                    return Some((
+                        (here.0 + dx * t, here.1 + dy * t),
+                        height,
+                        walked + t * qa.sqrt(),
+                    ));
+                }
+            }
+        }
+        walked += qa.sqrt();
+        here = next;
+    }
+    None
+}
+
 /// What a deck's end joins, as the step to it (its height less the deck's, see [`EndStep::step`]): the junction
 /// it belongs to within its reach, or the end of another road within [`END_JOIN_M`]. The one with the largest
 /// step, if any has a finite height.
@@ -608,11 +654,15 @@ fn end_neighbour(
         for (j, d, _) in named.iter().filter(|(j, d, other)| {
             *d > j.patch_m && *d <= j.patch_m + CROSSING_REACH_M && *d < *other
         }) {
-            let reached = profiles
-                .strips
-                .get(own.0)
-                .and_then(|strip| strip_near(strip, own.1, forward, j.at, d + j.patch_m))
-                .filter(|(point, _)| (point.0 - j.at.0).hypot(point.1 - j.at.1) <= j.patch_m);
+            // where the height solve ties the strip to the plane: where it enters the patch if that is within
+            // `RAMP_JOINT_MIN_M` of the deck's end (no joint fits there), else where it passes nearest
+            let reached = profiles.strips.get(own.0).and_then(|strip| {
+                strip_enter(strip, own.1, forward, (j.at, j.patch_m))
+                    .filter(|(_, _, walked)| *walked < RAMP_JOINT_MIN_M)
+                    .map(|(point, height, _)| (point, height))
+                    .or_else(|| strip_near(strip, own.1, forward, j.at, d + j.patch_m))
+                    .filter(|(point, _)| (point.0 - j.at.0).hypot(point.1 - j.at.1) <= j.patch_m)
+            });
             let Some((point, strip_height)) = reached else {
                 continue;
             };

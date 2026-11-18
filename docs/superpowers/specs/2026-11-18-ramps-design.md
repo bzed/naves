@@ -59,6 +59,13 @@ leaves, if it does). The junction's hold applies to these like to any joint in a
 pin on the interpolated line (`Crossing`, added for runs that touch a deck) where a joint can be added; the pin
 stays for the cases where it cannot.
 
+**The pin at a deck end (fix round 1).** A deck's end whose junction's patch starts within `RAMP_JOINT_MIN_M` of it
+along the run has no room for a joint between them, and a deck's own joint holds only one level. The deck's end is
+then tied to that junction's plane where the run enters the patch (a `Crossing` at the patch's edge, a hard row),
+even where the junction already holds another joint of the road (first version: the row was skipped, nothing in the
+solve saw the step at 74208396). `bridge_end_step` measures the step at the same place. The deck or the junction
+gives way: a junction less than about a metre off its ground costs less than a step.
+
 - It applies to every run, not only to runs that touch a deck, if the first measurement shows no harm; otherwise it
   is limited to runs that touch a deck and that is said.
 - A new joint closer than `RAMP_JOINT_MIN_M` (4.0 m, one terrain cell at size 2048) to an existing joint is not
@@ -75,7 +82,17 @@ the road, the rule for a change of grade is not the comfort radius:
 - the change of grade at one joint may be up to `GRADE_BREAK_MAX` (0.10, about 5.7°);
 - the limit used is the larger of this and what the family's radius allows over the run.
 
-Outside the zone nothing changes.
+Outside the zone the rules do not change (the heights of roads near it do: the solve is one calculation).
+
+What "within `RAMP_ZONE_M` of a junction's patch" means in the code: the zone is measured from every variable a
+junction holds, not from the patch's edge. A road joint held by the `Arm` rule lies up to 13 m from the junction's
+centre, and a junction holds up to eight joints inward, so the zone reaches about 25 m beyond a joint that is itself
+up to 13 m off. At Berchtesgaden (2048) that is about 36 % of all road segments.
+
+A change of grade above `GRADE_BREAK_HARD` (0.20) at one joint in a zone costs like a hard limit does outside a zone
+(a second band, priced as a hold that is given up). Between 0.10 and 0.20 a break is a finding that a hold or a
+clearance may cost; above 0.20 it is not given for them lightly. Without that band the break was the cheapest outlet
+in an impossible case: breaks of 27 to 34 % at one joint appeared.
 
 The value is an estimate: a car with ordinary ground clearance takes a 10 % break at walking speed without
 grounding; two such breaks at least `RAMP_JOINT_MIN_M` apart give a 20 % ramp. It is one constant and will be
@@ -100,6 +117,7 @@ and a test for the order.
 |---|---|---|
 | `RAMP_ZONE_M` | 25.0 | how far from a junction's patch or a deck's end the ramp rule applies |
 | `GRADE_BREAK_MAX` | 0.10 | the largest change of grade at one joint in a ramp zone (rise over run) |
+| `GRADE_BREAK_HARD` | 0.20 | a change of grade over this at one joint in a ramp zone costs like a hold given up (an estimate, like `GRADE_BREAK_MAX`, twice it, about 11.3 degrees; not driven in the game) |
 | `RAMP_JOINT_MIN_M` | 4.0 | new joints are not added closer than this to an existing one |
 
 ## How it is judged

@@ -13,23 +13,26 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- A short ramp instead of a step next to junctions and bridge ends. Where a road has to change height over a short
-  length next to a junction or the end of a bridge deck, the height solve now gives it a ramp inside its family's
-  grade ceiling instead of a step (`bridge_end_step`, 74208396 at Berchtesgaden: a level deck ending 5.7 m from a junction
-  whose plane is 0.87 m higher). A road that passes through the patch of a junction it belongs to without a joint
-  of its own there gets a joint where it enters the patch and one where it leaves it (where one would lie within 4 m of a joint the road has, that joint is held instead, unless it is a bridge deck's or the
-  start of the chain; the junction's plane holds them, so the road lies on it inside the patch), instead of being held at a joint
-  further away or by a pin on the line to the next joint. Within 25 m (along the road) of such a joint or of the
-  end of a bridge deck the grade may change by up to 10 % at one joint, or by what the family's vertical radius allows
-  over the run where that is more; outside that zone nothing changes. Next to a junction or a deck end the order of what
-  gives way is: the grade ceiling (firmer than before inside the zone), the junction's hold and the deck's join, the
-  grade break, the ground. A break over 10 % that was needed to keep a hold is reported by `road_grade` as "The grade
-  changes by 14 % at one point, the most a vehicle takes there is 10 %". The 10 % and the 25 m are estimates, not yet
-  driven in the game. On the example (terrain size 2048): 186 joints added; `road_misses_terrain` 4285 to 4180,
-  `road_conflict` 899 to 848, `road_not_drivable` 185 to 182; `road_grade` 4 to 11 (ten of the new wording at breaks of
-  11 to 18 %, three vertical bends gone), `bridge_buried` 6 to 9 (each 0.1 to 0.2 m) and `bridge_end_step` 3 to 4: at
-  74208396 the junction 5.7 m from the deck has a patch of 5 m that starts 0.7 m after the deck's end, so no ramp fits
-  there and the step is now 0.6 m against the next junction (6764, 7378), and 39605281 has a new one of 0.6 m.
+- A short ramp instead of a step next to junctions and bridge ends, where the geometry allows one. Where a road has to
+  change height over a short length next to a junction or the end of a bridge deck, the height solve gives it a ramp
+  inside its family's grade ceiling instead of a step. A road that passes through the patch of a junction it belongs
+  to without a joint of its own there gets a joint where it enters the patch and one where it leaves it (where one
+  would lie within 4 m of a joint the road has, that joint is held instead, unless it is a bridge deck's or the start
+  of the chain; the junction's plane holds them, so the road lies on it inside the patch), instead of being held at a
+  joint further away or by a pin on the line to the next joint. Within 25 m (along the road) of a joint a junction
+  holds, of one added at a patch or of the end of a bridge deck the grade may change by up to 10 % at one joint, or by
+  what the family's vertical radius allows over the run where that is more; a change of grade over 20 % costs as much
+  as a hold that is given up. The rules outside that zone do not change (the heights of roads near it do, as the
+  solve is one calculation). Next to a junction or a deck end the order of what gives way is: the grade ceiling (firmer
+  than before inside the zone), the junction's hold and the deck's join, the grade break, the ground. A break over
+  10 % that was needed to keep a hold is reported by `road_grade` as "The grade changes by 14 % at one point, the most
+  a vehicle takes there is 10 %". The 10 %, the 20 % and the 25 m are estimates, not yet driven in the game. Three
+  vertical bends of 5 to 6 % are no longer reported by `road_grade` because the zone limit now covers them (their
+  heights are the same as before). A deck whose end faces a junction whose patch starts within 4 m of it (no joint fits
+  between them) is tied to that junction's plane where the road enters the patch, even if the junction already holds
+  another joint of the road: the junction or the deck gives way, a junction less than about a metre off its ground
+  before a step is left, and `bridge_end_step` measures the step there too (it measured at the closest approach to the
+  junction's centre before, which hid a step at the patch's edge).
 
 ### Fixed
 

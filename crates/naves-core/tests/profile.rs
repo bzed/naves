@@ -2040,15 +2040,24 @@ fn a_deck_too_thick_for_a_junction_the_roads_share_is_a_finding() {
     // This scenario cannot be solved inside the limits. The deck needs 4.5 m + 8 m (or + 16 m) over the road below,
     // and the side road from the T junction on the road below to the junction on the approach (38 m long from
     // x = 285, 53 m from x = 260, 61 m from x = 250) has to climb most of that: the approach has only 22.5 m to the
-    // deck and the road below 15 to 50 m to the crossing. So something gives. In a ramp zone the grade ceiling comes
-    // first (then the holds and the clearance, then the breaks of the grade, then the ground), so no road is
-    // steeper than its ceiling and the clearance is what is short (a `bridge_clearance` finding), and the breaks of
-    // the grade over a tenth are `road_grade` findings. (With the vertical radius alone the side road was steeper than
-    // its ceiling, 40 % from x = 285, more than a car can drive, and the clearance short by less.)
-    for (jx, deck) in [(285.0, 8.0), (260.0, 8.0), (250.0, 16.0)] {
+    // deck and the road below 15 to 50 m to the crossing. So something gives, in this order: no road is steeper than
+    // its ceiling (the first to be kept), then the clearance is short (3.6, 1.4 and 2.7 m of 4.5 m, a
+    // `bridge_clearance` finding) and the changes of grade over a tenth are `road_grade` findings. A change of grade
+    // over a fifth costs as much as a hold given up (`GRADE_BREAK_HARD`), the same per metre of misfit as the
+    // clearance, so the solve gives the clearance up only until a break that buys it costs more: the breaks measured
+    // are up to 25.6 % (27 % in the first two cases and 34 % in the third before that price), the clearance
+    // reached 0.92, 3.08 and 1.76 m (1.09, 3.51 and 2.34 m before it: less clearance is the price of the bound on
+    // the breaks, a trade the design states as an estimate). Not a break over 27 % anywhere.
+    // (With the vertical radius alone the side road was steeper than its ceiling, 40 % from x = 285, more than a
+    // car can drive.)
+    for (jx, deck, reached_least) in [(285.0, 8.0, 0.6), (260.0, 8.0, 2.8), (250.0, 16.0, 1.5)] {
         let (p, net, reached, wanted) = a_t_junction_on_the_road_below_at(jx, deck);
         assert!(
             reached < wanted - 0.05,
+            "x = {jx}, deck {deck} m: reached {reached}"
+        );
+        assert!(
+            reached > reached_least,
             "x = {jx}, deck {deck} m: reached {reached}"
         );
         for id in ["1:", "3:", "6:"] {
@@ -2058,13 +2067,20 @@ fn a_deck_too_thick_for_a_junction_the_roads_share_is_a_finding() {
                 "x = {jx}, deck {deck} m: {id} at {steepest}"
             );
         }
+        let breaks: Vec<f64> = p
+            .excesses
+            .iter()
+            .filter(|e| e.kind == GradeExcessKind::GradeBreak)
+            .map(|e| e.grade)
+            .collect();
         assert!(
-            p.excesses
-                .iter()
-                .any(|e| e.kind == GradeExcessKind::GradeBreak),
+            !breaks.is_empty(),
             "x = {jx}, deck {deck} m: {:?}",
             p.excesses
         );
+        for b in breaks {
+            assert!(b < 0.27, "x = {jx}, deck {deck} m: a break of {b}");
+        }
     }
 }
 

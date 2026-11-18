@@ -138,7 +138,7 @@ allow over a crest or a dip) or "The grade changes by 14 % at one point, the mos
 to a junction or the end of a bridge deck, within 25 m of it along the road, the grade may change by 10 % at one joint
 because a short ramp there is fine; the finding says that a ramp needed more, usually because the junction's plane or
 the deck's level was kept and the height difference is large for the length between them. Both values are estimates,
-not yet driven in the game; a break of 14 % is a bump taken at low speed, not a step). On steep ground with hairpins a finer grid
+not yet driven in the game, and so is the idea that a break of 14 % is a bump taken at low speed rather than a step). On steep ground with hairpins a finer grid
 follows the roads more closely, but it does not remove the findings: on the Berchtesgaden example `road_misses_terrain`
 is 4604 at `terrain_size = 1024` and 4015 at 2048, `road_conflict` 749 and 1130. The finer grid costs build time and PBO
 size: with the roads the build takes 350 s, 1.8 GiB and gives a 223 MB PBO at 2048, against 325 s, 1.7 GiB and 78 MB at

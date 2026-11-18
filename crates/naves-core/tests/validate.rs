@@ -1387,13 +1387,46 @@ fn a_strip_that_is_on_the_junctions_plane_where_it_enters_the_patch_is_no_step_h
 
 #[test]
 fn a_junction_plane_extrapolated_beyond_its_patch_is_no_step() {
-    // the plane rises 0.5 m per metre: 3 m below the junction it would be 1.5 m under the junction's height, but
-    // the strip is on it where it enters the patch
+    // the plane rises 0.5 m per metre: 3 m below the junction it would be 1.5 m under the junction's height, and the
+    // strip is on it (105.5 m) where it enters the patch, 3 m after the deck's end
     let mut j = join((100.0, 131.0), 107.0, &["s"]);
     j.gradient = (0.0, 0.5);
-    let joints = flat_chain(107.0, &[(100.0, 129.0, 107.0)]);
+    let joints = flat_chain(107.0, &[(100.0, 128.0, 105.5)]);
     let steps = chain_steps(&joints, vec![j]);
     assert_eq!(steps, Vec::new());
+}
+
+#[test]
+fn a_strip_that_is_on_the_plane_only_at_the_middle_of_a_patch_next_to_the_deck_is_a_step_at_its_edge()
+ {
+    // the patch (3 m) starts 3 m after the deck's end, so no joint fits between them and the solve ties the strip to
+    // the plane where it enters the patch; the strip climbs from 105 m to the plane (107 m) at the junction's centre,
+    // so it is 1 m under the plane at the patch's edge, where the step is measured (at the closest approach, the
+    // centre, it would be none)
+    let joints = flat_chain(107.0, &[(100.0, 131.0, 107.0)]);
+    let steps = chain_steps(&joints, vec![join((100.0, 131.0), 107.0, &["s"])]);
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!((steps[0].step - 1.0).abs() < 1e-6, "{steps:?}");
+}
+
+#[test]
+fn the_step_is_measured_at_the_patch_edge_over_several_joints_and_further_out_at_the_closest_approach()
+ {
+    // joints before the patch's edge do not change where it is: 105 m at 125 and 127, the patch (3 m around 131)
+    // starts at 128, on the way from 127 (105 m) to 129 (107 m): 106 m there, 1 m under the plane
+    let joints = flat_chain(107.0, &[(100.0, 127.0, 105.0), (100.0, 129.0, 107.0)]);
+    let steps = chain_steps(&joints, vec![join((100.0, 131.0), 107.0, &["s"])]);
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!((steps[0].step - 1.0).abs() < 1e-6, "{steps:?}");
+    // a patch that starts 5 m after the deck's end (a joint fits there) is compared where the strip passes nearest
+    // the junction, as before: the strip is 105 m to 129 and then rises to 107 m at 150, 105.38 m at 133
+    let joints = flat_chain(107.0, &[(100.0, 127.0, 105.0), (100.0, 129.0, 105.0)]);
+    let steps = chain_steps(&joints, vec![join((100.0, 133.0), 107.0, &["s"])]);
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(
+        (steps[0].step - (107.0 - (105.0 + 2.0 * 4.0 / 21.0))).abs() < 1e-6,
+        "{steps:?}"
+    );
 }
 
 #[test]

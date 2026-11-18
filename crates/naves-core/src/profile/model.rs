@@ -21,7 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::heightmap::Heightmap;
 use crate::junctions::{Junction, Junctions, RingPlane};
-use crate::limits::{GRADE_BREAK_MAX, RAMP_ZONE_M, grade_aim, grade_ceiling, min_vertical_radius};
+use crate::limits::{
+    GRADE_BREAK_HARD, GRADE_BREAK_MAX, RAMP_ZONE_M, grade_aim, grade_ceiling, min_vertical_radius,
+};
 use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
@@ -561,7 +563,8 @@ impl Builder {
 
     /// A row (B): the change of grade `change` within `limit`. Outside a ramp zone the excess costs as the other
     /// hard rows do (scaled to [`REFERENCE_M`]); inside one, where the limit is that of a ramp ([`bend_limit`]), it
-    /// costs [`RAMP_BREAK_PER_M`] a metre of the misfit it makes over `lever`, less than a hold that is given up.
+    /// costs [`RAMP_BREAK_PER_M`] a metre of the misfit it makes over `lever`, less than a hold that is given up;
+    /// the part of it over [`GRADE_BREAK_HARD`] (a second band) costs as it does outside a zone, as a hold given up.
     fn bend(&mut self, change: &Expr, limit: f64, lever: f64, ramp: bool) {
         if change.terms.is_empty() {
             return;
@@ -571,6 +574,9 @@ impl Builder {
             self.problem.add_linear(RAMP_BREAK_PER_M * lever, b);
             self.problem
                 .add_square(RAMP_BREAK_PER_M, &[(b, lever)], 0.0);
+            let steep = self.band(change, limit.max(GRADE_BREAK_HARD));
+            self.problem.add_linear(HARD * REFERENCE_M, steep);
+            self.problem.add_square(HARD, &[(steep, REFERENCE_M)], 0.0);
         } else {
             self.problem.add_linear(HARD * REFERENCE_M, b);
             self.problem.add_square(HARD, &[(b, REFERENCE_M)], 0.0);
@@ -603,14 +609,14 @@ fn ramp_anchors(
     anchors
 }
 
-/// The largest change of grade at a bend whose rows (B) are over `run` metres: `run / radius` outside a ramp zone;
-/// inside one (`station`, the way along the chain, within [`RAMP_ZONE_M`] of an anchor) the larger of that and
-/// [`GRADE_BREAK_MAX`]. Returns the limit and whether it is a ramp's.
 /// Whether the way `station` along a chain is within [`RAMP_ZONE_M`] of one of its `anchors` (see [`ramp_anchors`]).
 fn in_ramp_zone(anchors: &[f64], station: f64) -> bool {
     anchors.iter().any(|a| (a - station).abs() <= RAMP_ZONE_M)
 }
 
+/// The largest change of grade at a bend whose rows (B) are over `run` metres: `run / radius` outside a ramp zone;
+/// inside one (`station`, the way along the chain, within [`RAMP_ZONE_M`] of an anchor) the larger of that and
+/// [`GRADE_BREAK_MAX`]. Returns the limit and whether it is a ramp's.
 fn bend_limit(anchors: &[f64], station: f64, run: f64, radius: f64) -> (f64, bool) {
     let by_radius = run / radius;
     if in_ramp_zone(anchors, station) {
@@ -1297,12 +1303,16 @@ mod tests {
     }
 
     #[test]
-    fn a_hold_is_worth_more_than_a_break_and_a_break_more_than_the_ground() {
-        // the order of what gives way next to a junction or the end of a deck (one named constant per weight)
+    fn the_weights_are_ordered_as_the_design_says() {
+        // only the constants: the order of what gives way next to a junction or the end of a deck (one named constant
+        // per weight). The behaviour is tested through the solve: a hold beats a break
+        // (`a_kept_hold_beats_a_grade_break...`), the ceiling beats a hold (`a_deck_too_thick...` in `tests/profile.rs`)
+        // and a break over `GRADE_BREAK_HARD` is held back (the same test)
         const {
             assert!(CEILING > HARD);
             assert!(HARD > RAMP_BREAK_PER_M);
             assert!(RAMP_BREAK_PER_M > 1.0);
+            assert!(GRADE_BREAK_HARD > GRADE_BREAK_MAX);
         }
     }
 }

@@ -117,6 +117,15 @@ pub const RAMP_ZONE_M: f64 = 25.0;
 /// An estimate, **not driven in the game**: `docs/superpowers/specs/2026-11-18-ramps-design.md`.
 pub const GRADE_BREAK_MAX: f64 = 0.10;
 
+/// The change of grade at one joint inside a ramp zone (see [`RAMP_ZONE_M`]) that the height solve gives up only for
+/// the grade ceiling: 0.20, twice [`GRADE_BREAK_MAX`], about 11.3 degrees. Between the two a break is a finding that a
+/// hold or a clearance may cost; above it a break costs as much as a hold that is given up, so that a road is not
+/// bent this sharply to buy a clearance or a hold (a bump a car does not take at any speed, a "sudden very short
+/// change of steepness").
+///
+/// An estimate, **not driven in the game**: `docs/superpowers/specs/2026-11-18-ramps-design.md`.
+pub const GRADE_BREAK_HARD: f64 = 0.20;
+
 /// A joint that the height solve adds where a road enters a junction's patch is not added closer than this to a
 /// joint the road already has, in metres (one terrain cell at terrain size 2048).
 pub const RAMP_JOINT_MIN_M: f64 = 4.0;
