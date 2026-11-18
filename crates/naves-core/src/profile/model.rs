@@ -240,6 +240,8 @@ struct Draft {
     aim: Vec<f64>,
     ceiling: Vec<f64>,
     radius: f64,
+    /// The junctions the strip runs through the patch of between a deck and the next variable.
+    crossings: Vec<holds::Crossing>,
 }
 
 /// The height of a ring's plane at `at`; an error that says where if it is not a number.
@@ -410,6 +412,12 @@ fn drafts(
         let count = chain.at.len();
         let mut holds =
             holds::junction_heights(net, &chain, roads, road.width / 2.0, cell, junctions, true);
+        // a junction the strip crosses where no variable lies in its patch is held by a row, not a variable
+        let crossings = if ring_of(net, roads, junctions).is_some() {
+            Vec::new()
+        } else {
+            holds::crossings(&chain, junctions, &holds::stretch_ids(net, roads), &holds)
+        };
         // an end that lies at the end of another chain's deck takes the deck's height
         let on_decks = deck_meetings(&chain, &drafts, &holds);
         for &(var, _, _) in &on_decks {
@@ -476,6 +484,7 @@ fn drafts(
             aim,
             ceiling,
             radius: min_vertical_radius(family),
+            crossings,
         });
     }
     Ok(drafts)
@@ -583,6 +592,18 @@ fn junction_unknowns(
             Source::Held { junction, .. } => Some(*junction),
             _ => None,
         })
+        .chain(
+            drafts
+                .iter()
+                .flat_map(|d| &d.crossings)
+                .map(|c| c.junction)
+                .filter(|j| {
+                    junctions
+                        .points
+                        .get(*j)
+                        .is_some_and(|p| ring_of_junction(junctions, p).is_none())
+                }),
+        )
         .collect();
     let mut unknowns: Vec<Option<JunctionUnknowns>> = vec![None; junctions.points.len()];
     for &j in &holding {
@@ -624,6 +645,64 @@ fn junction_unknowns(
     Ok(unknowns)
 }
 
+/// The height of the plane of junction `junction` at a place whose tilt lever is `lever`, less `drop`.
+fn plane_expr(
+    junction: usize,
+    lever: f64,
+    drop: f64,
+    unknowns: &[Option<JunctionUnknowns>],
+    junctions: &Junctions,
+) -> Result<Expr, ProfileError> {
+    let (Some(point), Some(u)) = (
+        junctions.points.get(junction),
+        unknowns.get(junction).copied().flatten(),
+    ) else {
+        return Err(invalid(format!("junction {junction} has no unknown")));
+    };
+    let mut expr = Expr::unknown(u.height, point.ground - drop);
+    if let Some(s) = u.tilt {
+        expr.terms.push((s, lever));
+        expr.constant += lever * u.ground_tilt;
+    }
+    Ok(expr)
+}
+
+/// The row that holds a strip to the plane of a junction it crosses (see [`holds::Crossing`]): the strip's
+/// height at the crossing, between the variables `from` and `to`, equals the plane's, within a slack that costs
+/// as the other hard rows, so that a plane the grade limits do not allow shows as a grade, not as a break.
+fn add_crossing(
+    builder: &mut Builder,
+    heights: &[Expr],
+    crossing: &holds::Crossing,
+    ids: &BTreeSet<String>,
+    unknowns: &[Option<JunctionUnknowns>],
+    junctions: &Junctions,
+) -> Result<(), ProfileError> {
+    let (Some(point), Some(from), Some(to)) = (
+        junctions.points.get(crossing.junction),
+        heights.get(crossing.from),
+        heights.get(crossing.to),
+    ) else {
+        return Ok(());
+    };
+    let drop = holds::overlay_drop(point, ids);
+    let plane = if let Some(ring) = ring_of_junction(junctions, point) {
+        Expr::constant(ring_height(ring, crossing.at)? - drop)
+    } else {
+        let lever = point.tilt_axis.map_or(0.0, |u| {
+            u.0 * (crossing.at.0 - point.at.0) + u.1 * (crossing.at.1 - point.at.1)
+        });
+        plane_expr(crossing.junction, lever, drop, unknowns, junctions)?
+    };
+    let d = Expr::sum(&[(from, 1.0 - crossing.t), (to, crossing.t), (&plane, -1.0)]);
+    if !d.terms.is_empty() {
+        let e = builder.band(&d, 0.0);
+        builder.problem.add_linear(HARD, e);
+        builder.problem.add_square(HARD, &[(e, 1.0)], 0.0);
+    }
+    Ok(())
+}
+
 /// The height of every variable, chain by chain: the owner of a meeting comes before the chain that meets it.
 fn height_exprs(
     drafts: &[Draft],
@@ -645,20 +724,7 @@ fn height_exprs(
                     junction,
                     lever,
                     drop,
-                } => {
-                    let (Some(point), Some(u)) = (
-                        junctions.points.get(junction),
-                        unknowns.get(junction).copied().flatten(),
-                    ) else {
-                        return Err(invalid(format!("junction {junction} has no unknown")));
-                    };
-                    let mut expr = Expr::unknown(u.height, point.ground - drop);
-                    if let Some(s) = u.tilt {
-                        expr.terms.push((s, lever));
-                        expr.constant += lever * u.ground_tilt;
-                    }
-                    expr
-                }
+                } => plane_expr(junction, lever, drop, unknowns, junctions)?,
                 Source::Meets { owner, from, to, t } => {
                     let owner = heights.get(owner);
                     let (Some(a), Some(b)) = (
@@ -709,6 +775,17 @@ pub(crate) fn build(
         let mut over_ceiling = vec![None; draft.chain.spacing.len()];
         if !draft.ring {
             add_chain(&mut builder, &draft, &chain_heights, &mut over_ceiling);
+        }
+        let ids = holds::stretch_ids(net, &draft.roads);
+        for crossing in &draft.crossings {
+            add_crossing(
+                &mut builder,
+                &chain_heights,
+                crossing,
+                &ids,
+                &unknowns,
+                junctions,
+            )?;
         }
         chains.push(ModelChain {
             roads: draft.roads,

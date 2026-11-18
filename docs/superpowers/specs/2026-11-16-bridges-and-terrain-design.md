@@ -166,6 +166,13 @@ The clearance row of the height solve takes its thickness from `underside` over 
   within 1 m of the end of another chain's deck takes the deck's height, in place of the `Inward`, `Arm` and `Patch`
   holds (not of `End` and `Piece`). Decks stay level; where a deck has junctions at both ends that want different
   heights the step stays and is reported as `bridge_end_step`.
+- **A road is held to a junction it crosses without a joint** (Task 8c). A junction that names a road held it only at a
+  joint in its patch (`Patch`) or at the nearer variable of a free piece within 13 m (`Arm`); a strip between a deck and
+  a variable held elsewhere, running through the patch with no joint, was held to nothing (240795460: 2.4 m,
+  74208396: 0.8 m). Such a junction now holds the strip's interpolated height where it runs nearest the junction in the
+  patch (`holds::crossings`, a row in `model::add_crossing`, with the weight of the grade limits, so that an
+  impossible grade shows as `road_grade`). A junction within the patch of a deck's end is left to the deck rules; the
+  deck stays one level variable.
 - **Never** is ground under a span raised above the original ground, and never is a vertex of another road's core
   changed: there the cut stops, and what stays above the ceiling is a finding.
 

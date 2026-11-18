@@ -411,3 +411,86 @@ fn hold_beside(
         }
     }
 }
+
+/// A junction that a chain passes within its patch without a variable there: the strip between two variables
+/// (one of them a bridge deck) runs through the patch, and the junction's plane is to hold it there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Crossing {
+    /// Index into [`Junctions::points`].
+    pub junction: usize,
+    /// The variable before the strip's run through the patch.
+    pub from: usize,
+    /// The variable after it.
+    pub to: usize,
+    /// How far along the run, from the end of `from` to the start of `to`, the strip lies nearest the junction.
+    pub t: f64,
+    /// That place.
+    pub at: (f64, f64),
+}
+
+/// The [`Crossing`]s of a chain: the junctions it belongs to that hold no variable of it (`held`, from
+/// [`junction_heights`]) and whose patch the strip runs through between a bridge deck and the next variable,
+/// where no joint lies to be held (the deck is not held by [`HoldRule::Patch`] or [`HoldRule::Arm`] there: it
+/// lies outside the patch at its end, and the next joint is a piece further on). A junction within its patch of
+/// the end of the deck is left to the rules of the deck. One per junction, in the order
+/// of [`Junctions::points`], at the run that passes nearest it.
+pub(super) fn crossings(
+    chain: &Chain,
+    junctions: &Junctions,
+    ids: &BTreeSet<String>,
+    held: &[Option<Hold>],
+) -> Vec<Crossing> {
+    let is_deck = |v: usize| chain.deck.get(v).is_some_and(Option::is_some);
+    let mut found = Vec::new();
+    for (index, junction) in junctions.points.iter().enumerate() {
+        if (!junction.stretches.is_empty() && junction.stretches.is_disjoint(ids))
+            || held.iter().flatten().any(|h| h.junction == index)
+        {
+            continue;
+        }
+        let nearest = (0..chain.at.len().saturating_sub(1))
+            .filter(|&v| is_deck(v) || is_deck(v + 1))
+            .filter_map(|v| {
+                // a deck runs level to its end: the run starts at the end of the deck that faces the next
+                // variable and ends at the start of the one that faces the last
+                let from = match chain.deck.get(v).copied().flatten() {
+                    Some((_, end)) => end,
+                    None => chain.at.get(v).copied()?,
+                };
+                let to = match chain.deck.get(v + 1).copied().flatten() {
+                    Some((start, _)) => start,
+                    None => chain.at.get(v + 1).copied()?,
+                };
+                // a junction in the patch of a deck's end is the deck's own: held by [`HoldRule::Patch`] when it
+                // is the nearest, else its step is for the report (a deck is one level height, held to one
+                // junction)
+                let at_deck_end = |deck: bool, end: (f64, f64)| {
+                    deck && (junction.at.0 - end.0).hypot(junction.at.1 - end.1) <= junction.patch_m
+                };
+                if at_deck_end(is_deck(v), from) || at_deck_end(is_deck(v + 1), to) {
+                    return None;
+                }
+                let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+                let length2 = dx * dx + dy * dy;
+                if length2 <= 0.0 {
+                    return None;
+                }
+                let t = (((junction.at.0 - from.0) * dx + (junction.at.1 - from.1) * dy) / length2)
+                    .clamp(0.0, 1.0);
+                let at = (from.0 + t * dx, from.1 + t * dy);
+                let distance = (junction.at.0 - at.0).hypot(junction.at.1 - at.1);
+                (distance <= junction.patch_m).then_some((distance, v, t, at))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, from, t, at)) = nearest {
+            found.push(Crossing {
+                junction: index,
+                from,
+                to: from + 1,
+                t,
+                at,
+            });
+        }
+    }
+    found
+}

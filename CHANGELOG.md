@@ -11,6 +11,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A road is held to a junction it crosses without a joint. The height solve held a road to a junction only at a joint of
+  its strip that lies in the junction's patch (or at the nearest free joint of a piece within 13 m); a strip that runs
+  through the patch between a bridge deck and a joint that is held to another junction or is the deck, with no joint of
+  its own there, was held to nothing, so it stayed on the ground while the junction's plane stood above it (240795460 at
+  Berchtesgaden: a 2.4 m break and a 2.5 m `road_conflict` at its junction, 6.2 m from the deck end, patch 5.0 m). The
+  junction's plane now holds the strip's interpolated height where it runs nearest the junction inside the patch, by a
+  row with the weight of the grade limits, so that a plane the grade limits do not allow shows as `road_grade` or
+  `road_not_drivable`, not as a break. A junction in the patch of a deck's end is left to the rules of the deck.
+
 ### Changed
 
 - A bridge deck is held to the junction at its end, and a step there is reported. A run of bridge pieces is one level

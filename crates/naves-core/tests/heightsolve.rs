@@ -2171,3 +2171,135 @@ fn a_chain_that_is_one_deck_takes_the_height_of_an_earlier_deck_at_either_end() 
         );
     }
 }
+
+/// A junction at (300, `y`) with the patch `patch_m` and `ground`, belonging to the stretches `ids`.
+fn junction_on_x300(y: f64, ground: f64, patch_m: f64, ids: &[&str]) -> Junction {
+    Junction {
+        at: (300.0, y),
+        kind: JunctionKind::Piece,
+        ground,
+        height: ground,
+        rank: 3,
+        patch_m,
+        stretches: ids.iter().map(|s| (*s).to_string()).collect(),
+        lower: BTreeSet::new(),
+        gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
+    }
+}
+
+/// A chain north along x = 300 that starts at y = 300 and has a deck: a 12.5 m piece "a", a 25 m deck "b" from
+/// y = 312.5 to 337.5, 12.5 m pieces of "c" on to y = 525. The start is held by a junction (index 1) at
+/// y = 299, which is nearer than the one (index 0) at (300, `at_y`), 5 m patch, ground 101: that one is held by
+/// no variable, and its patch lies between the start and the deck, 6.2 m from the deck's end if `at_y` is 306.3.
+fn junction_on_the_run(at_y: f64) -> (PlacedNetwork, Junctions) {
+    let mut chain = vec![piece(
+        "a",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (300.0, 300.0),
+        (300.0, 312.5),
+    )];
+    chain.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 312.5),
+        (300.0, 337.5),
+    ));
+    chain.extend(pieces(
+        "c",
+        Family::Asf3,
+        (300.0, 337.5),
+        (300.0, 525.0),
+        12.5,
+    ));
+    let junctions = Junctions {
+        points: vec![
+            junction_on_x300(at_y, 101.0, 5.0, &["a", "b", "c"]),
+            junction_on_x300(299.0, 100.0, 3.0, &["a", "b", "c"]),
+        ],
+        ..Junctions::default()
+    };
+    (network(vec![chain]), junctions)
+}
+
+/// The height of strip 0 at `y` on the line x = 300, between its joints.
+fn strip_height_at(p: &Profiles, y: f64) -> f64 {
+    let joints = &p.strips[0].joints;
+    let after = joints.iter().position(|j| j.1 >= y).unwrap();
+    let (a, b) = (joints[after - 1], joints[after]);
+    a.2 + (b.2 - a.2) * (y - a.1) / (b.1 - a.1)
+}
+
+#[test]
+fn a_deck_whose_junction_lies_beyond_its_patch_is_held_to_it_where_the_strip_crosses() {
+    // the junction lies 6.2 m before the deck, 1.2 m outside its 5 m patch, on the strip's run from the held start
+    // to the deck: no joint lies in the patch, and the next joint is 12.5 m from the deck's end. Its ground is
+    // 1 m above the terrain, so a strip that stays on the terrain is 1 m below its plane.
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, junctions) = junction_on_the_run(306.3);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let plane = solved.points[0].height;
+    let strip = strip_height_at(&p, 306.3);
+    assert!(
+        (strip - plane).abs() < 0.01,
+        "the strip is at {strip}, the plane at {plane}"
+    );
+    // the junction gave way a little to the terrain, the strip came up to the plane
+    assert!(plane < 100.9 && strip > 100.1, "{plane} {strip}");
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
+        "{steps:?}"
+    );
+    // the deck stays one level height
+    let (start, end) = (joint_at(&p, 312.5), joint_at(&p, 337.5));
+    assert!((start.2 - end.2).abs() < 1e-9, "{start:?} {end:?}");
+}
+
+#[test]
+fn a_junction_off_the_run_or_that_the_road_does_not_belong_to_holds_nothing() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    // 8 m beside the strip, outside its 5 m patch
+    let (net, mut junctions) = junction_on_the_run(306.3);
+    junctions.points[0].at = (308.0, 306.3);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
+    assert!((strip_height_at(&p, 306.3) - 100.0).abs() < 0.01);
+    // a junction that belongs to other roads
+    let (net, mut junctions) = junction_on_the_run(306.3);
+    junctions.points[0].stretches = ["x"].map(String::from).into();
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
+    assert!((strip_height_at(&p, 306.3) - 100.0).abs() < 0.01);
+}
+
+#[test]
+fn a_plain_road_that_passes_a_junction_without_a_joint_in_its_patch_is_held_too() {
+    // 12.5 m pieces; the junction 3 m from the strip between two joints, 6 m from each: held at the nearer joint
+    // (the arm of the junction), so the junction takes part in the solve and moves off its own height
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let net = network(vec![pieces(
+        "a",
+        Family::Asf3,
+        (300.0, 100.0),
+        (300.0, 525.0),
+        12.5,
+    )]);
+    let junctions = Junctions {
+        points: vec![{
+            let mut j = junction_on_x300(318.75, 101.0, 5.0, &["a"]);
+            j.at.0 = 303.0;
+            j
+        }],
+        ..Junctions::default()
+    };
+    let (_, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    assert!(solved.points[0].height < 100.9, "{solved:?}");
+}
