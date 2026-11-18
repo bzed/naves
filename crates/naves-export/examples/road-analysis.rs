@@ -1469,6 +1469,7 @@ fn main() {
     if let Ok(path) = std::env::var("RULES_OUT") {
         let mut text = String::new();
         for v in &violations {
+            // writing to a String cannot fail, so the Result carries no error
             let _ = writeln!(
                 text,
                 "{}\t{:.1}\t{:.1}\t{}",

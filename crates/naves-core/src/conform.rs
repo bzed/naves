@@ -103,15 +103,16 @@ pub struct Conformed {
     pub conflicts: Vec<RoadConflict>,
     /// Places where the earthworks hit [`MAX_EARTHWORK_M`] and a step is left.
     pub capped: Vec<(f64, f64)>,
-    /// Bridges with ground above the underside of their deck that the shaping could not cut (another road's core
-    /// stops the cut), one for each bridge, in the order of their ids.
+    /// Bridges with ground in their deck that the shaping did not cut (another road's earthwork stops the cut), one for each bridge, in the order of their ids.
     pub buried: Vec<Buried>,
     /// Bridges whose posts, piers or walls stand more than [`POST_FLOATS_M`] above the shaped ground, one for each
     /// bridge, in the order of their ids.
     pub floating: Vec<PostFloat>,
 }
 
-/// Ground that another road's core keeps above the underside of a bridge's deck.
+/// Ground in a bridge's deck: above the underside of the deck beyond the end guard, above its surface within the
+/// guard of a free end, that the shaping did not cut (another road's earthwork holds it, or no road does and the cut
+/// did not reach it).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buried {
     /// The id of the bridge stretch.
@@ -137,7 +138,8 @@ pub enum Holder {
     Strip(usize),
     /// A level patch (where roads meet without a junction piece), at this place.
     Patch((f64, f64)),
-    /// No road: the ground was not cut (within the end guard, or under a deck shorter than two guards).
+    /// No road holds it, and the cut did not reach it. Inside the end guard ground with no core is cut to the deck's
+    /// surface, so this comes only from beyond the guard.
     None,
 }
 
@@ -319,7 +321,7 @@ struct Under {
     floor: f32,
     /// The span that gave the ceiling.
     span: usize,
-    /// Whether the vertex lies on the line of one of the span's ports, or in the end guard.
+    /// Whether the vertex lies on the line of one of the span's ports.
     at_port: bool,
     /// Within the end guard of a free end: under the deck but not cut for it.
     guarded: bool,
@@ -331,9 +333,10 @@ struct Under {
 }
 
 impl Under {
-    /// What a vertex that lies in the bands of two spans is held to: the lower ceiling, but guarded, at a port and
-    /// inside if either span says so (a guard is lost to nobody: only a free end guards, and a joint of two steps
-    /// is none).
+    /// What a vertex that lies in the bands of two spans is held to: the lower ceiling, but at a port and inside if
+    /// either span says so. A guard counts where its span has the vertex inside its width, or where the other span
+    /// does not: the guard of one span does not stop the cut inside the other (only a free end guards, and a joint of
+    /// two steps is none).
     fn merge(self, other: Under) -> Under {
         let kept = if self.ceiling <= other.ceiling {
             self
@@ -341,7 +344,8 @@ impl Under {
             other
         };
         Under {
-            guarded: self.guarded || other.guarded,
+            guarded: (self.guarded && (self.inside || !other.inside))
+                || (other.guarded && (other.inside || !self.inside)),
             at_port: self.at_port || other.at_port,
             inside: self.inside || other.inside,
             surface: self.surface.min(other.surface),
@@ -528,7 +532,7 @@ fn bridge_ceilings(spans: &[BridgeSpan], grid: Grid) -> Vec<Option<Under>> {
                 floor: narrow(floor),
                 span: number,
                 guarded,
-                at_port: guarded || along <= PORT_LINE_M || along >= length - PORT_LINE_M,
+                at_port: along <= PORT_LINE_M || along >= length - PORT_LINE_M,
                 inside: across.abs() <= half,
                 surface: narrow(span.deck_at(along)),
             };
@@ -746,6 +750,7 @@ fn candidates(
             // with the end ramp holds there
             if let Some(held) = under.get(vertex).copied().flatten()
                 && !held.at_port
+                && !held.guarded
                 && own.get(held.span).is_some_and(|o| o.contains(&index))
             {
                 continue;

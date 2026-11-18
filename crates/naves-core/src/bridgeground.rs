@@ -225,6 +225,17 @@ pub fn bridge_spans(
             if road.kind != PlacedKind::Bridge {
                 continue;
             }
+            // a step of a lengthened panel grid starts where the placed panel does: the strip's joint before the first
+            // step is the end of the junction piece that the grid lies over, inside the deck (the height is the joint's)
+            let (from, to) =
+                if road.kind == PlacedKind::Bridge && slab.is_some_and(|s| s.model == road.model) {
+                    (
+                        (road.start.x, road.start.y, from.2),
+                        (road.end.x, road.end.y, to.2),
+                    )
+                } else {
+                    (*from, *to)
+                };
             let chord = (to.0 - from.0).hypot(to.1 - from.1);
             let (shape, reversed) = if let Some(model) =
                 catalog.bridges().iter().find(|m| m.model == road.model)
@@ -244,17 +255,6 @@ pub fn bridge_spans(
             } else {
                 continue;
             };
-            // a step of a lengthened panel grid starts where the placed panel does: the strip's joint before the first
-            // step is the end of the junction piece that the grid lies over, inside the deck (the height is the joint's)
-            let (from, to) =
-                if road.kind == PlacedKind::Bridge && slab.is_some_and(|s| s.model == road.model) {
-                    (
-                        (road.start.x, road.start.y, from.2),
-                        (road.end.x, road.end.y, to.2),
-                    )
-                } else {
-                    (*from, *to)
-                };
             let (first, second) = if reversed { (to, from) } else { (from, to) };
             let own_strips = own
                 .entry(road.slot.stretch.clone())
