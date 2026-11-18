@@ -669,7 +669,12 @@ fn plane_expr(
 
 /// The row that holds a strip to the plane of a junction it crosses (see [`holds::Crossing`]): the strip's
 /// height at the crossing, between the variables `from` and `to`, equals the plane's, within a slack that costs
-/// as the other hard rows, so that a plane the grade limits do not allow shows as a grade, not as a break.
+/// `HARD`, as a bend over its limit does. The hold is given up where keeping it costs more than the break: a
+/// height `h` at the crossing moves `to` by `h / t` (a crossing near `from` has a long lever), and next to a level
+/// deck that is a change of grade at the deck's end that the bend rows (B: the vertical radius over the run) price
+/// at more than `h`, though the grade itself stays under its ceiling (74208396: 16 to 20 % against 27 %, a bend of
+/// 0.16 to 0.20 against a limit of 0.046). The break that remains is reported by `bridge_end_step`
+/// (`validate::bridge_end_steps` compares the strip with the plane from the solved heights), not by `road_grade`.
 fn add_crossing(
     builder: &mut Builder,
     heights: &[Expr],
@@ -776,7 +781,11 @@ pub(crate) fn build(
         if !draft.ring {
             add_chain(&mut builder, &draft, &chain_heights, &mut over_ceiling);
         }
-        let ids = holds::stretch_ids(net, &draft.roads);
+        let ids = if draft.crossings.is_empty() {
+            BTreeSet::new()
+        } else {
+            holds::stretch_ids(net, &draft.roads)
+        };
         for crossing in &draft.crossings {
             add_crossing(
                 &mut builder,

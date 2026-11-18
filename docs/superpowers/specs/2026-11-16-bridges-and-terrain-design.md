@@ -170,10 +170,13 @@ The clearance row of the height solve takes its thickness from `underside` over 
   joint in its patch (`Patch`) or at the nearer variable of a free piece within 13 m (`Arm`); a strip between a deck and
   a variable held elsewhere, running through the patch with no joint, was held to nothing (240795460: 2.4 m,
   74208396: 0.8 m). Such a junction now holds the strip's interpolated height where it runs nearest the junction in the
-  patch (`holds::crossings`, a row in `model::add_crossing`, with the weight of the grade limits, so that an
-  impossible grade shows as `road_grade`). A junction within the patch of a deck's end is left to the deck rules; the
+  patch (`holds::crossings`, a row in `model::add_crossing`, as a soft row that costs as much as a bend over its limit). A junction within the patch of a deck's end is left to the deck rules; the
   deck stays one level variable. At Berchtesgaden it removes the break at 240795460; 74208396 (0.76 m) stays, where the pin
-would need a grade over the ceiling and the solve gives up the pin, which has the same weight.
+would lift the joint 17.5 m beyond the level deck by 2.4 to 3.2 m (the pin sits at t = 0.31 of the run), a grade of 16 to
+20 % (the Asf2 ceiling is 27 %) but a change of grade at the deck's end of 0.16 to 0.20 against the bend limit
+run / radius = 18.4 / 400 = 0.046; the bend rows price that above the 0.76 m break, and the solve gives up the pin. Only runs that touch a deck get a
+row; a plain road keeps `Arm`. A given-up hold is not silent: `bridge_end_step` compares the strip with the plane of
+every junction of the bridge's roads within `CROSSING_REACH_M` = 25 m of its patch that the strip runs through.
 - **Never** is ground under a span raised above the original ground, and never is a vertex of another road's core
   changed: there the cut stops, and what stays above the ceiling is a finding.
 

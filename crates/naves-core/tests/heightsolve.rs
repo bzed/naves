@@ -2184,96 +2184,125 @@ fn junction_on_x300(y: f64, ground: f64, patch_m: f64, ids: &[&str]) -> Junction
         stretches: ids.iter().map(|s| (*s).to_string()).collect(),
         lower: BTreeSet::new(),
         gradient: (0.0, 0.0),
-        tilt_axis: None,
-        tilt_cap: 0.0,
+        tilt_axis: Some((1.0, 0.0)),
+        tilt_cap: 0.08,
     }
 }
 
-/// A chain north along x = 300 that starts at y = 300 and has a deck: a 12.5 m piece "a", a 25 m deck "b" from
-/// y = 312.5 to 337.5, 12.5 m pieces of "c" on to y = 525. The start is held by a junction (index 1) at
-/// y = 299, which is nearer than the one (index 0) at (300, `at_y`), 5 m patch, ground 101: that one is held by
-/// no variable, and its patch lies between the start and the deck, 6.2 m from the deck's end if `at_y` is 306.3.
-fn junction_on_the_run(at_y: f64) -> (PlacedNetwork, Junctions) {
-    let mut chain = vec![piece(
+/// A chain along x = 300 that has a deck: a 12.5 m piece "a", a 25 m deck "b", 12.5 m pieces of "c". Going north
+/// it starts at y = 300, the deck runs from y = 312.5 to 337.5 and the pieces on to y = 525; `reversed` mirrors
+/// it (y to 625 - y, the same chain walked from the north). The start is held by a junction (index 1) 1 m before
+/// it, which is nearer than the one (index 0) at `at_y` (north-going numbers), 5 m patch, ground 101: that one is
+/// held by no variable, and its patch lies between the start and the deck, 6.2 m from the deck's end if `at_y`
+/// is 306.3.
+fn junction_on_the_run(at_y: f64, reversed: bool) -> (PlacedNetwork, Junctions) {
+    let mirror = |y: f64| if reversed { 625.0 - y } else { y };
+    let before = piece(
         "a",
         0,
         PlacedKind::Piece,
         Family::Asf3,
-        (300.0, 300.0),
-        (300.0, 312.5),
-    )];
-    chain.push(piece(
+        (300.0, mirror(300.0)),
+        (300.0, mirror(312.5)),
+    );
+    let deck = piece(
         "b",
         0,
         PlacedKind::Bridge,
         Family::Asf3,
-        (300.0, 312.5),
-        (300.0, 337.5),
-    ));
-    chain.extend(pieces(
+        (300.0, mirror(312.5)),
+        (300.0, mirror(337.5)),
+    );
+    let after = pieces(
         "c",
         Family::Asf3,
-        (300.0, 337.5),
-        (300.0, 525.0),
+        (300.0, mirror(337.5)),
+        (300.0, mirror(525.0)),
         12.5,
-    ));
+    );
+    let chain = if reversed {
+        let mut chain: Vec<PlacedRoad> = after
+            .iter()
+            .rev()
+            .map(|r| {
+                let mut r = r.clone();
+                std::mem::swap(&mut r.start, &mut r.end);
+                r
+            })
+            .collect();
+        for mut r in [deck, before] {
+            std::mem::swap(&mut r.start, &mut r.end);
+            chain.push(r);
+        }
+        chain
+    } else {
+        let mut chain = vec![before, deck];
+        chain.extend(after);
+        chain
+    };
     let junctions = Junctions {
         points: vec![
-            junction_on_x300(at_y, 101.0, 5.0, &["a", "b", "c"]),
-            junction_on_x300(299.0, 100.0, 3.0, &["a", "b", "c"]),
+            junction_on_x300(mirror(at_y), 101.0, 5.0, &["a", "b", "c"]),
+            junction_on_x300(mirror(299.0), 100.0, 3.0, &["a", "b", "c"]),
         ],
         ..Junctions::default()
     };
     (network(vec![chain]), junctions)
 }
 
-/// The height of strip 0 at `y` on the line x = 300, between its joints.
+/// The height of strip 0 at `y` on the line x = 300, between its joints (in either order).
 fn strip_height_at(p: &Profiles, y: f64) -> f64 {
     let joints = &p.strips[0].joints;
-    let after = joints.iter().position(|j| j.1 >= y).unwrap();
-    let (a, b) = (joints[after - 1], joints[after]);
-    a.2 + (b.2 - a.2) * (y - a.1) / (b.1 - a.1)
+    let pair = joints
+        .windows(2)
+        .find(|w| (w[0].1 - y) * (w[1].1 - y) <= 0.0 && (w[1].1 - w[0].1).abs() > 1e-9)
+        .unwrap();
+    pair[0].2 + (pair[1].2 - pair[0].2) * (y - pair[0].1) / (pair[1].1 - pair[0].1)
 }
 
 #[test]
 fn a_deck_whose_junction_lies_beyond_its_patch_is_held_to_it_where_the_strip_crosses() {
     // the junction lies 6.2 m before the deck, 1.2 m outside its 5 m patch, on the strip's run from the held start
     // to the deck: no joint lies in the patch, and the next joint is 12.5 m from the deck's end. Its ground is
-    // 1 m above the terrain, so a strip that stays on the terrain is 1 m below its plane.
+    // 1 m above the terrain, so a strip that stays on the terrain is 1 m below its plane. The chain is walked
+    // either way: the run is measured from the deck's facing end in both.
     let hm = terrain(250, 4.0, |_, _| 100.0);
-    let (net, junctions) = junction_on_the_run(306.3);
-    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
-    let plane = solved.points[0].height;
-    let strip = strip_height_at(&p, 306.3);
-    assert!(
-        (strip - plane).abs() < 0.01,
-        "the strip is at {strip}, the plane at {plane}"
-    );
-    // the junction gave way a little to the terrain, the strip came up to the plane
-    assert!(plane < 100.9 && strip > 100.1, "{plane} {strip}");
-    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
-    assert!(
-        steps
-            .iter()
-            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
-        "{steps:?}"
-    );
-    // the deck stays one level height
-    let (start, end) = (joint_at(&p, 312.5), joint_at(&p, 337.5));
-    assert!((start.2 - end.2).abs() < 1e-9, "{start:?} {end:?}");
+    for reversed in [false, true] {
+        let m = |y: f64| if reversed { 625.0 - y } else { y };
+        let (net, junctions) = junction_on_the_run(306.3, reversed);
+        let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+        let plane = solved.points[0].height;
+        let strip = strip_height_at(&p, m(306.3));
+        assert!(
+            (strip - plane).abs() < 0.01,
+            "reversed {reversed}: the strip is at {strip}, the plane at {plane}"
+        );
+        // the junction gave way a little to the terrain, the strip came up to the plane
+        assert!(plane < 100.9 && strip > 100.1, "{plane} {strip}");
+        let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+        assert!(
+            steps
+                .iter()
+                .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
+            "reversed {reversed}: {steps:?}"
+        );
+        // the deck stays one level height
+        let (start, end) = (joint_at(&p, m(312.5)), joint_at(&p, m(337.5)));
+        assert!((start.2 - end.2).abs() < 1e-9, "{start:?} {end:?}");
+    }
 }
 
 #[test]
 fn a_junction_off_the_run_or_that_the_road_does_not_belong_to_holds_nothing() {
     let hm = terrain(250, 4.0, |_, _| 100.0);
     // 8 m beside the strip, outside its 5 m patch
-    let (net, mut junctions) = junction_on_the_run(306.3);
+    let (net, mut junctions) = junction_on_the_run(306.3, false);
     junctions.points[0].at = (308.0, 306.3);
     let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
     assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
     assert!((strip_height_at(&p, 306.3) - 100.0).abs() < 0.01);
     // a junction that belongs to other roads
-    let (net, mut junctions) = junction_on_the_run(306.3);
+    let (net, mut junctions) = junction_on_the_run(306.3, false);
     junctions.points[0].stretches = ["x"].map(String::from).into();
     let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
     assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
@@ -2281,10 +2310,9 @@ fn a_junction_off_the_run_or_that_the_road_does_not_belong_to_holds_nothing() {
 }
 
 #[test]
-fn a_plain_road_that_passes_a_junction_without_a_joint_in_its_patch_is_held_too() {
-    // 12.5 m pieces; the junction 3 m from the strip between two joints, 6 m from each: held at the nearer joint
-    // (the arm of the junction), so the junction takes part in the solve and moves off its own height
-    let hm = terrain(250, 4.0, |_, _| 100.0);
+fn a_plain_road_is_held_to_a_junction_it_passes_by_its_arm_not_by_a_crossing_row() {
+    // 12.5 m pieces; the junction 3 m from the strip between two joints, 6 m from each: the existing rule holds
+    // the nearer joint (`Arm`); the crossing rows are for runs that touch a deck and change nothing here
     let net = network(vec![pieces(
         "a",
         Family::Asf3,
@@ -2300,6 +2328,73 @@ fn a_plain_road_that_passes_a_junction_without_a_joint_in_its_patch_is_held_too(
         }],
         ..Junctions::default()
     };
-    let (_, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
-    assert!(solved.points[0].height < 100.9, "{solved:?}");
+    let holds = chain_holds(&net, &net.chains[0], 4.0, &junctions);
+    let held: Vec<_> = holds.iter().filter_map(|(_, h)| h.as_ref()).collect();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].rule, naves_core::profile::HoldRule::Arm);
+}
+
+/// The ring-held version of the run: the junction at (300, `at_y`) lies on a level ring at `ring` metres, so its
+/// plane is that height whatever the solve does; the start of the chain is held by a junction on a ring at 100 m.
+fn ring_junction_on_the_run(at_y: f64, ring: f64) -> (PlacedNetwork, Junctions) {
+    let (net, _) = junction_on_the_run(at_y, false);
+    let mut crossing = junction_on_x300(at_y, ring, 5.0, &["a", "b", "c", "r2"]);
+    crossing.height = ring;
+    let mut start = ring_held(300.0, "a", "r1");
+    start.patch_m = 1.0;
+    let junctions = Junctions {
+        rings: vec![
+            level_ring("r1", (300.0, 290.0), 100.0),
+            level_ring("r2", (320.0, 303.0), ring),
+        ],
+        points: vec![crossing, start],
+        ..Junctions::default()
+    };
+    (net, junctions)
+}
+
+#[test]
+fn a_crossing_hold_the_grade_limits_forbid_is_given_up_and_reported_wherever_the_junction_lies() {
+    // a junction on a ring at 105 m lies 3 m from the held start (100 m) and 9.5 m from the deck's end, beyond the
+    // patch (5 m) and the reach of the end rule: its plane, 5 m up in 3 m, would need the deck 20 m up, a change of
+    // grade at the deck's end far over the bend limit. The solve gives up the hold: that must be a finding.
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, junctions) = ring_junction_on_the_run(303.0, 105.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    let big: Vec<_> = steps
+        .iter()
+        .filter(|s| s.step.abs() > naves_core::validate::END_STEP_TOL_M)
+        .collect();
+    assert_eq!(big.len(), 1, "{steps:?}");
+    assert!(big[0].what.contains("junction at (300, 303)"), "{big:?}");
+    assert!(big[0].step > 2.0, "{big:?}");
+}
+
+#[test]
+fn a_crossing_hold_that_is_kept_is_not_reported() {
+    // the same junction on a ring at 100 m, the strip's own height: nothing to give up
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, junctions) = ring_junction_on_the_run(303.0, 100.0);
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let steps = naves_core::validate::bridge_end_steps(&net, &p, &solved);
+    assert!(
+        steps
+            .iter()
+            .all(|s| s.step.abs() <= naves_core::validate::END_STEP_TOL_M),
+        "{steps:?}"
+    );
+    assert!((strip_height_at(&p, 303.0) - 100.0).abs() < 0.01);
+}
+
+#[test]
+fn a_crossing_row_does_not_pin_a_run_end_that_another_junction_holds() {
+    // a junction 2 m behind the held start of the chain: the run's nearest point to it is the start itself (t = 0),
+    // which the junction 1 m from the start already holds, so the first junction is not pinned to it
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    let (net, mut junctions) = junction_on_the_run(298.0, false);
+    junctions.points[0].patch_m = 5.0;
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    assert!((solved.points[0].height - 101.0).abs() < 1e-9, "{solved:?}");
+    assert!((strip_height_at(&p, 300.0) - 100.0).abs() < 0.01);
 }

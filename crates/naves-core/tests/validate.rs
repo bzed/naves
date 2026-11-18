@@ -1318,10 +1318,17 @@ fn a_deck_inside_a_chain_is_compared_within_the_junctions_patch() {
         vec![join((100.0, 128.0), 107.0, &["s"])],
     );
     assert_eq!(steps.len(), 1, "{steps:?}");
-    // a junction 15 m away is out of reach altogether
+    // a junction 15 m away is beyond the patch, and the strip that runs through its patch is compared with its
+    // plane (the height solve may have given the hold up); one 65 m away is out of reach altogether
     let steps = chain_steps(
         &flat_chain(105.0, &[]),
         vec![join((100.0, 140.0), 107.0, &["s"])],
+    );
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!((steps[0].step - 2.0).abs() < 1e-6, "{steps:?}");
+    let steps = chain_steps(
+        &flat_chain(105.0, &[]),
+        vec![join((100.0, 190.0), 107.0, &["s"])],
     );
     assert_eq!(steps, Vec::new());
 }

@@ -23,6 +23,10 @@ use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 
 /// A bridge's deck that ends this far (metres) above or below the road or junction it joins is a finding.
 pub const END_STEP_TOL_M: f64 = 0.5;
+/// How far beyond a junction's patch a junction of a bridge's roads may lie from the end of its deck, inside a
+/// chain, for the strip that runs through the patch to be compared with the junction's plane: the run from the
+/// deck to the next variable of the height solve is at most a piece (25 m) long.
+pub const CROSSING_REACH_M: f64 = 25.0;
 /// A chain end this close (metres) to the end of a deck is where the deck ends.
 const END_JOIN_M: f64 = 1.5;
 /// The priority of water among the OSM areas.
@@ -588,20 +592,24 @@ fn end_neighbour(
             height - deck,
             format!("junction at ({:.0}, {:.0})", j.at.0, j.at.1),
         ));
-    } else if !chain_end {
-        // A deck inside a chain is not held to a junction beyond the patch, but the strip may run through the
-        // junction's patch there, held to nothing: compare the strip with the junction's plane where it passes
-        // closest to the junction, inside the patch.
-        let near = named
-            .iter()
-            .filter(|(j, d, other)| *d <= j.patch_m + HOLD_M && *d < *other)
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some((j, d, _)) = near
-            && let Some(strip) = profiles.strips.get(own.0)
-            && let Some((point, strip_height)) =
-                strip_near(strip, own.1, forward, j.at, d + j.patch_m)
-            && (point.0 - j.at.0).hypot(point.1 - j.at.1) <= j.patch_m
-        {
+    }
+    if !chain_end {
+        // A deck inside a chain is not held to a junction beyond its patch, but the strip may run through the
+        // junction's patch there: the height solve holds it to the junction's plane (a crossing row) and may give
+        // that up where the grade limits forbid it. Compare the strip with the junction's plane where it passes
+        // closest to the junction, inside the patch, for every junction of the bridge's roads within
+        // [`CROSSING_REACH_M`] of the patch and nearer this end than the deck's other end.
+        for (j, d, _) in named.iter().filter(|(j, d, other)| {
+            *d > j.patch_m && *d <= j.patch_m + CROSSING_REACH_M && *d < *other
+        }) {
+            let reached = profiles
+                .strips
+                .get(own.0)
+                .and_then(|strip| strip_near(strip, own.1, forward, j.at, d + j.patch_m))
+                .filter(|(point, _)| (point.0 - j.at.0).hypot(point.1 - j.at.1) <= j.patch_m);
+            let Some((point, strip_height)) = reached else {
+                continue;
+            };
             let under =
                 j.kind == JunctionKind::Overlay && ids.iter().any(|id| j.lower.contains(*id));
             let height = j.height_at(point) - if under { OVERLAY_DROP_M } else { 0.0 };
@@ -665,9 +673,11 @@ pub struct EndStep {
 /// [`HOLD_M`] beyond it if it is nearer this end than the deck's other end): the junction's plane (an overlay's lower
 /// road is [`OVERLAY_DROP_M`] below it); or with a road that ends within 1.5 m of it. What is not joined
 /// to the bridge is not compared. A deck inside a chain whose junction lies beyond the patch is not held to it,
-/// but the strip beyond the deck may run through the patch held to nothing: then the strip's height where it
-/// passes closest to the junction (inside the patch) is compared with the junction's plane there, and not the
-/// plane read beyond its patch at the deck's port (a ramp between the deck and the patch is `road_grade`'s).
+/// but the strip beyond the deck may run through the patch (the height solve holds it to the junction's plane
+/// there, and gives that up where the grade limits forbid it): then the strip's height where it passes closest to
+/// the junction (inside the patch) is compared with the junction's plane there, for every junction of the bridge's
+/// roads within [`CROSSING_REACH_M`] of the patch and nearer this end than the deck's other end; the plane is not
+/// read beyond its patch at the deck's port (a ramp between the deck and the patch is `road_grade`'s).
 /// Heights that are not numbers give nothing.
 #[must_use]
 pub fn bridge_end_steps(

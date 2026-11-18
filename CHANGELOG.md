@@ -19,8 +19,13 @@ All notable changes to this project are documented here. The format follows
   its own there, was held to nothing, so it stayed on the ground while the junction's plane stood above it (240795460 at
   Berchtesgaden: a 2.4 m break and a 2.5 m `road_conflict` at its junction, 6.2 m from the deck end, patch 5.0 m). The
   junction's plane now holds the strip's interpolated height where it runs nearest the junction inside the patch, by a
-  row with the weight of the grade limits, so that a plane the grade limits do not allow shows as `road_grade` or
-  `road_not_drivable`, not as a break. A junction in the patch of a deck's end is left to the rules of the deck.
+  row that costs as much as a bend over its limit. It applies to a run of road between a bridge deck and the next
+  joint; a plain road is held by the rules it had. Where keeping the plane would cost more in vertical bends next to the level deck than the break, the solve gives the
+  hold up (74208396 stays 0.76 m under its junction; the grades there would stay under their ceiling), and the break is the finding
+  `bridge_end_step`, which now compares the road with every junction of the bridge's roads within 25 m of the patch
+  that the road runs through, not only those within 4 m of it. A junction in the patch of a deck's end is left to the
+  rules of the deck. On the example `road_not_drivable` has a new finding at (5599.3, 7126.6) (1 % over 4 m, 20 %
+  across, 100 m from the junction; the heights around it moved by 0.1 to 0.2 m) in place of the one at (5700.7, 7083.7).
 
 ### Changed
 

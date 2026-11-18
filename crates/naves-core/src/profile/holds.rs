@@ -442,6 +442,9 @@ pub(super) fn crossings(
 ) -> Vec<Crossing> {
     let is_deck = |v: usize| chain.deck.get(v).is_some_and(Option::is_some);
     let mut found = Vec::new();
+    if !chain.deck.iter().any(Option::is_some) {
+        return found;
+    }
     for (index, junction) in junctions.points.iter().enumerate() {
         if (!junction.stretches.is_empty() && junction.stretches.is_disjoint(ids))
             || held.iter().flatten().any(|h| h.junction == index)
@@ -477,6 +480,12 @@ pub(super) fn crossings(
                 }
                 let t = (((junction.at.0 - from.0) * dx + (junction.at.1 - from.1) * dy) / length2)
                     .clamp(0.0, 1.0);
+                // a run's end variable that another junction already holds is not pinned to this one's plane
+                let var_held =
+                    |var: usize| held.get(var).is_some_and(Option::is_some) && !is_deck(var);
+                if (t <= 0.0 && var_held(v)) || (t >= 1.0 && var_held(v + 1)) {
+                    return None;
+                }
                 let at = (from.0 + t * dx, from.1 + t * dy);
                 let distance = (junction.at.0 - at.0).hypot(junction.at.1 - at.1);
                 (distance <= junction.patch_m).then_some((distance, v, t, at))
