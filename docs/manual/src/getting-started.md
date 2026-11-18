@@ -259,7 +259,9 @@ it is fitted to the deck's start; where the pieces cannot end exactly there, the
 line (0.25 m steps, the shortest slide first) until the road ends within 0.1 m and 1 degree of the deck's port. The road
 behind the deck starts at the deck's end, on the line. Where no such slide exists, or where the road turns into the
 bridge (it arrives more than 2.5 degrees off the line's chord, as on a bridge on a curve), the deck keeps its place and
-follows the road: it starts where the road ends, with the road's heading.
+follows the road: it starts where the road ends, with the road's heading. This slide, and the deck that follows the
+road, are for a bridge built from a model (the model has ports that the road must reach). A grid of panels is laid node
+to node on its line, and its approach is fitted as described under "How a bridge is laid" below.
 
 **A bridge over a road keeps its clearance.** Where a road tagged as a bridge crosses another road without a shared
 node, the underside of the deck keeps **4.5 m** from the surface of the road below. The room is shared between the
@@ -331,15 +333,16 @@ causes says so ("The cut under a bridge's deck and a road want heights ... apart
 
 **Bridge findings, and what to do about each.** On the Berchtesgaden example at `terrain_size = 2048` (measured
 2026-11-18, `docs/research/2026-11-18-bridges.md`) 79 of the 84 OpenStreetMap bridges are built from a part (the other 5
-are at most 3 m and plain road on purpose) and the build reports four kinds of bridge finding. The numbers are what the build
+are at most 3 m and plain road on purpose) and the build reports five kinds of bridge finding. The numbers are what the build
 leaves; each is a place to look at, not a failure of the build.
 
 | Finding | On the example | What you do |
 |---|---|---|
+| `bridge_clearance` | 1 (2.3 m) | A bridge clears the road below by less than 4.5 m although the roads were shaped as far as their limits allow (the room between a bridge and a road below is shared, see above). Straighten the crossing or accept it. |
 | `bridge_blocks_road` | 3 | A road below has less room than it needs under the bridge (0.4 to 1.4 m of 12.8 to 21.0 m). Straighten the crossing in the data (the crossing angle and a crossing near the bridge's end ask for the most room), or accept it. |
 | `bridge_buried` | 6 (the highest 0.8 m) | Ground that a road holds stands in the deck. The message names the road. If it is another road, move that road in the data (OpenStreetMap). If it is the bridge's own road, or you cannot move the other, nothing in the project sets a road's or a bridge's height (the heights are solved), so the build leaves the ground as it is: look at the place in the game and report it with the way id. |
 | `bridge_end_step` | 3 (0.5, 0.6 and 0.8 m) | A level deck ends at another height than the junction or road it joins: the junctions at its two ends want different heights, or the clearance over a road below lifts it. Nothing in the project sets heights: look at the place in the game and report it with the way id, or change the roads in the data (OpenStreetMap), for example by moving a junction away from the bridge's end. |
-| `bridge_post_floats` | 0 | Nothing. Where it appears, use a bridge that does not stand on the ground (a panel grid) or change the road's height there. |
+| `bridge_post_floats` | 0 | Nothing. Where it appears, use a bridge that does not stand on the ground (a panel grid). |
 
 **Bridges.** On a bridge, the span has a level deck (one height; held to a junction at the end that faces it, not at its
 middle, and a road that starts at the deck's end takes the deck's height; where its two ends want different heights the
@@ -356,10 +359,11 @@ own interval (see below); a bridge over a dip, which has no part of its own, tak
 stretch between the solid parts.
 
 **What a bridge is built from.** Every OpenStreetMap bridge is built from a part that fits its length (on the map; bridge ways that follow each other
-are one bridge):
+are one bridge, which takes the id of the lower outer way; edits made on the other ways no longer find their objects and are reported as `orphaned_edit`):
 
 - **At most 3 m:** plain road on the terrain, on purpose (no finding), unless the bridge meets other bridges at a node
-  where only bridges meet (a fork of bridges): then it is at least one panel.
+  where only bridges meet (a fork of bridges): then it is at least one panel; a bridge over a road is a panel grid too (so
+  that the road passes), and without panels it is plain road with the finding `bridge_not_built`.
 - **At least two thirds as long as a bridge model of its road:** the shortest such model that is at least as long as
   the bridge. A bridge longer than all of them gets a chain of the longest end to end (`bridge_wood2` is never
   chained; it is laid alone where it covers two thirds of the bridge). `bridge_wood_25` stands on posts and is used

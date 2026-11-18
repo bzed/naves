@@ -129,7 +129,7 @@ Open until Task 1 steps 2 to 7 of the roads plan have been run. What is known:
 - Hypothesis from vanilla data, **not tested in the game**: road pieces have a vertical up axis (97.9 % of
   Livonia's records, 100 % of the sample), so the engine probably drapes them on the terrain. See
   `docs/research/2026-11-06-road-pieces.md`.
-- Bridge models are not scaled: a road gets the models of its family (`roadplace::BRIDGE_MODELS`) that are at
+- Bridge models are not scaled (the concrete panels of a grid are: they carry their scale in the transform): a road gets the models of its family (`roadplace::BRIDGE_MODELS`) that are at
   most 1 m narrower than its piece. A scale other than 1 would be written into the rotation (the nine rotation
   entries of the object's transform multiplied by it); the world writer keeps that for objects that carry one.
 

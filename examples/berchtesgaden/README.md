@@ -106,7 +106,7 @@ for how to make it; put it at `navmesh/berchtesgaden.nm`. The results below were
 ## The 84 bridges on the 8.2 km map at 2048 (2026-11-18)
 
 What each of the 84 OpenStreetMap bridges of the map became, measured with `road-analysis` at `terrain_size = 2048`
-on the branch `bridges` (the run is of `f5f1fda`; `2d0e09c`, the head, differs from it in comments and a rewritten
+on the branch `bridges` (the run is of `f5f1fda`; `2d0e09c`, the code head (the branch head differs from it in documents only), differs from it in comments and a rewritten
 condition in `validate.rs`, no behaviour). Details and the reasoning: `docs/research/2026-11-18-bridges.md`; the
 design: `docs/superpowers/specs/2026-11-16-bridges-and-terrain-design.md`. Nothing was tuned for these figures.
 
@@ -134,27 +134,32 @@ road on purpose. No bridge is plain road because the install lacks a part (`brid
   Silbergstraße (1341010238) was not measured: the OpenStreetMap crossing is not where the placed road below runs
   under the lengthened deck.
 - 3 decks end at a height step from the junction they join (`bridge_end_step`): 130047131 0.5 m above, 39663890
-  0.6 m below and 74208396 0.8 m below. A level deck cannot follow two junctions that want different heights.
+  0.6 m below and 74208396 0.8 m below. For 130047131 and 39663890 a level deck has a junction at each end and the two
+  want different heights. 74208396 is a given-up hold: the road beyond the deck runs through a junction's patch and the
+  height solve left it 0.76 m under the junction's plane, because keeping it would cost more in vertical bends next to the
+  level deck than the break.
 
-**Findings of the whole map**, against the state before the bridge work (the same map and size):
+**Findings of the whole map**, against the baseline `d7cb864` (the commit before the bridge work; the same map and size).
+The middle column is the state after the road-height work and before the ground work (Task 6 of the branch), kept
+because the text below refers to it; it is not the baseline.
 
-| Finding | Before | Now |
-|---|---|---|
-| `road_gap` | 356 | 356 |
-| `road_kink` | 21 | 21 |
-| `road_conflict` | 905 | 899 |
-| `road_not_drivable` | 186 | 185 |
-| `road_misses_terrain` | 4271 | 4285 |
-| `road_grade` | 3 | 4 |
-| `bridge_clearance` | 0 | 1 |
-| `bridge_blocks_road` | 3 | 3 |
-| `bridge_buried`, `bridge_end_step`, `bridge_post_floats` | (rule did not exist) | 6, 3, 0 |
-| `bridge_not_built` | 0 | 0 |
+| Finding | Baseline d7cb864 | Before the ground work (Task 6) | Now |
+|---|---|---|---|
+| `road_gap` | not measured | 356 | 356 |
+| `road_kink` | (rule did not exist) | 21 | 21 |
+| `road_conflict` | 900 | 905 | 899 |
+| `road_not_drivable` | 189 | 186 | 185 |
+| `road_misses_terrain` | 4317 | 4271 | 4285 |
+| `road_grade` | 3 | 3 | 4 |
+| `bridge_clearance` | 0 | 0 | 1 |
+| `bridge_blocks_road` | (rule did not exist; 8 solid parts on a road below) | 3 | 3 |
+| `bridge_buried`, `bridge_end_step`, `bridge_post_floats` | (rule did not exist) | (rule did not exist) | 6, 3, 0 |
+| `bridge_not_built` | (rule did not exist) | 0 | 0 |
 
 What got **worse**, and why:
 
-- `road_misses_terrain` 4271 to 4285. The count was not tuned; the figure after the bridge work and before the decks
-  were held to their junctions was 4292, and the baseline before any of it 4317.
+- `road_misses_terrain` 4271 (before the ground work) to 4285. The count was not tuned; the figure after the bridge work and
+  before the decks were held to their junctions was 4292. Against the baseline (4317) it is 32 fewer.
 - `road_grade` 3 to 4 and `bridge_clearance` 0 to 1 are one place, bridge 299428041 at (2349, 6546): the road below
   starts at the bridge's own end node, 2 m from the deck, and loops under it. Before, the deck floated 5.7 m above
   that road's start and nothing reported it. Now the road starts at the deck's height and cannot get under it
@@ -164,26 +169,27 @@ What got **worse**, and why:
 
 **Time** (`road-analysis` at 2048, release build): placement 803.8 s, shaping the ground under the bridges
 (`conform`) 30.4 s, the whole analysis 848.0 s with a peak of 1.3 GiB. The height solve: 4.1 s in all, one solve of
-0.88 s, 97 571 unknowns, 200 132 rows, 16 iterations. `naves build` was not timed at this state.
+0.88 s, 97 571 unknowns, 200 132 rows, 16 iterations. `naves build` took 893 s at `2d0e09c` (game check 3).
 
 **In the game** (DayZ 1.30, headless client, three checks with `tools/ingame-check`, 21 to 37 sites photographed;
 the pictures are not kept in the repository):
 
-- Check 1 (`4b0dea6`): the decks of 39674984 (Bergwerkstraße), 286196692, 48450084 and 130657216 stood above or
-  below the road at their ends.
+- Check 1 (`4b0dea6`): the decks of 39674984 (Bergwerkstraße), 286196692, 48450084 and 130657216 had ground over
+  the deck and a step at the joint at their ends.
 - Check 2 (`775b101`): after the decks were held to the junction at their end, 39674984, 286196692 and 130657216
   were flush.
-- Check 3 (`2d0e09c`, the head): the same three flush, and at 240795460 the road now meets the deck in the top view
+- Check 3 (`2d0e09c`, the code head): the same three flush, and at 240795460 the road now meets the deck in the top view
   after the junction hold.
-- Still wrong in the game at the head: 48450084 (the own width of a neighbouring road overlaps the deck's corner),
-  299428041 (the path below climbs a steep ramp to the bridge's end; `bridge_clearance` 2.3 m) and 74208396 (a 0.76 m
-  step at one end, reported as `bridge_end_step`; the solve prefers the step to a short ramp because of the crest
-  and dip rule, and a follow-up task changes that).
+- Still wrong in the game at the branch head: 48450084 (the own width of a neighbouring road overlaps the deck's corner),
+  299428041 (the path below climbs a steep ramp to the bridge's end; `bridge_clearance` 2.3 m) the fork of panel bridges at (6166, 7042)
+  (sites 79 and 80: the panel grids still overlap untidily) and 74208396 (a 0.76 m step at one end, a given-up junction
+  hold, reported as `bridge_end_step`; the solve prefers the step to a short ramp because of the crest and dip rule, and
+  a follow-up task changes that).
 - **No vehicle was driven over any bridge.** Only the photographed sites were looked at.
 
 **Still open:**
 
-- The three sites above.
+- The four sites above.
 - The clearance at Silbergstraße (1341010238) is not measured.
 - Two grown deck ends turn by more than 5 degrees (299428041 and 36788104).
 - Sidepaths next to a bridge and junctions on a bridge end, which the planned clean-up of the road network addresses.
