@@ -202,7 +202,7 @@ what hangs below it there; the metre of air the cut aims at and the foot of what
 against the grid; the whole of a deck shorter than two guards), higher than the deck's surface. The message says which
 reference its number is above ("above the deck" in the guard, "above the underside of its deck" beyond it). The cut never changes the core of a road that is not the bridge's own, so a road that runs
 under the deck (or an arm of a junction next to a lengthened deck end, or a level patch where roads meet) keeps its
-ground and it sticks into the deck. The message names the road or patch that holds it; "no road" means that nothing
+ground and it sticks into the deck (inside the end guard only a core does: the shoulder ring of another road takes at most the deck's surface there). The message names the road or patch that holds it; "no road" means that nothing
 holds it and the ground was not cut there. The position
 is the vertex with the most ground above the reference. Move the other road in the data. Nothing in the project sets a
 road's or a bridge's height, so where the holder is the bridge's own road, or the other road cannot be moved, the build
@@ -213,6 +213,18 @@ A post, pier or wall foot of a bridge model is more than 0.5 m above the shaped 
 there. The choice of `bridge_wood_25` looks at the original ground; this finding looks at the ground after the shaping
 under the deck as it was placed (with the height the road got). The position is the sample furthest from the ground.
 Use a bridge that does not stand on the ground (a panel grid), or change the road's height there.
+
+**`bridge_end_step`: "The deck of bridge ... ends 1.2 m below the junction at (6840, 7677) it joins: nothing in the project sets heights, look at the site"**
+A bridge's deck is level, and one end of it lies at a junction of the bridge's roads (or at the end of another road) that
+the height solve put more than 0.5 m above or below it. The deck is held to one junction at the end that faces it; where
+the junctions at its two ends want heights that differ (the ground under them differs, or the grade limits keep them
+apart), the second end keeps what is left, and that is this finding. A vehicle meets a step, or the road beyond the end
+climbs it in a few metres, and the ground at the deck's end may stand in the lane. The position is the end of the deck;
+the message says how far the deck is below or above, and names the junction (its position) or the road that ends there.
+Only a junction or a road that belongs to the bridge and ends at the deck's end is compared. Nothing in the project sets
+a road's or a bridge's height, so look at the site in the game and report it with the way id; or change the roads in the
+data (OpenStreetMap): a bridge between two junctions on ground that differs by metres is the usual cause; moving one
+junction away from the bridge's end gives the road room to take up the difference.
 
 **`road_kink`: "Road ... meets its bridge 17.5 degrees off the deck's heading"**
 The road reaches the end of an OpenStreetMap bridge, but its heading there differs from the deck's by more than

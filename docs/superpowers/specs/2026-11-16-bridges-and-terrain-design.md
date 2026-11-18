@@ -158,6 +158,14 @@ The clearance row of the height solve takes its thickness from `underside` over 
   `(underside + BRIDGE_AIR_M) / FILL_SLOPE_MAX`.
 - **A road below** keeps its own core under the span; its cutting ends at the solid parts where the bridge retains and
   in slopes where it does not.
+- **A deck is held from its ends** (Task 8b, after the game check). A run of bridge pieces is one variable of the height
+  solve at the middle of the deck; the rules that hold a variable to a junction measured from there, so a deck longer
+  than about `2 * (patch + HOLD_M)` was not held to the junction at its end and the roads on the two sides of the joint
+  got different heights (up to 1.5 m, and the ground over the deck). Now a deck is held from the deck end that faces the
+  junction (the `Patch`, `End` and meeting rules, and the lever along the junction's tilt), and a chain end that lies
+  within 1 m of the end of another chain's deck takes the deck's height, in place of the `Inward`, `Arm` and `Patch`
+  holds (not of `End` and `Piece`). Decks stay level; where a deck has junctions at both ends that want different
+  heights the step stays and is reported as `bridge_end_step`.
 - **Never** is ground under a span raised above the original ground, and never is a vertex of another road's core
   changed: there the cut stops, and what stays above the ceiling is a finding.
 
@@ -166,6 +174,8 @@ The clearance row of the height solve takes its thickness from `underside` over 
 - `bridge_blocks_road`: a solid part of a bridge, or the end of its deck, on a road below; with the missing metres.
 - `bridge_buried`: after `conform`, ground above the ceiling under a span (another road's core stopped the cut).
 - `bridge_post_floats`: a post row or pier that does not reach the ground by more than 0.5 m.
+- `bridge_end_step`: the deck's height and the height of the junction of the bridge's roads at its end, or of a road that
+  ends there, differ by more than `END_STEP_TOL_M` = 0.5 m (Task 8b).
 - `bridge_not_built`: an OpenStreetMap bridge laid as plain road because the install has no part for it (no panels
   and no fitting model); a fill of at most `FILL_MAX_M` is none.
 - The warning "no room for a bridge model" goes; the report says for every OpenStreetMap bridge what it was built from.
@@ -292,15 +302,16 @@ the work in `conform`, the wording of findings and report lines, and the order o
   (`cell * (|ax| + |ay|)` along the deck; the whole of a deck shorter than two guards) is under the deck but not cut for it,
   because a terrain cell that straddles a port line would slope the road's last piece down to the cut: never cut, and no
   level patch claims it, except that ground above the deck's surface within the deck's width is cut down to the surface
-  (never below it, never raised) unless another road's earthwork (its core or its shoulder ring) holds it; that ground is
-  left and reported. Where spans overlap (steps of a grid, forks) a guard counts at a vertex where its span has the
+  (never below it, never raised) unless another road's core holds it; that ground is left and reported. The shoulder ring
+  of another road holds nothing there: inside the guard and the deck's width a ring claim takes at most the deck's
+  surface (the vertex stays the road's, its earthwork continues). Where spans overlap (steps of a grid, forks) a guard counts at a vertex where its span has the
   vertex inside its width or the other span does not: one span's guard never stops the cut inside the other span's
   deck; a joint of two steps or of two joined bridges is not a free end. The road of the bridge up to the next junction at each end (its chain, plus any strip with a deck
   joint at a port) holds nothing under the deck beyond the guard; inside it, it may hold or raise ground up to its road
   height (the abutment's fill). Beyond the guard ground under a deck is never raised. A road above the underside of the
   deck claims a vertex under it, beyond the guard and within the deck's outline, only within its own width (the
   neighbour's-ring rule: beyond the guard the ring of a road above is limited to that road's own width; inside the guard
-  and beside the deck the ring stays and holds ground); a road below keeps its ring. Other roads' cores win.
+  and the deck's width the ring takes at most the deck's surface; beside the deck the ring stays); a road below keeps its ring. Other roads' cores win.
   `bridge_buried` is the one measure of the finding and of `spans_above_underside`: ground more than `BURIED_TOL_M` = 0.1 m
   above the underside (deck less what hangs, never the foot, no air) beyond the guard, above the deck's surface inside
   it, whoever holds it; the holder is named or "no road".

@@ -313,14 +313,14 @@ that the whole of a deck shorter than two guards is in it) the ground is under t
 terrain cell that straddles the port line would slope the road's last piece down to the cut: it keeps its height and
 no level patch claims it. Beyond the guard ground under a deck is never raised above the original ground. Inside the
 guard, ground that stands above the deck's surface within the deck's width is cut down to the deck's surface (never
-below it, and never raised) unless another road's earthwork holds it (its core or its shoulder ring), so that a bank at
+below it, and never raised) unless another road's core holds it (its shoulder ring takes at most the deck's surface there), so that a bank at
 a deck's end does not stand in the lane. Inside the
 guard the bridge's own road (the strips of the road the bridge is part of, up to the next junction at each end) may hold
 or raise ground up to its road height, as the abutment's fill; beyond the guard it holds nothing under the deck. A road
 that passes under the deck keeps its core and the ground around it, and its cutting spreads under the open parts of
 the deck. A road above the underside of the deck (a junction arm, a road beside the deck end) claims a vertex under the
-deck beyond the end guard only within its own width, not with the shoulder ring of its earthwork (inside the guard its
-ring holds ground: ground above the deck's surface that it holds stays and is reported, and a road that only runs beside the deck keeps its shoulder). The core of another road is never
+deck beyond the end guard only within its own width, not with the shoulder ring of its earthwork (inside the guard and the deck's width
+its ring takes at most the deck's surface: only a road's core holds ground above the deck there, and it is reported; a road that only runs beside the deck keeps its shoulder outside the deck's width). The core of another road is never
 changed. Ground that is in the deck is the finding `bridge_buried`: more than 0.1 m above the underside of the deck
 (the deck's height less what hangs under it there, without the metre of air and never the foot of what stands) beyond
 the end guard, more than 0.1 m above the deck's surface inside it; whoever holds it (the message names the road or the
@@ -331,16 +331,19 @@ causes says so ("The cut under a bridge's deck and a road want heights ... apart
 
 **Bridge findings, and what to do about each.** On the Berchtesgaden example at `terrain_size = 2048` (measured
 2026-11-18, `docs/research/2026-11-18-bridges.md`) 79 of the 84 OpenStreetMap bridges are built from a part (the other 5
-are at most 3 m and plain road on purpose) and the build reports three kinds of bridge finding. The numbers are what the build
+are at most 3 m and plain road on purpose) and the build reports four kinds of bridge finding. The numbers are what the build
 leaves; each is a place to look at, not a failure of the build.
 
 | Finding | On the example | What you do |
 |---|---|---|
 | `bridge_blocks_road` | 3 | A road below has less room than it needs under the bridge (0.4 to 1.4 m of 12.8 to 21.0 m). Straighten the crossing in the data (the crossing angle and a crossing near the bridge's end ask for the most room), or accept it. |
-| `bridge_buried` | 20 (13 of them 0.4 m or less, the highest 1.6 m) | Ground that a road holds stands in the deck. The message names the road. If it is another road, move that road in the data (OpenStreetMap). If it is the bridge's own road, or you cannot move the other, nothing in the project sets a road's or a bridge's height (the heights are solved), so the build leaves the ground as it is: look at the place in the game and report it with the way id. |
+| `bridge_buried` | 6 (the highest 0.8 m) | Ground that a road holds stands in the deck. The message names the road. If it is another road, move that road in the data (OpenStreetMap). If it is the bridge's own road, or you cannot move the other, nothing in the project sets a road's or a bridge's height (the heights are solved), so the build leaves the ground as it is: look at the place in the game and report it with the way id. |
+| `bridge_end_step` | 6 (0.5 to 2.6 m) | A level deck ends at another height than the junction or road it joins: the junctions at its two ends want different heights. Nothing in the project sets heights: look at the place in the game and report it with the way id, or change the roads in the data (OpenStreetMap), for example by moving a junction away from the bridge's end. |
 | `bridge_post_floats` | 0 | Nothing. Where it appears, use a bridge that does not stand on the ground (a panel grid) or change the road's height there. |
 
-**Bridges.** On a bridge, the span has a level deck and the ground below is cut to its ceiling (see above), not left
+**Bridges.** On a bridge, the span has a level deck (one height; held to a junction at the end that faces it, not at its
+middle, and a road that starts at the deck's end takes the deck's height; where its two ends want different heights the
+step is the finding `bridge_end_step`) and the ground below is cut to its ceiling (see above), not left
 alone; the ground starts to be shaped for the road at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
 the stone bridge or `bridge_concrete3`, gravel and dirt tracks `bridge_wood_25` or `bridge_wood2`. A model may be

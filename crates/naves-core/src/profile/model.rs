@@ -260,12 +260,12 @@ fn ring_height(plane: &RingPlane, at: (f64, f64)) -> Result<f64, ProfileError> {
 fn hold_sources(
     sources: &mut [Source],
     holds: &[Option<holds::Hold>],
-    chain: &Chain,
     junctions: &Junctions,
     ids: &BTreeSet<String>,
 ) -> Result<(), ProfileError> {
-    for ((slot, hold), at) in sources.iter_mut().zip(holds).zip(&chain.at) {
+    for (slot, hold) in sources.iter_mut().zip(holds) {
         let Some(hold) = hold else { continue };
+        let at = &hold.at;
         let Some(j) = junctions.points.get(hold.junction) else {
             continue;
         };
@@ -309,6 +309,85 @@ fn ground_targets(chain: &Chain, hm: &Heightmap) -> Result<Vec<f64>, ProfileErro
         .collect()
 }
 
+/// Sets the source of every variable that meets a road (`joins`) or the end of a deck (`on_decks`).
+fn meeting_sources(
+    sources: &mut [Source],
+    joins: &[(usize, super::Meeting)],
+    on_decks: &[(usize, usize, usize)],
+    drafts: &[Draft],
+) {
+    // a meeting found later for the same variable wins, as it does today
+    for (var, meet) in joins {
+        let owner = drafts.get(meet.owner);
+        let variable = |joint: usize| owner.and_then(|o| o.chain.joints.get(joint)).map(|j| j.2);
+        if let (Some(slot), Some(from), Some(to)) = (
+            sources.get_mut(*var),
+            variable(meet.segment),
+            variable(meet.segment + 1),
+        ) {
+            *slot = Source::Meets {
+                owner: meet.owner,
+                from,
+                to,
+                t: meet.t,
+            };
+        }
+    }
+    for &(var, owner, owner_var) in on_decks {
+        if let Some(slot) = sources.get_mut(var) {
+            *slot = Source::Meets {
+                owner,
+                from: owner_var,
+                to: owner_var,
+                t: 0.0,
+            };
+        }
+    }
+}
+
+/// How near a chain end must lie to the end of another chain's deck to meet it, in metres.
+const DECK_MEET_M: f64 = 1.0;
+
+/// The ends of `chain` that lie at the end of the deck of an earlier chain (of `drafts`) and are not held by the
+/// stronger rules of a junction (a junction piece, or the end rule, which holds the end itself): the variable of
+/// the end, the earlier chain and its deck's variable. The end takes the deck's height, which the junction
+/// rules that reach further in (`Inward`, `Arm`, `Patch`) do not give it: the deck is level and cannot follow
+/// a junction plane, so the road beyond it has to.
+fn deck_meetings(
+    chain: &Chain,
+    drafts: &[Draft],
+    holds: &[Option<holds::Hold>],
+) -> Vec<(usize, usize, usize)> {
+    let count = chain.at.len();
+    let mut found = Vec::new();
+    for end in [0, count.saturating_sub(1)] {
+        let strong = holds
+            .get(end)
+            .copied()
+            .flatten()
+            .is_some_and(|h| matches!(h.rule, holds::HoldRule::End | holds::HoldRule::Piece));
+        let Some(joint) = (if end == 0 {
+            chain.joints.first()
+        } else {
+            chain.joints.last()
+        }) else {
+            continue;
+        };
+        if strong || found.iter().any(|f: &(usize, usize, usize)| f.0 == end) {
+            continue;
+        }
+        let near = |p: (f64, f64)| (p.0 - joint.0).hypot(p.1 - joint.1) < DECK_MEET_M;
+        let on_deck = drafts.iter().enumerate().find_map(|(owner, d)| {
+            d.chain.deck.iter().enumerate().find_map(|(v, ends)| {
+                let (a, b) = (*ends)?;
+                (near(a) || near(b)).then_some((end, owner, v))
+            })
+        });
+        found.extend(on_deck);
+    }
+    found
+}
+
 /// Pass one: the chains, which junction holds which variable, the meetings, the targets and the limits.
 fn drafts(
     net: &PlacedNetwork,
@@ -329,35 +408,24 @@ fn drafts(
         };
         let family = road.family;
         let count = chain.at.len();
-        let holds =
+        let mut holds =
             holds::junction_heights(net, &chain, roads, road.width / 2.0, cell, junctions, true);
+        // an end that lies at the end of another chain's deck takes the deck's height
+        let on_decks = deck_meetings(&chain, &drafts, &holds);
+        for &(var, _, _) in &on_decks {
+            if let Some(slot) = holds.get_mut(var) {
+                *slot = None;
+            }
+        }
         let flags: Vec<Option<f64>> = holds.iter().map(|h| h.map(|h| h.height)).collect();
         let (_, joins) = end_joins(&chain, &strips, &bounds, cell, &flags);
         let ring = ring_of(net, roads, junctions);
         let mut sources = vec![Source::Free; count];
-        // a meeting found later for the same variable wins, as it does today
-        for (var, meet) in &joins {
-            let owner = drafts.get(meet.owner);
-            let variable =
-                |joint: usize| owner.and_then(|o| o.chain.joints.get(joint)).map(|j| j.2);
-            if let (Some(slot), Some(from), Some(to)) = (
-                sources.get_mut(*var),
-                variable(meet.segment),
-                variable(meet.segment + 1),
-            ) {
-                *slot = Source::Meets {
-                    owner: meet.owner,
-                    from,
-                    to,
-                    t: meet.t,
-                };
-            }
-        }
+        meeting_sources(&mut sources, &joins, &on_decks, &drafts);
         // a junction beats a meeting
         hold_sources(
             &mut sources,
             &holds,
-            &chain,
             junctions,
             &holds::stretch_ids(net, roads),
         )?;

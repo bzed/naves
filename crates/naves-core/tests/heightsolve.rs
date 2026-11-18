@@ -1907,3 +1907,224 @@ fn a_junction_on_a_ring_keeps_the_plane_and_the_other_end_takes_the_rest() {
     assert!((joints[0].2 - 100.0).abs() < 1e-9, "{joints:?}");
     assert!(p.excesses.is_empty(), "{:?}", p.excesses);
 }
+
+/// A junction of roads that meet without a piece, at `at`, held at `ground`, of the stretches `stretches`.
+fn join_at(at: (f64, f64), ground: f64, patch_m: f64, stretches: &[&str]) -> Junction {
+    Junction {
+        at,
+        kind: JunctionKind::Join,
+        ground,
+        height: ground,
+        rank: 3,
+        patch_m,
+        stretches: stretches.iter().map(|s| (*s).to_string()).collect(),
+        lower: BTreeSet::new(),
+        gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
+    }
+}
+
+/// A road along y = 100 from x = 100: 100 m of road, a deck of `deck` m, 100 m of road, all one chain.
+fn road_with_deck(deck: f64) -> Vec<PlacedRoad> {
+    let end = 200.0 + deck;
+    let mut chain = pieces("a", Family::Asf3, (100.0, 100.0), (200.0, 100.0), 25.0);
+    chain.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (200.0, 100.0),
+        (end, 100.0),
+    ));
+    chain.extend(pieces(
+        "c",
+        Family::Asf3,
+        (end, 100.0),
+        (end + 100.0, 100.0),
+        25.0,
+    ));
+    chain
+}
+
+/// The height of the joint of strip `strip` at `at`.
+fn deck_joint(p: &Profiles, strip: usize, at: (f64, f64)) -> f64 {
+    p.strips[strip]
+        .joints
+        .iter()
+        .find(|j| (j.0 - at.0).hypot(j.1 - at.1) < 1e-6)
+        .unwrap()
+        .2
+}
+
+#[test]
+fn a_long_deck_ending_at_a_junction_is_held_to_its_height() {
+    // the deck's middle is 30 m from the junction at its end, far beyond the patch and the reach of the end rule
+    let hm = terrain(160, 6.25, |_, _| 100.0);
+    let net = network(vec![road_with_deck(60.0)]);
+    let junctions = Junctions {
+        points: vec![join_at((260.0, 100.0), 106.0, 1.0, &["a", "b", "c"])],
+        ..Junctions::default()
+    };
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let deck = deck_joint(&p, 0, (260.0, 100.0));
+    assert!(
+        (deck - solved.points[0].height).abs() < 1e-6,
+        "deck {deck}, junction {}",
+        solved.points[0].height
+    );
+    assert!(
+        (deck_joint(&p, 0, (200.0, 100.0)) - deck).abs() < 1e-9,
+        "the deck is level"
+    );
+}
+
+#[test]
+fn a_deck_end_on_a_junction_beside_its_middle_takes_the_height_of_the_junction_at_the_end() {
+    // the same deck, with the junction's plane tilting along the road: the deck takes the plane's height at
+    // its end, not at its middle
+    let hm = terrain(160, 6.25, |_, _| 100.0);
+    let net = network(vec![road_with_deck(60.0)]);
+    let mut junction = join_at((260.0, 100.0), 106.0, 1.0, &["a", "b", "c"]);
+    junction.kind = JunctionKind::Piece;
+    junction.tilt_axis = Some((1.0, 0.0));
+    junction.tilt_cap = 0.05;
+    junction.gradient = (0.05, 0.0);
+    let junctions = Junctions {
+        points: vec![junction],
+        ..Junctions::default()
+    };
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let deck = deck_joint(&p, 0, (260.0, 100.0));
+    let at_end = solved.points[0].height;
+    assert!(
+        (deck - at_end).abs() < 1e-6,
+        "the deck {deck} against the junction {at_end}"
+    );
+}
+
+#[test]
+fn a_chain_that_continues_from_a_deck_end_takes_the_height_of_the_deck() {
+    // the road after the deck is another chain of one short piece, held to a junction 7.5 m from the deck end
+    // (inward from its other end, which lies at the junction): the junction does not own the deck, so the end
+    // takes the deck's height
+    let hm = terrain(160, 6.25, |_, _| 100.0);
+    let mut deck = pieces("a", Family::Asf3, (100.0, 100.0), (200.0, 100.0), 25.0);
+    deck.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (200.0, 100.0),
+        (260.0, 100.0),
+    ));
+    let after = vec![piece(
+        "p",
+        0,
+        PlacedKind::Piece,
+        Family::Asf3,
+        (260.0, 100.0),
+        (266.2, 100.0),
+    )];
+    let net = network(vec![deck, after]);
+    let junctions = Junctions {
+        points: vec![join_at((267.5, 100.0), 106.0, 3.0, &["p"])],
+        ..Junctions::default()
+    };
+    let (p, _) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let on_deck = deck_joint(&p, 0, (260.0, 100.0));
+    let after = deck_joint(&p, 1, (260.0, 100.0));
+    assert!(
+        (on_deck - after).abs() < 1e-6,
+        "deck {on_deck}, road {after}"
+    );
+}
+
+#[test]
+fn a_deck_between_two_junctions_that_want_different_heights_keeps_a_step_at_one_of_them() {
+    let hm = terrain(160, 6.25, |_, _| 100.0);
+    let net = network(vec![road_with_deck(60.0)]);
+    let junctions = Junctions {
+        points: vec![
+            join_at((200.0, 100.0), 103.0, 1.0, &["a", "b", "c"]),
+            join_at((260.0, 100.0), 112.0, 1.0, &["a", "b", "c"]),
+        ],
+        ..Junctions::default()
+    };
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+    let deck = deck_joint(&p, 0, (200.0, 100.0));
+    let steps: Vec<f64> = solved
+        .points
+        .iter()
+        .map(|j| (j.height - deck).abs())
+        .collect();
+    // the deck is held to one junction, and the other end keeps what is left, which is more than the report's
+    // tolerance
+    assert!(steps.iter().any(|s| *s < 1e-6), "{steps:?} at {deck}");
+    assert!(steps.iter().any(|s| *s > 0.5), "{steps:?} at {deck}");
+}
+
+#[test]
+fn a_deck_that_ends_on_an_earlier_road_takes_its_height() {
+    // the road runs east along y = 100; the deck starts 2 m north of its centre line and runs away from it; the
+    // ground rises to the north, so a deck that is free would stand higher than the road
+    let hm = terrain(160, 6.25, |_, y| 100.0 + 0.05 * (y - 100.0));
+    let low = pieces("low", Family::Asf3, (100.0, 100.0), (300.0, 100.0), 25.0);
+    let deck = vec![
+        piece(
+            "d",
+            0,
+            PlacedKind::Bridge,
+            Family::Asf3,
+            (200.0, 102.0),
+            (200.0, 142.0),
+        ),
+        piece(
+            "e",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (200.0, 142.0),
+            (200.0, 200.0),
+        ),
+    ];
+    let net = network(vec![low, deck]);
+    let (p, _) = solve_plain(&net, &hm, &Junctions::default(), &[]).unwrap();
+    let on_road = deck_joint(&p, 0, (200.0, 100.0));
+    let deck = deck_joint(&p, 1, (200.0, 102.0));
+    assert!((on_road - deck).abs() < 1e-6, "road {on_road}, deck {deck}");
+}
+
+#[test]
+fn a_deck_does_not_end_on_the_road_that_passes_under_its_end() {
+    // the same road, but it crosses 2.5 m inside the deck's start: it is the road below the deck, which the deck must
+    // clear, not a road the deck ends on; the deck keeps its own height (the ground is 0.5 m higher at its middle)
+    let hm = terrain(160, 6.25, |_, y| 100.0 + 0.05 * (y - 100.0));
+    let low = pieces("low", Family::Asf3, (100.0, 100.0), (300.0, 100.0), 25.0);
+    let deck = vec![
+        piece(
+            "d",
+            0,
+            PlacedKind::Bridge,
+            Family::Asf3,
+            (200.0, 97.5),
+            (200.0, 137.5),
+        ),
+        piece(
+            "e",
+            0,
+            PlacedKind::Piece,
+            Family::Asf3,
+            (200.0, 137.5),
+            (200.0, 200.0),
+        ),
+    ];
+    let net = network(vec![low, deck]);
+    let (p, _) = solve_plain(&net, &hm, &Junctions::default(), &[]).unwrap();
+    let on_road = deck_joint(&p, 0, (200.0, 100.0));
+    let deck = deck_joint(&p, 1, (200.0, 97.5));
+    assert!(
+        deck < on_road - 0.1 || deck > on_road + 0.1,
+        "road {on_road}, deck {deck}"
+    );
+}

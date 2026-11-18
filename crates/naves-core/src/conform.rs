@@ -12,7 +12,8 @@
 //!
 //! The ground under a bridge span is shaped for the bridge ([`conform_bridges`]): cut to a ceiling under the
 //! deck (never to the foot of what stands), cut open to both sides, not cut within the end guard of a free end,
-//! never raised beyond it, and never changed where another road's core holds it (see [`Buried`]).
+//! never raised beyond it, and never changed where another road's core holds it (see [`Buried`]). The shoulder ring of
+//! another road holds nothing in the end guard inside the deck's width: it takes at most the deck's surface there.
 //!
 //! The earthworks reach only as far as they are connected to the road: a flood from the road through the
 //! vertices that break the limits stops where the ground meets the slope again, so that a cliff beyond that
@@ -112,7 +113,8 @@ pub struct Conformed {
 
 /// Ground in a bridge's deck: above the underside of the deck beyond the end guard, above its surface within the
 /// guard of a free end, that the shaping did not cut (another road's earthwork holds it, or no road does and the cut
-/// did not reach it).
+/// did not reach it). Within the guard only the core of a road can hold ground above the deck's surface: the shoulder
+/// ring of another road is cut to it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buried {
     /// The id of the bridge stretch.
@@ -134,7 +136,8 @@ pub struct Buried {
 /// What holds the ground that another road keeps under a bridge's deck.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Holder {
-    /// The core of a road: the index of its strip.
+    /// The core of a road: the index of its strip. Within the end guard of a free end only a core holds ground above
+    /// the deck's surface, not the shoulder ring of the road.
     Strip(usize),
     /// A level patch (where roads meet without a junction piece), at this place.
     Patch((f64, f64)),
@@ -762,8 +765,9 @@ fn candidates(
             for hit in hits {
                 // beyond the end guard a road that lies above the underside of the deck claims a vertex under it only
                 // within its own width, not with its ring: its ring would hold ground in the deck. In the guard the
-                // ring stays: the pieces of a road at the deck's end need the ground around them. A road below the underside (a road
-                // that passes under the deck) keeps its ring, its pieces need the ground around them.
+                // ring is kept, but inside the deck's width it takes at most the deck's surface (below): the pieces
+                // of a road at the deck's end need the ground around them, not above the deck. A road below the
+                // underside (a road that passes under the deck) keeps its ring, its pieces need the ground around them.
                 if let Some(held) = held
                     && !own_road
                     && !held.guarded
@@ -775,11 +779,22 @@ fn candidates(
                 }
                 let steep =
                     strip.side_slope.get(hit.segment).copied().unwrap_or(0.0) > FACE_SIDE_SLOPE;
+                // the ring of a road inside the deck's width and its end guard takes at most the deck's surface:
+                // the vertex stays the road's (its earthwork continues), but the ground in the deck's footprint is
+                // never above the deck because of a shoulder. The core of the road, within its own width, is as it was.
+                let mut height = narrow(hit.height);
+                if let Some(held) = held
+                    && held.guarded
+                    && held.inside
+                    && hit.distance - strip.half_width > 0.0
+                {
+                    height = height.min(held.surface);
+                }
                 found.entry(vertex).or_default().push(Candidate {
                     patch: false,
                     owner: index,
                     rank: strip.rank,
-                    height: narrow(hit.height),
+                    height,
                     distance: hit.distance,
                     edge: hit.distance - strip.half_width,
                     cut: if steep { narrow(FACE_SLOPE) } else { cut },

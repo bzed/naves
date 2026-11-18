@@ -546,6 +546,46 @@ pub(crate) fn meeting_bounds(strip: &RoadStrip) -> [f64; 4] {
     ]
 }
 
+/// How far inside the end of a deck the other road's centre line may lie for the deck to end on it, in metres.
+const DECK_END_ON_ROAD_M: f64 = 0.5;
+
+/// Whether the road of `strip` at `meet` is not one that the deck `var` of `chain` ends on, at its end that faces
+/// `side`: it passes under the deck, further in than [`DECK_END_ON_ROAD_M`] from that end (the road below the bridge,
+/// which the clearance rows keep apart from the deck). Not a deck: no, whatever the road.
+fn not_the_road_a_deck_ends_on(
+    chain: &Chain,
+    var: usize,
+    side: usize,
+    strip: &RoadStrip,
+    meet: &Meeting,
+) -> bool {
+    let Some((start, finish)) = chain.deck.get(var).copied().flatten() else {
+        return false;
+    };
+    let (outer, inner) = if side == 0 {
+        (start, finish)
+    } else {
+        (finish, start)
+    };
+    let (Some(from), Some(to)) = (
+        strip.joints.get(meet.segment),
+        strip.joints.get(meet.segment + 1),
+    ) else {
+        return false;
+    };
+    let on = (
+        from.0 + meet.t * (to.0 - from.0),
+        from.1 + meet.t * (to.1 - from.1),
+    );
+    let length = (inner.0 - outer.0).hypot(inner.1 - outer.1);
+    if length <= 0.0 {
+        return false;
+    }
+    let along =
+        ((on.0 - outer.0) * (inner.0 - outer.0) + (on.1 - outer.1) * (inner.1 - outer.1)) / length;
+    along > DECK_END_ON_ROAD_M && along < length
+}
+
 /// The fixed heights of a chain's variables and where they lie on an earlier road: an end that
 /// reaches one takes its height there and stays fixed, and so do up to eight variables inward
 /// while they lie on that road's surface (within its half width and 1.5 cells of its centre line,
@@ -561,29 +601,35 @@ fn end_joins(
     let mut fixed = vec![None; count];
     let mut joins = Vec::new();
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
-        let Some(point) = chain.at.get(end) else {
+        let Some(point) = holds::outer_point(chain, end, side) else {
             continue;
         };
         // a junction holds this end
         if held.get(end).is_some_and(Option::is_some) {
             continue;
         }
-        let Some(meet) = meeting(strips, bounds, *point) else {
+        let Some(meet) = meeting(strips, bounds, point) else {
             continue;
         };
         let owner = meet.owner;
         let Some(owner_strip) = strips.get(owner) else {
             continue;
         };
+        if not_the_road_a_deck_ends_on(chain, end, side, owner_strip, &meet) {
+            continue;
+        }
         let reach = owner_strip.half_width + 1.5 * cell;
         let mut var = end;
         for _ in 0..8 {
-            let Some(point) = chain.at.get(var) else {
+            let Some(point) = holds::outer_point(chain, var, side) else {
                 break;
             };
-            let Some((_, meet_on)) = meeting_on(owner_strip, owner, *point, reach, reach) else {
+            let Some((_, meet_on)) = meeting_on(owner_strip, owner, point, reach, reach) else {
                 break;
             };
+            if not_the_road_a_deck_ends_on(chain, var, side, owner_strip, &meet_on) {
+                break;
+            }
             let height = meeting_height(owner_strip, &meet_on);
             if let (Some(slot), Some(height)) = (fixed.get_mut(var), height) {
                 *slot = Some(height);

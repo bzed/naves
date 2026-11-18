@@ -17,7 +17,7 @@ use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, Link};
 use naves_core::objects::{ObjectId, OrphanedEdit};
 use naves_core::osm::LandPolygon;
-use naves_core::profile::{GradeExcess, GradeExcessKind, Profiles};
+use naves_core::profile::{GradeExcess, GradeExcessKind, Profiles, RoadStrip};
 use naves_core::project::Project;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, RoadKink, Slot};
@@ -493,6 +493,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeNotBuilt,
         Rule::BridgeBuried,
         Rule::BridgePostFloats,
+        Rule::BridgeEndStep,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -510,6 +511,7 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::BridgeBlocksRoad.id(), "bridge_blocks_road");
     assert_eq!(Rule::BridgeBuried.id(), "bridge_buried");
     assert_eq!(Rule::BridgePostFloats.id(), "bridge_post_floats");
+    assert_eq!(Rule::BridgeEndStep.id(), "bridge_end_step");
     assert_eq!(Rule::RoadKink.id(), "road_kink");
 }
 
@@ -1083,4 +1085,165 @@ fn a_conflict_that_the_cut_under_a_bridge_causes_names_the_bridge() {
         "{}",
         found[1].message
     );
+}
+
+/// A strip of the roads `slots` with its joints, bridge flags and half width 3.5.
+fn strip(slots: &[usize], joints: &[(f64, f64, f64)], bridge: &[bool]) -> RoadStrip {
+    RoadStrip {
+        slots: slots.to_vec(),
+        joints: joints.to_vec(),
+        bridge: bridge.to_vec(),
+        junction: Vec::new(),
+        side_slope: Vec::new(),
+        half_width: 3.5,
+        rank: 3,
+    }
+}
+
+/// A junction of roads that meet without a piece, at `at`, at `height`, of the stretches `stretches`.
+fn join(at: (f64, f64), height: f64, stretches: &[&str]) -> Junction {
+    Junction {
+        at,
+        kind: JunctionKind::Join,
+        ground: height,
+        height,
+        rank: 3,
+        patch_m: 3.0,
+        stretches: stretches.iter().map(|s| (*s).to_string()).collect(),
+        lower: std::collections::BTreeSet::new(),
+        gradient: (0.0, 0.0),
+        tilt_axis: None,
+        tilt_cap: 0.0,
+    }
+}
+
+/// The findings `bridge_end_step` of one deck, the road "s" from (100, 100) to (100, 125) at `deck`, with these
+/// junctions and these other strips (each a road from the given joints).
+fn end_steps(
+    deck: f64,
+    junctions: Vec<Junction>,
+    others: &[[(f64, f64, f64); 2]],
+) -> Vec<Violation> {
+    let mut roads = vec![road(0, PlacedKind::Bridge, (100.0, 100.0))];
+    let mut strips = vec![strip(
+        &[0],
+        &[(100.0, 100.0, deck), (100.0, 125.0, deck)],
+        &[true],
+    )];
+    for (i, joints) in others.iter().enumerate() {
+        let mut other = road(
+            1 + u32::try_from(i).unwrap(),
+            PlacedKind::Piece,
+            (joints[0].0, joints[0].1),
+        );
+        "t".clone_into(&mut other.slot.stretch);
+        roads.push(other);
+        strips.push(strip(&[roads.len() - 1], joints, &[false]));
+    }
+    let n = net(roads);
+    let profiles = Profiles {
+        strips,
+        ..Profiles::default()
+    };
+    let junctions = Junctions {
+        points: junctions,
+        ..Junctions::default()
+    };
+    let v = check_roads(
+        &n,
+        &profiles,
+        &junctions,
+        &conformed(),
+        &[],
+        &[],
+        &[],
+        &[],
+        &frame(),
+        &[],
+    );
+    v.into_iter()
+        .filter(|v| v.rule == Rule::BridgeEndStep)
+        .collect()
+}
+
+#[test]
+fn a_deck_that_ends_1_2_m_off_the_junction_it_joins_is_a_finding_with_the_step_and_the_junction() {
+    let found = end_steps(105.0, vec![join((100.0, 126.0), 106.2, &["s"])], &[]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].at, (100.0, 125.0));
+    assert!(
+        found[0].message.contains("bridge s")
+            && found[0].message.contains("1.2 m")
+            && found[0].message.contains("junction at (100, 126)"),
+        "{}",
+        found[0].message
+    );
+}
+
+#[test]
+fn a_step_under_the_tolerance_is_no_finding() {
+    for step in [0.0, 0.3, -0.4, 0.5] {
+        let found = end_steps(105.0, vec![join((100.0, 125.0), 105.0 + step, &["s"])], &[]);
+        assert!(found.is_empty(), "{step}: {found:?}");
+    }
+    let found = end_steps(105.0, vec![join((100.0, 125.0), 105.6, &["s"])], &[]);
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+#[test]
+fn a_junction_that_is_not_the_bridges_or_is_out_of_reach_is_no_step() {
+    // 1.2 m off, but the junction belongs to other roads; or the right roads but 10 m away
+    let foreign = end_steps(105.0, vec![join((100.0, 126.0), 106.2, &["other"])], &[]);
+    assert_eq!(foreign, Vec::new());
+    let far = end_steps(105.0, vec![join((100.0, 135.0), 106.2, &["s"])], &[]);
+    assert_eq!(far, Vec::new());
+}
+
+#[test]
+fn a_road_that_ends_at_the_deck_end_at_another_height_is_a_finding_that_names_the_road() {
+    let found = end_steps(
+        105.0,
+        Vec::new(),
+        &[[(100.0, 125.5, 107.0), (100.0, 150.0, 107.0)]],
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].message.contains("2.0 m") && found[0].message.contains("road t"),
+        "{}",
+        found[0].message
+    );
+    // 30 m away it is not the deck's neighbour
+    let far = end_steps(
+        105.0,
+        Vec::new(),
+        &[[(100.0, 155.0, 107.0), (100.0, 180.0, 107.0)]],
+    );
+    assert_eq!(far, Vec::new());
+}
+
+#[test]
+fn a_deck_between_two_junctions_at_different_heights_reports_the_end_that_has_the_step() {
+    let found = end_steps(
+        105.0,
+        vec![
+            join((100.0, 100.0), 105.0, &["s"]),
+            join((100.0, 125.0), 110.0, &["s"]),
+        ],
+        &[],
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].at, (100.0, 125.0));
+    assert!(found[0].message.contains("5.0 m"), "{}", found[0].message);
+}
+
+#[test]
+fn heights_that_are_not_numbers_make_no_end_step() {
+    for (deck, other) in [(f64::NAN, 105.0), (105.0, f64::NAN), (f64::INFINITY, 105.0)] {
+        let found = end_steps(
+            deck,
+            vec![join((100.0, 126.0), other, &["s"])],
+            &[[(100.0, 125.0, other), (100.0, 150.0, 105.0)]],
+        );
+        assert!(found.is_empty(), "{deck} {other}: {found:?}");
+    }
 }

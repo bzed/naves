@@ -36,6 +36,8 @@ pub struct Hold {
     pub junction: usize,
     /// The height it gives.
     pub height: f64,
+    /// Where the variable is held: its position, for a bridge deck the end of the deck that faces the junction.
+    pub at: (f64, f64),
 }
 
 /// Sets the junction that holds variable `var`, which lies at `at`: it gets the height of the junction's plane
@@ -55,6 +57,7 @@ fn hold(
             rule,
             junction,
             height: j.height_at(at) - overlay_drop(j, ids),
+            at,
         });
     }
 }
@@ -147,6 +150,34 @@ pub(super) fn stretch_ids(net: &PlacedNetwork, roads: &[usize]) -> BTreeSet<Stri
         .collect()
 }
 
+/// Where variable `var` of `chain` lies for a junction at `toward`: its position, and for a bridge deck, which is
+/// as long as its span, the end of the deck or the middle, whichever is nearest the junction. A deck is held to a
+/// junction at the end that faces it, not at its middle.
+fn hold_point(chain: &Chain, var: usize, toward: Option<(f64, f64)>) -> (f64, f64) {
+    let middle = chain.at.get(var).copied().unwrap_or_default();
+    let (Some((start, end)), Some(to)) = (chain.deck.get(var).copied().flatten(), toward) else {
+        return middle;
+    };
+    [start, end]
+        .into_iter()
+        .chain(std::iter::once(middle))
+        .min_by(|a, b| {
+            (a.0 - to.0)
+                .hypot(a.1 - to.1)
+                .total_cmp(&(b.0 - to.0).hypot(b.1 - to.1))
+        })
+        .unwrap_or(middle)
+}
+
+/// Where the end variable `end` of `chain` (`side` 0: the first, else the last) lies for the rule that holds a
+/// chain end to a junction: a deck's outer end, the one that is the end of the chain, not its middle.
+pub(super) fn outer_point(chain: &Chain, end: usize, side: usize) -> Option<(f64, f64)> {
+    match chain.deck.get(end).copied().flatten() {
+        Some((start, finish)) => Some(if side == 0 { start } else { finish }),
+        None => chain.at.get(end).copied(),
+    }
+}
+
 /// The runs of consecutive variables held to one junction by `Patch`, cut down to the one variable of each run
 /// that lies nearest the junction: a road that passes a junction is held at one joint, not along its length.
 fn nearest_of_runs(candidates: &[(usize, usize, f64)]) -> Vec<(usize, usize)> {
@@ -216,7 +247,8 @@ pub(super) fn junction_heights(
             .map(|(i, d, _)| (i, d))
     };
     let give = |held: &mut [Option<Hold>], var: usize, junction: usize, rule: HoldRule| {
-        let at = chain.at.get(var).copied().unwrap_or_default();
+        let toward = junctions.points.get(junction).map(|j| j.at);
+        let at = hold_point(chain, var, toward);
         hold(held, var, at, junction, junctions, &ids, rule);
     };
     let mut held: Vec<Option<Hold>> = vec![None; count];
@@ -247,7 +279,21 @@ pub(super) fn junction_heights(
         .iter()
         .enumerate()
         .filter(|(var, _)| held.get(*var).is_some_and(Option::is_none))
-        .filter_map(|(var, point)| nearest(*point, 0.0).map(|(j, d)| (var, j, d)))
+        .filter_map(|(var, point)| {
+            // a deck is as near a junction as the nearest of its ends and its middle
+            let ends = chain
+                .deck
+                .get(var)
+                .copied()
+                .flatten()
+                .into_iter()
+                .flat_map(|(a, b)| [a, b]);
+            std::iter::once(*point)
+                .chain(ends)
+                .filter_map(|p| nearest(p, 0.0))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(j, d)| (var, j, d))
+        })
         .collect();
     for (var, junction) in nearest_of_runs(&candidates) {
         give(&mut held, var, junction, HoldRule::Patch);
@@ -259,7 +305,8 @@ pub(super) fn junction_heights(
         .iter()
         .any(|r| !r.stretches.is_disjoint(&ids));
     for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
-        let Some((junction_index, _)) = chain.at.get(end).and_then(|point| nearest(*point, HOLD_M))
+        let Some((junction_index, _)) =
+            outer_point(chain, end, side).and_then(|point| nearest(point, HOLD_M))
         else {
             continue;
         };

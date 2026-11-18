@@ -1862,7 +1862,7 @@ fn a_deck_so_thick_that_the_junctions_must_rise_far_is_still_cleared() {
 }
 
 #[test]
-fn the_road_below_is_the_one_that_crosses_not_the_approach_next_to_the_deck() {
+fn the_road_below_is_the_one_that_crosses_and_a_deck_that_starts_on_it_is_held_to_its_junction() {
     let hm = terrain(250, 4.0, |_, _| 100.0);
     // the lower road crosses 2.5 m behind the deck's start, where the approach (another chain) ends
     let mut low = straight("low", Family::Asf3, (50.0, 490.0), (550.0, 490.0));
@@ -1894,9 +1894,19 @@ fn the_road_below_is_the_one_that_crosses_not_the_approach_next_to_the_deck() {
         &graph,
         &|_| Some(DECK),
     );
+    // the crossing is the lower road's (2.5 m behind the deck's start), not the approach's end
     assert_eq!(p.clearances.len(), 1);
     assert!(
-        p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.06,
+        (p.clearances[0].at.1 - 490.0).abs() < 1.0,
+        "{:?}",
+        p.clearances[0]
+    );
+    // The deck starts on the road below (the approach ends there, and the junction of the two is on the lower road's
+    // surface), so the deck is held to that junction, as a deck is held to the junction at its end. It cannot clear
+    // the road: the shortfall is what is reported (before, the deck floated free of its end and left a step of the
+    // clearance's height at the joint that nothing reported).
+    assert!(
+        p.clearances[0].reached < BRIDGE_CLEARANCE_M - 0.06,
         "{}",
         p.clearances[0].reached
     );
