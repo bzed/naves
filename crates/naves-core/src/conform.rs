@@ -13,7 +13,8 @@
 //! The ground under a bridge span is shaped for the bridge ([`conform_bridges`]): cut to a ceiling under the
 //! deck (never to the foot of what stands), cut open to both sides, not cut within the end guard of a free end,
 //! never raised beyond it, and never changed where another road's core holds it (see [`Buried`]). The shoulder ring of
-//! another road holds nothing in the end guard inside the deck's width: it takes at most the deck's surface there.
+//! any road (another road, or the bridge's own road a piece beyond the port) holds nothing in the end guard inside the
+//! deck's width: it takes at most the deck's surface there.
 //!
 //! The earthworks reach only as far as they are connected to the road: a flood from the road through the
 //! vertices that break the limits stops where the ground meets the slope again, so that a cliff beyond that
@@ -114,7 +115,7 @@ pub struct Conformed {
 /// Ground in a bridge's deck: above the underside of the deck beyond the end guard, above its surface within the
 /// guard of a free end, that the shaping did not cut (another road's earthwork holds it, or no road does and the cut
 /// did not reach it). Within the guard only the core of a road can hold ground above the deck's surface: the shoulder
-/// ring of another road is cut to it.
+/// ring of any road, the bridge's own included, is cut to it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Buried {
     /// The id of the bridge stretch.

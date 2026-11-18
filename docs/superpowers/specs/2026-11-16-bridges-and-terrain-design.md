@@ -303,7 +303,7 @@ the work in `conform`, the wording of findings and report lines, and the order o
   because a terrain cell that straddles a port line would slope the road's last piece down to the cut: never cut, and no
   level patch claims it, except that ground above the deck's surface within the deck's width is cut down to the surface
   (never below it, never raised) unless another road's core holds it; that ground is left and reported. The shoulder ring
-  of another road holds nothing there: inside the guard and the deck's width a ring claim takes at most the deck's
+  of any road (the bridge's own included) holds nothing there: inside the guard and the deck's width a ring claim takes at most the deck's
   surface (the vertex stays the road's, its earthwork continues). Where spans overlap (steps of a grid, forks) a guard counts at a vertex where its span has the
   vertex inside its width or the other span does not: one span's guard never stops the cut inside the other span's
   deck; a joint of two steps or of two joined bridges is not a free end. The road of the bridge up to the next junction at each end (its chain, plus any strip with a deck

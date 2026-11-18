@@ -51,7 +51,7 @@ use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
-use naves_core::validate::{Rule, check_roads};
+use naves_core::validate::{Rule, bridge_end_steps, check_roads};
 use naves_export::catalog_read::road_catalog;
 use naves_export::generate::{FittedGraph, Placed, fitted_graph, place_once, plan_roads};
 use naves_export::tools::Tools;
@@ -1375,6 +1375,12 @@ fn main() {
         &dips,
     );
     println!("violations total {}", violations.len());
+    for e in bridge_end_steps(&net, &profiles, &junctions) {
+        println!(
+            "ENDSTEP {} end {} {:+.2} m {} at ({:.1}, {:.1})",
+            e.stretch, e.end, e.step, e.what, e.at.0, e.at.1
+        );
+    }
     {
         // dips of the first placement by what was decided, and those of the final one
         let describe = |label: &str,

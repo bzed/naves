@@ -1124,10 +1124,22 @@ fn end_steps(
     junctions: Vec<Junction>,
     others: &[[(f64, f64, f64); 2]],
 ) -> Vec<Violation> {
-    let mut roads = vec![road(0, PlacedKind::Bridge, (100.0, 100.0))];
+    end_steps_of(25.0, deck, junctions, others)
+}
+
+/// [`end_steps`] with the deck `length` metres long.
+fn end_steps_of(
+    length: f64,
+    deck: f64,
+    junctions: Vec<Junction>,
+    others: &[[(f64, f64, f64); 2]],
+) -> Vec<Violation> {
+    let mut first = road(0, PlacedKind::Bridge, (100.0, 100.0));
+    first.end.y = 100.0 + length;
+    let mut roads = vec![first];
     let mut strips = vec![strip(
         &[0],
-        &[(100.0, 100.0, deck), (100.0, 125.0, deck)],
+        &[(100.0, 100.0, deck), (100.0, 100.0 + length, deck)],
         &[true],
     )];
     for (i, joints) in others.iter().enumerate() {
@@ -1245,5 +1257,49 @@ fn heights_that_are_not_numbers_make_no_end_step() {
             &[[(100.0, 125.0, other), (100.0, 150.0, 105.0)]],
         );
         assert!(found.is_empty(), "{deck} {other}: {found:?}");
+    }
+}
+
+#[test]
+fn a_short_decks_far_end_is_not_compared_with_the_junction_at_its_near_end() {
+    // a 6 m deck with a junction at its far end 3 m up: the near end is 6 m from it, within the reach, but the
+    // junction is nearer the other end
+    let found = end_steps_of(6.0, 105.0, vec![join((100.0, 106.0), 108.0, &["s"])], &[]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].at, (100.0, 106.0));
+}
+
+#[test]
+fn a_deck_inside_a_chain_is_compared_only_within_the_junctions_patch() {
+    // the deck is the middle of three roads: the solve holds it to a junction within its patch (3 m), not 6 m away
+    let mut roads = vec![
+        road(0, PlacedKind::Piece, (100.0, 75.0)),
+        road(1, PlacedKind::Bridge, (100.0, 100.0)),
+        road(2, PlacedKind::Piece, (100.0, 125.0)),
+    ];
+    for r in &mut roads {
+        "s".clone_into(&mut r.slot.stretch);
+    }
+    let n = net(roads);
+    let profiles = Profiles {
+        strips: vec![strip(
+            &[0, 1, 2],
+            &[
+                (100.0, 75.0, 105.0),
+                (100.0, 100.0, 105.0),
+                (100.0, 125.0, 105.0),
+                (100.0, 150.0, 105.0),
+            ],
+            &[false, true, false],
+        )],
+        ..Profiles::default()
+    };
+    for (y, expected) in [(128.0, 1), (131.0, 0)] {
+        let junctions = Junctions {
+            points: vec![join((100.0, y), 107.0, &["s"])],
+            ..Junctions::default()
+        };
+        let steps = naves_core::validate::bridge_end_steps(&n, &profiles, &junctions);
+        assert_eq!(steps.len(), expected, "junction at {y}: {steps:?}");
     }
 }

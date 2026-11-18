@@ -506,19 +506,26 @@ fn end_neighbour(
     net: &PlacedNetwork,
     profiles: &Profiles,
     junctions: &Junctions,
-    own: (usize, usize),
-    port: (f64, f64),
+    own: (usize, usize, bool),
+    ports: ((f64, f64), (f64, f64)),
     deck: f64,
     ids: &[&str],
 ) -> Option<(f64, String)> {
+    let (port, other_port) = ports;
+    let chain_end = own.2;
     let mut found: Vec<(f64, String)> = Vec::new();
-    // the nearest junction that belongs to the bridge, within its patch and the reach of the end rule
+    // the nearest junction that belongs to the bridge and is nearer this end than the deck's other end, within its
+    // patch and, for the end of a chain, the reach of the end rule: what the height solve holds the deck to (a deck
+    // inside a chain is held only within the patch)
     let junction = junctions
         .points
         .iter()
         .filter(|j| ids.iter().any(|id| j.stretches.contains(*id)))
         .map(|j| (j, (j.at.0 - port.0).hypot(j.at.1 - port.1)))
-        .filter(|(j, d)| *d <= j.patch_m + HOLD_M)
+        .filter(|(j, d)| {
+            *d <= j.patch_m + if chain_end { HOLD_M } else { 0.0 }
+                && *d < (j.at.0 - other_port.0).hypot(j.at.1 - other_port.1)
+        })
         .min_by(|a, b| a.1.total_cmp(&b.1));
     if let Some((j, _)) = junction {
         let under = j.kind == JunctionKind::Overlay && ids.iter().any(|id| j.lower.contains(*id));
@@ -554,17 +561,35 @@ fn end_neighbour(
         .max_by(|a, b| (a.0 - deck).abs().total_cmp(&(b.0 - deck).abs()))
 }
 
-/// Bridges whose deck ends at another height than the road or junction it joins: one violation for each such end,
-/// at the end of the deck.
+/// The deck of a bridge at one end and what it joins there (see [`bridge_end_steps`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EndStep {
+    /// The id of the bridge stretch.
+    pub stretch: String,
+    /// Which end of the deck: 0 the first, 1 the last.
+    pub end: usize,
+    /// The end of the deck, in map metres.
+    pub at: (f64, f64),
+    /// The height of what it joins less the deck's height, in metres: positive where the deck is below it.
+    pub step: f64,
+    /// What it joins, for people.
+    pub what: String,
+}
+
+/// Every end of a bridge's deck that joins a junction of the bridge's roads or the end of another road, with the
+/// step to it (not only the ones over [`END_STEP_TOL_M`]).
 ///
-/// A deck is level and one variable of the height solve. An end of it that lies at a junction of the bridge's roads,
-/// or at the end of another road, is compared with that junction's plane (an overlay's lower road is
-/// [`OVERLAY_DROP_M`] below it) or that road's end; what is not joined to the bridge is not compared.
-fn end_step_violations(
+/// A deck is level and one variable of the height solve. An end of it is compared with the junction of the
+/// bridge's roads that the solve holds the deck to (within the junction's patch, and for the end of a chain also
+/// [`HOLD_M`] beyond it, and nearer this end than the deck's other end): the junction's plane (an overlay's lower
+/// road is [`OVERLAY_DROP_M`] below it); or with a road that ends within 1.5 m of it. What is not joined
+/// to the bridge is not compared. Heights that are not numbers give nothing.
+#[must_use]
+pub fn bridge_end_steps(
     net: &PlacedNetwork,
     profiles: &Profiles,
     junctions: &Junctions,
-) -> Vec<Violation> {
+) -> Vec<EndStep> {
     let mut out = Vec::new();
     for (index, strip) in profiles.strips.iter().enumerate() {
         let is_deck = |i: usize| strip.bridge.get(i).copied().unwrap_or(false);
@@ -585,32 +610,64 @@ fn end_step_violations(
                 .flat_map(|s| stretch_parts(net, *s))
                 .collect();
             let name = ids.first().copied().unwrap_or("?");
-            for joint in [first, i] {
-                let Some(port) = strip.joints.get(joint) else {
-                    continue;
-                };
+            let (Some(start), Some(finish)) = (strip.joints.get(first), strip.joints.get(i)) else {
+                continue;
+            };
+            for (end, joint, port, other) in [(0, first, start, finish), (1, i, finish, start)] {
+                let chain_end = joint == 0 || joint + 1 == strip.joints.len();
                 let at = (port.0, port.1);
-                let Some((other, what)) =
-                    end_neighbour(net, profiles, junctions, (index, joint), at, port.2, &ids)
-                else {
+                let ports = (at, (other.0, other.1));
+                let Some((height, what)) = end_neighbour(
+                    net,
+                    profiles,
+                    junctions,
+                    (index, joint, chain_end),
+                    ports,
+                    port.2,
+                    &ids,
+                ) else {
                     continue;
                 };
-                let step = other - port.2;
-                if step.is_finite() && step.abs() > END_STEP_TOL_M {
-                    let side = if step > 0.0 { "below" } else { "above" };
-                    out.push(violation(
-                        Rule::BridgeEndStep,
+                let step = height - port.2;
+                if step.is_finite() {
+                    out.push(EndStep {
+                        stretch: name.to_string(),
+                        end,
                         at,
-                        format!(
-                            "The deck of bridge {name} ends {:.1} m {side} the {what} it joins: nothing in the project sets heights, look at the site",
-                            step.abs()
-                        ),
-                    ));
+                        step,
+                        what,
+                    });
                 }
             }
         }
     }
     out
+}
+
+/// Bridges whose deck ends at another height than the road or junction it joins: one violation for each such end
+/// (see [`bridge_end_steps`]), at the end of the deck, where the step is over [`END_STEP_TOL_M`].
+fn end_step_violations(
+    net: &PlacedNetwork,
+    profiles: &Profiles,
+    junctions: &Junctions,
+) -> Vec<Violation> {
+    bridge_end_steps(net, profiles, junctions)
+        .into_iter()
+        .filter(|e| e.step.abs() > END_STEP_TOL_M)
+        .map(|e| {
+            let side = if e.step > 0.0 { "below" } else { "above" };
+            violation(
+                Rule::BridgeEndStep,
+                e.at,
+                format!(
+                    "The deck of bridge {} ends {:.1} m {side} the {} it joins: nothing in the project sets heights, look at the site",
+                    e.stretch,
+                    e.step.abs(),
+                    e.what
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Bridges whose posts, piers or walls do not reach the ground: one violation for each, where the foot is

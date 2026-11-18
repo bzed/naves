@@ -19,7 +19,7 @@ All notable changes to this project are documented here. The format follows
   not held at all, the roads on the two sides of the joint got different heights (1.5 m at Bergwerkstrasse) and the
   ground over the deck stood in the lane. Now the junction rules (the patch, the end of a chain, a meeting with an
   earlier road, and the lean of the junction's plane) measure from the end of the deck that faces the junction, and a
-  chain that starts at the end of another chain's deck takes the deck's height. The shoulder ring of a neighbouring road
+  chain that starts at the end of another chain's deck takes the deck's height. The shoulder ring of any road (the bridge's own included)
   inside a deck's end guard and width takes at most the deck's surface (it held the ground over the deck before; the road's
   core is as it was). A deck with a junction at each end that want different heights keeps a step at one of them, and
   that is the new finding `bridge_end_step` (the deck and the junction or road it joins differ by more than 0.5 m; also in

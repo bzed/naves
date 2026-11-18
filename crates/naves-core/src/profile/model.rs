@@ -360,13 +360,13 @@ fn deck_meetings(
 ) -> Vec<(usize, usize, usize)> {
     let count = chain.at.len();
     let mut found = Vec::new();
-    for end in [0, count.saturating_sub(1)] {
+    for (side, end) in [0, count.saturating_sub(1)].into_iter().enumerate() {
         let strong = holds
             .get(end)
             .copied()
             .flatten()
             .is_some_and(|h| matches!(h.rule, holds::HoldRule::End | holds::HoldRule::Piece));
-        let Some(joint) = (if end == 0 {
+        let Some(joint) = (if side == 0 {
             chain.joints.first()
         } else {
             chain.joints.last()

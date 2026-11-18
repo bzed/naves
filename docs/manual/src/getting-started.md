@@ -313,7 +313,7 @@ that the whole of a deck shorter than two guards is in it) the ground is under t
 terrain cell that straddles the port line would slope the road's last piece down to the cut: it keeps its height and
 no level patch claims it. Beyond the guard ground under a deck is never raised above the original ground. Inside the
 guard, ground that stands above the deck's surface within the deck's width is cut down to the deck's surface (never
-below it, and never raised) unless another road's core holds it (its shoulder ring takes at most the deck's surface there), so that a bank at
+below it, and never raised) unless a road's core holds it (the shoulder ring of any road, the bridge's own included, takes at most the deck's surface there), so that a bank at
 a deck's end does not stand in the lane. Inside the
 guard the bridge's own road (the strips of the road the bridge is part of, up to the next junction at each end) may hold
 or raise ground up to its road height, as the abutment's fill; beyond the guard it holds nothing under the deck. A road
@@ -338,7 +338,7 @@ leaves; each is a place to look at, not a failure of the build.
 |---|---|---|
 | `bridge_blocks_road` | 3 | A road below has less room than it needs under the bridge (0.4 to 1.4 m of 12.8 to 21.0 m). Straighten the crossing in the data (the crossing angle and a crossing near the bridge's end ask for the most room), or accept it. |
 | `bridge_buried` | 6 (the highest 0.8 m) | Ground that a road holds stands in the deck. The message names the road. If it is another road, move that road in the data (OpenStreetMap). If it is the bridge's own road, or you cannot move the other, nothing in the project sets a road's or a bridge's height (the heights are solved), so the build leaves the ground as it is: look at the place in the game and report it with the way id. |
-| `bridge_end_step` | 6 (0.5 to 2.6 m) | A level deck ends at another height than the junction or road it joins: the junctions at its two ends want different heights. Nothing in the project sets heights: look at the place in the game and report it with the way id, or change the roads in the data (OpenStreetMap), for example by moving a junction away from the bridge's end. |
+| `bridge_end_step` | 6 (0.5 to 2.6 m) | A level deck ends at another height than the junction or road it joins: the junctions at its two ends want different heights, or the clearance over a road below lifts it. Nothing in the project sets heights: look at the place in the game and report it with the way id, or change the roads in the data (OpenStreetMap), for example by moving a junction away from the bridge's end. |
 | `bridge_post_floats` | 0 | Nothing. Where it appears, use a bridge that does not stand on the ground (a panel grid) or change the road's height there. |
 
 **Bridges.** On a bridge, the span has a level deck (one height; held to a junction at the end that faces it, not at its

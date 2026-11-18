@@ -1912,6 +1912,48 @@ fn the_road_below_is_the_one_that_crosses_and_a_deck_that_starts_on_it_is_held_t
     );
 }
 
+#[test]
+fn a_separate_approach_that_does_not_end_on_the_road_below_still_leaves_the_clearance() {
+    let hm = terrain(250, 4.0, |_, _| 100.0);
+    // the lower road crosses 2.5 m behind the deck's start, where the approach (another chain) ends
+    let mut low = straight("low", Family::Asf3, (50.0, 500.0), (550.0, 500.0));
+    for r in &mut low {
+        r.slot.stretch = "1:1-2".to_string();
+    }
+    let approach = straight("up", Family::Asf3, (300.0, 400.0), (300.0, 487.5));
+    let mut deck_chain = vec![piece(
+        "deck",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (300.0, 487.5),
+        (300.0, 512.5),
+    )];
+    deck_chain[0].slot.stretch = "4:4-5".to_string();
+    deck_chain.extend(straight("on", Family::Asf3, (300.0, 512.5), (300.0, 600.0)));
+    let net = network(vec![low, approach, deck_chain]);
+    let graph = build_graph(&[
+        way(1, &[1, 2], &[(50.0, 500.0), (550.0, 500.0)], false),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)], true),
+    ]);
+    let junctions = find_junctions(&net, &RoadGraph::default(), &hm);
+    let (p, _) = solve_clearing(
+        &net,
+        &hm,
+        &junctions,
+        &side_slopes(&net, &hm),
+        &graph,
+        &|_| Some(DECK),
+    );
+    // the approach ends 12.5 m before the lower road, not on it: the deck is held to nothing there and clears it
+    assert_eq!(p.clearances.len(), 1);
+    assert!(
+        p.clearances[0].reached >= BRIDGE_CLEARANCE_M - 0.06,
+        "{}",
+        p.clearances[0].reached
+    );
+}
+
 /// The strip heights of the stretch `id`, by position.
 fn heights_of(p: &Profiles, net: &PlacedNetwork, id: &str) -> Vec<(f64, f64, f64)> {
     p.strips

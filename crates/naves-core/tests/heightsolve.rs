@@ -2128,3 +2128,46 @@ fn a_deck_does_not_end_on_the_road_that_passes_under_its_end() {
         "road {on_road}, deck {deck}"
     );
 }
+
+/// A road and a deck ending at (260, 100), held to a junction at its start; a one-piece deck chain that starts or
+/// ends at the end of that deck, held to a junction of its own beside the other end.
+fn two_decks_meeting(reversed: bool) -> (PlacedNetwork, Junctions) {
+    let mut a = pieces("a", Family::Asf3, (100.0, 100.0), (200.0, 100.0), 25.0);
+    a.push(piece(
+        "b",
+        0,
+        PlacedKind::Bridge,
+        Family::Asf3,
+        (200.0, 100.0),
+        (260.0, 100.0),
+    ));
+    let (from, to) = if reversed {
+        ((260.0, 100.5), (260.0, 160.0))
+    } else {
+        ((260.0, 160.0), (260.0, 100.5))
+    };
+    let b = vec![piece("q", 0, PlacedKind::Bridge, Family::Asf3, from, to)];
+    let junctions = Junctions {
+        points: vec![
+            join_at((200.0, 100.0), 106.0, 1.0, &["a", "b"]),
+            join_at((262.0, 100.0), 100.0, 3.0, &["q"]),
+        ],
+        ..Junctions::default()
+    };
+    (network(vec![a, b]), junctions)
+}
+
+#[test]
+fn a_chain_that_is_one_deck_takes_the_height_of_an_earlier_deck_at_either_end() {
+    let hm = terrain(160, 6.25, |_, _| 100.0);
+    for reversed in [true, false] {
+        let (net, junctions) = two_decks_meeting(reversed);
+        let (p, _) = solve_plain(&net, &hm, &junctions, &[]).unwrap();
+        let first = deck_joint(&p, 0, (260.0, 100.0));
+        let second = deck_joint(&p, 1, (260.0, 100.5));
+        assert!(
+            (first - second).abs() < 1e-6,
+            "reversed {reversed}: {first} against {second}"
+        );
+    }
+}
