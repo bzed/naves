@@ -136,8 +136,8 @@ Steps 2 and 3 of the spec. Built before the sidepath step because that step's co
 `MergedJunction { kept: i64, merged: Vec<i64>, removed: Vec<String>, at: (f64, f64) }` and
 `NotMerged { nodes: Vec<i64>, reason: &'static str, at: (f64, f64) }`.
 
-- [ ] **Step 1: Failing tests (stubs):** a 4 m dead-end footpath off a road is dropped and reported; a 20 m
-  driveway stays; a 4 m drivable dead end on a 6 m wide road is dropped, a 4 m one on a 3 m wide track stays; a 4 m
+- [ ] **Step 1: Failing tests (stubs):** a 4 m dead-end track that is not drivable, off a road, is dropped and
+  reported; a 20 m service road stays; a 4 m drivable dead end on a 6 m wide road is dropped, a 4 m one on a 3 m wide track stays; a 4 m
   stretch between two junctions (not a dead end) stays; points 0.2 m apart inside a stretch become one, the end
   nodes keep their positions; a stretch that is only two points 0.2 m apart is kept whole.
 - [ ] **Step 2: Failing tests (junctions):** two T-junctions 4 m apart on a main road with one side road each
@@ -166,20 +166,20 @@ Vec<KeptSidepath>)` with `DroppedSidepath { stretch: String, road: String, from_
 connectors: Vec<(String, (f64, f64))> }` and `KeptSidepath { stretch: String, road: String, reason: &'static str,
 at: (f64, f64) }` (reasons: `"clear"`, `"would_disconnect"`, `"crosses"`).
 
-Rules, from the spec: candidate = within 15 m on one side for at least 30 m, or any length with a tag flag; removed
+Rules, from the spec: candidate = within 15 m on one side for at least 30 m, or any length where the road has `use_sidepath`; removed
 only if the two earthworks (half width plus shoulder ring each; take the ring width the conform stage uses, do not
 invent one) come closer than `cell_m`, or the run passes a bridge of the road; joining stretches get a straight
 connector to the nearest point of the road with a new node there, or the piece of sidepath is kept if the connector
 would cross a third road or be longer than 15 m; the two ends of the removed run are joined the same way.
 
 - [ ] **Step 1: Failing tests:** a lower-family stretch 5 m beside a road for 100 m, joining it at both ends, is removed and
-  reported, components unchanged; the same path at 14 m with narrow roads (earthworks a cell apart) stays with
-  reason `"clear"`; at 14 m beside a bridge of the road it is removed along the bridge; a path 5 m beside for 20 m
-  only stays, and is removed when the road has `use_sidepath`; a path that crosses the road halfway is not removed
+  reported, components unchanged; the same stretch at 14 m with narrow roads (earthworks a cell apart) stays with
+  reason `"clear"`; at 14 m beside a bridge of the road it is removed along the bridge; a stretch 5 m beside for 20 m
+  only stays, and is removed when the road has `use_sidepath`; a stretch that crosses the road halfway is not removed
   across the crossing; a graph stretch that joins the sidepath in the middle of the run ends on the road afterwards
   (a node on the road within 15 m of the old joint, connector straight) and the far end of that stretch is still
   reachable from the road; when a third road lies between, the piece of sidepath is kept instead; a gravel track
-  beside a paved road is treated like a footpath, a paved road beside a gravel track is not removed; a sidepath
+  beside a paved road is a candidate like any lower-family stretch, a paved road beside a gravel track is not removed; a sidepath
   between two parallel roads within 15 m of both is removed against the nearer; result independent of input order.
 - [ ] **Step 2:** RED. **Step 3:** implement, wire into `clean` before `drop_stubs`. **Step 4:** GREEN,
   `make check`.

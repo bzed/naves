@@ -19,8 +19,8 @@ unchanged except where said. Figures are Berchtesgaden at terrain size 2048 and 
 OpenStreetMap is drawn for maps. What it holds is right on a map and cannot be built at our resolution: the terrain
 cell is 4 m, roads are placed at full width on a map scaled 0.5, and every road shapes the ground beside it.
 
-- A footpath or track drawn beside a road lies on or against that road. It holds terrain, makes conflicts, and under
-  a bridge it holds the ground up into the deck (Bergwerkstraße, way 39674984).
+- A track or lesser road drawn beside a road lies on or against that road. It holds terrain and makes conflicts.
+  (Footpaths are not meant: they are only painted on the ground, see step 1.)
 - Junctions a few metres apart have overlapping junction patches. The height solve and the placement each need an
   exception for them.
 - A junction drawn exactly on a bridge's end node leaves the bridge no approach: the deck's end, the junction plane
@@ -133,7 +133,7 @@ Finding: `road_sidepath_dropped` (stretch, kept road, from/to along the stretch,
 ### Step 2: stubs and specks
 
 - A dead-end stretch shorter than `STUB_MAX_M` (6 m) that is not drivable, or is drivable and shorter than its own
-  width, is removed. (A driveway of 20 m stays.)
+  width, is removed. (A service road of 20 m stays.)
 - Points of a stretch closer than `SPECK_M` (0.5 m) to the point before are dropped; the end nodes stay.
 
 Finding: `road_stub_dropped`.
