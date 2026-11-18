@@ -798,7 +798,7 @@ fn a_wide_road_beside_a_deck_end_does_not_hold_the_ground_under_it_but_a_road_be
         "{}",
         at(&out.heightmap, 100.0, 86.0)
     );
-    // in the end guard (the last 2 m of the deck) the ring still claims: the road's pieces there need the ground
+    // in the end guard (the last 2 m of the deck) this road's core (|88 - 92| < 5) still claims: its pieces need the ground
     assert!(
         (at(&out.heightmap, 100.0, 88.0) - 100.0).abs() < 1e-3,
         "{}",
@@ -1006,12 +1006,13 @@ fn ground_standing_on_a_decks_end_is_cut_to_the_deck_and_never_below() {
 fn another_roads_core_in_the_guard_is_left_and_reported() {
     let base = flat(99.0);
     let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    // the core covers y = 88 and 90 (cells of 2 m)
     let other = road_across(89.0, 101.5, 1.0);
     let out = conform_bridges(&base, &[other], &[], std::slice::from_ref(&span)).unwrap();
     assert!(
-        (at(&out.heightmap, 100.0, 89.0) - 101.5).abs() < 1e-3,
+        (at(&out.heightmap, 100.0, 88.0) - 101.5).abs() < 1e-3,
         "{}",
-        at(&out.heightmap, 100.0, 89.0)
+        at(&out.heightmap, 100.0, 88.0)
     );
     assert_eq!(out.buried.len(), 1, "{:?}", out.buried);
     assert_eq!(out.buried[0].holder, Holder::Strip(0));
@@ -1025,6 +1026,39 @@ fn another_roads_core_in_the_guard_is_left_and_reported() {
         "{metric:?} {:?}",
         out.buried[0]
     );
+}
+
+#[test]
+fn another_roads_core_cuts_ground_standing_above_it_in_the_guard_and_is_left_there() {
+    // a bank 2 m above the deck, a road in the guard at 101.5: its core is cut down to the road, not to the deck
+    let base = flat(102.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let other = road_across(88.0, 101.5, 1.0);
+    let out = conform_bridges(&base, &[other], &[], std::slice::from_ref(&span)).unwrap();
+    assert!(
+        (at(&out.heightmap, 100.0, 88.0) - 101.5).abs() < 1e-3,
+        "{}",
+        at(&out.heightmap, 100.0, 88.0)
+    );
+    assert!(!out.buried.is_empty(), "{:?}", out.buried);
+}
+
+#[test]
+fn another_roads_shoulder_ring_holds_ground_in_the_guard_that_is_not_in_its_core() {
+    // a bank 2 m above the deck; a road at 101.5 across y = 94 with a core of 3 m half width: the vertices at
+    // y = 88 and 90 are in its ring (4 to 6 m away), not in its core, and in the deck's guard
+    let base = flat(102.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let other = road_across(94.0, 101.5, 3.0);
+    let out = conform_bridges(&base, &[other], &[], std::slice::from_ref(&span)).unwrap();
+    for y in [88.0, 90.0] {
+        assert!(
+            at(&out.heightmap, 100.0, y) > 100.5,
+            "{y}: {}",
+            at(&out.heightmap, 100.0, y)
+        );
+    }
+    assert!(out.buried.iter().any(|b| b.guarded), "{:?}", out.buried);
 }
 
 #[test]
@@ -1130,6 +1164,11 @@ fn a_panel_steps_shape_is_as_long_as_the_step_not_as_the_strips_old_joints() {
     let spans = bridge_spans(&net, &strips, &catalog);
     assert_eq!(spans.len(), 1, "{spans:?}");
     assert!((spans[0].length() - 3.0).abs() < 1e-9);
+    assert!(
+        (spans[0].shape.length - 3.0).abs() < 1e-9,
+        "{:?}",
+        spans[0].shape
+    );
     assert!(
         !spans[0].shape.underside.depth.is_empty(),
         "{:?}",

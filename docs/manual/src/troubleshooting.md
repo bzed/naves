@@ -204,8 +204,9 @@ reference its number is above ("above the deck" in the guard, "above the undersi
 under the deck (or an arm of a junction next to a lengthened deck end, or a level patch where roads meet) keeps its
 ground and it sticks into the deck. The message names the road or patch that holds it; "no road" means that nothing
 holds it and the ground was not cut there. The position
-is the vertex with the most ground above the reference. Move the other road in the data, or raise the bridge; the build
-leaves it as it is.
+is the vertex with the most ground above the reference. Move the other road in the data. Nothing in the project sets a
+road's or a bridge's height, so where the holder is the bridge's own road, or the other road cannot be moved, the build
+leaves it as it is: look at the place in the game and report it with the way id.
 
 **`bridge_post_floats`: "The posts of bridge ... stand 4.0 m above the ground at the furthest (0.5 m is allowed)"**
 A post, pier or wall foot of a bridge model is more than 0.5 m above the shaped ground, so the model hangs in the air

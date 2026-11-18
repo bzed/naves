@@ -746,7 +746,7 @@ fn candidates(
     for (index, strip) in strips.iter().enumerate() {
         let reach = strip.half_width + 1.5 * grid.cell;
         for (vertex, hits) in core_vertices(strip, grid, reach) {
-            // the road of a bridge does not claim the ground under its deck beyond the port line: the ceiling
+            // the road of a bridge does not claim the ground under its deck beyond the end guard and the port line: the ceiling
             // with the end ramp holds there
             if let Some(held) = under.get(vertex).copied().flatten()
                 && !held.at_port
