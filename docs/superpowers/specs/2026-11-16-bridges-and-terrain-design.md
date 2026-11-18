@@ -284,14 +284,17 @@ the work in `conform`, the wording of findings and report lines, and the order o
   ±1 m and what hangs over the footprint less 1.5 m (`clearance_thickness`). `placed` is true where a placed piece of the
   road below (or of a part split from it) lies within the placed deck's outline widened by its half width.
 
-- **The ground under a bridge** (Task 7). Under every placed part the ground is held to the ceiling (deck less what hangs
-  less `BRIDGE_AIR_M`, the foot under what stands, the lowest within half a cell along the span), with an end ramp counted
-  from a port that does not retain. The road of the bridge up to the next junction at each end (its
-  chain, plus any strip with a deck joint at a port) holds nothing under the deck beyond the port line; other roads' cores
-  win. `bridge_buried` means ground held by such a core more than `BURIED_TOL_M` = 0.1 m above the underside of the deck
-  (deck less what hangs, never the foot, no air margin), with the holder named; `spans_above_underside` is the same
-  measure on any heightmap.
-- **The end guard** (Task 7). Ground within one cell of a free end of a bridge (an end where no other part of the bridge
-  begins) is under the deck but not cut for it: it is never raised, no level patch claims it, and neither the ceiling
-  nor the cutting slopes from the deck lower it, because a terrain cell that straddles a port line would slope the
-  road's last piece down to the cut. Decks shorter than two cells are therefore not cut at all.
+- **The ground under a bridge** (Task 7, fix round 1). Under every placed part the ground is cut to the ceiling (deck less
+  what hangs there less `BRIDGE_AIR_M`, the lowest within half a cell along the span), with an end ramp at a port that does
+  not retain. Under what stands (blocks, piers, posts, cross walls) the bridge's cut is the same and stops there: the foot
+  (deck less `reach_down`) only bounds from below what another road's cutting may take, and a vertex beside the deck has
+  none (the first version cut to the foot: a trench 16 m deep at 39674984). Ground within the end guard of a free end
+  (`cell * (|ax| + |ay|)` along the deck; the whole of a deck shorter than two guards) is under the deck but not cut for it,
+  because a terrain cell that straddles a port line would slope the road's last piece down to the cut: never cut, and no
+  level patch claims it. The road of the bridge up to the next junction at each end (its chain, plus any strip with a deck
+  joint at a port) holds nothing under the deck beyond the guard; inside it, it may hold or raise ground up to its road
+  height (the abutment's fill). Beyond the guard ground under a deck is never raised. A road above the underside of the
+  deck claims a vertex under it only within its own width; a road below keeps its ring. Other roads' cores win.
+  `bridge_buried` is the one measure of the finding and of `spans_above_underside`: ground more than `BURIED_TOL_M` = 0.1 m
+  above the underside (deck less what hangs, never the foot, no air) beyond the guard, above the deck's surface inside
+  it, whoever holds it; the holder is named or "no road".

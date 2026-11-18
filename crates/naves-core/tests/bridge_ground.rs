@@ -175,9 +175,18 @@ fn a_truss_with_end_blocks_is_cut_to_the_foot_under_the_blocks() {
         own_strips: Vec::new(),
     };
     let out = conform_bridges(&flat(100.0), &[road_over(70.0)], &[], &[span]).unwrap();
-    // under the blocks the ground is held at their foot, 5 m below the deck, beyond the first cell of each end
+    // under the blocks the bridge's cut stops at the hang ceiling (the deck's underside less the air) like
+    // everywhere under the deck: never at the foot, 5 m below the deck, which only bounds other roads' cutting
+    let ceiling = 100.0 - 1.7 - BRIDGE_AIR_M;
     for y in [54.0, 66.0] {
-        assert!(at(&out.heightmap, 100.0, y) <= 95.0 + 1e-3, "{y}");
+        let under = at(&out.heightmap, 100.0, y);
+        assert!((under - ceiling).abs() < 0.05, "{y}: {under}");
+    }
+    // the ground beside the blocks is not lower than beside the open span
+    for x in [106.0, 108.0, 112.0, 88.0, 92.0, 94.0] {
+        let by_block = at(&out.heightmap, x, 54.0);
+        let by_span = at(&out.heightmap, x, 60.0);
+        assert!(by_block >= by_span - 0.05, "{x}: {by_block} < {by_span}");
     }
     // within a cell of a port the ground is the road's side, not shaped for the deck
     for y in [50.0, 52.0, 68.0, 70.0] {
@@ -185,10 +194,60 @@ fn a_truss_with_end_blocks_is_cut_to_the_foot_under_the_blocks() {
     }
     // between them at the deck's underside less the air
     let middle = at(&out.heightmap, 100.0, 60.0);
-    assert!(
-        middle <= 100.0 - 1.7 - BRIDGE_AIR_M + 1e-3 && middle > 97.0,
-        "{middle}"
-    );
+    assert!((middle - ceiling).abs() < 0.05, "{middle}");
+    // nowhere under or beside the part is the ground lower than the lowest of the original ground and the ceiling
+    let lowest = out
+        .heightmap
+        .h
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    assert!(f64::from(lowest) >= ceiling - 0.05, "{lowest}");
+}
+
+#[test]
+fn cross_walls_every_three_metres_are_cut_to_the_hang_ceiling_and_no_lower() {
+    // like bridge_concrete3: a thin deck, walls 4.8 m deep in every third slice across the whole width
+    let n = 40;
+    let mut stand = vec![Vec::new(); n];
+    let mut depth = vec![0.64; n];
+    for i in (0..n).filter(|i| i % 3 == 0) {
+        stand[i] = vec![(-3.0, 3.0)];
+        depth[i] = 4.8;
+    }
+    let shape = PartShape {
+        length: 40.0,
+        underside: Underside {
+            depth,
+            half_width: vec![3.0; n],
+            hang: vec![0.64; n],
+            stand,
+        },
+        solid: Vec::new(),
+        retains: (false, false),
+        reach_down: 4.8,
+        deck_half_width: 3.0,
+    };
+    let span = BridgeSpan {
+        stretch: "walls".to_string(),
+        first: (100.0, 50.0, 100.0),
+        second: (100.0, 90.0, 100.0),
+        shape,
+        own_strips: Vec::new(),
+    };
+    let out = conform_bridges(&flat(100.0), &[road_over(90.0)], &[], &[span]).unwrap();
+    let ceiling = 100.0 - 0.64 - BRIDGE_AIR_M;
+    for y in (56..=84).step_by(2) {
+        let under = at(&out.heightmap, 100.0, f64::from(y));
+        assert!((under - ceiling).abs() < 0.05, "{y}: {under}");
+    }
+    let lowest = out
+        .heightmap
+        .h
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    assert!(f64::from(lowest) >= ceiling - 0.05, "{lowest}");
 }
 
 #[test]
@@ -297,9 +356,18 @@ fn posts_over_a_dip_do_not_reach_the_ground_and_posts_on_it_do() {
     // ground at the deck's level is cut to the foot: the posts stand on it
     let level = conform_bridges(&flat(100.0), &[road_over(70.0)], &[], &[wood()]).unwrap();
     assert!(level.floating.is_empty(), "{:?}", level.floating);
+    // the cut stops at the deck's ceiling (0.6 m of deck and a metre of air), the posts' foot is 2 m down
     for y in [56.0, 64.0] {
-        assert!(at(&level.heightmap, 98.0, y) <= 98.0 + 1e-3, "{y}");
+        let under = at(&level.heightmap, 98.0, y);
+        assert!((under - 98.4).abs() < 0.05, "{y}: {under}");
     }
+    let lowest = level
+        .heightmap
+        .h
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    assert!(f64::from(lowest) >= 98.4 - 0.05, "{lowest}");
 }
 
 #[test]
@@ -312,13 +380,7 @@ fn a_deck_narrower_than_a_cell_and_a_bridge_at_the_edge_change_only_existing_ver
     let out = conform_bridges(&base, &[strip], &[], &[narrow, edge, corner]).unwrap();
     assert_eq!(out.heightmap.h.len(), base.h.len());
     assert_eq!(out.heightmap.size, base.size);
-    assert!(
-        out.heightmap
-            .h
-            .iter()
-            .zip(&base.h)
-            .all(|(n, o)| n <= o || (n - o) < 3.0)
-    );
+    assert!(out.heightmap.h.iter().zip(&base.h).all(|(n, o)| n <= o));
     // the narrow deck still gets its ceiling at the vertex it passes
     assert!(at(&out.heightmap, 100.0, 70.0) <= 100.0 - 0.3 - BRIDGE_AIR_M + 1e-3);
     // a part with no length or no numbers is nothing
@@ -663,4 +725,181 @@ fn the_strips_of_the_bridges_own_chain_hold_nothing_under_its_deck() {
     let own = conform_bridges(&base, &[road_over(90.0), chain], &[], &[span]).unwrap();
     assert!(matches!(own.buried.as_slice(), []), "{:?}", own.buried);
     assert!(at(&own.heightmap, 100.0, 70.0) <= 98.75 + 1e-3);
+}
+
+/// A deck of `length` m from (60, 60) in the direction of `degrees` at 100 m over flat ground at 100 m, with the
+/// road on its line at 100 m, and the lowest terrain under the last `along` metres of the approach.
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: failing loudly is the point"
+)]
+fn dip_under_the_approach(degrees: f64, origin: (f64, f64)) -> f64 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let point = |t: f64| (origin.0 + t * cos, origin.1 + t * sin);
+    let (a, b) = (point(0.0), point(40.0));
+    let span = level((a.0, a.1, 100.0), (b.0, b.1, 100.0), 3.0, 3.5);
+    let road = strip(
+        &[
+            (point(-50.0).0, point(-50.0).1, 100.0),
+            (a.0, a.1, 100.0),
+            (b.0, b.1, 100.0),
+            (point(90.0).0, point(90.0).1, 100.0),
+        ],
+        &[false, true, false],
+        3.5,
+    );
+    let out = conform_bridges(&flat(100.0), &[road], &[], &[span]).unwrap();
+    let mut lowest: f64 = 100.0;
+    for k in 0..=24 {
+        for c in -6..=6 {
+            let t = -f64::from(k) / 4.0;
+            let (nx, ny) = (-sin, cos);
+            let p = (
+                point(t).0 + f64::from(c) * 0.5 * nx,
+                point(t).1 + f64::from(c) * 0.5 * ny,
+            );
+            lowest = lowest.min(f64::from(out.heightmap.sample(p.0, p.1).height));
+        }
+    }
+    lowest
+}
+
+#[test]
+fn a_deck_that_runs_diagonally_to_the_grid_does_not_dip_the_road_before_it() {
+    for degrees in [0.0, 30.0, 45.0, 17.0] {
+        // the phase of the grid under the port line matters: sweep it
+        for dx in [0.0, 0.5, 1.0, 1.5] {
+            for dy in [0.0, 0.5, 1.0, 1.5] {
+                let lowest = dip_under_the_approach(degrees, (60.0 + dx, 60.0 + dy));
+                assert!(
+                    lowest >= 99.99,
+                    "{degrees} degrees at ({dx}, {dy}): {lowest}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_wide_road_beside_a_deck_end_does_not_hold_the_ground_under_it_but_a_road_below_does() {
+    let base = flat(100.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    // a road 5 m half width at the deck's level 2 m past its end: its ring reaches 6 m under the deck
+    let beside = strip(&[(20.0, 92.0, 100.0), (180.0, 92.0, 100.0)], &[], 5.0);
+    let out = conform_bridges(
+        &base,
+        &[road_over(90.0), beside],
+        &[],
+        std::slice::from_ref(&span),
+    )
+    .unwrap();
+    assert!(
+        at(&out.heightmap, 100.0, 86.0) <= 98.75 + 1e-3,
+        "{}",
+        at(&out.heightmap, 100.0, 86.0)
+    );
+    // in the end guard (the last 2 m of the deck) the ring still claims: the road's pieces there need the ground
+    assert!(
+        (at(&out.heightmap, 100.0, 88.0) - 100.0).abs() < 1e-3,
+        "{}",
+        at(&out.heightmap, 100.0, 88.0)
+    );
+    // a road below, its ring included, keeps what it claims
+    let below = strip(&[(20.0, 70.0, 90.0), (180.0, 70.0, 90.0)], &[], 3.0);
+    let out = conform_bridges(&base, &[road_over(90.0), below], &[], &[span]).unwrap();
+    for y in [64.0, 66.0, 70.0, 74.0, 76.0] {
+        assert!((at(&out.heightmap, 100.0, y) - 90.0).abs() < 1e-3, "{y}");
+    }
+}
+
+#[test]
+fn beyond_the_guard_the_ground_does_not_depend_on_the_spacing_of_the_approachs_joints() {
+    // a deck 5 m above ground that a road at 100 m comes down to: the road's last piece is 3 m, 6.25 m or 12 m
+    let base = flat(95.0);
+    let span = level((100.0, 50.0, 100.0), (100.0, 90.0, 100.0), 0.25, 3.5);
+    let result = |last: f64| {
+        let road = strip(
+            &[
+                (100.0, 0.0, 100.0),
+                (100.0, 50.0 - last, 100.0),
+                (100.0, 50.0, 100.0),
+                (100.0, 90.0, 100.0),
+                (100.0, 190.0, 100.0),
+            ],
+            &[false, false, true, false],
+            3.5,
+        );
+        conform_bridges(&base, &[road], &[], std::slice::from_ref(&span)).unwrap()
+    };
+    let first = result(3.0);
+    for last in [6.25, 12.0] {
+        let other = result(last);
+        for y in (56..=84).step_by(2) {
+            for x in [94.0, 98.0, 100.0, 102.0, 106.0] {
+                assert_eq!(
+                    at(&first.heightmap, x, f64::from(y)).to_bits(),
+                    at(&other.heightmap, x, f64::from(y)).to_bits(),
+                    "{x},{y} with a last piece of {last}"
+                );
+            }
+        }
+    }
+    // beyond the guard nothing is raised
+    for y in (56..=84).step_by(2) {
+        assert!(
+            (at(&first.heightmap, 100.0, f64::from(y)) - 95.0).abs() < 1e-3,
+            "{y}"
+        );
+    }
+}
+
+#[test]
+fn ground_in_the_end_guard_and_under_a_short_deck_is_measured_against_the_deck_surface() {
+    // a 4 m deck at 98 m over ground at 100 m: all of it is within a cell of an end
+    let base = flat(100.0);
+    let span = level((100.0, 60.0, 98.0), (100.0, 64.0, 98.0), 0.5, 3.5);
+    let road = strip(
+        &[
+            (100.0, 0.0, 98.0),
+            (100.0, 60.0, 98.0),
+            (100.0, 64.0, 98.0),
+            (100.0, 190.0, 98.0),
+        ],
+        &[false, true, false],
+        3.5,
+    );
+    let out = conform_bridges(
+        &base,
+        std::slice::from_ref(&road),
+        &[],
+        std::slice::from_ref(&span),
+    )
+    .unwrap();
+    assert_eq!(out.buried.len(), 1, "{:?}", out.buried);
+    let found = &out.buried[0];
+    assert_eq!(found.holder, Holder::None);
+    assert!((found.above_m - 2.0).abs() < 0.05, "{found:?}");
+    // the analysis counts the same ground the same way
+    let above = spans_above_underside(&out.heightmap, std::slice::from_ref(&span));
+    assert_eq!(above.len(), 1, "{above:?}");
+    assert!((above[0].above_m - found.above_m).abs() < 1e-9 && above[0].vertices == found.vertices);
+    // ground below the deck's surface there is none
+    assert!(matches!(
+        spans_above_underside(&flat(97.0), std::slice::from_ref(&span)).as_slice(),
+        []
+    ));
+}
+
+#[test]
+fn a_deck_height_that_is_not_a_number_gives_no_finding() {
+    let base = flat(100.0);
+    let mut span = level((100.0, 60.0, 98.0), (100.0, 64.0, 98.0), 0.5, 3.5);
+    span.first.2 = f64::NAN;
+    let road = strip(&[(100.0, 0.0, 100.0), (100.0, 190.0, 100.0)], &[], 3.5);
+    let out = conform_bridges(&base, &[road], &[], &[span.clone()]).unwrap();
+    assert!(matches!(out.buried.as_slice(), []), "{:?}", out.buried);
+    assert!(matches!(
+        spans_above_underside(&out.heightmap, &[span]).as_slice(),
+        []
+    ));
 }

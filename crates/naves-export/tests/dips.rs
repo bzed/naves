@@ -219,7 +219,7 @@ fn ground_at_hollow(generated: &Generated) -> (f64, f64) {
 }
 
 #[test]
-fn a_road_over_a_hollow_gets_bridges_and_the_ground_under_them_is_left_alone() {
+fn a_road_over_a_hollow_gets_bridges_and_the_ground_under_them_is_never_raised() {
     let dir = tempfile::tempdir().unwrap();
     let p = project(dir.path(), 40.0, 12.0, &[]);
     let generated = build(dir.path(), &p);

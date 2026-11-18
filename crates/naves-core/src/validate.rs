@@ -451,6 +451,7 @@ fn buried_violations(
                 Holder::Patch(at) => {
                     format!("a level patch at ({:.0}, {:.0})", at.0, at.1)
                 }
+                Holder::None => "no road (the ground was not cut there)".to_string(),
                 Holder::Strip(i) => {
                     let mut ids: Vec<&str> = profiles
                         .strips
@@ -579,10 +580,17 @@ pub fn check_roads(
         violation(
             Rule::RoadConflict,
             c.at,
-            format!(
-                "Two roads want heights {:.1} m apart here",
-                c.height_difference_m
-            ),
+            if c.bridge {
+                format!(
+                    "The cut under a bridge's deck and a road want heights {:.1} m apart here",
+                    c.height_difference_m
+                )
+            } else {
+                format!(
+                    "Two roads want heights {:.1} m apart here",
+                    c.height_difference_m
+                )
+            },
         )
     }));
     out.extend(capped_violations(&conformed.capped));

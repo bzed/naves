@@ -298,24 +298,32 @@ has `placed: false` in the report and is not a finding.
 **The ground under a bridge is shaped for the bridge.** The bridge wins and the terrain is adapted to it, so that roads
 can pass onto, over and under bridges. After the roads are placed, the terrain under every placed part (a model between
 its ports, a step of a panel grid, as placed: a grid lengthened over a road, a model slid or grown, a grid that follows
-a bend) is held to a ceiling: the height of the deck, less what hangs under it there (the catalog measures it in slices
+a bend) is cut to a ceiling: the height of the deck, less what hangs under it there (the catalog measures it in slices
 of 1 m: the deck, an arch, a truss floor), less 1 m of air (`BRIDGE_AIR_M`). Ground that is higher is cut, and the cut
 spreads sideways with the cutting slopes (1:1 to 2:1 by the hillside), from the width of what is below the deck and
 one and a half cells, so that the opening is open at both sides. Where something stands (the abutment blocks of the
 metal bridge, the flanks of the stone arch, the posts of the wooden bridge, the cross walls of `bridge_concrete3`,
-about every 3 m) the ground is held at its foot, not cut below it; each vertex takes the lowest ceiling within half a
-cell along the span. At an end that holds nothing back (panels, `bridge_wood2`) the ceiling rises to the height of the
-road at the port, a metre of height per metre of run, so that the cut there is not deeper than the earthwork can
-hold; where the part retains the ground there is no such ramp. Within one cell of a free end of the bridge the ground is not cut for the deck (a terrain cell that straddles the port line would slope the road's last piece down to the cut): it keeps its height, is never raised and is claimed by no level patch. The ground is never raised under a deck. A road below
-keeps its own core under the span and its cutting spreads under the open parts of the deck, not under what stands.
-The vertices at the ports are the road's. The road the bridge is part of, up to the next
-junction at each end, holds nothing under the deck beyond the port line; the core of any other road (a road below, an arm
-of a junction at the bridge's end, a level patch) is never changed. Where such a core holds ground above the underside
-of the deck (the deck's height less what hangs under it there, without the metre of air and never the foot of what
-stands) by more than 0.1 m the cut stops there and the finding is `bridge_buried`, with the place, how far the ground
-is above the underside and what holds it. A bridge model on posts (`bridge_wood_25`) is chosen where the posts reach
-the original ground; if the shaped ground, under the deck as placed, is more than 0.5 m below the foot of a post,
-pier or wall, the finding is `bridge_post_floats`.
+about every 3 m) the bridge's cut is the same: it stops at the ceiling and never goes to the foot of what stands; the
+foot (the deck less the model's deepest point) is only the lowest that the cutting of another road may take the ground
+under it, and a vertex beside the deck has none. Each vertex takes the lowest ceiling within half a cell along the
+span. At an end that holds nothing back (panels, `bridge_wood2`) the ceiling rises to the height of the road at the
+port, a metre of height per metre of run; where the part retains the ground there is no such ramp. Within the end
+guard of a free end of the bridge (a cell along the deck, `cell * (|ax| + |ay|)` for a deck turned against the grid, so
+that the whole of a deck shorter than two guards is in it) the ground is under the deck but not cut for it, because a
+terrain cell that straddles the port line would slope the road's last piece down to the cut: it keeps its height and
+no level patch claims it. Beyond the guard ground under a deck is never raised above the original ground. Inside the
+guard the bridge's own road (the strips of the road the bridge is part of, up to the next junction at each end) may hold
+or raise ground up to its road height, as the abutment's fill; beyond the guard it holds nothing under the deck. A road
+that passes under the deck keeps its core and the ground around it, and its cutting spreads under the open parts of
+the deck. A road above the underside of the deck (a junction arm, a road beside the deck end) claims a vertex under the
+deck only within its own width, never with the shoulder ring of its earthwork. The core of another road is never
+changed. Ground that is in the deck is the finding `bridge_buried`: more than 0.1 m above the underside of the deck
+(the deck's height less what hangs under it there, without the metre of air and never the foot of what stands) beyond
+the end guard, more than 0.1 m above the deck's surface inside it; whoever holds it (the message names the road or the
+level patch, or says that no road holds it: the ground was not cut there). A bridge model on posts (`bridge_wood_25`)
+is chosen where the posts reach the original ground; if the shaped ground, under the deck as placed, is more than 0.5 m
+below the foot of a post, pier or wall, the finding is `bridge_post_floats`. A `road_conflict` that the cut under a deck
+causes says so ("The cut under a bridge's deck and a road want heights ... apart here").
 
 **Bridges.** On a bridge, the span has a level deck and the ground below is cut to its ceiling (see above), not left
 alone; the ground starts to be shaped for the road at the abutments. Gravel and dirt roads get the wooden bridges, the

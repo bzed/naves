@@ -277,6 +277,7 @@ fn the_other_rules_each_give_a_violation() {
     n.tunnels_omitted.push(("9:3-4".to_string(), (50.0, 60.0)));
     let mut c = conformed();
     c.conflicts.push(RoadConflict {
+        bridge: false,
         at: (70.0, 80.0),
         height_difference_m: 4.0,
     });
@@ -1028,4 +1029,34 @@ fn a_bridge_that_misses_its_clearance_is_a_finding_that_names_what_was_reached()
     assert_eq!(found[0].at, (10.0, 20.0));
     assert!(found[0].message.contains("3.2 m"), "{}", found[0].message);
     assert!(found[0].message.contains("4.5 m"), "{}", found[0].message);
+}
+
+#[test]
+fn a_conflict_that_the_cut_under_a_bridge_causes_names_the_bridge() {
+    let mut c = conformed();
+    c.conflicts.push(RoadConflict {
+        at: (10.0, 20.0),
+        height_difference_m: 11.1,
+        bridge: true,
+    });
+    c.conflicts.push(RoadConflict {
+        at: (30.0, 40.0),
+        height_difference_m: 2.0,
+        bridge: false,
+    });
+    let v = run(&net(vec![]), &Profiles::default(), &c, &[], &[], &[], &[]);
+    let found = only(Rule::RoadConflict, &v);
+    assert_eq!(found.len(), 2, "{v:?}");
+    assert!(
+        found[0].message.contains("bridge") && found[0].message.contains("11.1 m"),
+        "{}",
+        found[0].message
+    );
+    assert!(
+        found[1]
+            .message
+            .starts_with("Two roads want heights 2.0 m apart"),
+        "{}",
+        found[1].message
+    );
 }

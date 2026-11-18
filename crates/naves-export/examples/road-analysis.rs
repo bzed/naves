@@ -1453,12 +1453,103 @@ fn main() {
             after.len()
         );
         println!(
-            "ABOVE bridge_buried findings {} (same measure: another road's core above the underside)",
+            "ABOVE bridge_buried findings {} (the same measure as the count after: {})",
             violations
                 .iter()
                 .filter(|v| v.rule == Rule::BridgeBuried)
-                .count()
+                .count(),
+            after.len()
         );
+        // the deepest cut below the original ground within the width of each deck
+        let mut cuts: BTreeMap<String, (f64, (f64, f64))> = BTreeMap::new();
+        let cell = f64::from(base.cell_m);
+        for span in &spans {
+            let (lo, hi) = (
+                (
+                    span.first.0.min(span.second.0) - 12.0,
+                    span.first.1.min(span.second.1) - 12.0,
+                ),
+                (
+                    span.first.0.max(span.second.0) + 12.0,
+                    span.first.1.max(span.second.1) + 12.0,
+                ),
+            );
+            let first = |v: f64| (v / cell).floor().max(0.0) as u32;
+            for row in first(lo.1)..=first(hi.1) {
+                for col in first(lo.0)..=first(hi.0) {
+                    let p = (f64::from(col) * cell, f64::from(row) * cell);
+                    let Some((a, c)) = span.locate(p) else {
+                        continue;
+                    };
+                    if a < 0.0 || a > span.length() || c.abs() > span.half_width_at(a) + 6.0 {
+                        continue;
+                    }
+                    let cut =
+                        f64::from(base.at(col, row)) - f64::from(conformed.heightmap.at(col, row));
+                    let e = cuts.entry(span.stretch.clone()).or_insert((0.0, p));
+                    if cut > e.0 {
+                        *e = (cut, p);
+                    }
+                }
+            }
+        }
+        // ground lower than the deck's ceiling (deck less what hangs and the air) where the original ground was not:
+        // an over-cut (a road below cuts there legitimately)
+        let mut over: BTreeMap<String, (f64, (f64, f64))> = BTreeMap::new();
+        for span in &spans {
+            let first = |v: f64| (v / cell).floor().max(0.0) as u32;
+            let (lo, hi) = (
+                (
+                    span.first.0.min(span.second.0) - 12.0,
+                    span.first.1.min(span.second.1) - 12.0,
+                ),
+                (
+                    span.first.0.max(span.second.0) + 12.0,
+                    span.first.1.max(span.second.1) + 12.0,
+                ),
+            );
+            for row in first(lo.1)..=first(hi.1) {
+                for col in first(lo.0)..=first(hi.0) {
+                    let p = (f64::from(col) * cell, f64::from(row) * cell);
+                    let Some((a, c)) = span.locate(p) else {
+                        continue;
+                    };
+                    if a < 0.0 || a > span.length() || c.abs() > span.half_width_at(a) {
+                        continue;
+                    }
+                    let ceiling = span.deck_at(a) - span.hang_at(a) - 1.0;
+                    let (orig, shaped) = (
+                        f64::from(base.at(col, row)),
+                        f64::from(conformed.heightmap.at(col, row)),
+                    );
+                    let deficit = ceiling.min(orig) - shaped;
+                    if deficit > 0.1 {
+                        let e = over.entry(span.stretch.clone()).or_insert((0.0, p));
+                        if deficit > e.0 {
+                            *e = (deficit, p);
+                        }
+                    }
+                }
+            }
+        }
+        let mut deepest: Vec<_> = over.iter().collect();
+        deepest.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+        println!(
+            "OVERCUT bridges with ground under the deck lower than min(original, ceiling) by 0.1 m: {}",
+            over.len()
+        );
+        for (stretch, (d, at)) in deepest.iter().take(10) {
+            println!("OVERCUT {stretch} at ({:.0}, {:.0}): {d:.2} m", at.0, at.1);
+        }
+        let mut worst: Vec<_> = cuts.iter().collect();
+        worst.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+        println!(
+            "CUT deepest cut below the original ground near a deck: overall max {:.2} m",
+            worst.first().map_or(0.0, |w| w.1.0)
+        );
+        for (stretch, (cut, at)) in worst.iter().take(10) {
+            println!("CUT {stretch} at ({:.0}, {:.0}): {cut:.2} m", at.0, at.1);
+        }
         for a in &after {
             println!(
                 "ABOVE after {} at ({:.0}, {:.0}): {:.2} m, {} vertices",
