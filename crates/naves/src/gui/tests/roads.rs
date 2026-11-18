@@ -3,7 +3,7 @@
 
 //! Level 4: the row without roads, the tools it needs, the layers that wait, the properties and the problems.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui_kittest::kittest::Queryable;
 use naves_core::render::MapLayer;
@@ -30,7 +30,7 @@ fn with_roads(root: &Path) -> PathBuf {
 }
 
 fn wait_for_the_roads(app: &mut NavesApp) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while matches!(app.roads, RoadsState::Generating) {
         assert!(Instant::now() < deadline, "timed out waiting for the roads");
         app.poll_background();

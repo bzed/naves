@@ -3,7 +3,7 @@
 
 //! The seam between the shell and the views.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -14,7 +14,7 @@ use crate::gui::viewport::map::MapViewport;
 use crate::gui::viewport::{ViewEvent, ViewFocus, Viewport, WorldPoint};
 
 fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bool) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
         harness.step();
@@ -79,6 +79,33 @@ fn the_map_reports_clicks_in_metres() {
     assert!(
         (at.x - want.x).abs() < 0.01 && (at.y - want.y).abs() < 0.01,
         "{at:?} {want:?}"
+    );
+}
+
+#[test]
+fn the_wheel_over_the_map_zooms_it() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut harness = harness(app(root.path(), &dir));
+    run_until(&mut harness, ready);
+    harness.run_steps(2);
+    let before = harness.state().views.active().focus().unwrap().span_m;
+    let pos = harness.state().seen_rect.center();
+    harness.hover_at(pos);
+    harness.run_steps(1);
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 120.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: egui::Modifiers::NONE,
+    });
+    // egui spreads a wheel turn over a few frames; the steps, not the clock, decide how far it got
+    harness.run_steps(8);
+    let after = harness.state().views.active().focus().unwrap().span_m;
+    assert!(
+        after < before,
+        "a wheel turn up zooms in: {before} -> {after}"
     );
 }
 

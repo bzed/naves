@@ -3,7 +3,7 @@
 
 //! Switchable map layers: the checkboxes, fade and hide, and that switching renders nothing.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -20,7 +20,7 @@ use crate::gui::viewport::{Viewport, VisibleLayer};
 const NAME: &str = "Too steep to walk";
 
 fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bool) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
         harness.step();

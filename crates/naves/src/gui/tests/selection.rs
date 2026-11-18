@@ -3,7 +3,7 @@
 
 //! Reading a point, framing it, and moving the map.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui::{Event, Modifiers, PointerButton};
 use egui_kittest::Harness;
@@ -16,7 +16,7 @@ use crate::gui::viewport::map::MapViewport;
 use crate::gui::viewport::{ViewEvent, ViewFocus, Viewport, WorldPoint};
 
 fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bool) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
         harness.step();
