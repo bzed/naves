@@ -146,35 +146,77 @@ pub fn components(graph: &RoadGraph) -> usize {
         .count()
 }
 
+/// The result of a step that did nothing: the graph as it is and no report.
+fn unchanged<T>(graph: &RoadGraph) -> (RoadGraph, Vec<T>) {
+    (graph.clone(), Vec::new())
+}
+
 /// Step 1: the parts of stretches that run beside a road of higher rank and disturb it. Not done yet.
 #[must_use]
 pub fn drop_sidepaths(
     graph: &RoadGraph,
+    widths: &dyn Fn(Family) -> f64,
+    cell_m: f64,
+) -> (RoadGraph, Vec<DroppedSidepath>) {
+    drop_sidepaths_if(SIDEPATHS_ENABLED, graph, widths, cell_m)
+}
+
+fn drop_sidepaths_if(
+    enabled: bool,
+    graph: &RoadGraph,
     _widths: &dyn Fn(Family) -> f64,
     _cell_m: f64,
 ) -> (RoadGraph, Vec<DroppedSidepath>) {
-    (graph.clone(), Vec::new())
+    if !enabled {
+        return unchanged(graph);
+    }
+    unchanged(graph)
 }
 
 /// Step 2: short dead ends. Not done yet.
 #[must_use]
 pub fn drop_stubs(
     graph: &RoadGraph,
+    widths: &dyn Fn(Family) -> f64,
+) -> (RoadGraph, Vec<DroppedStub>) {
+    drop_stubs_if(STUBS_ENABLED, graph, widths)
+}
+
+fn drop_stubs_if(
+    enabled: bool,
+    graph: &RoadGraph,
     _widths: &dyn Fn(Family) -> f64,
 ) -> (RoadGraph, Vec<DroppedStub>) {
-    (graph.clone(), Vec::new())
+    if !enabled {
+        return unchanged(graph);
+    }
+    unchanged(graph)
 }
 
 /// Step 3: junctions closer than [`JUNCTION_MERGE_M`]. Not done yet.
 #[must_use]
 pub fn merge_junctions(graph: &RoadGraph) -> (RoadGraph, Vec<MergedJunction>) {
-    (graph.clone(), Vec::new())
+    merge_junctions_if(MERGE_ENABLED, graph)
+}
+
+fn merge_junctions_if(enabled: bool, graph: &RoadGraph) -> (RoadGraph, Vec<MergedJunction>) {
+    if !enabled {
+        return unchanged(graph);
+    }
+    unchanged(graph)
 }
 
 /// Step 4: a junction on the end of a bridge is moved [`APPROACH_M`] off the deck. Not done yet.
 #[must_use]
 pub fn make_approaches(graph: &RoadGraph) -> (RoadGraph, Vec<Approach>) {
-    (graph.clone(), Vec::new())
+    make_approaches_if(APPROACHES_ENABLED, graph)
+}
+
+fn make_approaches_if(enabled: bool, graph: &RoadGraph) -> (RoadGraph, Vec<Approach>) {
+    if !enabled {
+        return unchanged(graph);
+    }
+    unchanged(graph)
 }
 
 /// Cleans the graph: sidepaths, stubs, close junctions and bridge approaches, in this order. `widths` is the
@@ -200,4 +242,46 @@ pub fn clean(
         components_after: components(&graph4),
     };
     (graph4, report)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The switches of the steps are constants, so the switched-off path is tested on the private variants.
+    use super::*;
+    use crate::roadnet::Stretch;
+
+    fn graph() -> RoadGraph {
+        RoadGraph {
+            stretches: vec![Stretch {
+                id: "1:1-2".to_string(),
+                family: Family::Asf3,
+                drivable: true,
+                bridge: false,
+                tunnel: false,
+                roundabout: false,
+                layer: 0,
+                points: vec![(0.0, 0.0), (5.0, 0.0)],
+                start: 1,
+                end: 2,
+                bridge_kind: None,
+                bridge_offset: 0.0,
+                use_sidepath: false,
+            }],
+            crossings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_step_that_is_switched_off_returns_the_graph_unchanged() {
+        let g = graph();
+        let w = |f: Family| f.width_m();
+        let (out, report) = drop_sidepaths_if(false, &g, &w, 8.0);
+        assert_eq!((&out, report.len()), (&g, 0));
+        let (out, report) = drop_stubs_if(false, &g, &w);
+        assert_eq!((&out, report.len()), (&g, 0));
+        let (out, report) = merge_junctions_if(false, &g);
+        assert_eq!((&out, report.len()), (&g, 0));
+        let (out, report) = make_approaches_if(false, &g);
+        assert_eq!((&out, report.len()), (&g, 0));
+    }
 }

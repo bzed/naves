@@ -267,8 +267,9 @@ place of the change) and nothing is changed that is not reported; no step ever s
 pieces than it had. The steps are being added one at a time; until a step exists it changes nothing and reports
 nothing. The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged` and
 `bridge_approach_made` (information), and `bridge_end_at_junction` (warning: a junction on a bridge's end that could
-not be moved off it). The tags `foot=use_sidepath` on a road and `footway=sidewalk` on a way are read from
-OpenStreetMap for the sidepath step.
+not be moved off it). The tag `foot=use_sidepath` on a road is read from
+OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
+fix, "warning" means a place worth a look.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its

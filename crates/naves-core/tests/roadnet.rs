@@ -36,7 +36,6 @@ fn feature(
             tunnel: false,
             roundabout: false,
             layer: 0,
-            sidepath_hint: false,
             use_sidepath: false,
         },
         points: points.to_vec(),
@@ -1093,44 +1092,35 @@ fn two_dead_ends_drawn_into_one_node_stay_apart() {
 
 // ---- the sidepath tags ----
 
-/// A road feature with the two sidepath tags.
-fn tagged(
-    way: i64,
-    nodes: &[i64],
-    points: &[(f64, f64)],
-    hint: bool,
-    use_sidepath: bool,
-) -> Feature {
+/// A road feature, with `foot=use_sidepath` when `use_sidepath`.
+fn tagged(way: i64, nodes: &[i64], points: &[(f64, f64)], use_sidepath: bool) -> Feature {
     let mut f = road(way, nodes, points);
     if let FeatureKind::Road {
-        sidepath_hint,
-        use_sidepath: u,
-        ..
+        use_sidepath: u, ..
     } = &mut f.kind
     {
-        *sidepath_hint = hint;
         *u = use_sidepath;
     }
     f
 }
 
 #[test]
-fn the_sidepath_tags_reach_the_stretch_and_do_not_cut_it() {
+fn the_use_sidepath_tag_reaches_the_stretch_and_does_not_cut_it() {
     let g = build_graph(&[road(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)])]);
-    assert!(!g.stretches[0].sidepath_hint && !g.stretches[0].use_sidepath);
+    assert!(!g.stretches[0].use_sidepath);
     // two ways, one tagged, joined at a plain joint: one stretch that carries the tag
     let g = build_graph(&[
-        tagged(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)], false, true),
-        tagged(2, &[2, 3], &[(50.0, 0.0), (100.0, 0.0)], true, false),
+        tagged(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)], true),
+        tagged(2, &[2, 3], &[(50.0, 0.0), (100.0, 0.0)], false),
     ]);
     assert_eq!(ids(&g), vec!["1:1-3"]);
-    assert!(g.stretches[0].sidepath_hint && g.stretches[0].use_sidepath);
+    assert!(g.stretches[0].use_sidepath);
 }
 
 #[test]
-fn a_cut_piece_keeps_the_sidepath_tags_of_its_stretch() {
+fn a_cut_piece_keeps_the_use_sidepath_tag_of_its_stretch() {
     let g = build_graph(&[
-        tagged(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], true, true),
+        tagged(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], true),
         way(2, Family::Asf3, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
     ]);
     let (out, dropped) = drop_duplicates(&g);
@@ -1141,8 +1131,5 @@ fn a_cut_piece_keeps_the_sidepath_tags_of_its_stretch() {
         .filter(|s| s.id.starts_with("1:"))
         .collect();
     assert_ne!(rest.len(), 0);
-    assert!(
-        rest.iter().all(|s| s.sidepath_hint && s.use_sidepath),
-        "{rest:?}"
-    );
+    assert!(rest.iter().all(|s| s.use_sidepath), "{rest:?}");
 }

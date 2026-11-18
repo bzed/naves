@@ -56,7 +56,6 @@ fn feature(id: i64, points: &[(f64, f64)], nodes: &[i64], family: Family) -> Fea
             tunnel: false,
             roundabout: false,
             layer: 0,
-            sidepath_hint: false,
             use_sidepath: false,
         },
         points: points.to_vec(),

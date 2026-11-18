@@ -17,7 +17,7 @@ All notable changes to this project are documented here. The format follows
   steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
   roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
   `road_junctions_merged`, `bridge_approach_made` (information) and `bridge_end_at_junction` (warning), also in the MCP
-  rule list. The tags `foot` and `footway` are read from OpenStreetMap.
+  rule list. The tag `foot` is read from OpenStreetMap (`foot=use_sidepath` on a road).
 
 ### Changed
 

@@ -227,6 +227,8 @@ fn main() {
             ("road_stub_dropped", clean.stubs.len()),
             ("road_junctions_merged", clean.merged.len()),
             ("bridge_approach_made", clean.approaches.len()),
+            // no step reports this yet: the bridge approach step will
+            ("bridge_end_at_junction", 0),
         ] {
             println!("CLEAN {rule} {count}");
         }

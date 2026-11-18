@@ -219,8 +219,8 @@ under the deck as it was placed (with the height the road got). The position is 
 Use a bridge that does not stand on the ground (a panel grid).
 
 **`road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made` (information)**
-The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map became a plain
-crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
+The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map, or tighter than the
+tightest arc of its surface, became a plain crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
 left out or merged, or a junction was moved off the end of a bridge. Nothing to do; look at the place if the result is
 not what you want and change the data (OpenStreetMap) there. The position is the place of the change.
 

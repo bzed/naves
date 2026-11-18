@@ -52,7 +52,7 @@ junctions as this plan leaves them.
 
 ## Review Focus
 
-- The hiking path: a stretch that joins a sidepath in the middle of the removed run must still reach the road
+- A graph stretch that joins a sidepath in the middle of the removed run must still reach the road
   afterwards (the maintainer's caution at Bergwerkstraße, way 39674984).
 - A sidepath that crosses its road, changes sides, or runs between two roads: not a one-sided run, must not be
   removed as one.
@@ -100,9 +100,9 @@ modify `crates/naves-export/src/generate.rs` (`fitted_graph`, `FittedGraph`), `c
 
 **Interfaces — Produces:**
 
-- `WAY_TAGS` also keeps `"foot"` and `"footway"`.
-- `Stretch::sidepath_hint: bool` — true for a path tagged `footway=sidewalk`; `Stretch::use_sidepath: bool` — true
-  for a road tagged `foot=use_sidepath`. Both false by default and after cuts inherited from the original stretch.
+- `WAY_TAGS` also keeps `"foot"`.
+- `Stretch::use_sidepath: bool` — true for a road tagged `foot=use_sidepath`. False by default; cut pieces inherit it
+  from the original stretch. (`footway=sidewalk` is not read: it sits on painted paths outside the graph.)
 - `netclean::CleanReport { sidepaths: Vec<DroppedSidepath>, stubs: Vec<DroppedStub>, merged: Vec<MergedJunction>,
   approaches: Vec<Approach>, roundabouts: Vec<Ring>, components_before: usize, components_after: usize }` and
   `netclean::clean(graph: &RoadGraph, widths: &dyn Fn(Family) -> f64, cell_m: f64) -> (RoadGraph, CleanReport)`,
@@ -113,8 +113,8 @@ modify `crates/naves-export/src/generate.rs` (`fitted_graph`, `FittedGraph`), `c
   (information) and `bridge_end_at_junction` (warning) exist in `Rule::ALL` with manual entries; `road-analysis`
   prints `CLEAN <rule> <count>` lines and `COMPONENTS <before> <after>`.
 
-- [ ] **Step 1: Failing tests:** OSM input with `foot=use_sidepath` on a road and `footway=sidewalk` on a path sets
-  the two flags and nothing else changes; `components` of two separate roads is 2 and of a T is 1; `clean` on any
+- [ ] **Step 1: Failing tests:** OSM input with `foot=use_sidepath` on a road sets
+  the flag and nothing else changes (a real-fixture test pins that `foot` is kept); `components` of two separate roads is 2 and of a T is 1; `clean` on any
   graph with all steps as stubs returns an equal graph and an empty report with equal component counts.
 - [ ] **Step 1b: Failing tests (roundabouts):** `roadnet::ROUNDABOUT_KEEP_M = 10.0`; `collapse_small_rings` keeps a
   ring only if its radius is at least `ROUNDABOUT_KEEP_M` and at least the family's tightest arc (a 9 m ring of a
@@ -172,12 +172,12 @@ invent one) come closer than `cell_m`, or the run passes a bridge of the road; j
 connector to the nearest point of the road with a new node there, or the piece of sidepath is kept if the connector
 would cross a third road or be longer than 15 m; the two ends of the removed run are joined the same way.
 
-- [ ] **Step 1: Failing tests:** a footpath 5 m beside a road for 100 m, joining it at both ends, is removed and
+- [ ] **Step 1: Failing tests:** a lower-family stretch 5 m beside a road for 100 m, joining it at both ends, is removed and
   reported, components unchanged; the same path at 14 m with narrow roads (earthworks a cell apart) stays with
   reason `"clear"`; at 14 m beside a bridge of the road it is removed along the bridge; a path 5 m beside for 20 m
   only stays, and is removed when the road has `use_sidepath`; a path that crosses the road halfway is not removed
-  across the crossing; a hiking path that joins the sidepath in the middle of the run ends on the road afterwards
-  (a node on the road within 15 m of the old joint, connector straight) and the far end of the hiking path is still
+  across the crossing; a graph stretch that joins the sidepath in the middle of the run ends on the road afterwards
+  (a node on the road within 15 m of the old joint, connector straight) and the far end of that stretch is still
   reachable from the road; when a third road lies between, the piece of sidepath is kept instead; a gravel track
   beside a paved road is treated like a footpath, a paved road beside a gravel track is not removed; a sidepath
   between two parallel roads within 15 m of both is removed against the nearer; result independent of input order.
@@ -220,7 +220,7 @@ at: (f64, f64) }` (reasons: `"bridge_too_short"`, `"road_below"`, `"no_room"`).
   unchanged") and listed for the maintainer. No tuning until numbers look right.
 - **Checkpoint, the game:** build from this branch (rebuild the `naves` binary first; log HEAD and the binary's
   mtime), `tools/ingame-check` on: the seven named bridge sites, three removed sidepaths (one of them
-  Bergwerkstraße with the hiking path), three merged junctions, two shortened bridges. Compare with the shots in
+  Bergwerkstraße with the stretch that joined the sidepath), three merged junctions, two shortened bridges. Compare with the shots in
   `/var/tmp/naves-bridges-cp2/shots/`. All caps apply; one game at a time; non-default ports; remove the mod
   symlinks afterwards. Send the pairs to the maintainer.
 - If the shortened bridges look wrong in the game: the T case of step 4 is switched off; those sites stay reported.

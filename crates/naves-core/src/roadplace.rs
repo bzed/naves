@@ -243,7 +243,7 @@ pub struct PlacedNetwork {
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,
-    /// The roundabouts that are placed as a closed loop (the others, smaller than the tightest arc of their
+    /// The roundabouts that are placed as a closed loop (the others, smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of their
     /// family, are ordinary crossings).
     pub rings: Vec<crate::roadnet::Ring>,
 }
@@ -512,7 +512,8 @@ fn bits(p: (f64, f64)) -> (u64, u64) {
 
 impl<'a> Placer<'a> {
     fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog, shifts: Shifts) -> Self {
-        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads
+        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads (the
+        // build has collapsed the rings below `ROUNDABOUT_KEEP_M` before, see `collapse_small_rings`)
         let rings: Vec<Ring> = rings(graph)
             .into_iter()
             .filter(|r| {

@@ -53,8 +53,6 @@ pub struct Stretch {
     /// stored start the model's first end lies, in metres (decided by [`crate::bridgekind::fit_bridges`]); 0
     /// otherwise.
     pub bridge_offset: f64,
-    /// A path tagged `footway=sidewalk` (any of the ways it is made of): it says it is the sidewalk of a road.
-    pub sidepath_hint: bool,
     /// A road tagged `foot=use_sidepath` (any of the ways it is made of): its pedestrians use a path beside it.
     pub use_sidepath: bool,
 }
@@ -119,7 +117,6 @@ struct Seg {
     attrs: Attrs,
     way: i64,
     /// Not part of `attrs`: the tags must not cut a stretch.
-    sidepath_hint: bool,
     use_sidepath: bool,
 }
 
@@ -133,7 +130,6 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             tunnel,
             roundabout,
             layer,
-            sidepath_hint,
             use_sidepath,
         } = feature.kind
         else {
@@ -157,7 +153,6 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
                     pb,
                     attrs,
                     way: feature.way_id,
-                    sidepath_hint,
                     use_sidepath,
                 });
             }
@@ -172,7 +167,6 @@ struct Walked {
     points: Vec<(f64, f64)>,
     attrs: Attrs,
     way: i64,
-    sidepath_hint: bool,
     use_sidepath: bool,
     /// Every node on it is a plain joint: nothing marks where it starts.
     ring: bool,
@@ -325,9 +319,6 @@ fn walk(
             layer: 0,
         }),
         way,
-        sidepath_hint: seq
-            .iter()
-            .any(|&(i, _)| segs.get(i).is_some_and(|x| x.sidepath_hint)),
         use_sidepath: seq
             .iter()
             .any(|&(i, _)| segs.get(i).is_some_and(|x| x.use_sidepath)),
@@ -381,7 +372,6 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         end,
         bridge_kind: None,
         bridge_offset: 0.0,
-        sidepath_hint: w.sidepath_hint,
         use_sidepath: w.use_sidepath,
     })
 }

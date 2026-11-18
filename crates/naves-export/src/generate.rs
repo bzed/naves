@@ -201,7 +201,7 @@ pub fn place_once(
 /// The road graph of a project before the placement.
 pub struct FittedGraph {
     /// The graph of the features without the parts of roads that OpenStreetMap draws twice (see
-    /// [`drop_duplicates`]): its bridges are those of OpenStreetMap.
+    /// [`drop_duplicates`]) and cleaned (see [`netclean::clean`]): its bridges are those of OpenStreetMap.
     pub built: RoadGraph,
     /// The same with every OpenStreetMap bridge built from the part that fits it, grown along the straight road
     /// as far as the part needs (see [`fit_bridges`]).
@@ -215,11 +215,11 @@ pub struct FittedGraph {
     pub bridges: Vec<BridgeFit>,
 }
 
-/// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, and every
-/// OpenStreetMap bridge built from the part that fits it on the original ground `base`.
+/// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, the graph
+/// cleaned ([`netclean::clean`]), and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
 #[must_use]
 pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightmap) -> FittedGraph {
-    // a roundabout too small for the tightest arc of its surface is a plain crossing
+    // a roundabout smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of its surface is a plain crossing
     let (flat, roundabouts) =
         collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
     let (deduplicated, duplicates) = drop_duplicates(&flat);

@@ -51,7 +51,7 @@ roads **(maintainer)**.
 
 ## Anti-goals
 
-- Losing a connection: a path that met a removed sidepath and now ends in nothing (the hiking path beside the
+- Losing a connection: a graph stretch that met a removed sidepath and now ends in nothing (the stretch beside the
   Bergwerkstraße bridge **(maintainer)**).
 - Removing something that did no harm ("if it doesn't disturb us and is rendered without issues - leave it"
   **(maintainer)**).
@@ -86,8 +86,9 @@ In `generate::fitted_graph`: `build_graph` → `drop_duplicates` → **clean-up 
 
 ### Step 0: tags
 
-`osm::WAY_TAGS` also keeps `foot` and `footway`. `foot=use_sidepath` on a road and `footway=sidewalk` on a path are
-the strongest signals for step 1 **(maintainer: Bergwerkstraße is tagged `foot=use_sidepath`)**. `width` and `lanes`
+`osm::WAY_TAGS` also keeps `foot`. `foot=use_sidepath` on a road is the strongest signal for step 1 **(maintainer:
+Bergwerkstraße is tagged `foot=use_sidepath`)**; it is the only tag signal. `footway=sidewalk` is not read: it sits on
+`highway=footway`, a painted path outside the graph, so a flag for it could never be set. `width` and `lanes`
 are not read yet; they are added when a step uses them.
 
 ### Before the steps: small roundabouts
@@ -109,8 +110,9 @@ of 10.9 m at map (5308, 6768).
 A sidepath is a part of a stretch that runs beside a road of higher rank (the rank the duplicate drop uses).
 
 - **Candidate (maintainer's criteria):** the part stays within `SIDEPATH_MAX_M` (15 m) of the road, on one side of
-  it, without crossing it, for at least `SIDEPATH_MIN_RUN_M` (30 m). A path of any length counts if the road is
-  tagged `foot=use_sidepath` or the path `footway=sidewalk`.
+  it, without crossing it, for at least `SIDEPATH_MIN_RUN_M` (30 m). A stretch of any length counts if the road is
+  tagged `foot=use_sidepath`. Footways, paths, cycleways and driveways are painted strokes outside the graph, shape
+  no terrain and are left as they are, so the step works on graph stretches only.
 - **Removed only if it disturbs:** somewhere along the run the two roads' earthworks (road width plus shoulder ring)
   overlap or leave less than one terrain cell between them, or the run passes a bridge of the road (within the
   bridge's length plus its end guards). A candidate that keeps its distance stays.
@@ -222,7 +224,7 @@ every step shows what it alone changed:
   removed stubs);
 - all findings, in particular `road_conflict`, `road_gap`, `road_kink`, `road_not_drivable`,
   `road_misses_terrain`, `road_grade`, `bridge_buried`, `bridge_end_step`, `bridge_clearance`, `bridge_blocks_road`;
-- the named sites: Bergwerkstraße 39674984 (sidepath gone, the hiking path still connected, the T-junction off the
+- the named sites: Bergwerkstraße 39674984 (sidepath gone, the stretch that joined it still connected, the T-junction off the
   deck end), 48450084, 240795460, 74208396, 299428041, 286196692, 130657216;
 - run time.
 

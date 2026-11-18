@@ -540,7 +540,7 @@ pub fn read_land_from_bytes(bytes: &[u8], window: GeoWindow) -> Result<OsmLand, 
 // --- highway ways -------------------------------------------------------------------------------------------------
 
 /// The tags of a highway way that are kept: the ones the road classification reads.
-const WAY_TAGS: [&str; 15] = [
+const WAY_TAGS: [&str; 14] = [
     "highway",
     "tracktype",
     "surface",
@@ -555,7 +555,6 @@ const WAY_TAGS: [&str; 15] = [
     "junction",
     "layer",
     "foot",
-    "footway",
 ];
 
 /// The `waterway` values that are kept: the water lines that are wide or steady enough to be a dip in a road.
@@ -566,7 +565,7 @@ const WATERWAYS: [&str; 3] = ["stream", "river", "canal"];
 pub struct OsmWay {
     /// The OSM way id.
     pub id: i64,
-    /// The tags that the classification reads (`highway`, `tracktype`, `surface`, `smoothness`, `service`, `sac_scale`, `trail_visibility`, `bridge`, `tunnel`, `area`, `waterway`, `junction`, `layer`, `foot`, `footway`).
+    /// The tags that the classification reads (`highway`, `tracktype`, `surface`, `smoothness`, `service`, `sac_scale`, `trail_visibility`, `bridge`, `tunnel`, `area`, `waterway`, `junction`, `layer`, `foot`).
     pub tags: BTreeMap<String, String>,
     /// Node ids in order.
     pub nodes: Vec<i64>,

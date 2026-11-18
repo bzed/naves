@@ -327,7 +327,7 @@ fn village_window() -> GeoWindow {
 }
 
 /// The tags `read_ways` keeps: the ones the road classification reads.
-const KEPT_TAGS: [&str; 15] = [
+const KEPT_TAGS: [&str; 14] = [
     "highway",
     "tracktype",
     "surface",
@@ -342,7 +342,6 @@ const KEPT_TAGS: [&str; 15] = [
     "junction",
     "layer",
     "foot",
-    "footway",
 ];
 
 #[expect(
@@ -387,6 +386,8 @@ fn only_the_tags_the_classification_reads_are_kept() {
         }
     }
     assert!(seen.contains("tracktype") && seen.contains("bridge") && seen.contains("sac_scale"));
+    // `foot=*` is read from real OSM input (the step that removes sidepaths needs `foot=use_sidepath`)
+    assert!(seen.contains("foot"), "foot is not kept: {seen:?}");
 }
 
 #[test]

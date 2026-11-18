@@ -524,7 +524,6 @@ fn a_track_that_is_not_drivable_is_checked_like_a_path() {
         tunnel: false,
         roundabout: false,
         layer: 0,
-        sidepath_hint: false,
         use_sidepath: false,
     };
     assert_ne!(check_walkable(&[track.clone()], &ramp(steep)).len(), 0);
