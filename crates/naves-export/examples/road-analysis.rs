@@ -1649,6 +1649,97 @@ fn main() {
             );
         }
     }
+    // the spec's "How it is judged" 2 and 3 in one place, and the table of every bridge: OSM length, what it is built
+    // from, growth at each end and the turn of the road it grew into, ground above the deck's underside (on the original
+    // ground and after the shaping), solid parts on a road below
+    {
+        let before = spans_above_underside(&base, &spans);
+        let after = spans_above_underside(&conformed.heightmap, &spans);
+        let count = |rule: Rule| violations.iter().filter(|v| v.rule == rule).count();
+        let fits = &net.bridge_fits;
+        let kind_of = |k: &naves_core::bridgekind::BridgeKind| match k {
+            naves_core::bridgekind::BridgeKind::Fill => "fill".to_string(),
+            naves_core::bridgekind::BridgeKind::Panels { .. } => "panels".to_string(),
+            naves_core::bridgekind::BridgeKind::Model { model, .. } => model
+                .rsplit('\\')
+                .next()
+                .unwrap_or(model)
+                .trim_end_matches(".p3d")
+                .to_string(),
+        };
+        let built = fits
+            .iter()
+            .filter(|f| !matches!(f.kind, naves_core::bridgekind::BridgeKind::Fill))
+            .count();
+        // a deck grown at an end (positive growth) around the turn of the road there
+        let grown_turns: Vec<f64> = fits
+            .iter()
+            .flat_map(|f| {
+                [(f.grown.0, f.turn_deg.0), (f.grown.1, f.turn_deg.1)]
+                    .into_iter()
+                    .filter(|(g, _)| *g > 1e-9)
+                    .map(|(_, t)| t)
+            })
+            .collect();
+        let max_turn = grown_turns.iter().copied().fold(0.0_f64, f64::max);
+        let over_turn = grown_turns.iter().filter(|t| **t > 5.0).count();
+        let blocks = count(Rule::BridgeBlocksRoad);
+        let buried = count(Rule::BridgeBuried);
+        println!(
+            "JUDGED bridges {} built as a part {built} plain road (fill) {}",
+            fits.len(),
+            fits.len() - built
+        );
+        println!(
+            "JUDGED grown deck ends {} the largest turn {max_turn:.1} deg, over 5 deg: {over_turn}",
+            grown_turns.len()
+        );
+        println!(
+            "JUDGED bridges with ground above the underside: before the shaping {} after {} (bridge_buried findings {buried})",
+            before.len(),
+            after.len()
+        );
+        println!(
+            "JUDGED solid parts on a road below: bridge_blocks_road findings {blocks}; bridge_clearance {}",
+            count(Rule::BridgeClearance)
+        );
+        for f in fits {
+            let above = |list: &[naves_core::conform::AboveUnderside]| {
+                list.iter()
+                    .find(|a| a.stretch == f.stretch)
+                    .map_or("-".to_string(), |a| {
+                        format!("{:.2} m/{}", a.above_m, a.vertices)
+                    })
+            };
+            let solid: Vec<String> = f
+                .below
+                .iter()
+                .filter(|b| b.placed && b.missing > 0.05)
+                .map(|b| format!("{:.1} m", b.missing))
+                .collect();
+            println!(
+                "BRIDGETABLE {}\t{:.1}\t{}\t{:+.2}/{:+.2}\t{:.1}/{:.1}\t{:.2}\t{}\t{}\t{}\t{}\t({:.0}, {:.0})",
+                f.stretch,
+                f.length,
+                kind_of(&f.kind),
+                f.grown.0,
+                f.grown.1,
+                f.turn_deg.0,
+                f.turn_deg.1,
+                f.slid,
+                f.below.len(),
+                above(&before),
+                above(&after),
+                if solid.is_empty() {
+                    "-".to_string()
+                } else {
+                    solid.join(", ")
+                },
+                f.at.0,
+                f.at.1
+            );
+        }
+    }
     // roads far from the ground: by family, the extremes and the distribution of |off_ground_m|
     {
         println!("off ground: family, pieces, over the allowance, p50/p90/max |off_ground_m|");

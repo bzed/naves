@@ -329,6 +329,17 @@ is chosen where the posts reach the original ground; if the shaped ground, under
 below the foot of a post, pier or wall, the finding is `bridge_post_floats`. A `road_conflict` that the cut under a deck
 causes says so ("The cut under a bridge's deck and a road want heights ... apart here").
 
+**Bridge findings, and what to do about each.** On the Berchtesgaden example at `terrain_size = 2048` (measured
+2026-11-18, `docs/research/2026-11-18-bridges.md`) 79 of the 84 OpenStreetMap bridges are built from a part (the other 5
+are at most 3 m and plain road on purpose) and the build reports three bridge findings. The numbers are what the build
+leaves; each is a place to look at, not a failure of the build.
+
+| Finding | On the example | What you do |
+|---|---|---|
+| `bridge_blocks_road` | 3 | A road below has less room than it needs under the bridge (0.4 to 1.4 m of 12.8 to 21.0 m). Straighten the crossing in the data (the crossing angle and a crossing near the bridge's end ask for the most room), or accept it. |
+| `bridge_buried` | 20 (13 of them 0.4 m or less, the highest 1.6 m) | Ground another road holds stands in the deck. Move that road in the data, or raise the bridge; the build leaves the ground as it is. The message names the road that holds it. |
+| `bridge_post_floats` | 0 | Nothing. Where it appears, use a bridge that does not stand on the ground (a panel grid) or change the road's height there. |
+
 **Bridges.** On a bridge, the span has a level deck and the ground below is cut to its ceiling (see above), not left
 alone; the ground starts to be shaped for the road at the abutments. Gravel and dirt roads get the wooden bridges, the
 paved roads the stone and metal ones: asphalt 1 and streets the metal bridge, asphalt 2 the stone bridge, asphalt 3
