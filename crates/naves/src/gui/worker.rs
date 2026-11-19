@@ -230,7 +230,6 @@ impl RoadJob {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    use std::time::Duration;
 
     use naves_export::testing::FakeEnv;
 
@@ -258,7 +257,7 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
         project(&proj);
         let mut worker = BuildWorker::start(&proj, Ok(fakes.tools()));
-        let msgs = worker.wait(Duration::from_mins(1));
+        let msgs = worker.wait(crate::gui::testing::HANG_GUARD);
         assert!(
             msgs.iter().any(|m| matches!(m, BuildMsg::Progress(_))),
             "{msgs:?}"
@@ -277,7 +276,7 @@ mod tests {
             .save(&proj)
             .unwrap();
         let mut worker = BuildWorker::start(&proj, Ok(fakes.tools()));
-        let msgs = worker.wait(Duration::from_mins(1));
+        let msgs = worker.wait(crate::gui::testing::HANG_GUARD);
         match msgs.last() {
             Some(BuildMsg::Failed(text)) => assert!(text.contains("sources.dem"), "{text}"),
             other => panic!("expected Failed, got {other:?}"),
@@ -291,7 +290,7 @@ mod tests {
             root.path(),
             Err("dayzmake not found; set DAYZMAKE".to_string()),
         );
-        let msgs = worker.wait(Duration::from_secs(10));
+        let msgs = worker.wait(crate::gui::testing::HANG_GUARD);
         assert_eq!(
             msgs,
             vec![BuildMsg::Failed(
@@ -305,7 +304,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         project(root.path());
         let job = HeightmapJob::start(root.path());
-        let deadline = std::time::Instant::now() + Duration::from_mins(1);
+        let deadline = std::time::Instant::now() + crate::gui::testing::HANG_GUARD;
         let result = loop {
             if let Some(r) = job.poll() {
                 break r;

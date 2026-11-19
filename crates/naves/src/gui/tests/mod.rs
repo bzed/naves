@@ -6,7 +6,7 @@
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -68,7 +68,7 @@ fn app(root: &Path, dir: &Path) -> NavesApp {
 
 /// Steps the harness until `done` holds or a generous deadline passes.
 fn step_until(harness: &mut Harness<'_>, done: impl Fn(&Harness<'_>) -> bool) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
         harness.step();
@@ -176,7 +176,7 @@ fn the_land_grid_follows_the_terrain_grid() {
 
 /// Steps the app without a window until its heightmap job has ended.
 fn wait_for_the_job(app: &mut NavesApp) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while app.job.is_some() {
         assert!(Instant::now() < deadline, "timed out waiting for the job");
         app.poll_background();
@@ -476,9 +476,9 @@ struct FakeWms {
 impl Http for FakeWms {
     fn get(&self, url: &str, _max: u64, out: &mut dyn std::io::Write) -> Result<(), FetchError> {
         if let Some(gate) = &self.gate {
-            let deadline = Instant::now() + Duration::from_secs(30);
+            let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
             while !gate.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+                std::thread::yield_now();
             }
         }
         let value = |key: &str| -> u32 {
@@ -516,7 +516,7 @@ fn fetching_app(
 }
 
 fn wait_for_the_fetch(app: &mut NavesApp) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while app.fetch_running() {
         assert!(Instant::now() < deadline, "timed out waiting for the fetch");
         app.poll_background();

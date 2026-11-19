@@ -4,7 +4,7 @@
 //! The settings window, the shortcut bindings and the per-user file behind them.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use egui::accesskit::Role;
 use egui::{Key, Modifiers};
@@ -62,7 +62,7 @@ fn is_open(h: &Harness<'_, NavesApp>) -> bool {
 
 /// Steps the harness until `done` holds or a generous deadline passes.
 fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bool) {
-    let deadline = Instant::now() + Duration::from_mins(1);
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
         harness.step();
@@ -787,7 +787,7 @@ fn changing_a_path_is_used_by_the_next_build() {
     h.key_press(Key::Escape);
     h.run_steps(3);
     h.key_press_modifiers(Modifiers::CTRL, Key::B);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(1);
+    let deadline = std::time::Instant::now() + crate::gui::testing::HANG_GUARD;
     while h.query_by_label_contains("Mod: ").is_none() && std::time::Instant::now() < deadline {
         h.step();
         std::thread::yield_now();

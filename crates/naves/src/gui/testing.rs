@@ -5,10 +5,17 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use eframe::egui;
 
 use super::viewport::{ViewEvent, ViewFocus, ViewFrame, Viewport, WorldPoint};
+
+/// How long a test waits for a background thread (a job, a build, a fetch) before it calls the wait a hang.
+///
+/// The condition ends every wait; this is only the guard against a real hang. It is long on purpose: under
+/// coverage instrumentation on a loaded machine a heightmap job or a build can take minutes of wall time.
+pub const HANG_GUARD: Duration = Duration::from_mins(10);
 
 /// What the fake view saw and what it answers.
 #[derive(Default)]
