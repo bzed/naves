@@ -1391,19 +1391,27 @@ pub(crate) fn samples(points: &[(f64, f64)]) -> Vec<Sample> {
 /// The nearest point of the kept pieces within half the narrower width, on a segment whose direction is
 /// within [`DUPLICATE_MAX_HEADING_DEG`] of `dir`.
 fn nearest_hit(at: (f64, f64), dir: (f64, f64), width: f64, pieces: &[&KeptPiece]) -> Option<Hit> {
-    nearest_hit_within(at, dir, &|piece| width.min(piece.width) / 2.0, pieces).map(|(_, hit)| hit)
+    let aligned = DUPLICATE_MAX_HEADING_DEG.to_radians().cos();
+    nearest_hit_within(
+        at,
+        dir,
+        &|piece| width.min(piece.width) / 2.0,
+        aligned,
+        pieces,
+    )
+    .map(|(_, hit)| hit)
 }
 
-/// The nearest point of the kept pieces within `reach(piece)` of `at`, on a segment whose direction is within
-/// [`DUPLICATE_MAX_HEADING_DEG`] of `dir`, and its distance. The duplicate drop looks within half the narrower
+/// The nearest point of the kept pieces within `reach(piece)` of `at`, on a segment whose direction makes an angle
+/// of at least `cos_limit` (the cosine of the angle) with `dir`, and its distance. The duplicate drop looks within half the narrower
 /// width; the clean-up of the graph looks further, for lower roads beside a road.
 pub(crate) fn nearest_hit_within(
     at: (f64, f64),
     dir: (f64, f64),
     reach: &dyn Fn(&KeptPiece) -> f64,
+    cos_limit: f64,
     pieces: &[&KeptPiece],
 ) -> Option<(f64, Hit)> {
-    let cos_limit = DUPLICATE_MAX_HEADING_DEG.to_radians().cos();
     let mut best: Option<(f64, Hit)> = None;
     for piece in pieces {
         let half = reach(piece);

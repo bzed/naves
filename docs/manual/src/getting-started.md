@@ -266,19 +266,22 @@ that lie close together, and junctions on the end of a bridge. Each change is a 
 place of the change) and nothing is changed that is not reported; no step ever splits the network into more connected
 pieces than it had. The steps are being added one at a time; until a step exists it changes nothing and reports
 nothing. Three exist so far. **Sidepaths:** a road or track of a lower family (asphalt before gravel before mud) that
-runs beside a road of a higher family, within 15 m of it, on one side of it and heading the way it does, for at least 30 m
-(for any length beside a road tagged `foot=use_sidepath`), is removed where it disturbs: the two earthworks (half the
-road's width and the shoulder ring of one and a half terrain cells on each side) overlap or leave less than one cell
-between them, or the run passes a bridge of the road (the bridge's length and one cell at each end). A run that keeps
-its distance and passes no bridge stays, and the `road-analysis` example lists it as `clear`. A run that crosses the
-road is not removed across the crossing, and a run between two roads is judged against the nearer. Footways, paths and
-cycleways are painted strokes, not stretches of the graph, and are not touched. Nothing that met the removed part is
-lost: a road that joined it ends on the road instead, by a straight connector of at most 15 m to the nearest point of
-the road, where the road is cut by a new node (the road keeps its id; the removed run's stretch keeps its id and the
-pieces that follow the first are named `<id>/side<n>`), and the ends of a removed part inside a stretch are joined to
-the road the same way. Where a connector would cross a third road, would be longer than 15 m (a joint beside a bridge
-deck is never made on the deck, but at its end) or where the removal would split the network, the run next to the joint
-stays and is reported (`crosses`, `would_disconnect`). Each removed part is a finding (`road_sidepath_dropped`).
+runs beside a road of a higher family, within 15 m of it and on one side of it, for at least 30 m
+(for any length beside a road tagged `foot=use_sidepath`), is removed where it disturbs. The run is the whole part that
+stays within 15 m, also where the track bends towards the road to join it; at least two metres of it must head the way the road
+does, so that a road that joins at an angle is no sidepath. It disturbs when, along the part that heads along the road, the two
+earthworks (half the road's width and the shoulder ring of one and a half terrain cells on each side) overlap or leave
+less than one cell between them, or when it passes a bridge of that road (the bridge's length and one cell at each
+end; a bridge of another road does not count). A run that keeps its distance and passes no bridge stays, and the
+`road-analysis` example lists it as `clear`. A run that crosses the road is not removed across the crossing, and a run
+between two roads is judged against the nearer. Footways, paths and cycleways are painted strokes, not stretches of
+the graph, and are not touched. Nothing that met the removed part is lost: a road that joined it goes on along its own
+direction to the road (if that is within 30 m), the rest of a track at the end of a removed part meets the road at a
+shallow angle ahead of that end, and the road is cut there by a new node. A node of the road within 6 m is used instead
+of a new one, and no node is made within 8 m of the end of a bridge. The removed run's stretch keeps its id and the pieces
+that follow the first are named `<id>/side<n>`. Where a connector would cross a third road or be too long, the run next to
+the joint stays and is reported (`crosses`, `would_disconnect`); no removal may cut a connected piece of the road network
+off from the rest (`would_disconnect`). Each removed part is a finding (`road_sidepath_dropped`).
 **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
 shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
 roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).

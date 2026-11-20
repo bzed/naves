@@ -119,14 +119,26 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
 - **Removed only if it disturbs:** somewhere along the run the two roads' earthworks (road width plus shoulder ring)
   overlap or leave less than one terrain cell between them, or the run passes a bridge of the road (within the
   bridge's length plus its end guards). A candidate that keeps its distance stays.
-- **Connections are kept:** every node on the removed part where another stretch joins is connected to the road
-  instead: the joining stretch is extended by a straight connector to the nearest point of the road, where a node is
-  put into the road. If the connector would cross a third road or be longer than `SIDEPATH_MAX_M`, the piece of
-  sidepath between that node and the sidepath's nearer end is kept instead.
-- The two ends of the removed part are joined to the road the same way, so the rest of the path still leads
-  somewhere.
-- After the step, the number of connected components of the graph must not have grown; if it would, that removal is
-  not made and is reported.
+- **Connections are kept** (amended 2026-11-20, controller ruling after the first run: straight connectors at right
+  angles made corners that the piece set cannot build, and new nodes landed next to existing ones): every node on the
+  removed part where another stretch joins is connected to the road instead. The joining stretch is continued along
+  its own end heading to the point where that line meets the road, if that point is within `2 * SIDEPATH_MAX_M` of the
+  old node; otherwise by a straight connector to the nearest point of the road. The rest of a sidepath at an end of the
+  removed run meets the road at a point ahead of that end, towards the removed part, by twice its distance from the
+  road (at most a connector of `2 * SIDEPATH_MAX_M`), within the part of the road the run lies along: a shallow merge.
+  A point on the road is never a new node when a node of the road is within `JUNCTION_MERGE_M` (that node is used), and
+  never within `APPROACH_M` of the end of a bridge or tunnel (it moves along the road to that distance). If a connector
+  would cross a third road or be longer than its limit, the run next to that joint stays instead (at a node between two
+  runs, the shorter of the two) and is reported. "On the road" means on the road the run is beside or on the network of
+  higher roads that it belongs to; a higher road that merely ends at the track is joined to the road like any other
+  stretch.
+- **A run** is a stretch of samples within `SIDEPATH_MAX_M` of a road on one side of it, whatever way the stretch heads
+  there; it must have at least two samples that head the way the road does (so a road that joins at an angle is not
+  beside it). Whether it disturbs is judged on the samples that head along the road; the bridge test counts only a
+  bridge of the road it runs beside.
+- After the step no connected component of the graph may be split: the nodes of a component that are still in the
+  graph must lie in one component afterwards (a component that goes whole is no split, and does not make up for
+  another). A group of runs whose removal would split one is not removed and is reported (`would_disconnect`).
 
 This is the duplicate drop (`drop_duplicates`, which removes a road lying on a higher road) with a wider distance and
 the "disturbs" test; it reuses that code's sampling and leaving points where it fits.

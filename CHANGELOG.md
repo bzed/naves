@@ -20,7 +20,10 @@ All notable changes to this project are documented here. The format follows
   (`road_sidepath_dropped`). Roads that met the removed part end on the road instead, by a straight connector of at
   most 15 m; a run that would need a connector across a third road, or whose removal would split the network, stays
   and is listed by the `road-analysis` example. Footways and paths are not touched. Stretch ids are kept; pieces of
-  a cut stretch are named `<id>/side<n>`.
+  a cut stretch are named `<id>/side<n>`. A removal never cuts a connected piece of the road network off from the
+  rest; a run is the whole part within 15 m of the road, also where the track bends to join it; roads that met it go on
+  along their own direction to the road, the rest of a track merges at a shallow angle, and joints use a node of the
+  road within 6 m and keep 8 m off the end of a bridge.
 - The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four
   steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
   roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
