@@ -296,11 +296,15 @@ are among them, and none of the straightened roads would cross another road; oth
 **Bridge approaches:** where three or more roads meet on the end of a bridge deck, the junction is moved 8 m off the
 deck. If the bridge's road goes on, the other roads are taken off the deck end and joined to the road 8 m beyond it
 (the road gets a new node there; its first 8 m are a stretch named `<id>/approach<n>`); this needs the road to go on for
-at least 8 m plus 12.5 m, or exactly 8 m to the next junction, and no moved road may cross a road it did not cross
-before. If the bridge's road ends at the junction (a T), the last 8 m of the bridge become an ordinary stretch of the
-same road, but only if the bridge stays at least 24 m long and no road passes under the part that is cut off. Otherwise
-nothing changes and the place is reported with the reason `no_room`, `bridge_too_short` or `road_below`
-(`bridge_end_at_junction`). The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged` and
+at least 8 m plus 12.5 m, or exactly 8 m to the next junction (a road of 8 m within 0.5 m counts as exactly 8 m: the
+other roads then join its far end, which can be up to 0.5 m less than 8 m from the deck end), and no moved road may
+cross a road it did not cross before. That crossing is counted only against roads that touch none of the nodes
+involved, so a crossing with a road that meets the deck end, the new node, the far node of the moved road or the far
+end of the road is not seen. If the bridge's road ends at the junction (a T), the last 8 m of the bridge become an
+ordinary stretch of the same road, but only if the bridge stays at least 24 m long, no other bridge, tunnel or closed
+loop ends at that junction (a junction where several decks end stays as it is), and no road passes under the part that
+is cut off. Otherwise nothing changes and the place is reported with the reason `no_room`, `bridge_too_short` or
+`road_below` (`bridge_end_at_junction`). The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged` and
 `bridge_approach_made` (information), and `bridge_end_at_junction` (warning: a junction on a bridge's end that could
 not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to

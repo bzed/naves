@@ -2239,9 +2239,95 @@ fn both_ends_of_one_bridge_are_handled_independently() {
     assert!((length(&deck.points) - 44.0).abs() < 1e-9);
     assert_eq!(out.stretches.len(), g.stretches.len() + 2);
     assert_components_kept(&g, &out);
-    // a deck with a T at one end and a road that goes on at the other
-    let (_, approaches, _) = make_approaches(&continuing(40.0, 100.0));
-    assert_eq!(approaches.len(), 1);
+}
+
+/// A deck of 40 m from node 1 east to node 2, a road passing across at node 1 (a T there) and, at node 2, the road
+/// going on east for 100 m and a side road leaving node 2 north.
+fn t_at_one_end_and_a_road_on_at_the_other() -> RoadGraph {
+    build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[5, 1, 6], &[(0.0, -50.0), (0.0, 0.0), (0.0, 50.0)]),
+        asf(4, &[2, 3], &[(40.0, 0.0), (140.0, 0.0)]),
+        grav(5, &[2, 7], &[(40.0, 0.0), (40.0, 50.0)]),
+    ])
+}
+
+#[test]
+fn one_end_of_a_deck_is_shortened_while_the_other_gets_its_side_road_moved() {
+    let g = t_at_one_end_and_a_road_on_at_the_other();
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(none, Vec::new());
+    assert_eq!(
+        approaches
+            .iter()
+            .map(|a| (a.bridge.as_str(), a.end, a.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("1:1-2", 0, ApproachKind::BridgeShortened),
+            ("1:1-2", 1, ApproachKind::SideRoadsMoved),
+        ]
+    );
+    // the T end: the last 8 m before node 1 are a plain stretch of the deck's family, the deck keeps 32 m
+    let piece = by_id(&out, "1:1-2/approach0");
+    assert!(!piece.bridge && piece.bridge_kind.is_none() && piece.layer == 0);
+    assert!((length(&piece.points) - 8.0).abs() < 1e-9);
+    assert!(piece.start == 1 || piece.end == 1);
+    let deck = by_id(&out, "1:1-2");
+    assert!(deck.bridge);
+    assert!((length(&deck.points) - 32.0).abs() < 1e-9);
+    // the two share the cut node, and the deck still ends at the far end of the line
+    let cut = if piece.start == 1 {
+        piece.end
+    } else {
+        piece.start
+    };
+    assert!(cut == deck.start || cut == deck.end);
+    assert!(deck.start == 2 || deck.end == 2);
+    assert!(deck.points.contains(&(40.0, 0.0)));
+    // the other end: the side road left node 2 and joins the road 8 m beyond the deck's far end
+    let approach = by_id(&out, "4:2-3/approach0");
+    assert!((length(&approach.points) - 8.0).abs() < 1e-9);
+    let joint = if approach.start == 2 {
+        approach.end
+    } else {
+        approach.start
+    };
+    assert_ne!(joint, 2);
+    assert!(approach.points.contains(&(48.0, 0.0)));
+    let side = by_id(&out, "5:2-7");
+    assert!(side.start == joint || side.end == joint);
+    assert!(side.points.contains(&(48.0, 0.0)));
+    assert!(side.points.contains(&(40.0, 50.0)));
+    assert_eq!(out.stretches.len(), g.stretches.len() + 2);
+    assert_components_kept(&g, &out);
+}
+
+/// Three deck ends on node 2, 120 degrees apart: none of them continues another, so each would be a T.
+fn three_decks_at_one_node() -> RoadGraph {
+    build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        deck(2, &[2, 3], &[(40.0, 0.0), (15.0, 43.301_270_189_221_93)]),
+        deck(3, &[2, 4], &[(40.0, 0.0), (10.0, -51.961_524_227_066_32)]),
+    ])
+}
+
+#[test]
+fn a_deck_that_ends_where_other_decks_end_is_not_shortened() {
+    let g = three_decks_at_one_node();
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(
+        none.iter()
+            .map(|n| (n.bridge.as_str(), n.end, n.reason))
+            .collect::<Vec<_>>(),
+        vec![
+            ("1:1-2", 1, "no_room"),
+            ("2:2-3", 0, "no_room"),
+            ("3:2-4", 0, "no_room"),
+        ]
+    );
+    assert!(none.iter().all(|n| n.at == (40.0, 0.0)));
+    assert_eq!(out, g);
 }
 
 #[test]
@@ -2269,6 +2355,8 @@ fn the_approach_step_keeps_components_and_does_not_depend_on_the_order() {
         continuing(40.0, 5.0),
         t_at_the_end(40.0),
         t_at_the_end(20.0),
+        t_at_one_end_and_a_road_on_at_the_other(),
+        three_decks_at_one_node(),
     ] {
         let mut reversed = g.clone();
         reversed.stretches.reverse();

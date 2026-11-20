@@ -12,11 +12,13 @@
 //!   [`APPROACH_M`] long (within [`SPECK_M`]), the roads are joined to its far end node instead and `C` stays whole.
 //!   The new node must be at least [`APPROACH_M`] from the deck end and at least [`JUNCTION_SPACING_M`] from the
 //!   far end of `C`, otherwise there is `"no_room"`. So is it if a road that is moved would be joined to a node it
-//!   already has, if one of the roads is itself a bridge or a tunnel, or if moving a road makes it cross a road it did
-//!   not cross before.
+//!   already has, or if another bridge, tunnel or loop ends at the node. A crossing also refuses it, but only against
+//!   the stretches that touch none of the nodes involved: a stretch that meets the deck end, the far node of the
+//!   moved road, the new node or the far end of `C` is not counted, so a crossing at one of them is not seen.
 //! - **The road ends** (a T): the last [`APPROACH_M`] of the bridge become a plain stretch of the same family,
 //!   named `<id>/approach<n>`, joined to the junction. Only if the bridge stays at least three times [`APPROACH_M`] long
-//!   (`"bridge_too_short"` otherwise) and no road passes under the part that is cut off (`"road_below"`).
+//!   (`"bridge_too_short"` otherwise), no other bridge, tunnel or loop ends at the node (`"no_room"`, the same test as
+//!   above) and no road passes under the part that is cut off (`"road_below"`).
 //!
 //! A bridge end with only two stretch ends is not touched and not reported. The ends are handled in the order of
 //! the bridge ids (end 0 before end 1) on the graph as the earlier ends left it; new nodes are numbered above all
@@ -72,6 +74,15 @@ fn piece_id(work: &[Stretch], id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a stretch at `node`, other than the one at `own`, is a bridge, a tunnel or a loop. A junction is not moved
+/// off a deck where another deck, tunnel or loop ends: the road there would run at ground level between deck ends
+/// that stay in the air.
+fn another_deck_at(work: &[Stretch], own: usize, node: i64) -> bool {
+    work.iter().enumerate().any(|(i, s)| {
+        i != own && (s.start == node || s.end == node) && (s.start == s.end || s.bridge || s.tunnel)
+    })
+}
+
 /// The crossings of `line` with the stretches of `work` that share no node with `skip`.
 fn crossing_count(work: &[Stretch], line: &[Point], skip: &[i64], own: &str) -> usize {
     work.iter()
@@ -89,6 +100,10 @@ fn shorten(
     next_node: i64,
 ) -> Result<Change, &'static str> {
     let b = work.get(bi).ok_or("no_room")?;
+    let node = if at_start { b.start } else { b.end };
+    if another_deck_at(work, bi, node) {
+        return Err("no_room");
+    }
     let length = polyline_length(&b.points);
     if length - APPROACH_M < 3.0 * APPROACH_M - 1e-9 {
         return Err("bridge_too_short");
@@ -115,7 +130,6 @@ fn shorten(
             slice_points(&b.points, length - APPROACH_M, length),
         )
     };
-    let node = if at_start { b.start } else { b.end };
     let cut = if at_start { off.last() } else { off.first() }
         .copied()
         .ok_or("no_room")?;
@@ -209,7 +223,7 @@ fn move_side_roads(
     let Some(c) = work.get(ci) else {
         return Err("no_room");
     };
-    if c.start == c.end || c.bridge || c.tunnel {
+    if another_deck_at(work, bi, node) {
         return Err("no_room");
     }
     let far = if c.start == node { c.end } else { c.start };
@@ -239,7 +253,7 @@ fn move_side_roads(
     for &i in &sides {
         let s = work.get(i).ok_or("no_room")?;
         let other = if s.start == node { s.end } else { s.start };
-        if s.start == s.end || s.bridge || s.tunnel || other == target {
+        if other == target {
             return Err("no_room");
         }
         let mut back = from_node(s, node);

@@ -16,7 +16,8 @@ All notable changes to this project are documented here. The format follows
 - A junction on the end of a bridge deck is moved off it (the clean-up of the graph, before bridges are fitted). Where
   the bridge's road goes on, the roads that met the deck end are joined to it 8 m further along (a new node; the
   first 8 m are the stretch `<id>/approach<n>`); where it ends in a T, the last 8 m of the bridge become an ordinary
-  stretch (only if the bridge stays 24 m long and no road passes under the cut-off part). What was done is
+  stretch (only if the bridge stays 24 m long, no other deck, tunnel or loop ends at that junction and no road passes
+  under the cut-off part). What was done is
   `bridge_approach_made`; a place that could not be changed is `bridge_end_at_junction` with the reason `no_room`,
   `bridge_too_short` or `road_below`.
 - Sidepaths are cleaned up before bridges are fitted. A road or track of a lower family that runs within 15 m beside a

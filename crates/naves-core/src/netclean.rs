@@ -134,7 +134,9 @@ pub enum ApproachKind {
 pub struct Approach {
     /// The id of the bridge stretch.
     pub bridge: String,
-    /// Which end: 0 for its start, 1 for its end (as the stretch was when the step reached it).
+    /// Which end of the bridge: 0 for its start, 1 for its end, as the stretch had them in the graph the step took
+    /// as input. The graph the step leaves can differ: a cut made at the other end gives the stretch a new node
+    /// there, which is why an end is followed by its node.
     pub end: u8,
     /// What was done.
     pub kind: ApproachKind,
@@ -149,11 +151,12 @@ pub struct Approach {
 pub struct NoApproach {
     /// The id of the bridge stretch.
     pub bridge: String,
-    /// Which end: 0 for its start, 1 for its end.
+    /// Which end of the bridge: 0 for its start, 1 for its end, as the stretch had them in the graph the step took
+    /// as input.
     pub end: u8,
     /// Why not: `"bridge_too_short"` (the bridge would be shorter than three times [`APPROACH_M`]), `"road_below"`
-    /// (a road passes under the part that would be cut off) or `"no_room"` (the road beyond is too short, or the
-    /// roads cannot be joined to it).
+    /// (a road passes under the part that would be cut off) or `"no_room"` (another bridge deck, tunnel or loop ends
+    /// at the same node, the road beyond is too short, or the roads cannot be joined to it).
     pub reason: &'static str,
     /// The end of the deck, in map metres.
     pub at: (f64, f64),
