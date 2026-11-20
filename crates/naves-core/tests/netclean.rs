@@ -7,8 +7,8 @@
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::netclean::{
-    CleanReport, DroppedSpeck, KeptSidepath, clean, components, drop_sidepaths, drop_stubs,
-    merge_junctions,
+    ApproachKind, CleanReport, DroppedSpeck, KeptSidepath, clean, components, drop_sidepaths,
+    drop_stubs, make_approaches, merge_junctions,
 };
 use naves_core::roadnet::{RoadGraph, build_graph};
 
@@ -2008,4 +2008,285 @@ fn the_end_of_a_part_inside_a_stretch_is_joined_straight_down_where_the_shallow_
         "{:?}",
         rest.points
     );
+}
+
+// ---- bridge approaches ----
+
+fn deck(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    way(id, nodes, points, Family::Asf3, true, true, false)
+}
+
+fn asf(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    plain(id, nodes, points, Family::Asf3)
+}
+
+fn grav(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    plain(id, nodes, points, Family::Grav)
+}
+
+#[expect(
+    clippy::unwrap_used,
+    reason = "a test helper: a missing stretch fails the test"
+)]
+fn by_id<'a>(g: &'a RoadGraph, id: &str) -> &'a naves_core::roadnet::Stretch {
+    g.stretches.iter().find(|s| s.id == id).unwrap()
+}
+
+/// A deck of `len` metres from the origin east to node 2, the road going on east for `rest` metres to node 3 (a
+/// side road leaves node 3 so that it is a junction), and a side road leaving node 2 north.
+fn continuing(len: f64, rest: f64) -> RoadGraph {
+    build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (len, 0.0)]),
+        asf(2, &[2, 3], &[(len, 0.0), (len + rest, 0.0)]),
+        asf(
+            5,
+            &[3, 7, 8],
+            &[(len + rest, 0.0), (len + rest, -30.0), (len + rest, -80.0)],
+        ),
+        asf(6, &[3, 9], &[(len + rest, 0.0), (len + rest + 100.0, 0.0)]),
+        grav(3, &[2, 4], &[(len, 0.0), (len, 50.0)]),
+    ])
+}
+
+/// A deck of `len` metres from the origin east to node 2 where a road passes across (nodes 5 and 6).
+fn t_at_the_end(len: f64) -> RoadGraph {
+    build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (len, 0.0)]),
+        asf(2, &[5, 2, 6], &[(len, -50.0), (len, 0.0), (len, 50.0)]),
+    ])
+}
+
+fn length(points: &[(f64, f64)]) -> f64 {
+    points
+        .iter()
+        .zip(points.iter().skip(1))
+        .map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1))
+        .sum()
+}
+
+fn sorted_stretches(g: &RoadGraph) -> Vec<naves_core::roadnet::Stretch> {
+    let mut v = g.stretches.clone();
+    v.sort_by(|a, b| a.id.cmp(&b.id));
+    v
+}
+
+#[test]
+fn a_side_road_on_the_end_of_a_bridge_is_joined_eight_metres_beyond() {
+    let g = continuing(40.0, 100.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(none, Vec::new());
+    assert_eq!(approaches.len(), 1);
+    let a = &approaches[0];
+    assert_eq!(
+        (a.bridge.as_str(), a.end, a.kind),
+        ("1:1-2", 1, ApproachKind::SideRoadsMoved)
+    );
+    assert_eq!(a.moved, vec!["3:2-4".to_string()]);
+    assert!((a.at.0 - 48.0).abs() < 1e-9 && a.at.1.abs() < 1e-9);
+    assert_eq!(by_id(&out, "1:1-2"), by_id(&g, "1:1-2"));
+    // the end node has two stretches now: the deck and the first 8 m of the road that goes on
+    let at_end = out
+        .stretches
+        .iter()
+        .filter(|s| s.start == 2 || s.end == 2)
+        .count();
+    assert_eq!(at_end, 2);
+    let approach = by_id(&out, "2:2-3/approach0");
+    assert!((length(&approach.points) - 8.0).abs() < 1e-9);
+    assert!(!approach.bridge);
+    let side = by_id(&out, "3:2-4");
+    let new_node = a_new_node(&g, &out);
+    assert!(side.start == new_node || side.end == new_node);
+    let mut ends = vec![side.points[0], side.points[side.points.len() - 1]];
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(ends, vec![(40.0, 50.0), (48.0, 0.0)]);
+    assert_components_kept(&g, &out);
+}
+
+/// The one node of `out` that `g` does not have.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a test helper: the list is checked to be filled"
+)]
+fn a_new_node(g: &RoadGraph, out: &RoadGraph) -> i64 {
+    let old: std::collections::BTreeSet<i64> =
+        g.stretches.iter().flat_map(|s| [s.start, s.end]).collect();
+    let new: Vec<i64> = out
+        .stretches
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .filter(|n| !old.contains(n))
+        .collect();
+    assert!(new.iter().all(|n| *n == new[0]) && !new.is_empty());
+    new[0]
+}
+
+#[test]
+fn a_road_that_goes_on_only_five_metres_before_the_next_junction_leaves_no_room() {
+    let g = continuing(40.0, 5.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(none.len(), 1);
+    assert_eq!(
+        (none[0].bridge.as_str(), none[0].end, none[0].reason),
+        ("1:1-2", 1, "no_room")
+    );
+    assert_eq!(none[0].at, (40.0, 0.0));
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_road_that_goes_on_for_less_than_a_junction_piece_beyond_the_approach_leaves_no_room() {
+    let g = continuing(40.0, 15.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!((approaches.len(), none.len()), (0, 1));
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_road_that_goes_on_exactly_the_approach_joins_the_side_road_at_its_far_node() {
+    let g = continuing(40.0, 8.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(none, Vec::new());
+    assert_eq!(approaches.len(), 1);
+    let side = by_id(&out, "3:2-4");
+    assert!(side.start == 3 || side.end == 3);
+    assert!(side.points.contains(&(48.0, 0.0)));
+    assert_eq!(out.stretches.len(), g.stretches.len());
+    assert_components_kept(&g, &out);
+}
+
+#[test]
+fn a_deck_that_ends_in_a_t_is_shortened_by_eight_metres() {
+    let g = t_at_the_end(40.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(none, Vec::new());
+    assert_eq!(approaches.len(), 1);
+    assert_eq!(approaches[0].kind, ApproachKind::BridgeShortened);
+    assert_eq!(
+        (approaches[0].bridge.as_str(), approaches[0].end),
+        ("1:1-2", 1)
+    );
+    let deck = by_id(&out, "1:1-2");
+    assert!(deck.bridge);
+    assert!((length(&deck.points) - 32.0).abs() < 1e-9);
+    let piece = by_id(&out, "1:1-2/approach0");
+    assert!(!piece.bridge && piece.bridge_kind.is_none());
+    assert_eq!((piece.family, piece.drivable), (deck.family, deck.drivable));
+    assert!((length(&piece.points) - 8.0).abs() < 1e-9);
+    assert!(piece.start == 2 || piece.end == 2);
+    assert_eq!(out.stretches.len(), g.stretches.len() + 1);
+    assert_components_kept(&g, &out);
+}
+
+#[test]
+fn a_deck_of_twenty_metres_that_ends_in_a_t_is_too_short_to_shorten() {
+    let g = t_at_the_end(20.0);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(none.len(), 1);
+    assert_eq!(none[0].reason, "bridge_too_short");
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_deck_with_a_road_under_its_last_five_metres_is_not_shortened() {
+    let mut features = vec![
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[5, 2, 6], &[(40.0, -50.0), (40.0, 0.0), (40.0, 50.0)]),
+        asf(3, &[11, 12], &[(35.0, -30.0), (35.0, 30.0)]),
+    ];
+    let g = build_graph(&features);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(
+        none.iter().map(|n| n.reason).collect::<Vec<_>>(),
+        vec!["road_below"]
+    );
+    assert_eq!(out, g);
+    // the same road further back does not stop it
+    features[2] = asf(3, &[11, 12], &[(20.0, -30.0), (20.0, 30.0)]);
+    let (_, approaches, none) = make_approaches(&build_graph(&features));
+    assert_eq!((approaches.len(), none.len()), (1, 0));
+}
+
+#[test]
+fn a_bridge_end_with_only_two_stretches_is_untouched_and_not_reported() {
+    let g = build_graph(&[
+        asf(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)]),
+        deck(2, &[2, 3], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(3, &[3, 4], &[(40.0, 0.0), (90.0, 0.0)]),
+    ]);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!((approaches, none), (Vec::new(), Vec::new()));
+    assert_eq!(out, g);
+}
+
+#[test]
+fn both_ends_of_one_bridge_are_handled_independently() {
+    let g = build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (60.0, 0.0)]),
+        asf(2, &[5, 1, 6], &[(0.0, -50.0), (0.0, 0.0), (0.0, 50.0)]),
+        asf(3, &[7, 2, 8], &[(60.0, -50.0), (60.0, 0.0), (60.0, 50.0)]),
+    ]);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(none, Vec::new());
+    assert_eq!(
+        approaches.iter().map(|a| a.end).collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    let deck = by_id(&out, "1:1-2");
+    assert!((length(&deck.points) - 44.0).abs() < 1e-9);
+    assert_eq!(out.stretches.len(), g.stretches.len() + 2);
+    assert_components_kept(&g, &out);
+    // a deck with a T at one end and a road that goes on at the other
+    let (_, approaches, _) = make_approaches(&continuing(40.0, 100.0));
+    assert_eq!(approaches.len(), 1);
+}
+
+#[test]
+fn a_side_road_that_would_cross_another_road_when_moved_stays_and_leaves_no_room() {
+    let mut features = vec![
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[2, 3], &[(40.0, 0.0), (140.0, 0.0)]),
+        grav(3, &[2, 4], &[(40.0, 0.0), (40.0, 50.0)]),
+    ];
+    features.push(asf(9, &[20, 21], &[(42.0, 20.0), (60.0, 20.0)]));
+    let g = build_graph(&features);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(
+        none.iter().map(|n| n.reason).collect::<Vec<_>>(),
+        vec!["no_room"]
+    );
+    assert_eq!(out, g);
+}
+
+#[test]
+fn the_approach_step_keeps_components_and_does_not_depend_on_the_order() {
+    for g in [
+        continuing(40.0, 100.0),
+        continuing(40.0, 5.0),
+        t_at_the_end(40.0),
+        t_at_the_end(20.0),
+    ] {
+        let mut reversed = g.clone();
+        reversed.stretches.reverse();
+        let a = make_approaches(&g);
+        let b = make_approaches(&reversed);
+        assert_eq!(sorted_stretches(&a.0), sorted_stretches(&b.0));
+        assert_eq!((&a.1, &a.2), (&b.1, &b.2));
+        assert!(components(&a.0) <= components(&g));
+    }
+}
+
+#[test]
+fn clean_makes_the_approaches_last_and_reports_them() {
+    let g = t_at_the_end(40.0);
+    let (out, report) = clean(&g, &widths, 8.0);
+    assert_eq!(report.approaches.len(), 1);
+    assert_eq!(out.stretches.len(), g.stretches.len() + 1);
+    let g = t_at_the_end(20.0);
+    let (_, report) = clean(&g, &widths, 8.0);
+    assert_eq!(report.no_approach.len(), 1);
 }

@@ -669,6 +669,14 @@ fn through_pairs(graph: &RoadGraph, rings: &[Ring]) -> BTreeMap<Arm, Arm> {
     partner
 }
 
+/// The stretch that continues stretch `i` at its start (`at_start`) or its end by the chain rule (see [`chains`]), with
+/// the end of it that meets there (`true` for its start); `None` if the road stops there.
+pub(crate) fn continuation(graph: &RoadGraph, i: usize, at_start: bool) -> Option<(usize, bool)> {
+    through_pairs(graph, &rings(graph))
+        .get(&(i, at_start))
+        .copied()
+}
+
 /// A roundabout: stretches tagged `junction=roundabout` (or `circular`) that form one closed loop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ring {

@@ -15,7 +15,7 @@ use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
-use crate::netclean::CleanReport;
+use crate::netclean::{ApproachKind, CleanReport};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
@@ -496,12 +496,28 @@ fn clean_violations(clean: &CleanReport) -> Vec<Violation> {
         )
     }));
     out.extend(clean.approaches.iter().map(|a| {
+        let what = match a.kind {
+            ApproachKind::SideRoadsMoved => {
+                format!("{} road(s) were joined further along", a.moved.len())
+            }
+            ApproachKind::BridgeShortened => "the bridge was shortened".to_string(),
+        };
         violation(
             Rule::BridgeApproachMade,
             a.at,
             format!(
-                "A junction was moved off the end {} of bridge {}",
+                "A junction was moved off the end {} of bridge {}: {what}",
                 a.end, a.bridge
+            ),
+        )
+    }));
+    out.extend(clean.no_approach.iter().map(|n| {
+        violation(
+            Rule::BridgeEndAtJunction,
+            n.at,
+            format!(
+                "A junction sits on the end {} of bridge {} and could not be moved off it: {}",
+                n.end, n.bridge, n.reason
             ),
         )
     }));

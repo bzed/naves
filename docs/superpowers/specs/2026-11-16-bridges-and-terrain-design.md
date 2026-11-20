@@ -326,3 +326,5 @@ the work in `conform`, the wording of findings and report lines, and the order o
   `bridge_buried` is the one measure of the finding and of `spans_above_underside`: ground more than `BURIED_TOL_M` = 0.1 m
   above the underside (deck less what hangs, never the foot, no air) beyond the guard, above the deck's surface inside
   it, whoever holds it; the holder is named or "no road".
+- A junction on a deck end is moved off it by the clean-up of the graph (`netclean`, step 4): the roads are joined 8 m
+  along the road that goes on, or the last 8 m of a bridge that ends in a T become an ordinary stretch.

@@ -236,10 +236,21 @@ fn main() {
             ("road_junctions_merged", clean.merged.len()),
             ("road_junctions_not_merged", clean.not_merged.len()),
             ("bridge_approach_made", clean.approaches.len()),
-            // no step reports this yet: the bridge approach step will
-            ("bridge_end_at_junction", 0),
+            ("bridge_end_at_junction", clean.no_approach.len()),
         ] {
             println!("CLEAN {rule} {count}");
+        }
+        for a in &clean.approaches {
+            println!(
+                "CLEAN approach {} end {} {:?} moved {:?} at ({:.1}, {:.1})",
+                a.bridge, a.end, a.kind, a.moved, a.at.0, a.at.1
+            );
+        }
+        for n in &clean.no_approach {
+            println!(
+                "CLEAN no_approach {} end {} {} at ({:.1}, {:.1})",
+                n.bridge, n.end, n.reason, n.at.0, n.at.1
+            );
         }
         // what no rule reports: the speck points removed (each with its stretch), the clusters of close junctions
         // that were left alone, the components after each step and the drivable length

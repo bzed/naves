@@ -538,7 +538,9 @@ fn the_rule_ids_are_distinct_snake_case_words() {
 #[test]
 fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
     use naves_core::catalog::Family;
-    use naves_core::netclean::{Approach, DroppedSidepath, DroppedStub, MergedJunction, NotMerged};
+    use naves_core::netclean::{
+        Approach, ApproachKind, DroppedSidepath, DroppedStub, MergedJunction, NotMerged,
+    };
     use naves_core::roadnet::Ring;
     let mut n = net(vec![]);
     n.clean.roundabouts.push(Ring {
@@ -574,7 +576,15 @@ fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
     n.clean.approaches.push(Approach {
         bridge: "12:1-2".to_string(),
         end: 1,
+        kind: ApproachKind::SideRoadsMoved,
+        moved: vec![],
         at: (9.0, 10.0),
+    });
+    n.clean.no_approach.push(naves_core::netclean::NoApproach {
+        bridge: "13:1-2".to_string(),
+        end: 0,
+        reason: "no_room",
+        at: (13.0, 14.0),
     });
     let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     for (rule, at) in [
@@ -584,12 +594,12 @@ fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
         (Rule::RoadJunctionsMerged, (7.0, 8.0)),
         (Rule::RoadJunctionsNotMerged, (11.0, 12.0)),
         (Rule::BridgeApproachMade, (9.0, 10.0)),
+        (Rule::BridgeEndAtJunction, (13.0, 14.0)),
     ] {
         let found = only(rule, &v);
         assert_eq!(found.len(), 1, "{rule:?}");
         assert_eq!(found[0].at, at);
     }
-    assert_eq!(only(Rule::BridgeEndAtJunction, &v).len(), 0);
 }
 
 #[test]

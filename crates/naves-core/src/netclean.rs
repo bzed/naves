@@ -7,8 +7,9 @@
 //! Every step is `fn(&RoadGraph, ...) -> (RoadGraph, reports)`, deterministic, and never makes the graph fall
 //! apart: the number of its connected components never grows. A step that is switched off (its `..._ENABLED`
 //! constant) returns the graph unchanged, bit for bit. Steps 1 (sidepaths), 2 (stubs and specks) and 3 (close
-//! junctions) are done; the approach step is still empty and returns the graph as it is.
+//! junctions) and 4 (bridge approaches) are done.
 
+mod approach;
 mod sidepath;
 
 use std::cmp::Ordering;
@@ -119,14 +120,42 @@ pub struct NotMerged {
     pub at: (f64, f64),
 }
 
+/// What was done at the end of a bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApproachKind {
+    /// The road goes on beyond the bridge: the roads that met the deck's end were joined to it further on.
+    SideRoadsMoved,
+    /// The road ends at the junction: the last [`APPROACH_M`] of the bridge became an ordinary stretch.
+    BridgeShortened,
+}
+
 /// A junction that was moved off the end of a bridge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Approach {
     /// The id of the bridge stretch.
     pub bridge: String,
+    /// Which end: 0 for its start, 1 for its end (as the stretch was when the step reached it).
+    pub end: u8,
+    /// What was done.
+    pub kind: ApproachKind,
+    /// The ids of the stretches whose end was moved off the deck end (empty for a shortened bridge).
+    pub moved: Vec<String>,
+    /// Where the junction is now, in map metres.
+    pub at: (f64, f64),
+}
+
+/// A bridge end with a junction on it that could not be moved off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoApproach {
+    /// The id of the bridge stretch.
+    pub bridge: String,
     /// Which end: 0 for its start, 1 for its end.
     pub end: u8,
-    /// Where the approach is, in map metres.
+    /// Why not: `"bridge_too_short"` (the bridge would be shorter than three times [`APPROACH_M`]), `"road_below"`
+    /// (a road passes under the part that would be cut off) or `"no_room"` (the road beyond is too short, or the
+    /// roads cannot be joined to it).
+    pub reason: &'static str,
+    /// The end of the deck, in map metres.
     pub at: (f64, f64),
 }
 
@@ -147,6 +176,8 @@ pub struct CleanReport {
     pub specks: Vec<DroppedSpeck>,
     /// Bridge ends that got an approach.
     pub approaches: Vec<Approach>,
+    /// Bridge ends with a junction on them that stay as they are, with the reason.
+    pub no_approach: Vec<NoApproach>,
     /// Roundabouts that were turned into plain junctions (set by the caller that collapses them).
     pub roundabouts: Vec<Ring>,
     /// The connected components of the graph before the clean-up.
@@ -200,11 +231,6 @@ pub fn components(graph: &RoadGraph) -> usize {
     (0..parent.len())
         .filter(|&i| root(&mut parent, i) == i)
         .count()
-}
-
-/// The result of a step that did nothing: the graph as it is and no report.
-fn unchanged<T>(graph: &RoadGraph) -> (RoadGraph, Vec<T>) {
-    (graph.clone(), Vec::new())
 }
 
 /// Step 1: the parts of stretches that run beside a road of higher rank and disturb it, removed, and what joined
@@ -761,17 +787,20 @@ fn merge_junctions_if(
     (out, merged, not_merged)
 }
 
-/// Step 4: a junction on the end of a bridge is moved [`APPROACH_M`] off the deck. Not done yet.
+/// Step 4: a junction on the end of a bridge is moved [`APPROACH_M`] off the deck (see the module `approach`).
 #[must_use]
-pub fn make_approaches(graph: &RoadGraph) -> (RoadGraph, Vec<Approach>) {
+pub fn make_approaches(graph: &RoadGraph) -> (RoadGraph, Vec<Approach>, Vec<NoApproach>) {
     make_approaches_if(APPROACHES_ENABLED, graph)
 }
 
-fn make_approaches_if(enabled: bool, graph: &RoadGraph) -> (RoadGraph, Vec<Approach>) {
+fn make_approaches_if(
+    enabled: bool,
+    graph: &RoadGraph,
+) -> (RoadGraph, Vec<Approach>, Vec<NoApproach>) {
     if !enabled {
-        return unchanged(graph);
+        return (graph.clone(), Vec::new(), Vec::new());
     }
-    unchanged(graph)
+    approach::make_approaches(graph)
 }
 
 /// The length of the drivable stretches, in metres.
@@ -796,7 +825,7 @@ pub fn clean(
     let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(graph, widths, cell_m);
     let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths);
     let (graph3, merged, not_merged) = merge_junctions(&graph2);
-    let (graph4, approaches) = make_approaches(&graph3);
+    let (graph4, approaches, no_approach) = make_approaches(&graph3);
     let report = CleanReport {
         sidepaths,
         sidepaths_kept,
@@ -805,6 +834,7 @@ pub fn clean(
         not_merged,
         specks,
         approaches,
+        no_approach,
         roundabouts: Vec::new(),
         components_before: components(graph),
         components_after: components(&graph4),
@@ -961,7 +991,7 @@ mod tests {
     #[test]
     fn the_empty_steps_that_are_left_return_the_graph_unchanged() {
         let g = graph();
-        let (out, report) = make_approaches_if(false, &g);
-        assert_eq!((&out, report.len()), (&g, 0));
+        let (out, report, none) = make_approaches_if(false, &g);
+        assert_eq!((&out, report.len(), none.len()), (&g, 0, 0));
     }
 }
