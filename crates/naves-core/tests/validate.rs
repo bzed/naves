@@ -553,6 +553,7 @@ fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
         from_m: 10.0,
         to_m: 90.0,
         at: (3.0, 4.0),
+        connectors: vec![],
     });
     n.clean.stubs.push(DroppedStub {
         stretch: "9:5-6".to_string(),

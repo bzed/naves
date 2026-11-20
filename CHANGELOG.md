@@ -13,6 +13,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Sidepaths are cleaned up before bridges are fitted. A road or track of a lower family that runs within 15 m beside a
+  road of a higher family, on one side and along it, for at least 30 m (any length beside a road tagged
+  `foot=use_sidepath`), is not placed where it disturbs: where the two earthworks (half the width and the shoulder
+  ring of one and a half terrain cells each) overlap or leave less than a cell, or along a bridge of the road
+  (`road_sidepath_dropped`). Roads that met the removed part end on the road instead, by a straight connector of at
+  most 15 m; a run that would need a connector across a third road, or whose removal would split the network, stays
+  and is listed by the `road-analysis` example. Footways and paths are not touched. Stretch ids are kept; pieces of
+  a cut stretch are named `<id>/side<n>`.
 - The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four
   steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
   roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,

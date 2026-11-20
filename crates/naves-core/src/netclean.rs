@@ -6,8 +6,10 @@
 //!
 //! Every step is `fn(&RoadGraph, ...) -> (RoadGraph, reports)`, deterministic, and never makes the graph fall
 //! apart: the number of its connected components never grows. A step that is switched off (its `..._ENABLED`
-//! constant) returns the graph unchanged, bit for bit. Steps 2 (stubs and specks) and 3 (close junctions) are
-//! done; the sidepath and approach steps are still empty and return the graph as it is.
+//! constant) returns the graph unchanged, bit for bit. Steps 1 (sidepaths), 2 (stubs and specks) and 3 (close
+//! junctions) are done; the approach step is still empty and returns the graph as it is.
+
+mod sidepath;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,6 +53,24 @@ pub struct DroppedSidepath {
     /// Where it ends.
     pub to_m: f64,
     /// The middle of the removed part, in map metres.
+    pub at: (f64, f64),
+    /// The stretches that met the removed part and were joined to the road instead: the id of each and the node
+    /// that was put into the road for it, in map metres.
+    pub connectors: Vec<(String, (f64, f64))>,
+}
+
+/// A candidate for removal as a sidepath that was left as it is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeptSidepath {
+    /// The id of the stretch that runs beside a road.
+    pub stretch: String,
+    /// The id of the road it runs beside.
+    pub road: String,
+    /// Why it stays: `"clear"` (the two earthworks keep their distance and no bridge is near), `"would_disconnect"`
+    /// (the removal would split the network or a joining stretch could not be reached to the road) or
+    /// `"crosses"` (a straight connector to the road would cross a third road).
+    pub reason: &'static str,
+    /// The middle of the part, in map metres.
     pub at: (f64, f64),
 }
 
@@ -114,6 +134,8 @@ pub struct Approach {
 pub struct CleanReport {
     /// Parts of stretches removed as sidepaths of a road.
     pub sidepaths: Vec<DroppedSidepath>,
+    /// Candidates for removal that stayed, with the reason.
+    pub sidepaths_kept: Vec<KeptSidepath>,
     /// Dead-end stubs removed.
     pub stubs: Vec<DroppedStub>,
     /// Junctions merged.
@@ -184,26 +206,27 @@ fn unchanged<T>(graph: &RoadGraph) -> (RoadGraph, Vec<T>) {
     (graph.clone(), Vec::new())
 }
 
-/// Step 1: the parts of stretches that run beside a road of higher rank and disturb it. Not done yet.
+/// Step 1: the parts of stretches that run beside a road of higher rank and disturb it, removed, and what joined
+/// them joined to the road (see the module `sidepath`).
 #[must_use]
 pub fn drop_sidepaths(
     graph: &RoadGraph,
     widths: &dyn Fn(Family) -> f64,
     cell_m: f64,
-) -> (RoadGraph, Vec<DroppedSidepath>) {
+) -> (RoadGraph, Vec<DroppedSidepath>, Vec<KeptSidepath>) {
     drop_sidepaths_if(SIDEPATHS_ENABLED, graph, widths, cell_m)
 }
 
 fn drop_sidepaths_if(
     enabled: bool,
     graph: &RoadGraph,
-    _widths: &dyn Fn(Family) -> f64,
-    _cell_m: f64,
-) -> (RoadGraph, Vec<DroppedSidepath>) {
+    widths: &dyn Fn(Family) -> f64,
+    cell_m: f64,
+) -> (RoadGraph, Vec<DroppedSidepath>, Vec<KeptSidepath>) {
     if !enabled {
-        return unchanged(graph);
+        return (graph.clone(), Vec::new(), Vec::new());
     }
-    unchanged(graph)
+    sidepath::drop_sidepaths(graph, widths, cell_m)
 }
 
 /// Whether `a` is a number below `b`: false if either is not a number (a point that is not a number is never
@@ -769,12 +792,13 @@ pub fn clean(
     widths: &dyn Fn(Family) -> f64,
     cell_m: f64,
 ) -> (RoadGraph, CleanReport) {
-    let (graph1, sidepaths) = drop_sidepaths(graph, widths, cell_m);
+    let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(graph, widths, cell_m);
     let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths);
     let (graph3, merged, not_merged) = merge_junctions(&graph2);
     let (graph4, approaches) = make_approaches(&graph3);
     let report = CleanReport {
         sidepaths,
+        sidepaths_kept,
         stubs,
         merged,
         not_merged,
@@ -901,12 +925,41 @@ mod tests {
         assert_eq!((&out, merged.len(), not_merged.len()), (&g, 0, 0));
     }
 
+    /// A road and a gravel road that runs 5 m beside it for 100 m, free at both ends.
+    fn with_a_sidepath() -> RoadGraph {
+        let stretch = |id: &str, family, points: Vec<(f64, f64)>, start, end| Stretch {
+            id: id.to_string(),
+            family,
+            points,
+            start,
+            end,
+            ..graph().stretches[0].clone()
+        };
+        let stretches = vec![
+            stretch("1:1-2", Family::Asf3, vec![(0.0, 0.0), (100.0, 0.0)], 1, 2),
+            stretch("2:3-4", Family::Grav, vec![(0.0, 5.0), (100.0, 5.0)], 3, 4),
+        ];
+        let crossings = crossings_of(&stretches);
+        RoadGraph {
+            stretches,
+            crossings,
+        }
+    }
+
+    #[test]
+    fn the_sidepath_step_that_is_switched_off_returns_the_graph_unchanged_though_it_would_change_it()
+     {
+        let g = with_a_sidepath();
+        let w = |f: Family| f.width_m();
+        let (out, dropped, kept) = drop_sidepaths_if(true, &g, &w, 4.0);
+        assert_eq!((out.stretches.len(), dropped.len(), kept.len()), (1, 1, 0));
+        let (out, dropped, kept) = drop_sidepaths_if(false, &g, &w, 4.0);
+        assert_eq!((&out, dropped.len(), kept.len()), (&g, 0, 0));
+    }
+
     #[test]
     fn the_empty_steps_that_are_left_return_the_graph_unchanged() {
         let g = graph();
-        let w = |f: Family| f.width_m();
-        let (out, report) = drop_sidepaths_if(false, &g, &w, 8.0);
-        assert_eq!((&out, report.len()), (&g, 0));
         let (out, report) = make_approaches_if(false, &g);
         assert_eq!((&out, report.len()), (&g, 0));
     }

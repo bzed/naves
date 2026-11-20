@@ -179,9 +179,17 @@ fn main() {
         bridges,
     } = fitted_graph(&features, &catalog, &base);
     if let Ok(spot) = std::env::var("NEARDUMP") {
-        // NEARDUMP=x,y: every stretch of the OpenStreetMap graph and of the fitted one within 40 m of the spot
+        // NEARDUMP=x,y: every stretch of the graph before the clean-up (PRE), after it (OSM) and fitted (FIT) within 40 m
+        // of the spot
         let v: Vec<f64> = spot.split(',').filter_map(|p| p.parse().ok()).collect();
-        for (label, g) in [("OSM", &built), ("FIT", &widened)] {
+        let pre = {
+            let (flat, _) = naves_core::roadnet::collapse_small_rings(
+                &naves_core::roadnet::build_graph(&features),
+                &|f| catalog.tightest_arc(f),
+            );
+            naves_core::roadnet::drop_duplicates(&flat).0
+        };
+        for (label, g) in [("PRE", &pre), ("OSM", &built), ("FIT", &widened)] {
             for s in &g.stretches {
                 let near = s
                     .points
@@ -235,6 +243,27 @@ fn main() {
         }
         // what no rule reports: the speck points removed (each with its stretch), the clusters of close junctions
         // that were left alone, the components after each step and the drivable length
+        println!("CLEAN sidepaths_kept {}", clean.sidepaths_kept.len());
+        for k in &clean.sidepaths_kept {
+            println!(
+                "CLEAN sidepath_kept {} beside {} at ({:.0}, {:.0}): {}",
+                k.stretch, k.road, k.at.0, k.at.1, k.reason
+            );
+        }
+        println!("CLEAN sidepaths {}", clean.sidepaths.len());
+        for d in &clean.sidepaths {
+            println!(
+                "CLEAN sidepath {} beside {} from {:.0} to {:.0} m ({:.0} m) at ({:.0}, {:.0}) connectors {:?}",
+                d.stretch,
+                d.road,
+                d.from_m,
+                d.to_m,
+                d.to_m - d.from_m,
+                d.at.0,
+                d.at.1,
+                d.connectors
+            );
+        }
         println!("CLEAN specks {}", clean.specks.len());
         for d in &clean.specks {
             println!(

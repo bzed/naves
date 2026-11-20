@@ -41,6 +41,16 @@ pub const FILL_SLOPE: f64 = 0.667;
 pub const FILL_SLOPE_MAX: f64 = 1.0;
 /// How far earthworks reach from a road's core, in metres.
 pub const MAX_EARTHWORK_M: f64 = 60.0;
+/// How many terrain cells the shoulder ring of a road is wide: every vertex within half the road's width and this
+/// many cells of its centre line takes the road's height.
+pub const SHOULDER_CELLS: f64 = 1.5;
+
+/// How far from the centre line of a road the ground is held to the road's height: half its width and the shoulder
+/// ring of [`SHOULDER_CELLS`] cells. `cell` is the terrain cell, in metres.
+#[must_use]
+pub fn core_reach_m(half_width: f64, cell: f64) -> f64 {
+    half_width + SHOULDER_CELLS * cell
+}
 /// Side slope above which the uphill side of a road may be a face.
 pub const FACE_SIDE_SLOPE: f64 = 0.35;
 /// Rise over run of a face: steeper than any grid cell can show.
@@ -375,7 +385,7 @@ fn band(span: &BridgeSpan, grid: Grid, mut visit: impl FnMut(usize, f64, f64, f6
         .half_width
         .iter()
         .fold(span.shape.deck_half_width, |a, b| a.max(*b));
-    let reach = widest.max(0.0) + 1.5 * grid.cell;
+    let reach = core_reach_m(widest.max(0.0), grid.cell);
     let last = grid.size.saturating_sub(1);
     let cols = (
         grid.nearest(span.first.0.min(span.second.0) - reach)
@@ -397,7 +407,7 @@ fn band(span: &BridgeSpan, grid: Grid, mut visit: impl FnMut(usize, f64, f64, f6
                 continue;
             }
             let half = span.half_width_at(along);
-            if across.abs() <= half + 1.5 * grid.cell {
+            if across.abs() <= core_reach_m(half, grid.cell) {
                 visit(vertex, along, across, half);
             }
         }
@@ -748,7 +758,7 @@ fn candidates(
 ) -> BTreeMap<usize, Vec<Candidate>> {
     let mut found: BTreeMap<usize, Vec<Candidate>> = BTreeMap::new();
     for (index, strip) in strips.iter().enumerate() {
-        let reach = strip.half_width + 1.5 * grid.cell;
+        let reach = core_reach_m(strip.half_width, grid.cell);
         for (vertex, hits) in core_vertices(strip, grid, reach) {
             // the road of a bridge does not claim the ground under its deck beyond the end guard and the port line: the ceiling
             // with the end ramp holds there

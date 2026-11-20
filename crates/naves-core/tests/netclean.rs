@@ -7,7 +7,8 @@
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::netclean::{
-    CleanReport, DroppedSpeck, clean, components, drop_stubs, merge_junctions,
+    CleanReport, DroppedSidepath, DroppedSpeck, KeptSidepath, clean, components, drop_sidepaths,
+    drop_stubs, merge_junctions,
 };
 use naves_core::roadnet::{RoadGraph, build_graph};
 
@@ -853,4 +854,448 @@ fn clean_reports_the_components_after_every_step_and_the_drivable_length() {
     assert_eq!(report.components_by_step, vec![components(&g); 4]);
     assert!((report.drivable_m_before - 104.0).abs() < 1e-9);
     assert!((report.drivable_m_after - 100.0).abs() < 1e-9);
+}
+
+// ---- sidepaths ----
+
+/// Narrow roads and a fine cell: the earthworks of two roads (half the width plus the shoulder ring of one and a half
+/// cells each) keep a cell apart from 11 m on.
+fn narrow(_: Family) -> f64 {
+    2.0
+}
+
+const FINE_CELL_M: f64 = 2.0;
+const CELL_M: f64 = 4.0;
+
+/// A road along y = 0 from x = -50 to 150 with nodes at x = 0 and x = 100.
+fn main_road(family: Family) -> Feature {
+    plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (100.0, 0.0), (150.0, 0.0)],
+        family,
+    )
+}
+
+/// A lesser road that leaves the main road at x = 0, runs `d` metres beside it and joins it again at x = 100.
+fn side_road(d: f64, family: Family) -> Feature {
+    plain(
+        2,
+        &[2, 5, 6, 3],
+        &[(0.0, 0.0), (0.0, d), (100.0, d), (100.0, 0.0)],
+        family,
+    )
+}
+
+fn scene(road: Feature, side: Feature) -> RoadGraph {
+    build_graph(&[road, side])
+}
+
+fn kept_reasons(kept: &[KeptSidepath]) -> Vec<&'static str> {
+    kept.iter().map(|k| k.reason).collect()
+}
+
+#[test]
+fn a_gravel_road_five_metres_beside_a_road_and_joined_at_both_ends_is_removed_and_reported() {
+    let g = scene(main_road(Family::Asf3), side_road(5.0, Family::Grav));
+    assert_eq!(stretch_ids(&g), ["1:1-2", "1:2-3", "1:3-4", "2:2-3"]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "1:3-4"]);
+    assert_eq!(dropped.len(), 1);
+    let d = &dropped[0];
+    assert_eq!((d.stretch.as_str(), d.road.as_str()), ("2:2-3", "1:2-3"));
+    assert!(d.from_m.abs() < 1e-9, "{d:?}");
+    assert!(
+        (d.to_m
+            - g.stretches[3]
+                .points
+                .windows(2)
+                .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+                .sum::<f64>())
+        .abs()
+            < 1e-6
+    );
+    assert!(
+        (d.at.0 - 50.0).abs() < 1.0 && (d.at.1 - 5.0).abs() < 1e-6,
+        "{d:?}"
+    );
+    assert_eq!(d.connectors.len(), 0);
+    assert_eq!(kept.len(), 0);
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn a_road_that_keeps_its_distance_stays_with_the_reason_clear() {
+    let g = scene(main_road(Family::Asf3), side_road(14.0, Family::Grav));
+    let (out, dropped, kept) = drop_sidepaths(&g, &narrow, FINE_CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0));
+    assert_eq!(kept_reasons(&kept), ["clear"]);
+    assert_eq!(
+        (kept[0].stretch.as_str(), kept[0].road.as_str()),
+        ("2:2-3", "1:2-3")
+    );
+    assert!((kept[0].at.1 - 14.0).abs() < 1e-6, "{kept:?}");
+    // the same road with the real widths of a gravel road and an asphalt road leaves less than a cell
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((out.stretches.len(), dropped.len()), (3, 1));
+}
+
+#[test]
+fn a_road_beside_a_bridge_of_the_road_is_removed_along_the_bridge() {
+    // the main road has a bridge between x = 0 and x = 100; the track runs 14 m beside it
+    let bridge = way(
+        3,
+        &[2, 3],
+        &[(0.0, 0.0), (100.0, 0.0)],
+        Family::Asf3,
+        true,
+        true,
+        false,
+    );
+    let road = plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (100.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    // without the bridge the earthworks of the two narrow roads keep their distance
+    let with_deck = build_graph(&[
+        plain(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)], Family::Asf3),
+        bridge,
+        plain(4, &[3, 4], &[(100.0, 0.0), (150.0, 0.0)], Family::Asf3),
+        side_road(14.0, Family::Grav),
+    ]);
+    let plain_road = scene(road, side_road(14.0, Family::Grav));
+    let (_, dropped, kept) = drop_sidepaths(&plain_road, &narrow, FINE_CELL_M);
+    assert_eq!((dropped.len(), kept_reasons(&kept)), (0, vec!["clear"]));
+    let (out, dropped, kept) = drop_sidepaths(&with_deck, &narrow, FINE_CELL_M);
+    assert_eq!(dropped.len(), 1, "{kept:?}");
+    assert!(out.stretches.iter().all(|s| s.id != "2:2-3"));
+    assert_eq!(components(&out), components(&with_deck));
+}
+
+#[test]
+fn a_run_of_twenty_metres_stays_unless_the_road_says_use_sidepath() {
+    let short = plain(2, &[5, 6], &[(40.0, 5.0), (60.0, 5.0)], Family::Grav);
+    let g = scene(main_road(Family::Asf3), short.clone());
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len(), kept.len()), (&g, 0, 0));
+    let mut tagged = main_road(Family::Asf3);
+    if let FeatureKind::Road { use_sidepath, .. } = &mut tagged.kind {
+        *use_sidepath = true;
+    }
+    let g = scene(tagged, short);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1);
+    assert!(out.stretches.iter().all(|s| s.id != "2:5-6"));
+}
+
+#[test]
+fn a_road_that_crosses_its_road_is_not_removed_across_the_crossing() {
+    let side = plain(2, &[5, 6], &[(0.0, -5.0), (100.0, 5.0)], Family::Grav);
+    let g = scene(main_road(Family::Asf3), side);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 2, "{dropped:?}");
+    for d in &dropped {
+        assert!(d.to_m < 50.6 || d.from_m > 49.4, "{d:?}");
+    }
+    // what is left of it still crosses the road at x = 50
+    assert!(
+        out.stretches
+            .iter()
+            .filter(|s| s.id.starts_with("2:"))
+            .any(|s| s
+                .points
+                .iter()
+                .any(|p| (p.0 - 50.0).abs() < 2.0 && p.1.abs() < 2.0)),
+        "{:?}",
+        stretch_ids(&out)
+    );
+}
+
+/// The main road, a track that leaves it at x = 0 and joins it at x = 100 in two ways (nodes 2 to 7 and 7 to 3) that
+/// meet at x = 50, and a side road that leaves the track there and goes north.
+fn track_with_a_side_road() -> Vec<Feature> {
+    vec![
+        main_road(Family::Asf3),
+        plain(
+            2,
+            &[2, 5, 7],
+            &[(0.0, 0.0), (5.0, 5.0), (50.0, 5.0)],
+            Family::Grav,
+        ),
+        plain(
+            3,
+            &[7, 6, 3],
+            &[(50.0, 5.0), (95.0, 5.0), (100.0, 0.0)],
+            Family::Grav,
+        ),
+        plain(4, &[7, 8], &[(50.0, 5.0), (50.0, 60.0)], Family::Grav),
+    ]
+}
+
+#[test]
+fn a_road_that_met_the_removed_track_in_the_middle_ends_on_the_road_and_stays_reachable() {
+    let g = build_graph(&track_with_a_side_road());
+    assert_eq!(components(&g), 1);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(components(&out), 1);
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(dropped.len(), 2, "{dropped:?}");
+    let joined: Vec<_> = dropped.iter().flat_map(|d| d.connectors.iter()).collect();
+    assert_eq!(joined.len(), 1, "{dropped:?}");
+    assert_eq!(joined[0].0, "4:7-8");
+    assert!((joined[0].1.0 - 50.0).abs() < 1e-6 && joined[0].1.1.abs() < 1e-6);
+    // the stretch keeps its id and the straight connector is its new last piece, on a node of the main road
+    let side = out
+        .stretches
+        .iter()
+        .find(|s| s.id == "4:7-8")
+        .expect("kept");
+    let (start_node, end_node) = (side.start, side.end);
+    let far = side
+        .points
+        .iter()
+        .find(|p| p.1 > 59.0)
+        .expect("far end kept");
+    assert_eq!(*far, (50.0, 60.0));
+    let on_road = |p: (f64, f64)| (p.0 - 50.0).abs() < 1e-6 && p.1.abs() < 1e-6;
+    assert!(side.points.iter().any(|&p| on_road(p)));
+    let node_on_road = if on_road(side.points[0]) {
+        start_node
+    } else {
+        end_node
+    };
+    let touching_road: Vec<_> = out
+        .stretches
+        .iter()
+        .filter(|s| s.id.starts_with("1:") && (s.start == node_on_road || s.end == node_on_road))
+        .collect();
+    assert_eq!(
+        touching_road.len(),
+        2,
+        "the road is cut where the stretch joins it"
+    );
+    // the far end is reachable from the road: the node on the road is in the road's component
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn when_a_third_road_lies_between_the_piece_of_the_track_is_kept_instead() {
+    let mut features = track_with_a_side_road();
+    // a short mud track across the straight connector from (50, 5) to (50, 0)
+    features.push(plain(5, &[9, 10], &[(40.0, 2.5), (60.0, 2.5)], Family::Mud));
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(components(&out), components(&g));
+    assert_eq!(kept_reasons(&kept), ["crosses"], "{kept:?}");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    // the piece next to the blocked joint stays whole with the stretch that met it
+    let ids = stretch_ids(&out);
+    assert!(ids.contains(&"2:2-7".to_string()), "{ids:?}");
+    assert!(ids.contains(&"4:7-8".to_string()));
+    assert!(!ids.contains(&"3:3-7".to_string()));
+    let side = out.stretches.iter().find(|s| s.id == "4:7-8").unwrap();
+    assert_eq!((side.start, side.end), (7, 8));
+}
+
+#[test]
+fn a_gravel_road_beside_a_paved_road_is_a_candidate_but_not_the_other_way_round() {
+    // a track of its own beside the main road, which is longer: the lesser of the two is the sidepath
+    let beside = |main: Family, track: Family| {
+        let track = plain(2, &[5, 6], &[(0.0, 5.0), (100.0, 5.0)], track);
+        let g = scene(main_road(main), track);
+        let (_, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+        dropped
+            .iter()
+            .map(|d| d.stretch.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(beside(Family::Asf3, Family::Grav), ["2:5-6"]);
+    assert_eq!(beside(Family::Grav, Family::Asf3), ["1:1-4"]);
+    assert_eq!(beside(Family::Asf3, Family::Asf3), Vec::<String>::new());
+}
+
+#[test]
+fn a_road_between_two_roads_is_removed_against_the_nearer() {
+    let upper = plain(3, &[7, 8], &[(-50.0, 20.0), (150.0, 20.0)], Family::Asf3);
+    let side = plain(2, &[5, 6], &[(0.0, 8.0), (100.0, 8.0)], Family::Grav);
+    let g = build_graph(&[main_road(Family::Asf3), upper, side]);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert_eq!(dropped[0].road, "1:1-4");
+    assert!(out.stretches.iter().all(|s| s.id != "2:5-6"));
+}
+
+#[test]
+fn the_sidepath_result_does_not_depend_on_the_order_of_the_stretches() {
+    let g = build_graph(&track_with_a_side_road());
+    let want = drop_sidepaths(&g, &widths, CELL_M);
+    let mut shuffled = g.clone();
+    shuffled.stretches.reverse();
+    shuffled.stretches.swap(0, 2);
+    let got = drop_sidepaths(&shuffled, &widths, CELL_M);
+    assert_eq!(got, want);
+}
+
+#[test]
+fn degenerate_input_is_left_alone_without_a_panic() {
+    let road = main_road(Family::Asf3);
+    let nan = plain(2, &[5, 6], &[(0.0, f64::NAN), (100.0, 5.0)], Family::Grav);
+    let point = plain(3, &[7, 8], &[(30.0, 5.0), (30.0, 5.0)], Family::Grav);
+    let looped = plain(
+        4,
+        &[9, 10, 9],
+        &[(10.0, 6.0), (60.0, 6.0), (10.0, 6.0)],
+        Family::Grav,
+    );
+    let g = build_graph(&[road, nan, point, looped]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(
+        (stretch_ids(&out), dropped.len(), kept.len()),
+        (stretch_ids(&g), 0, 0)
+    );
+    let nothing = drop_sidepaths(&RoadGraph::default(), &widths, f64::NAN);
+    assert_eq!(nothing.0, RoadGraph::default());
+    let (out, dropped, _) = drop_sidepaths(
+        &scene(main_road(Family::Asf3), side_road(5.0, Family::Grav)),
+        &widths,
+        f64::NAN,
+    );
+    assert_eq!(
+        dropped.len(),
+        0,
+        "a cell that is not a number disturbs nothing: {}",
+        out.stretches.len()
+    );
+}
+
+#[test]
+fn a_road_that_runs_beside_in_its_middle_only_keeps_its_approach_joined_to_the_road() {
+    // starts free 30 m north of the road, comes down to 5 m beside it at x = 40 and runs on to x = 140
+    let side = plain(
+        2,
+        &[5, 7, 6],
+        &[(0.0, 30.0), (40.0, 5.0), (150.0, 5.0)],
+        Family::Grav,
+    );
+    let g = scene(main_road(Family::Asf3), side);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(dropped[0].from_m > 15.0);
+    // the head stays under its id and ends on a node of the main road
+    let head = out
+        .stretches
+        .iter()
+        .find(|s| s.id == "2:5-6")
+        .expect("head");
+    assert_eq!(head.points.first(), Some(&(0.0, 30.0)));
+    let end = head.points.last().unwrap();
+    assert!(end.1.abs() < 1e-9, "{end:?}");
+    let shared = out
+        .stretches
+        .iter()
+        .filter(|s| {
+            s.id.starts_with("1:")
+                && [s.start, s.end]
+                    .iter()
+                    .any(|n| *n == head.end || *n == head.start)
+        })
+        .count();
+    assert_eq!(shared, 2);
+}
+
+#[test]
+fn clean_removes_sidepaths_first_and_reports_them() {
+    let g = scene(main_road(Family::Asf3), side_road(5.0, Family::Grav));
+    let (out, report) = clean(&g, &widths, CELL_M);
+    assert_eq!(report.sidepaths.len(), 1);
+    assert_eq!(out.stretches.len(), 3);
+    assert_eq!(report.components_by_step, vec![1; 4]);
+    let kept = scene(main_road(Family::Asf3), side_road(14.0, Family::Grav));
+    let (_, report) = clean(&kept, &narrow, FINE_CELL_M);
+    assert_eq!(kept_reasons(&report.sidepaths_kept), ["clear"]);
+    assert_eq!(report.sidepaths.len(), 0);
+    let _: Option<DroppedSidepath> = None;
+}
+
+#[test]
+fn a_removal_that_would_split_the_network_is_refused_and_reported() {
+    // a road ends 9 m from the main road; the only way from it to the main road is a track beside the main road
+    let features = [
+        main_road(Family::Asf3),
+        plain(3, &[7, 8], &[(0.0, 80.0), (0.0, 14.0)], Family::Asf2),
+        plain(
+            2,
+            &[8, 5, 6, 3],
+            &[(0.0, 14.0), (0.0, 5.0), (100.0, 5.0), (100.0, 0.0)],
+            Family::Grav,
+        ),
+    ];
+    let g = build_graph(&features);
+    assert_eq!(components(&g), 1);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0));
+    assert_eq!(kept_reasons(&kept), ["would_disconnect"], "{kept:?}");
+}
+
+#[test]
+fn a_joint_beside_a_bridge_deck_is_not_made_on_the_deck() {
+    // the track meets a side road at x = 50, beside the deck of a bridge from x = 0 to x = 100: the nearest node of
+    // the road is the end of the deck, 50 m away, so the run next to the joint stays
+    let road = |id: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool| {
+        way(id, nodes, points, Family::Asf3, true, bridge, false)
+    };
+    let mut features = vec![
+        road(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)], false),
+        road(5, &[2, 3], &[(0.0, 0.0), (100.0, 0.0)], true),
+        road(6, &[3, 4], &[(100.0, 0.0), (150.0, 0.0)], false),
+    ];
+    features.extend([
+        plain(2, &[10, 11], &[(30.0, 5.0), (50.0, 5.0)], Family::Grav),
+        plain(3, &[11, 12], &[(50.0, 5.0), (80.0, 5.0)], Family::Grav),
+        plain(4, &[11, 13], &[(50.0, 5.0), (50.0, 60.0)], Family::Grav),
+    ]);
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(components(&out), components(&g));
+    assert_eq!(kept_reasons(&kept), ["would_disconnect"], "{kept:?}");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    // the side road is still where it was: nothing was joined to a deck
+    let side = out.stretches.iter().find(|s| s.id == "4:11-13").unwrap();
+    assert_eq!((side.start, side.end), (11, 13));
+    assert!(out.stretches.iter().all(|s| s.id.starts_with("1:")
+        || s.id.starts_with("5:")
+        || s.id.starts_with("6:")
+        || s.id.starts_with("2:")
+        || s.id.starts_with("4:")));
+}
+
+#[test]
+fn the_end_of_a_part_inside_a_stretch_is_not_joined_across_a_third_road() {
+    // the track comes down to the road at x = 40; a short mud track lies across where it would be joined to it
+    let side = plain(
+        2,
+        &[5, 7, 6],
+        &[(0.0, 30.0), (40.0, 5.0), (150.0, 5.0)],
+        Family::Grav,
+    );
+    let across = plain(3, &[9, 10], &[(35.0, 2.5), (55.0, 2.5)], Family::Mud);
+    let g = build_graph(&[main_road(Family::Asf3), side, across]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0));
+    assert_eq!(kept_reasons(&kept), ["crosses"], "{kept:?}");
+}
+
+#[test]
+fn a_part_of_a_track_beyond_the_end_of_a_road_is_not_beside_it() {
+    // the road ends at x = 100 and the track goes on to x = 300: only 100 m of it are beside the road
+    let side = plain(2, &[5, 6], &[(0.0, 5.0), (300.0, 5.0)], Family::Grav);
+    let g = build_graph(&[
+        plain(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)], Family::Asf3),
+        side,
+    ]);
+    let (_, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1);
+    assert!(dropped[0].to_m < 101.0, "{dropped:?}");
 }

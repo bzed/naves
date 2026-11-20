@@ -265,7 +265,21 @@ built on the graph, the build cleans it in four steps: sidepaths that run beside
 that lie close together, and junctions on the end of a bridge. Each change is a finding of its own (information, at the
 place of the change) and nothing is changed that is not reported; no step ever splits the network into more connected
 pieces than it had. The steps are being added one at a time; until a step exists it changes nothing and reports
-nothing. Two exist so far. **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
+nothing. Three exist so far. **Sidepaths:** a road or track of a lower family (asphalt before gravel before mud) that
+runs beside a road of a higher family, within 15 m of it, on one side of it and heading the way it does, for at least 30 m
+(for any length beside a road tagged `foot=use_sidepath`), is removed where it disturbs: the two earthworks (half the
+road's width and the shoulder ring of one and a half terrain cells on each side) overlap or leave less than one cell
+between them, or the run passes a bridge of the road (the bridge's length and one cell at each end). A run that keeps
+its distance and passes no bridge stays, and the `road-analysis` example lists it as `clear`. A run that crosses the
+road is not removed across the crossing, and a run between two roads is judged against the nearer. Footways, paths and
+cycleways are painted strokes, not stretches of the graph, and are not touched. Nothing that met the removed part is
+lost: a road that joined it ends on the road instead, by a straight connector of at most 15 m to the nearest point of
+the road, where the road is cut by a new node (the road keeps its id; the removed run's stretch keeps its id and the
+pieces that follow the first are named `<id>/side<n>`), and the ends of a removed part inside a stretch are joined to
+the road the same way. Where a connector would cross a third road, would be longer than 15 m (a joint beside a bridge
+deck is never made on the deck, but at its end) or where the removal would split the network, the run next to the joint
+stays and is reported (`crosses`, `would_disconnect`). Each removed part is a finding (`road_sidepath_dropped`).
+**Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
 shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
 roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).
 **Close junctions:** junctions joined by a stretch shorter than 6 m become one junction (`road_junctions_merged`),
