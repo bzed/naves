@@ -129,16 +129,19 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   A point on the road is never a new node when a node of the road is within `JUNCTION_MERGE_M` (that node is used), and
   never within `APPROACH_M` of the end of a bridge or tunnel (it moves along the road to that distance). If a connector
   would cross a third road or be longer than its limit, the run next to that joint stays instead (at a node between two
-  runs, the shorter of the two) and is reported. "On the road" means on the road the run is beside or on the network of
-  higher roads that it belongs to; a higher road that merely ends at the track is joined to the road like any other
-  stretch.
+  runs, the shorter of the two) and is reported. "On the road" means a node of the road the run is beside, or a node that a higher stretch passes through (two or more
+  end there); a higher road that merely ends at the track is joined to the road like any other stretch. A connector
+  shorter than `SPECK_M` is not made (the end of the joining stretch moves onto the road); a point that would have to
+  move to a node of the road is joined to that node by the plain connector, and of two nodes within the merge distance
+  the nearer is used.
 - **A run** is a stretch of samples within `SIDEPATH_MAX_M` of a road on one side of it, whatever way the stretch heads
-  there; it must have at least two samples that head the way the road does (so a road that joins at an angle is not
-  beside it). Whether it disturbs is judged on the samples that head along the road; the bridge test counts only a
+  there; it must have at least two samples that head the way the road does, and the 30 m minimum is met by the part between
+  its first and its last such sample (so a road that joins at an angle, even with a short parallel tail, is not beside
+  it; the rest only decides how far the removal reaches once the run qualifies). Whether it disturbs is judged on the samples that head along the road; the bridge test counts only a
   bridge of the road it runs beside.
 - After the step no connected component of the graph may be split: the nodes of a component that are still in the
   graph must lie in one component afterwards (a component that goes whole is no split, and does not make up for
-  another). A group of runs whose removal would split one is not removed and is reported (`would_disconnect`).
+  another). A group of runs whose removal would split one is not removed and is reported (`would_split`).
 
 This is the duplicate drop (`drop_duplicates`, which removes a road lying on a higher road) with a wider distance and
 the "disturbs" test; it reuses that code's sampling and leaving points where it fits.

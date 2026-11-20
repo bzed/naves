@@ -1601,3 +1601,161 @@ fn a_joint_beside_the_start_of_a_bridge_is_kept_eight_metres_off_the_deck() {
     assert_eq!(joined.len(), 1, "{dropped:?} {kept:?}");
     assert!((joined[0].1.0 - 108.0).abs() < 1e-6, "{joined:?}");
 }
+
+// ---- fix round 2 ----
+
+#[test]
+fn a_road_of_the_same_network_that_ends_at_the_track_is_joined_to_the_road() {
+    // an Asf2 road ends at the node between the two parts of the track and joins the main road 150 m further on
+    let main = plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (200.0, 0.0), (300.0, 0.0)],
+        Family::Asf3,
+    );
+    let features = vec![
+        main,
+        plain(2, &[5, 7], &[(0.0, 5.0), (50.0, 5.0)], Family::Grav),
+        plain(3, &[7, 6], &[(50.0, 5.0), (100.0, 5.0)], Family::Grav),
+        plain(
+            4,
+            &[7, 40, 41, 3],
+            &[(50.0, 5.0), (50.0, 60.0), (200.0, 60.0), (200.0, 0.0)],
+            Family::Asf2,
+        ),
+    ];
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 2, "{kept:?}");
+    let road = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("4:"))
+        .expect("kept");
+    // the end that was at x = 50 is on the main road now, not 5 m off it
+    let ends = [road.points.first(), road.points.last()];
+    let near_track = ends
+        .iter()
+        .flatten()
+        .find(|p| (p.0 - 50.0).abs() < 10.0)
+        .expect("an end there");
+    assert!(
+        near_track.1.abs() < 1e-6,
+        "the Asf2 road ends in the air: {:?}",
+        road.points
+    );
+}
+
+#[test]
+fn a_junction_approach_with_a_short_parallel_tail_is_not_a_sidepath() {
+    // down to the road at about 20 degrees, 4 m along it, then to the junction on the road
+    let road = plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (100.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    let approach = plain(
+        2,
+        &[5, 6, 7, 3],
+        &[(20.0, 30.0), (80.0, 8.0), (84.0, 8.0), (100.0, 0.0)],
+        Family::Grav,
+    );
+    let g = build_graph(&[road, approach]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len(), kept.len()), (&g, 0, 0));
+}
+
+#[test]
+fn a_joint_that_would_have_to_move_to_a_node_is_joined_straight_to_it() {
+    // the road coming down at x = 5.7 would meet the main road 5.7 m from its junction at x = 0: it is joined to that
+    // junction by a straight connector from where it ended, not bent
+    let road = plain(
+        1,
+        &[1, 2, 3],
+        &[(-50.0, 0.0), (0.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    let mut features = track_with_a_road_coming_down(5.7, road);
+    features.push(plain(8, &[2, 9], &[(0.0, 0.0), (0.0, -30.0)], Family::Asf3));
+    let g = build_graph(&features);
+    let (out, _, _) = drop_sidepaths(&g, &widths, CELL_M);
+    let side = out
+        .stretches
+        .iter()
+        .find(|s| s.id == "4:7-8")
+        .expect("kept");
+    let points = if side.points.first() == Some(&(5.7, 60.0)) {
+        side.points.clone()
+    } else {
+        side.points.iter().rev().copied().collect()
+    };
+    assert_eq!(points, [(5.7, 60.0), (5.7, 5.0), (0.0, 0.0)]);
+}
+
+#[test]
+fn a_connector_shorter_than_half_a_metre_is_not_made_the_end_moves_onto_the_road() {
+    let features = vec![
+        main_road(Family::Asf3),
+        plain(2, &[5, 7], &[(0.0, 0.3), (50.0, 0.3)], Family::Grav),
+        plain(3, &[7, 6], &[(50.0, 0.3), (100.0, 0.3)], Family::Grav),
+        plain(4, &[7, 8], &[(50.0, 0.3), (50.0, 60.0)], Family::Grav),
+    ];
+    let g = build_graph(&features);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 2);
+    let side = out
+        .stretches
+        .iter()
+        .find(|s| s.id == "4:7-8")
+        .expect("kept");
+    let n = side.points.len();
+    assert_eq!(n, 2, "{:?}", side.points);
+    assert!(side.points.contains(&(50.0, 0.0)), "{:?}", side.points);
+}
+
+#[test]
+fn a_point_between_two_nodes_of_a_short_road_piece_goes_to_the_nearer_one() {
+    // the road piece between the junctions at x = 0 and x = 8 is shorter than twice the merge distance
+    let road = plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (8.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    let mut features = track_with_a_road_coming_down(5.0, road);
+    features.push(plain(8, &[2, 9], &[(0.0, 0.0), (0.0, -30.0)], Family::Asf3));
+    features.push(plain(
+        9,
+        &[3, 10],
+        &[(8.0, 0.0), (8.0, -30.0)],
+        Family::Asf3,
+    ));
+    let g = build_graph(&features);
+    let (_, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    let joined: Vec<_> = dropped.iter().flat_map(|d| d.connectors.iter()).collect();
+    assert_eq!(joined.len(), 1, "{dropped:?}");
+    assert_eq!(joined[0].1, (8.0, 0.0));
+}
+
+#[test]
+fn a_removal_that_would_cut_a_piece_off_is_refused_as_a_split() {
+    // the joint between the two parts of the track cannot be joined to the road (a mud track lies across), so the
+    // shorter part stays with what joins it; the other part's removal would leave that piece without a way to the road
+    let features = vec![
+        main_road(Family::Asf3),
+        plain(2, &[5, 7], &[(20.0, 5.0), (50.0, 5.0)], Family::Grav),
+        plain(
+            3,
+            &[7, 6, 3],
+            &[(50.0, 5.0), (100.0, 5.0), (100.0, 0.0)],
+            Family::Grav,
+        ),
+        plain(4, &[7, 8], &[(50.0, 5.0), (50.0, 60.0)], Family::Grav),
+        plain(5, &[9, 10], &[(40.0, 2.5), (60.0, 2.5)], Family::Mud),
+    ];
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0));
+    assert_eq!(kept_reasons(&kept), ["would_split"], "{kept:?}");
+}

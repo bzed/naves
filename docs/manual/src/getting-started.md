@@ -268,8 +268,8 @@ pieces than it had. The steps are being added one at a time; until a step exists
 nothing. Three exist so far. **Sidepaths:** a road or track of a lower family (asphalt before gravel before mud) that
 runs beside a road of a higher family, within 15 m of it and on one side of it, for at least 30 m
 (for any length beside a road tagged `foot=use_sidepath`), is removed where it disturbs. The run is the whole part that
-stays within 15 m, also where the track bends towards the road to join it; at least two metres of it must head the way the road
-does, so that a road that joins at an angle is no sidepath. It disturbs when, along the part that heads along the road, the two
+stays within 15 m, also where the track bends towards the road to join it; at least 30 m between its first and last metre that heads the way the road
+does must be along the road (any length beside a tagged road), so that a road that joins at an angle is no sidepath. It disturbs when, along the part that heads along the road, the two
 earthworks (half the road's width and the shoulder ring of one and a half terrain cells on each side) overlap or leave
 less than one cell between them, or when it passes a bridge of that road (the bridge's length and one cell at each
 end; a bridge of another road does not count). A run that keeps its distance and passes no bridge stays, and the
@@ -281,7 +281,7 @@ shallow angle ahead of that end, and the road is cut there by a new node. A node
 of a new one, and no node is made within 8 m of the end of a bridge. The removed run's stretch keeps its id and the pieces
 that follow the first are named `<id>/side<n>`. Where a connector would cross a third road or be too long, the run next to
 the joint stays and is reported (`crosses`, `would_disconnect`); no removal may cut a connected piece of the road network
-off from the rest (`would_disconnect`). Each removed part is a finding (`road_sidepath_dropped`).
+off from the rest (`would_split`). Each removed part is a finding (`road_sidepath_dropped`).
 **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
 shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
 roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).

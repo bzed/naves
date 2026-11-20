@@ -67,8 +67,8 @@ pub struct KeptSidepath {
     /// The id of the road it runs beside.
     pub road: String,
     /// Why it stays: `"clear"` (the two earthworks keep their distance and no bridge is near), `"would_disconnect"`
-    /// (the removal would split the network or a joining stretch could not be reached to the road) or
-    /// `"crosses"` (a straight connector to the road would cross a third road).
+    /// (a connector to the road would be too long), `"would_split"` (the removal would cut a connected piece off from
+    /// the rest of the network) or `"crosses"` (a straight connector to the road would cross a third road).
     pub reason: &'static str,
     /// The middle of the part, in map metres.
     pub at: (f64, f64),

@@ -11,8 +11,9 @@
 //!
 //! A *run* is the part of a stretch whose samples (every metre) lie within [`SIDEPATH_MAX_M`] of a higher road on one
 //! side of it, whatever way the stretch heads there, with at least two samples that head the way the road does (a road
-//! that joins at an angle is not beside it). Runs that meet at a node are one *group*. A group is a candidate if it is
-//! at least [`SIDEPATH_MIN_RUN_M`] long, or runs beside a road tagged `foot=use_sidepath`; it is removed if it
+//! that joins at an angle is not beside it). Runs that meet at a node are one *group*. A group is a candidate if the
+//! parts of its runs between their first and last sample that head the way the road does are together at least
+//! [`SIDEPATH_MIN_RUN_M`] long, or runs beside a road tagged `foot=use_sidepath`; it is removed if it
 //! disturbs, that is if somewhere along the part that heads along the road the earthworks of the two roads (half the
 //! width and the shoulder ring of [`core_reach_m`]) overlap or leave less than one terrain cell between them, or if it
 //! passes a bridge of the road (within the bridge's length and one cell at each end). Otherwise it stays, with the
@@ -26,13 +27,13 @@
 //! two runs) and is reported. A short end piece that would be left between the road and a node that is already on the
 //! road the run is beside (or free) goes with the run. If the removal would split a component of the network (checked
 //! by membership of its nodes, so that a component that goes whole does not make up for it), the groups are tried one
-//! at a time and the ones that would split it stay (`would_disconnect`).
+//! at a time and the ones that would split it stay (`would_split`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     APPROACH_M, DroppedSidepath, JUNCTION_MERGE_M, KeptSidepath, SIDEPATH_MAX_M,
-    SIDEPATH_MIN_RUN_M, known_less, rebuilt,
+    SIDEPATH_MIN_RUN_M, SPECK_M, known_less, rebuilt,
 };
 use crate::catalog::Family;
 use crate::conform::core_reach_m;
@@ -67,6 +68,8 @@ struct SideRun {
     /// The two ends of the part on the stretch.
     first_at: Point,
     last_at: Point,
+    /// The length of the part between its first and its last sample that heads the way the road does.
+    aligned_span: f64,
     /// The direction of the stretch at the two ends of the part.
     first_dir: Point,
     last_dir: Point,
@@ -112,9 +115,6 @@ struct Ctx<'a> {
     usable: Vec<bool>,
     /// The nodes at the end of a bridge or a tunnel.
     deck_ends: BTreeSet<i64>,
-    /// For each node of a stretch of a higher family the lowest node it is joined to by such stretches: nodes with
-    /// the same label are on the same network of higher roads.
-    label: BTreeMap<i64, i64>,
 }
 
 /// The stretches of `graph` in the order of their ids.
@@ -307,7 +307,21 @@ impl Sampled<'_> {
             .copied()
             .flatten()
             .map_or(first.stretch, |(_, h, ..)| h.stretch);
+        let aligned: Vec<f64> = self
+            .samples
+            .iter()
+            .zip(&self.hits)
+            .skip(a)
+            .take(last - a + 1)
+            .filter(|(_, hit)| hit.is_some_and(|(.., along_the_road)| along_the_road))
+            .map(|(sample, _)| sample.along)
+            .collect();
+        let aligned_span = aligned
+            .first()
+            .zip(aligned.last())
+            .map_or(0.0, |(first, last)| last - first);
         Some(SideRun {
+            aligned_span,
             stretch: self.stretch,
             from: from.along,
             to: to.along,
@@ -463,27 +477,6 @@ impl<'a> Ctx<'a> {
             ends.entry(s.start).or_default().push((i, false));
             ends.entry(s.end).or_default().push((i, true));
         }
-        let mut parent: BTreeMap<i64, i64> = BTreeMap::new();
-        for s in graph
-            .stretches
-            .iter()
-            .filter(|s| family_rank(s.family) < rank)
-        {
-            parent.entry(s.start).or_insert(s.start);
-            parent.entry(s.end).or_insert(s.end);
-            let (ra, rb) = (
-                super::find(&mut parent, s.start),
-                super::find(&mut parent, s.end),
-            );
-            if let Some(slot) = parent.get_mut(&ra.max(rb)) {
-                *slot = ra.min(rb);
-            }
-        }
-        let nodes: Vec<i64> = parent.keys().copied().collect();
-        let label = nodes
-            .into_iter()
-            .map(|n| (n, super::find(&mut parent, n)))
-            .collect();
         let mut ctx = Ctx {
             graph,
             rank,
@@ -498,7 +491,6 @@ impl<'a> Ctx<'a> {
                 .filter(|s| s.bridge || s.tunnel)
                 .flat_map(|s| [s.start, s.end])
                 .collect(),
-            label,
         };
         ctx.groups = ctx.group_runs();
         ctx.extend_short_ends();
@@ -522,14 +514,23 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Whether stretch `x` is on the road `run` runs beside: of a higher family and in the same network of higher
-    /// roads as that road (a higher road that merely ends at the track is not).
-    fn on_road(&self, x: usize, run: &SideRun) -> bool {
-        let label = |i: usize| self.stretch(i).and_then(|s| self.label.get(&s.start));
-        self.stretch(x)
-            .is_some_and(|s| family_rank(s.family) < self.rank)
-            && label(x).is_some()
-            && label(x) == label(run.road)
+    /// Whether `node` is on the road `run` runs beside: a node of that road stretch, or one that a higher stretch
+    /// passes through (two or more of them end there). A higher road that merely ends at the node is not on the road.
+    fn on_road(&self, node: i64, run: &SideRun) -> bool {
+        let higher_ends = self
+            .ends
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .filter(|(x, _)| {
+                self.stretch(*x)
+                    .is_some_and(|s| family_rank(s.family) < self.rank)
+            })
+            .count();
+        higher_ends >= 2
+            || self
+                .stretch(run.road)
+                .is_some_and(|road| road.start == node || road.end == node)
     }
 
     /// The point `along` metres along the road `road` as a place to join it: a node of the road if one is within
@@ -553,9 +554,12 @@ impl<'a> Ctx<'a> {
             along = (length - APPROACH_M).max(0.0);
         }
         along = along.clamp(0.0, length);
-        if !deck_start && along < JUNCTION_MERGE_M {
+        // a node within the merge distance is used, the nearer of the two if both are
+        let near_start = !deck_start && along < JUNCTION_MERGE_M;
+        let near_end = !deck_end && length - along < JUNCTION_MERGE_M;
+        if near_start && (!near_end || along <= length - along) {
             along = 0.0;
-        } else if !deck_end && length - along < JUNCTION_MERGE_M {
+        } else if near_end {
             along = length;
         }
         if (along - hit.along).abs() < EPS_M {
@@ -628,13 +632,16 @@ impl<'a> Ctx<'a> {
             }
             run += len;
         }
-        best.map(|(_, along)| {
-            self.snapped(Hit {
-                stretch: road,
-                along,
-                at: point_along(&line.points, along),
-            })
-        })
+        let (_, along) = best?;
+        let hit = Hit {
+            stretch: road,
+            along,
+            at: point_along(&line.points, along),
+        };
+        // a point that has to move to a node or off a deck end no longer continues the heading: the plain connector
+        // is made instead
+        let snapped = self.snapped(hit);
+        ((snapped.along - hit.along).abs() <= 1.0).then_some(snapped)
     }
 
     /// Groups of runs that meet at a node where exactly two of them end, on the same side of the road.
@@ -681,7 +688,7 @@ impl<'a> Ctx<'a> {
                 let length: f64 = runs
                     .iter()
                     .filter_map(|&k| self.runs.get(k))
-                    .map(|r| r.raw.1 - r.raw.0)
+                    .map(|r| r.aligned_span)
                     .sum();
                 let any = |f: &dyn Fn(&SideRun) -> bool| {
                     runs.iter().filter_map(|&k| self.runs.get(k)).any(f)
@@ -716,14 +723,14 @@ impl<'a> Ctx<'a> {
                 continue;
             };
             let node = if at_end { s.end } else { s.start };
-            let others = self
+            // the end is free, or on the road the run is beside
+            let free_or_on_road = self
                 .ends
                 .get(&node)
                 .into_iter()
                 .flatten()
-                .filter(|(x, _)| *x != run.stretch);
-            // every other stretch is on the road the run is beside; none is a free end
-            let free_or_on_road = others.clone().all(|(x, _)| self.on_road(*x, run));
+                .all(|(x, _)| *x == run.stretch)
+                || self.on_road(node, run);
             if gap > EPS_M
                 && gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M
                 && free_or_on_road
@@ -825,7 +832,7 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let first_run = removed.iter().find_map(|&(k, _)| self.runs.get(k))?;
-        let on_road = kept.iter().any(|&x| self.on_road(x, first_run));
+        let on_road = self.on_road(node, first_run);
         let beside_kept_run = kept.iter().any(|x| {
             self.of_stretch
                 .get(x)
@@ -1054,11 +1061,20 @@ struct Outcome {
 
 /// Makes the stretch end on `at`, a node of the road, instead of on `old`.
 fn rewire(s: &mut Stretch, old: i64, new: i64, at: Point) {
+    // a connector shorter than a speck is not made: the end moves onto the road
+    let short =
+        |p: Option<&Point>| p.is_some_and(|p| !known_less(SPECK_M, (p.0 - at.0).hypot(p.1 - at.1)));
     if s.start == old {
+        if short(s.points.first()) {
+            s.points.remove(0);
+        }
         s.points.insert(0, at);
         s.start = new;
     }
     if s.end == old {
+        if short(s.points.last()) {
+            s.points.pop();
+        }
         s.points.push(at);
         s.end = new;
     }
@@ -1300,7 +1316,7 @@ fn one_family(
             ctx.groups
                 .get(g)
                 .and_then(|group| group.runs.first())
-                .and_then(|&k| ctx.kept(k, "would_disconnect")),
+                .and_then(|&k| ctx.kept(k, "would_split")),
         );
     }
     for &(k, reason) in &outcome.blocked {
