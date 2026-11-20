@@ -110,11 +110,14 @@ skill has `make-server-tree.sh`, `free-ports.sh` and `dayz-client-headless.sh`).
 - Total line coverage stays **at or above 85 %** (`COVERAGE_MIN` in the `Makefile`, measured with
   `cargo llvm-cov`). A change must not lower it.
 - CI uploads the report to **Codecov** with `codecov/codecov-action` **v7 or newer**. `codecov.yml`:
-  - `project`: `target: auto`, `threshold: 0%`. A pull request must not lower total coverage at all
+  - `project`, pull requests: `target: auto`, `threshold: 1%`. A pull request may lower total coverage by up
+    to 1 %;
+  - `project`, `main`: `target: auto`, `threshold: 0.1%`. A push to `main` may differ from its parent by the
+    noise of a run (a few lines are reached or not depending on timing; 0.02 % has been seen), not by more
     (and `make coverage-check` still enforces the 85 % floor);
   - `patch`: `target: auto`, `threshold: 5%`. The changed lines may fall slightly below the base
     coverage, but no further.
-- Never lower the threshold, and never exclude code (`--ignore-filename-regex`, `#[coverage(off)]`,
+- Never lower the floor or widen these thresholds without the maintainer's word, and never exclude code (`--ignore-filename-regex`, `#[coverage(off)]`,
   moving code into untested crates) to reach it.
 - Vendored upstream crates (`crates/naves-ui`) are held to their upstream tests plus tests for our
   modifications, not to the 85 % floor; `make coverage-check` excludes them. The exclusion is for
