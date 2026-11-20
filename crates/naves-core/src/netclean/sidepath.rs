@@ -22,7 +22,8 @@
 //! What was joined to a removed part is not lost: every stretch that met it at a node goes on along its own heading to
 //! the road (within twice [`SIDEPATH_MAX_M`]) or else straight to the nearest point; the rest of a stretch at an end of
 //! a removed part inside it meets the road shallowly ahead of that end. The road is cut there by a new node unless a
-//! node is within [`JUNCTION_MERGE_M`], and never within [`APPROACH_M`] of the end of a bridge. If such a connector
+//! node is within [`JUNCTION_SPACING_M`] (the length of a junction piece; a road piece shorter than two of them gets no new
+//! node), two new nodes on one road piece are that far apart, and none is nearer than that to the end of a bridge. If such a connector
 //! would cross a third road or be too long, the run next to that joint stays (the shorter of the two at a node between
 //! two runs) and is reported. A short end piece that would be left between the road and a node that is already on the
 //! road the run is beside (or free) goes with the run. If the removal would split a component of the network (checked
@@ -32,8 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    APPROACH_M, DroppedSidepath, JUNCTION_MERGE_M, KeptSidepath, SIDEPATH_MAX_M,
-    SIDEPATH_MIN_RUN_M, SPECK_M, known_less, rebuilt,
+    DroppedSidepath, KeptSidepath, SIDEPATH_MAX_M, SIDEPATH_MIN_RUN_M, SPECK_M, known_less, rebuilt,
 };
 use crate::catalog::Family;
 use crate::conform::core_reach_m;
@@ -42,6 +42,7 @@ use crate::roadnet::{
     Stretch, bounds, cut_runs_named, family_rank, line_crossings, nearest_hit_within, point_along,
     polyline_length, samples,
 };
+use crate::roadplace::JUNCTION_SPACING_M;
 
 /// A position in map metres.
 type Point = (f64, f64);
@@ -534,8 +535,8 @@ impl<'a> Ctx<'a> {
     }
 
     /// The point `along` metres along the road `road` as a place to join it: a node of the road if one is within
-    /// [`JUNCTION_MERGE_M`], and never nearer than [`APPROACH_M`] to the end of a bridge or tunnel (it moves along the
-    /// road to that distance, or to the node at the far end if that is within [`JUNCTION_MERGE_M`] of it). A road
+    /// [`JUNCTION_SPACING_M`] (the nearer end node of a piece shorter than two of them), and never nearer than that to
+    /// the end of a bridge or tunnel (it moves along the road to that distance). A road
     /// that is itself a bridge is met as it is.
     fn snapped(&self, hit: Hit) -> Hit {
         let Some(road) = self.stretch(hit.stretch).filter(|r| !r.bridge && !r.tunnel) else {
@@ -546,22 +547,25 @@ impl<'a> Ctx<'a> {
             self.deck_ends.contains(&road.start),
             self.deck_ends.contains(&road.end),
         );
-        let mut along = hit.along;
-        if deck_start && along < APPROACH_M {
-            along = APPROACH_M;
+        let spacing = JUNCTION_SPACING_M;
+        let mut along = hit.along.clamp(0.0, length);
+        if length < 2.0 * spacing {
+            // too short for a new node: the nearer end that is no deck end
+            let (to_start, to_end) = (!deck_start, !deck_end);
+            along = match (to_start, to_end) {
+                (true, true) if along <= length - along => 0.0,
+                (_, true) => length,
+                (true, false) => 0.0,
+                (false, false) => return hit,
+            };
+        } else if along < spacing {
+            // a node of the road within a junction piece's length is used; a deck end is kept the same distance off
+            along = if deck_start { spacing } else { 0.0 };
+        } else if length - along < spacing {
+            along = if deck_end { length - spacing } else { length };
         }
-        if deck_end && length - along < APPROACH_M {
-            along = (length - APPROACH_M).max(0.0);
-        }
+        // a deck end is kept at least an approach off even where that is nearer than a junction piece
         along = along.clamp(0.0, length);
-        // a node within the merge distance is used, the nearer of the two if both are
-        let near_start = !deck_start && along < JUNCTION_MERGE_M;
-        let near_end = !deck_end && length - along < JUNCTION_MERGE_M;
-        if near_start && (!near_end || along <= length - along) {
-            along = 0.0;
-        } else if near_end {
-            along = length;
-        }
         if (along - hit.along).abs() < EPS_M {
             return hit;
         }
@@ -894,9 +898,13 @@ impl<'a> Ctx<'a> {
 
     /// Where the rest of a stretch that ends inside the run `k` meets the road at its two ends: the first of the
     /// shallow and the nearest point whose connector is fine, or the reason that none is.
-    fn inside_ends(&self, state: &[State], run: &SideRun) -> Result<[Hit; 2], &'static str> {
+    fn inside_ends(
+        &self,
+        state: &[State],
+        run: &SideRun,
+    ) -> Result<[Option<Hit>; 2], &'static str> {
         let total = self.total(run.stretch);
-        let mut chosen = [run.first, run.last];
+        let mut chosen = [None; 2];
         for (end, (inside, from)) in [
             (run.from > EPS_M, run.first_at),
             (run.to < total - EPS_M, run.last_at),
@@ -923,7 +931,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             match (found, chosen.get_mut(end)) {
-                (Some(target), Some(slot)) => *slot = target,
+                (Some(target), Some(slot)) => *slot = Some(target),
                 _ => return Err(reason.unwrap_or("would_disconnect")),
             }
         }
@@ -954,7 +962,7 @@ impl<'a> Ctx<'a> {
                 match self.inside_ends(&state, run) {
                     Ok(chosen) => {
                         if let Some(slot) = ends.get_mut(k) {
-                            *slot = chosen.map(Some);
+                            *slot = chosen;
                         }
                     }
                     Err(reason) => {
@@ -1088,7 +1096,9 @@ impl Ctx<'_> {
     /// The graph without the runs of the groups in `selected` (but for those that could not be joined to the road),
     /// the stretches that met them joined to the road, and the report.
     fn evaluate(&self, selected: &BTreeSet<usize>) -> Outcome {
-        let Plan { state, needs, ends } = self.plan(selected);
+        let mut plan = self.plan(selected);
+        self.space_new_nodes(&mut plan);
+        let Plan { state, needs, ends } = plan;
         let blocked: Vec<(usize, &'static str)> = state
             .iter()
             .enumerate()
@@ -1156,6 +1166,68 @@ impl Ctx<'_> {
             graph: rebuilt(stretches),
             dropped,
             blocked,
+        }
+    }
+
+    /// Two new nodes on one road piece are kept [`JUNCTION_SPACING_M`] apart: of the points where the plan meets a road
+    /// piece (in the order of the pieces and of the places along them), a later one within that distance of an earlier
+    /// new node uses that node.
+    fn space_new_nodes(&self, plan: &mut Plan) {
+        // (piece, place, which point): a point of an end inside a stretch, or of a joint at a node
+        let mut points: Vec<(usize, f64, usize, usize)> = Vec::new();
+        for (k, pair) in plan.ends.iter().enumerate() {
+            for (i, hit) in pair.iter().enumerate() {
+                if let Some(hit) = hit {
+                    points.push((hit.stretch, hit.along, k, i));
+                }
+            }
+        }
+        for (n, need) in plan.needs.iter().enumerate() {
+            points.push((need.target.stretch, need.target.along, n, 2));
+        }
+        points.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+                .then(a.3.cmp(&b.3))
+        });
+        let mut made: Vec<Hit> = Vec::new();
+        for (stretch, along, index, which) in points {
+            let length = self.total(stretch);
+            if along <= EPS_M || along >= length - EPS_M {
+                continue;
+            }
+            let earlier = made
+                .iter()
+                .find(|m| m.stretch == stretch && (m.along - along).abs() < JUNCTION_SPACING_M)
+                .copied();
+            let Some(hit) = earlier else {
+                if let Some(h) = Self::hit_at(&plan.ends, &plan.needs, index, which) {
+                    made.push(h);
+                }
+                continue;
+            };
+            if which == 2 {
+                if let Some(need) = plan.needs.get_mut(index) {
+                    need.target = hit;
+                }
+            } else if let Some(slot) = plan.ends.get_mut(index).and_then(|p| p.get_mut(which)) {
+                *slot = Some(hit);
+            }
+        }
+    }
+
+    fn hit_at(
+        ends: &[[Option<Hit>; 2]],
+        needs: &[NodeNeed],
+        index: usize,
+        which: usize,
+    ) -> Option<Hit> {
+        if which == 2 {
+            needs.get(index).map(|n| n.target)
+        } else {
+            ends.get(index)
+                .and_then(|p| p.get(which).copied().flatten())
         }
     }
 

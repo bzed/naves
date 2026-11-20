@@ -23,7 +23,7 @@ All notable changes to this project are documented here. The format follows
   a cut stretch are named `<id>/side<n>`. A removal never cuts a connected piece of the road network off from the
   rest; a run is the whole part within 15 m of the road, also where the track bends to join it; roads that met it go on
   along their own direction to the road, the rest of a track merges at a shallow angle, and joints use a node of the
-  road within 6 m and keep 8 m off the end of a bridge. A road that merely ends at a removed track is joined to the
+  road within 12.5 m (a junction piece), keep new nodes 12.5 m apart and keep 12.5 m off the end of a bridge. A road that merely ends at a removed track is joined to the
   road, a junction approach with a short parallel tail is not a sidepath (the 30 m must be met along the road), and a
   refused split is reported as `would_split`.
 - The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four

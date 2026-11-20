@@ -1377,7 +1377,7 @@ fn a_joint_is_made_on_a_node_of_the_road_within_six_metres_not_next_to_it() {
 }
 
 #[test]
-fn a_joint_is_never_made_within_eight_metres_of_a_deck_end() {
+fn a_joint_is_never_made_within_a_junction_piece_of_a_deck_end() {
     // a bridge from x = 0 to x = 100; the road that joins the track would meet the approach 0.7 m before it
     let features = vec![
         plain(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)], Family::Asf3),
@@ -1400,7 +1400,7 @@ fn a_joint_is_never_made_within_eight_metres_of_a_deck_end() {
     let joined: Vec<_> = dropped.iter().flat_map(|d| d.connectors.iter()).collect();
     assert_eq!(joined.len(), 1, "{dropped:?} {kept:?}");
     assert!(
-        (joined[0].1.0 + 8.0).abs() < 1e-6 && joined[0].1.1.abs() < 1e-6,
+        (joined[0].1.0 + 12.5).abs() < 1e-6 && joined[0].1.1.abs() < 1e-6,
         "{joined:?}"
     );
 }
@@ -1578,7 +1578,7 @@ fn a_track_that_starts_and_ends_beyond_the_ends_of_the_road_is_removed_whole() {
 }
 
 #[test]
-fn a_joint_beside_the_start_of_a_bridge_is_kept_eight_metres_off_the_deck() {
+fn a_joint_beside_the_start_of_a_bridge_is_kept_a_junction_piece_off_the_deck() {
     // the road ends in a bridge at x = 100: a road that joins the track at x = 103 would meet it 3 m after the deck
     let features = vec![
         way(
@@ -1599,7 +1599,7 @@ fn a_joint_beside_the_start_of_a_bridge_is_kept_eight_metres_off_the_deck() {
     let (_, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
     let joined: Vec<_> = dropped.iter().flat_map(|d| d.connectors.iter()).collect();
     assert_eq!(joined.len(), 1, "{dropped:?} {kept:?}");
-    assert!((joined[0].1.0 - 108.0).abs() < 1e-6, "{joined:?}");
+    assert!((joined[0].1.0 - 112.5).abs() < 1e-6, "{joined:?}");
 }
 
 // ---- fix round 2 ----
@@ -1758,4 +1758,98 @@ fn a_removal_that_would_cut_a_piece_off_is_refused_as_a_split() {
     let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
     assert_eq!((&out, dropped.len()), (&g, 0));
     assert_eq!(kept_reasons(&kept), ["would_split"], "{kept:?}");
+}
+
+// ---- fix round 3: the spacing of junctions on the road ----
+
+/// A main road of 200 m with a joining road coming down to a track at `x`.
+fn road_with_a_joint_at(x: f64) -> RoadGraph {
+    build_graph(&track_with_a_road_coming_down(
+        x,
+        plain(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], Family::Asf3),
+    ))
+}
+
+fn joint_of(dropped: &[naves_core::netclean::DroppedSidepath]) -> Vec<(f64, f64)> {
+    dropped
+        .iter()
+        .flat_map(|d| d.connectors.iter().map(|c| c.1))
+        .collect()
+}
+
+#[test]
+fn a_joint_within_a_junction_piece_of_a_node_uses_the_node_and_one_beyond_gets_its_own() {
+    // the road ends at x = 0 and x = 200 (nodes); a joining road at x = 9 meets it 9 m from the node, one at x = 13 13 m
+    let (_, dropped, _) = drop_sidepaths(&road_with_a_joint_at(9.0), &widths, CELL_M);
+    assert_eq!(joint_of(&dropped), [(0.0, 0.0)]);
+    let (_, dropped, _) = drop_sidepaths(&road_with_a_joint_at(13.0), &widths, CELL_M);
+    assert_eq!(joint_of(&dropped), [(13.0, 0.0)]);
+}
+
+#[test]
+fn a_road_piece_shorter_than_two_junction_pieces_never_gets_a_new_node() {
+    // a 20 m piece between two nodes
+    let road = plain(
+        1,
+        &[1, 2, 3, 4],
+        &[(-50.0, 0.0), (0.0, 0.0), (20.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    let mut features = track_with_a_road_coming_down(9.0, road);
+    features.push(plain(8, &[2, 9], &[(0.0, 0.0), (0.0, -30.0)], Family::Asf3));
+    features.push(plain(
+        9,
+        &[3, 10],
+        &[(20.0, 0.0), (20.0, -30.0)],
+        Family::Asf3,
+    ));
+    let g = build_graph(&features);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(joint_of(&dropped), [(0.0, 0.0)]);
+    assert!(
+        out.stretches
+            .iter()
+            .all(|s| !s.id.starts_with("1:") || !s.id.contains("/side"))
+    );
+}
+
+#[test]
+fn two_joints_four_metres_apart_end_on_one_junction_whatever_the_order() {
+    let features = vec![
+        plain(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], Family::Asf3),
+        plain(2, &[5, 7], &[(40.0, 5.0), (96.0, 5.0)], Family::Grav),
+        plain(3, &[7, 8], &[(96.0, 5.0), (100.0, 5.0)], Family::Grav),
+        plain(4, &[8, 6], &[(100.0, 5.0), (150.0, 5.0)], Family::Grav),
+        plain(5, &[7, 9], &[(96.0, 5.0), (96.0, 60.0)], Family::Grav),
+        plain(6, &[8, 10], &[(100.0, 5.0), (100.0, 60.0)], Family::Grav),
+    ];
+    let g = build_graph(&features);
+    let want = drop_sidepaths(&g, &widths, CELL_M);
+    let joints = joint_of(&want.1);
+    assert_eq!(joints.len(), 2, "{:?}", want.1);
+    assert_eq!(joints[0], joints[1]);
+    let mut shuffled = g.clone();
+    shuffled.stretches.reverse();
+    assert_eq!(drop_sidepaths(&shuffled, &widths, CELL_M), want);
+}
+
+#[test]
+fn a_joining_road_whose_heading_leads_to_a_node_but_whose_foot_does_not_is_joined_at_its_foot() {
+    // a road comes down to the track at (20, 5) heading for (8, 0), 8 m from the node at x = 0: it is joined at the foot
+    // (20, 0) with a straight connector, not bent towards the node
+    let features = vec![
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-50.0, 0.0), (0.0, 0.0), (200.0, 0.0)],
+            Family::Asf3,
+        ),
+        plain(2, &[5, 7], &[(-30.0, 5.0), (20.0, 5.0)], Family::Grav),
+        plain(3, &[7, 6], &[(20.0, 5.0), (100.0, 5.0)], Family::Grav),
+        plain(4, &[7, 8], &[(20.0, 5.0), (68.0, 25.0)], Family::Grav),
+        plain(9, &[2, 10], &[(0.0, 0.0), (0.0, -30.0)], Family::Asf3),
+    ];
+    let g = build_graph(&features);
+    let (_, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(joint_of(&dropped), [(20.0, 0.0)]);
 }

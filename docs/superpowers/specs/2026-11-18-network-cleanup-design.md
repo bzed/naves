@@ -126,14 +126,15 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   old node; otherwise by a straight connector to the nearest point of the road. The rest of a sidepath at an end of the
   removed run meets the road at a point ahead of that end, towards the removed part, by twice its distance from the
   road (at most a connector of `2 * SIDEPATH_MAX_M`), within the part of the road the run lies along: a shallow merge.
-  A point on the road is never a new node when a node of the road is within `JUNCTION_MERGE_M` (that node is used), and
-  never within `APPROACH_M` of the end of a bridge or tunnel (it moves along the road to that distance). If a connector
+  A point on the road is never a new node when a node of the road is within `JUNCTION_SPACING_M` of it (12.5 m, the
+  length of a junction piece in the placement; that node is used, the nearer one on a road piece shorter than two of
+  them), two new nodes on one road piece are that far apart (the later uses the earlier), and none is within that distance
+  of the end of a bridge or tunnel (it moves along the road to that distance; `APPROACH_M` is the smaller of the two). If a connector
   would cross a third road or be longer than its limit, the run next to that joint stays instead (at a node between two
   runs, the shorter of the two) and is reported. "On the road" means a node of the road the run is beside, or a node that a higher stretch passes through (two or more
   end there); a higher road that merely ends at the track is joined to the road like any other stretch. A connector
   shorter than `SPECK_M` is not made (the end of the joining stretch moves onto the road); a point that would have to
-  move to a node of the road is joined to that node by the plain connector, and of two nodes within the merge distance
-  the nearer is used.
+  move to a node of the road is joined to that node by the plain connector.
 - **A run** is a stretch of samples within `SIDEPATH_MAX_M` of a road on one side of it, whatever way the stretch heads
   there; it must have at least two samples that head the way the road does, and the 30 m minimum is met by the part between
   its first and its last such sample (so a road that joins at an angle, even with a short parallel tail, is not beside

@@ -277,8 +277,8 @@ end; a bridge of another road does not count). A run that keeps its distance and
 between two roads is judged against the nearer. Footways, paths and cycleways are painted strokes, not stretches of
 the graph, and are not touched. Nothing that met the removed part is lost: a road that joined it goes on along its own
 direction to the road (if that is within 30 m), the rest of a track at the end of a removed part meets the road at a
-shallow angle ahead of that end, and the road is cut there by a new node. A node of the road within 6 m is used instead
-of a new one, and no node is made within 8 m of the end of a bridge. The removed run's stretch keeps its id and the pieces
+shallow angle ahead of that end, and the road is cut there by a new node. A node of the road within 12.5 m (the length of a junction piece) is used instead
+of a new one, two new nodes on one road piece are 12.5 m apart, and no node is made within 12.5 m of the end of a bridge. The removed run's stretch keeps its id and the pieces
 that follow the first are named `<id>/side<n>`. Where a connector would cross a third road or be too long, the run next to
 the joint stays and is reported (`crosses`, `would_disconnect`); no removal may cut a connected piece of the road network
 off from the rest (`would_split`). Each removed part is a finding (`road_sidepath_dropped`).

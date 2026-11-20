@@ -26,7 +26,9 @@ use crate::roadnet::{Chain, Ring, RoadGraph, Stretch, chains_with, overlay_rank,
 /// A road that meets a bridge's end turned away from the deck's heading by more than this, in degrees, is a kink
 /// (a finding) even where its position is right.
 pub const HEADING_MISS_DEG: f64 = 5.0;
-const JUNCTION_SPACING_M: f64 = 12.5;
+/// The least distance between two junctions on one road: the length of a junction piece (its ports lie half of it from the
+/// centre).
+pub(crate) const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
 /// The steps in which a junction is tried along its through road when a road cannot close against it.
