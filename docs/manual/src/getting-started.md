@@ -278,8 +278,11 @@ between two roads is judged against the nearer. Footways, paths and cycleways ar
 the graph, and are not touched. Nothing that met the removed part is lost: a road that joined it goes on along its own
 direction to the road (if that is within 30 m), the rest of a track at the end of a removed part meets the road at a
 shallow angle ahead of that end, and the road is cut there by a new node. A node of the road within 12.5 m (the length of a junction piece) is used instead
-of a new one, two new nodes on one road piece are 12.5 m apart, and no node is made within 12.5 m of the end of a bridge. The removed run's stretch keeps its id and the pieces
-that follow the first are named `<id>/side<n>`. Where a connector would cross a third road or be too long, the run next to
+of a new one, two new nodes on one road piece are 12.5 m apart, and no node is made within 12.5 m of the end of a bridge (a road
+piece shorter than 25 m between two bridges or tunnels is not joined at all). The road must be within 15 m of the joint
+(measured to the nearest point of the road); the connector to the place the joint moved to may be up to 30 m long. The removed run's stretch keeps its id and the pieces
+that follow the first are named `<id>/side<n>`. Where a connector would cross a third road (also one that moved onto
+another new junction) or be too long, or the road is out of reach, the run next to
 the joint stays and is reported (`crosses`, `would_disconnect`); no removal may cut a connected piece of the road network
 off from the rest (`would_split`). Each removed part is a finding (`road_sidepath_dropped`).
 **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and

@@ -23,8 +23,11 @@
 //! the road (within twice [`SIDEPATH_MAX_M`]) or else straight to the nearest point; the rest of a stretch at an end of
 //! a removed part inside it meets the road shallowly ahead of that end. The road is cut there by a new node unless a
 //! node is within [`JUNCTION_SPACING_M`] (the length of a junction piece; a road piece shorter than two of them gets no new
-//! node), two new nodes on one road piece are that far apart, and none is nearer than that to the end of a bridge. If such a connector
-//! would cross a third road or be too long, the run next to that joint stays (the shorter of the two at a node between
+//! node), two new nodes on one road piece are that far apart, and none is nearer than that to the end of a bridge (a
+//! piece shorter than two junction pieces with a bridge or tunnel at both ends is not joined). The road is within reach
+//! if its nearest point is within [`SIDEPATH_MAX_M`]; the connector to the place the joint moved to may be twice as long.
+//! If such a connector (also one moved onto an earlier new node) would cross a third road or be too long, or the road is
+//! out of reach or cannot be joined there, the run next to that joint stays (the shorter of the two at a node between
 //! two runs) and is reported. A short end piece that would be left between the road and a node that is already on the
 //! road the run is beside (or free) goes with the run. If the removal would split a component of the network (checked
 //! by membership of its nodes, so that a component that goes whole does not make up for it), the groups are tried one
@@ -537,10 +540,11 @@ impl<'a> Ctx<'a> {
     /// The point `along` metres along the road `road` as a place to join it: a node of the road if one is within
     /// [`JUNCTION_SPACING_M`] (the nearer end node of a piece shorter than two of them), and never nearer than that to
     /// the end of a bridge or tunnel (it moves along the road to that distance). A road
-    /// that is itself a bridge is met as it is.
-    fn snapped(&self, hit: Hit) -> Hit {
+    /// that is itself a bridge is met as it is. `None` where the road cannot be joined: a piece shorter than two
+    /// junction pieces with a bridge or tunnel at both ends.
+    fn snapped(&self, hit: Hit) -> Option<Hit> {
         let Some(road) = self.stretch(hit.stretch).filter(|r| !r.bridge && !r.tunnel) else {
-            return hit;
+            return Some(hit);
         };
         let length = self.total(hit.stretch);
         let (deck_start, deck_end) = (
@@ -556,7 +560,7 @@ impl<'a> Ctx<'a> {
                 (true, true) if along <= length - along => 0.0,
                 (_, true) => length,
                 (true, false) => 0.0,
-                (false, false) => return hit,
+                (false, false) => return None,
             };
         } else if along < spacing {
             // a node of the road within a junction piece's length is used; a deck end is kept the same distance off
@@ -564,22 +568,22 @@ impl<'a> Ctx<'a> {
         } else if length - along < spacing {
             along = if deck_end { length - spacing } else { length };
         }
-        // a deck end is kept at least an approach off even where that is nearer than a junction piece
         along = along.clamp(0.0, length);
         if (along - hit.along).abs() < EPS_M {
-            return hit;
+            return Some(hit);
         }
-        Hit {
+        Some(Hit {
             stretch: hit.stretch,
             along,
             at: point_along(&road.points, along),
-        }
+        })
     }
 
     /// Where the rest of a stretch that ends inside a run meets the road at the `at_end` end of the run: a point
     /// ahead of the end, towards the removed part, by twice the distance from the road (not further than a connector
     /// of twice [`SIDEPATH_MAX_M`]) and within the part of the road the run lies along, so that it merges at a
-    /// shallow angle instead of a corner. `None` if the road is a bridge or has no heading there.
+    /// shallow angle instead of a corner. `None` if the road is a bridge, has no heading there or cannot be joined
+    /// there.
     fn shallow(&self, run: &SideRun, at_end: bool) -> Option<Hit> {
         let (hit, from, dir, other) = if at_end {
             (run.last, run.last_at, run.last_dir, run.first)
@@ -605,11 +609,11 @@ impl<'a> Ctx<'a> {
             (0.0, length)
         };
         let along = (hit.along + sign * reach).clamp(lo, hi);
-        Some(self.snapped(Hit {
+        self.snapped(Hit {
             stretch: hit.stretch,
             along,
             at: point_along(&road.points, along),
-        }))
+        })
     }
 
     /// Where a stretch that leaves `from` along `dir` meets the road `road`, if within twice [`SIDEPATH_MAX_M`].
@@ -644,7 +648,7 @@ impl<'a> Ctx<'a> {
         };
         // a point that has to move to a node or off a deck end no longer continues the heading: the plain connector
         // is made instead
-        let snapped = self.snapped(hit);
+        let snapped = self.snapped(hit)?;
         ((snapped.along - hit.along).abs() <= 1.0).then_some(snapped)
     }
 
@@ -813,6 +817,37 @@ impl<'a> Ctx<'a> {
         None
     }
 
+    /// Why the joint from `from` to the road cannot be made at `snapped`, the place `nearest` (the nearest point of the
+    /// road) moved to: the road is out of reach (`nearest` further than [`SIDEPATH_MAX_M`]) or cannot be joined
+    /// there (`would_disconnect`), or the connector is longer than twice [`SIDEPATH_MAX_M`] or crosses a road that
+    /// stays.
+    fn joint_reason(
+        &self,
+        state: &[State],
+        from: Point,
+        nearest: Point,
+        snapped: Option<Hit>,
+    ) -> Option<&'static str> {
+        let Some(snapped) = snapped else {
+            return Some("would_disconnect");
+        };
+        if known_less(
+            SIDEPATH_MAX_M,
+            (nearest.0 - from.0).hypot(nearest.1 - from.1),
+        ) {
+            return Some("would_disconnect");
+        }
+        self.bad_connector(state, from, snapped.at, 2.0 * SIDEPATH_MAX_M)
+    }
+
+    /// Of the runs `removed` that end at one node, the one that stays when the node cannot be joined: the shorter.
+    fn shorter_of(&self, removed: &[usize]) -> Option<usize> {
+        removed.iter().copied().min_by(|&a, &b| {
+            let len = |k: usize| self.runs.get(k).map_or(0.0, |r| r.to - r.from);
+            len(a).total_cmp(&len(b)).then(a.cmp(&b))
+        })
+    }
+
     /// What has to be joined to the road at `node`, if anything: the runs that end there and are removed, and the
     /// stretches that stay.
     fn node_need(&self, state: &[State], node: i64) -> Option<NodeNeed> {
@@ -858,7 +893,9 @@ impl<'a> Ctx<'a> {
             ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1))
         })?;
         let run = self.runs.get(designated)?;
-        let target = self.snapped(if at_end { run.last } else { run.first });
+        let nearest = if at_end { run.last } else { run.first };
+        let plain = self.snapped(nearest);
+        let target = plain.unwrap_or(nearest);
         // a stretch that joined the removed part goes on along its own heading to the road, if that is near enough
         let ray = kept.iter().min().and_then(|&x| {
             let joining = self.stretch(x).filter(|j| j.start != j.end)?;
@@ -891,6 +928,8 @@ impl<'a> Ctx<'a> {
             at_end,
             removed: removed.iter().map(|&(k, _)| k).collect(),
             source,
+            nearest,
+            plain,
             target,
             ray,
         })
@@ -916,23 +955,22 @@ impl<'a> Ctx<'a> {
                 continue;
             }
             let at_end = end == 1;
-            let plain = self.snapped(if at_end { run.last } else { run.first });
-            let mut reason = None;
-            let mut found = None;
-            for (target, limit) in [
-                (self.shallow(run, at_end), 2.0 * SIDEPATH_MAX_M),
-                (Some(plain), SIDEPATH_MAX_M),
-            ] {
-                let Some(target) = target else { continue };
-                reason = self.bad_connector(state, from, target.at, limit);
-                if reason.is_none() {
-                    found = Some(target);
-                    break;
+            let shallow = self.shallow(run, at_end).filter(|target| {
+                self.bad_connector(state, from, target.at, 2.0 * SIDEPATH_MAX_M)
+                    .is_none()
+            });
+            let found = if let Some(target) = shallow {
+                target
+            } else {
+                let nearest = if at_end { run.last } else { run.first };
+                let plain = self.snapped(nearest);
+                if let Some(reason) = self.joint_reason(state, from, nearest.at, plain) {
+                    return Err(reason);
                 }
-            }
-            match (found, chosen.get_mut(end)) {
-                (Some(target), Some(slot)) => *slot = Some(target),
-                _ => return Err(reason.unwrap_or("would_disconnect")),
+                plain.unwrap_or(nearest)
+            };
+            if let Some(slot) = chosen.get_mut(end) {
+                *slot = Some(found);
             }
         }
         Ok(chosen)
@@ -992,18 +1030,17 @@ impl<'a> Ctx<'a> {
                     if let Some(ray) = straight {
                         need.target = ray;
                     } else if let Some(reason) =
-                        self.bad_connector(&state, need.source, need.target.at, SIDEPATH_MAX_M)
+                        self.joint_reason(&state, need.source, need.nearest.at, need.plain)
                     {
                         // of the runs that end at the node the shorter stays, with what is joined to it
-                        let shorter = need.removed.iter().copied().min_by(|&a, &b| {
-                            let len = |k: usize| self.runs.get(k).map_or(0.0, |r| r.to - r.from);
-                            len(a).total_cmp(&len(b)).then(a.cmp(&b))
-                        });
-                        drop = shorter.map(|k| (k, reason));
+                        drop = self.shorter_of(&need.removed).map(|k| (k, reason));
                         break;
                     }
                     needs.push(need);
                 }
+            }
+            if drop.is_none() {
+                drop = self.space_new_nodes(&state, &mut ends, &mut needs);
             }
             match drop {
                 Some((k, reason)) => {
@@ -1053,7 +1090,11 @@ struct NodeNeed {
     removed: Vec<usize>,
     /// The node's place.
     source: Point,
-    /// Where the road is met: the nearest point of the road, or where the joining stretch goes on to it.
+    /// The nearest point of the road to the designated run's end.
+    nearest: Hit,
+    /// Where the road is joined if not by the ray: `nearest` moved to a place a junction fits, if there is one.
+    plain: Option<Hit>,
+    /// Where the road is met: the plain place, or where the joining stretch goes on to it.
     target: Hit,
     /// Where the joining stretch meets the road if it goes on along its own heading.
     ray: Option<Hit>,
@@ -1096,9 +1137,7 @@ impl Ctx<'_> {
     /// The graph without the runs of the groups in `selected` (but for those that could not be joined to the road),
     /// the stretches that met them joined to the road, and the report.
     fn evaluate(&self, selected: &BTreeSet<usize>) -> Outcome {
-        let mut plan = self.plan(selected);
-        self.space_new_nodes(&mut plan);
-        let Plan { state, needs, ends } = plan;
+        let Plan { state, needs, ends } = self.plan(selected);
         let blocked: Vec<(usize, &'static str)> = state
             .iter()
             .enumerate()
@@ -1171,18 +1210,24 @@ impl Ctx<'_> {
 
     /// Two new nodes on one road piece are kept [`JUNCTION_SPACING_M`] apart: of the points where the plan meets a road
     /// piece (in the order of the pieces and of the places along them), a later one within that distance of an earlier
-    /// new node uses that node.
-    fn space_new_nodes(&self, plan: &mut Plan) {
+    /// new node uses that node, if the connector to it passes the checks of [`Self::bad_connector`] (within twice
+    /// [`SIDEPATH_MAX_M`]). Otherwise the run whose joint it is has to stay: that run and the reason.
+    fn space_new_nodes(
+        &self,
+        state: &[State],
+        ends: &mut [[Option<Hit>; 2]],
+        needs: &mut [NodeNeed],
+    ) -> Option<(usize, &'static str)> {
         // (piece, place, which point): a point of an end inside a stretch, or of a joint at a node
         let mut points: Vec<(usize, f64, usize, usize)> = Vec::new();
-        for (k, pair) in plan.ends.iter().enumerate() {
+        for (k, pair) in ends.iter().enumerate() {
             for (i, hit) in pair.iter().enumerate() {
                 if let Some(hit) = hit {
                     points.push((hit.stretch, hit.along, k, i));
                 }
             }
         }
-        for (n, need) in plan.needs.iter().enumerate() {
+        for (n, need) in needs.iter().enumerate() {
             points.push((need.target.stretch, need.target.along, n, 2));
         }
         points.sort_by(|a, b| {
@@ -1202,19 +1247,34 @@ impl Ctx<'_> {
                 .find(|m| m.stretch == stretch && (m.along - along).abs() < JUNCTION_SPACING_M)
                 .copied();
             let Some(hit) = earlier else {
-                if let Some(h) = Self::hit_at(&plan.ends, &plan.needs, index, which) {
+                if let Some(h) = Self::hit_at(ends, needs, index, which) {
                     made.push(h);
                 }
                 continue;
             };
+            // where the connector starts, and the run that stays if it cannot be made
+            let source = if which == 2 {
+                needs
+                    .get(index)
+                    .and_then(|n| Some((n.source, self.shorter_of(&n.removed)?)))
+            } else {
+                self.runs
+                    .get(index)
+                    .map(|r| (if which == 0 { r.first_at } else { r.last_at }, index))
+            };
+            let Some((from, keep)) = source else { continue };
+            if let Some(reason) = self.bad_connector(state, from, hit.at, 2.0 * SIDEPATH_MAX_M) {
+                return Some((keep, reason));
+            }
             if which == 2 {
-                if let Some(need) = plan.needs.get_mut(index) {
+                if let Some(need) = needs.get_mut(index) {
                     need.target = hit;
                 }
-            } else if let Some(slot) = plan.ends.get_mut(index).and_then(|p| p.get_mut(which)) {
+            } else if let Some(slot) = ends.get_mut(index).and_then(|p| p.get_mut(which)) {
                 *slot = Some(hit);
             }
         }
+        None
     }
 
     fn hit_at(
@@ -1488,6 +1548,40 @@ mod tests {
             .map(|s| s.id.as_str())
             .collect();
         assert_eq!(ids, ["1", "2"]);
+    }
+
+    #[test]
+    fn reach_is_measured_to_the_road_and_the_moved_connector_may_be_twice_as_long() {
+        // only the public fixtures' runs lie within reach of the road, so the reach guard is tested here
+        let g = rebuilt(vec![Stretch {
+            points: vec![(0.0, 0.0), (100.0, 0.0)],
+            ..graph(&[(1, 2)]).stretches[0].clone()
+        }]);
+        let ctx = Ctx::new(&g, LOWEST_RANK, &|f| f.width_m(), 4.0);
+        let at = |x: f64| Hit {
+            stretch: 0,
+            along: x,
+            at: (x, 0.0),
+        };
+        // 10 m to the road, 16 m to where the joint moved
+        assert_eq!(
+            ctx.joint_reason(&[], (50.0, 10.0), (50.0, 0.0), Some(at(62.5))),
+            None
+        );
+        // 16 m to the road: out of reach, wherever the joint is
+        assert_eq!(
+            ctx.joint_reason(&[], (50.0, 16.0), (50.0, 0.0), Some(at(50.0))),
+            Some("would_disconnect")
+        );
+        // a connector longer than twice the reach, or no place to join
+        assert_eq!(
+            ctx.joint_reason(&[], (50.0, 10.0), (50.0, 0.0), Some(at(80.0))),
+            Some("would_disconnect")
+        );
+        assert_eq!(
+            ctx.joint_reason(&[], (50.0, 10.0), (50.0, 0.0), None),
+            Some("would_disconnect")
+        );
     }
 
     #[test]

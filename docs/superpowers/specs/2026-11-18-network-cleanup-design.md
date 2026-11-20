@@ -129,8 +129,13 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   A point on the road is never a new node when a node of the road is within `JUNCTION_SPACING_M` of it (12.5 m, the
   length of a junction piece in the placement; that node is used, the nearer one on a road piece shorter than two of
   them), two new nodes on one road piece are that far apart (the later uses the earlier), and none is within that distance
-  of the end of a bridge or tunnel (it moves along the road to that distance; `APPROACH_M` is the smaller of the two). If a connector
-  would cross a third road or be longer than its limit, the run next to that joint stays instead (at a node between two
+  of the end of a bridge or tunnel (it moves along the road to that distance; `APPROACH_M` is the smaller of the two). A road
+  piece shorter than two junction pieces with a bridge or tunnel at both ends is not joined. Reach is the distance from
+  the node (or the end of the run) to the nearest point of the road, before any of these moves: at most
+  `SIDEPATH_MAX_M` (amended 2026-11-20, controller ruling M8). The connector to the place the point moved to may then
+  be up to `2 * SIDEPATH_MAX_M` long, and every connector, also one moved onto an earlier new node, is checked for
+  crossing a third road. If a connector would cross a third road or be longer than its limit, if the road is out of
+  reach or cannot be joined there, the run next to that joint stays instead (at a node between two
   runs, the shorter of the two) and is reported. "On the road" means a node of the road the run is beside, or a node that a higher stretch passes through (two or more
   end there); a higher road that merely ends at the track is joined to the road like any other stretch. A connector
   shorter than `SPECK_M` is not made (the end of the joining stretch moves onto the road); a point that would have to

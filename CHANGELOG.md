@@ -17,13 +17,15 @@ All notable changes to this project are documented here. The format follows
   road of a higher family, on one side and along it, for at least 30 m (any length beside a road tagged
   `foot=use_sidepath`), is not placed where it disturbs: where the two earthworks (half the width and the shoulder
   ring of one and a half terrain cells each) overlap or leave less than a cell, or along a bridge of the road
-  (`road_sidepath_dropped`). Roads that met the removed part end on the road instead, by a straight connector of at
-  most 15 m; a run that would need a connector across a third road, or whose removal would split the network, stays
+  (`road_sidepath_dropped`). Roads that met the removed part end on the road instead, by a straight connector (the
+  road within 15 m of the joint, the connector to where the joint moved on the road at most 30 m, never across a
+  third road, also after it moved onto another new junction); a run that would need a connector across a third road, or whose removal would split the network, stays
   and is listed by the `road-analysis` example. Footways and paths are not touched. Stretch ids are kept; pieces of
   a cut stretch are named `<id>/side<n>`. A removal never cuts a connected piece of the road network off from the
   rest; a run is the whole part within 15 m of the road, also where the track bends to join it; roads that met it go on
   along their own direction to the road, the rest of a track merges at a shallow angle, and joints use a node of the
-  road within 12.5 m (a junction piece), keep new nodes 12.5 m apart and keep 12.5 m off the end of a bridge. A road that merely ends at a removed track is joined to the
+  road within 12.5 m (a junction piece), keep new nodes 12.5 m apart and keep 12.5 m off the end of a bridge (a road piece shorter than 25 m between two
+  bridges or tunnels is not joined). A road that merely ends at a removed track is joined to the
   road, a junction approach with a short parallel tail is not a sidepath (the 30 m must be met along the road), and a
   refused split is reported as `would_split`.
 - The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four

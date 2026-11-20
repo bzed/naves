@@ -1853,3 +1853,159 @@ fn a_joining_road_whose_heading_leads_to_a_node_but_whose_foot_does_not_is_joine
     let (_, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
     assert_eq!(joint_of(&dropped), [(20.0, 0.0)]);
 }
+
+// ---- fix round 4: moved joints are checked again, and reach is measured to the road ----
+
+/// Whether the segments `a`-`b` and `c`-`d` cross (not merely touch at an end).
+fn segments_cross(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    let side = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    };
+    let (d1, d2) = (side(c, d, a), side(c, d, b));
+    let (d3, d4) = (side(a, b, c), side(a, b, d));
+    d1 * d2 < 0.0 && d3 * d4 < 0.0
+}
+
+#[test]
+fn a_joint_moved_onto_an_earlier_junction_is_not_joined_across_a_third_road() {
+    // two joining roads 4 m apart along the track; the later joint would move onto the earlier one at (96, 0), and
+    // the connector from (100, 5) to it would cross a short mud track that lies across neither straight connector
+    let mud = [(97.5, 2.5), (98.5, 2.5)];
+    let features = vec![
+        plain(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], Family::Asf3),
+        plain(2, &[5, 7], &[(40.0, 5.0), (96.0, 5.0)], Family::Grav),
+        plain(3, &[7, 8], &[(96.0, 5.0), (100.0, 5.0)], Family::Grav),
+        plain(4, &[8, 6], &[(100.0, 5.0), (150.0, 5.0)], Family::Grav),
+        plain(5, &[7, 9], &[(96.0, 5.0), (96.0, 60.0)], Family::Grav),
+        plain(6, &[8, 10], &[(100.0, 5.0), (100.0, 60.0)], Family::Grav),
+        plain(7, &[11, 12], &mud, Family::Mud),
+    ];
+    let g = build_graph(&features);
+    let want = drop_sidepaths(&g, &widths, CELL_M);
+    let (out, dropped, kept) = &want;
+    assert!(components(out) <= components(&g));
+    for s in out.stretches.iter().filter(|s| !s.id.starts_with("7:")) {
+        for w in s.points.windows(2) {
+            assert!(
+                !segments_cross(w[0], w[1], mud[0], mud[1]),
+                "{} crosses the mud track: {:?} (dropped {dropped:?}, kept {kept:?})",
+                s.id,
+                s.points
+            );
+        }
+    }
+    assert!(kept.iter().any(|k| k.reason == "crosses"), "{kept:?}");
+    let mut shuffled = g.clone();
+    shuffled.stretches.reverse();
+    assert_eq!(drop_sidepaths(&shuffled, &widths, CELL_M), want);
+}
+
+#[test]
+fn a_road_piece_between_two_decks_shorter_than_two_junction_pieces_is_not_joined() {
+    // a 20 m piece of road between two bridges; the track beside it meets a joining road at x = 10
+    let deck = |id: i64, nodes: &[i64], points: &[(f64, f64)]| {
+        way(id, nodes, points, Family::Asf3, true, true, false)
+    };
+    let features = vec![
+        plain(1, &[1, 2], &[(-150.0, 0.0), (-100.0, 0.0)], Family::Asf3),
+        deck(5, &[2, 3], &[(-100.0, 0.0), (0.0, 0.0)]),
+        plain(6, &[3, 4], &[(0.0, 0.0), (20.0, 0.0)], Family::Asf3),
+        deck(7, &[4, 14], &[(20.0, 0.0), (120.0, 0.0)]),
+        plain(8, &[14, 15], &[(120.0, 0.0), (170.0, 0.0)], Family::Asf3),
+        plain(2, &[10, 11], &[(-30.0, 5.0), (10.0, 5.0)], Family::Grav),
+        plain(3, &[11, 12], &[(10.0, 5.0), (60.0, 5.0)], Family::Grav),
+        plain(4, &[11, 13], &[(10.0, 5.0), (10.0, 60.0)], Family::Grav),
+    ];
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert!(components(&out) <= components(&g));
+    assert!(
+        kept.iter().any(|k| k.reason == "would_disconnect"),
+        "{kept:?} {dropped:?}"
+    );
+    // no new node on the short piece, and the joining road still ends where it did
+    assert!(
+        out.stretches
+            .iter()
+            .all(|s| !s.id.starts_with("6:") || !s.id.contains("/side")),
+        "{:?}",
+        stretch_ids(&out)
+    );
+    let side = out.stretches.iter().find(|s| s.id == "4:11-13").unwrap();
+    assert_eq!((side.start, side.end), (11, 13));
+}
+
+#[test]
+fn a_joint_ten_metres_off_the_road_moved_out_from_a_deck_end_is_made() {
+    // the joint at x = 0 is 10 m from the road; the nearest point is the end of a bridge, so the joint moves out to
+    // 12.5 m from it: a connector of 16 m, within twice the reach
+    let features = vec![
+        plain(1, &[1, 2], &[(-50.0, 0.0), (0.0, 0.0)], Family::Asf3),
+        way(
+            5,
+            &[2, 3],
+            &[(0.0, 0.0), (100.0, 0.0)],
+            Family::Asf3,
+            true,
+            true,
+            false,
+        ),
+        plain(6, &[3, 4], &[(100.0, 0.0), (150.0, 0.0)], Family::Asf3),
+        plain(2, &[10, 11], &[(-30.0, 10.0), (0.0, 10.0)], Family::Grav),
+        plain(3, &[11, 12], &[(0.0, 10.0), (60.0, 10.0)], Family::Grav),
+        plain(4, &[11, 13], &[(0.0, 10.0), (0.0, 60.0)], Family::Grav),
+    ];
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert!(components(&out) <= components(&g));
+    assert!(kept.is_empty(), "{kept:?}");
+    let joined: Vec<_> = dropped.iter().flat_map(|d| d.connectors.iter()).collect();
+    assert_eq!(joined.len(), 1, "{dropped:?}");
+    assert!(
+        (joined[0].1.0 + 12.5).abs() < 1e-6 && joined[0].1.1.abs() < 1e-6,
+        "{joined:?}"
+    );
+}
+
+#[test]
+fn the_end_of_a_part_inside_a_stretch_is_joined_straight_down_where_the_shallow_merge_would_cross_a_third_road()
+ {
+    // the track comes down to the road at x = 40; a short mud track lies across the shallow merge ahead of the end of
+    // the run, but not across the straight connector down to the road
+    let mud = [(44.0, 0.5), (44.0, 4.5)];
+    let side = plain(
+        2,
+        &[5, 7, 6],
+        &[(0.0, 30.0), (40.0, 5.0), (150.0, 5.0)],
+        Family::Grav,
+    );
+    let g = build_graph(&[
+        main_road(Family::Asf3),
+        side,
+        plain(3, &[9, 10], &mud, Family::Mud),
+    ]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert!(kept.is_empty(), "{kept:?}");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    for s in out.stretches.iter().filter(|s| !s.id.starts_with("3:")) {
+        for w in s.points.windows(2) {
+            assert!(
+                !segments_cross(w[0], w[1], mud[0], mud[1]),
+                "{} crosses the mud track: {:?}",
+                s.id,
+                s.points
+            );
+        }
+    }
+    // the rest of the track ends on the road below the end of the run, before the mud track
+    let rest = out
+        .stretches
+        .iter()
+        .find(|s| s.id.starts_with("2:"))
+        .unwrap();
+    assert!(
+        rest.points.iter().any(|p| p.1.abs() < 1e-6 && p.0 < 30.0),
+        "{:?}",
+        rest.points
+    );
+}
