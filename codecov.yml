@@ -4,9 +4,18 @@
 coverage:
   status:
     project:
-      default:
+      # Pull requests may drop total coverage by up to 1 %.
+      pull-requests:
         target: auto
-        threshold: 0%
+        threshold: 1%
+        only_pulls: true
+      # main allows for the noise of a run: a few lines are reached or not depending on timing, which moves
+      # the total by a few hundredths of a percent.
+      main:
+        target: auto
+        threshold: 0.1%
+        branches:
+          - main
     patch:
       default:
         target: auto
