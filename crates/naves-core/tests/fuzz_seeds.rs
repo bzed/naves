@@ -170,3 +170,28 @@ fn odol_read_seeds_measure_as_bridge_parts() {
         drop(PieceCatalog::from_models(&models));
     }
 }
+
+#[test]
+fn smooth_line_seeds() {
+    use naves_core::smooth::{Sample, SmoothParams, resample, smooth_line};
+    for (name, data) in seeds("smooth_line") {
+        let samples: Vec<Sample> = data
+            .as_chunks::<17>()
+            .0
+            .iter()
+            .map(|c| Sample {
+                at: (
+                    f64::from_le_bytes(c[0..8].try_into().unwrap()),
+                    f64::from_le_bytes(c[8..16].try_into().unwrap()),
+                ),
+                fixed: c[16] & 1 != 0,
+                stiffness: if c[16] & 2 != 0 { 10.0 } else { 1.0 },
+            })
+            .collect();
+        let result = smooth_line(&samples, &SmoothParams::default());
+        let good = matches!(name.as_str(), "corner" | "straight");
+        assert_eq!(result.is_ok(), good, "seed {name}: {:?}", result.err());
+        let line: Vec<(f64, f64)> = samples.iter().map(|s| s.at).collect();
+        let _ = resample(&line, 2.0);
+    }
+}

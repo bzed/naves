@@ -117,3 +117,10 @@ path = "fuzz_targets/overrides_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "smooth_line"
+path = "fuzz_targets/smooth_line.rs"
+test = false
+doc = false
+bench = false

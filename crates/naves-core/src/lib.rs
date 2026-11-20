@@ -31,5 +31,6 @@ pub mod roadfit;
 pub mod roadnet;
 pub mod roadplace;
 pub mod sideslope;
+pub mod smooth;
 pub mod surface;
 pub mod validate;
