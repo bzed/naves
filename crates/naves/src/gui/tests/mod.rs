@@ -11,6 +11,7 @@ use std::time::Instant;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use naves_core::project::Project;
+use naves_core::render::MapLayer;
 use naves_export::testing::FakeEnv;
 
 use super::*;
@@ -64,6 +65,32 @@ fn state_harness(app: NavesApp) -> Harness<'static, NavesApp> {
 fn app(root: &Path, dir: &Path) -> NavesApp {
     let tools = FakeEnv::new(&root.join("fake")).unwrap().tools();
     NavesApp::open(dir, Box::new(move || Ok(tools.clone()))).unwrap()
+}
+
+/// The project with the OSM highways of the area listed as a source.
+fn with_roads(root: &Path) -> PathBuf {
+    let dir = project(root);
+    std::fs::create_dir_all(dir.join("osm")).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/osm/koenigssee_roads.osm.pbf");
+    std::fs::copy(fixture, dir.join("osm/roads.osm.pbf")).unwrap();
+    let mut p = Project::load(&dir).unwrap();
+    p.sources.osm = vec!["osm/roads.osm.pbf".into()];
+    // steep ground, so that the roads have findings (where roads meet without a junction piece one lies on
+    // top of the other, so the fixture has none at the real heights)
+    p.scale.height = 2.0;
+    p.save(&dir).unwrap();
+    dir
+}
+
+/// Steps the app without a window until its roads job has ended.
+fn wait_for_the_roads(app: &mut NavesApp) {
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
+    while matches!(app.roads, RoadsState::Generating) {
+        assert!(Instant::now() < deadline, "timed out waiting for the roads");
+        app.poll_background();
+        std::thread::yield_now();
+    }
 }
 
 /// Steps the harness until `done` holds or a generous deadline passes.
@@ -299,6 +326,59 @@ fn the_surface_overlay_draws_once_the_map_is_ready() {
     assert!(
         harness.query_by_label("Forest").is_some(),
         "the legend names the classes"
+    );
+}
+
+#[test]
+fn the_map_is_drawn_with_roads_once_they_are_there() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_roads(&mut app);
+    assert!(matches!(app.roads, RoadsState::Ready(_)), "the roads ready");
+    let mut harness = state_harness(app);
+    harness.run_steps(8);
+    let before = harness.state().views.active().renders();
+    harness.state_mut().panel.on.insert(MapLayer::Drivable);
+    harness.run_steps(4);
+    let after = harness.state().views.active().renders();
+    assert!(
+        after > before,
+        "the road layer was drawn from the generated roads"
+    );
+    assert!(
+        harness
+            .state()
+            .drawn_layers()
+            .iter()
+            .any(|l| crate::gui::levels::roads::needs_roads(l.layer)),
+        "the road layer stays in the frame while the roads are ready"
+    );
+}
+
+#[test]
+fn the_map_draws_no_picture_in_a_tiny_window() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_job(&mut app);
+    assert!(
+        matches!(app.heightmap, HeightmapState::Ready(_)),
+        "the map was waited for"
+    );
+    let mut harness = Harness::builder()
+        .with_context_setup(crate::gui::theme::apply_theme)
+        .with_size((100.0, 80.0))
+        .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app);
+    harness.run_steps(4);
+    let rect = harness.state().seen_rect;
+    assert!(
+        rect.height() < 1.0,
+        "the map's space {rect:?} is too small to hold a picture"
+    );
+    assert!(
+        !harness.state().views.active().holds_picture(),
+        "the window is too small to hold a picture of the map"
     );
 }
 

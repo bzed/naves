@@ -3,8 +3,6 @@
 
 //! Level 4: the row without roads, the tools it needs, the layers that wait, the properties and the problems.
 
-use std::time::Instant;
-
 use egui_kittest::kittest::Queryable;
 use naves_core::render::MapLayer;
 
@@ -12,31 +10,6 @@ use super::*;
 use crate::gui::levels::{BUILT, Level, roads};
 use crate::gui::viewport::WorldPoint;
 use crate::gui::worker::RoadsState;
-
-/// The project with the OSM highways of the area listed as a source.
-fn with_roads(root: &Path) -> PathBuf {
-    let dir = project(root);
-    std::fs::create_dir_all(dir.join("osm")).unwrap();
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/osm/koenigssee_roads.osm.pbf");
-    std::fs::copy(fixture, dir.join("osm/roads.osm.pbf")).unwrap();
-    let mut p = Project::load(&dir).unwrap();
-    p.sources.osm = vec!["osm/roads.osm.pbf".into()];
-    // steep ground, so that the roads have findings (where roads meet without a junction piece one lies on
-    // top of the other, so the fixture has none at the real heights)
-    p.scale.height = 2.0;
-    p.save(&dir).unwrap();
-    dir
-}
-
-fn wait_for_the_roads(app: &mut NavesApp) {
-    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
-    while matches!(app.roads, RoadsState::Generating) {
-        assert!(Instant::now() < deadline, "timed out waiting for the roads");
-        app.poll_background();
-        std::thread::yield_now();
-    }
-}
 
 fn go_to_roads(h: &mut Harness<'_, NavesApp>) {
     h.key_press(egui::Key::Num4);
