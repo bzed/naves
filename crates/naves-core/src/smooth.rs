@@ -136,11 +136,9 @@ pub fn resample(line: &[(f64, f64)], step: f64) -> Vec<(f64, f64)> {
         ) else {
             break;
         };
-        let t = if c1 > c0 {
-            (target - c0) / (c1 - c0)
-        } else {
-            0.0
-        };
+        // c1 > c0: the loop above stops at the first point whose length reaches the target, and no
+        // segment has length zero
+        let t = (target - c0) / (c1 - c0);
         out.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
     }
     out.push(last);
@@ -211,28 +209,23 @@ pub fn smooth_line(
     let normal = normals(&points);
 
     let mut problem = Problem::new(count);
-    for (i, w) in samples.windows(3).enumerate() {
+    for (i, (w, nw)) in samples.windows(3).zip(normal.windows(3)).enumerate() {
         // the second difference at sample i + 1, per coordinate
-        let centre = i + 1;
-        let (Some(before), Some(mid), Some(after)) = (w.first(), w.get(1), w.get(2)) else {
-            continue;
-        };
-        let (Some(na), Some(nb), Some(nc)) = (normal.get(i), normal.get(centre), normal.get(i + 2))
-        else {
-            continue;
-        };
-        let along_x = [(i, na.0), (centre, -2.0 * nb.0), (i + 2, nc.0)];
-        let along_y = [(i, na.1), (centre, -2.0 * nb.1), (i + 2, nc.1)];
-        problem.add_square(
-            mid.stiffness,
-            &along_x,
-            before.at.0 - 2.0 * mid.at.0 + after.at.0,
-        );
-        problem.add_square(
-            mid.stiffness,
-            &along_y,
-            before.at.1 - 2.0 * mid.at.1 + after.at.1,
-        );
+        if let ([before, mid, after], [na, nb, nc]) = (w, nw) {
+            let centre = i + 1;
+            let along_x = [(i, na.0), (centre, -2.0 * nb.0), (i + 2, nc.0)];
+            let along_y = [(i, na.1), (centre, -2.0 * nb.1), (i + 2, nc.1)];
+            problem.add_square(
+                mid.stiffness,
+                &along_x,
+                before.at.0 - 2.0 * mid.at.0 + after.at.0,
+            );
+            problem.add_square(
+                mid.stiffness,
+                &along_y,
+                before.at.1 - 2.0 * mid.at.1 + after.at.1,
+            );
+        }
     }
     for (i, s) in samples.iter().enumerate() {
         problem.add_square(params.stay, &[(i, 1.0)], 0.0);

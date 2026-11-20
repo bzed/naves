@@ -8,7 +8,9 @@
     reason = "test code; failing loudly is the point"
 )]
 
-use naves_core::smooth::{CORRIDOR_M, Sample, SmoothParams, radius_at, resample, smooth_line};
+use naves_core::smooth::{
+    CORRIDOR_M, Sample, SmoothError, SmoothParams, radius_at, resample, smooth_line,
+};
 
 type P = (f64, f64);
 
@@ -71,8 +73,8 @@ fn a_corner_is_rounded_inside_the_corridor() {
     let last = line.len() - 1;
     let out = smooth_line(&samples(&line, &[0, last]), &SmoothParams::default()).unwrap();
     within_corridor(&line, &out);
-    // A fillet of a 90 degree corner inside a 2 m corridor has a radius of at most 2 / (sqrt 2 - 1) = 4.8 m,
-    // which is about 24 degrees per 2 m sample; W_STAY pulls it a little below that.
+    // These thresholds are what the spec's model gives with W_STAY = 0.02 (measured: 25.3 degrees, 3.75 m); the
+    // corner sample moves about 0.9 m, so the corridor is not reached.
     let worst = turns(&out).iter().fold(0.0_f64, |m, t| m.max(t.abs()));
     assert!(worst < 30.0, "largest turn {worst}");
     let corner = line.iter().position(|p| *p == (40.0, 0.0)).unwrap();
@@ -140,6 +142,13 @@ fn a_switchback_stays_a_switchback() {
     within_corridor(&line, &out);
     let total: f64 = turns(&out).iter().sum();
     assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
+    let sharpest = |l: &[P]| turns(l).iter().fold(0.0_f64, |m, t| m.max(t.abs()));
+    assert!(
+        sharpest(&out) < sharpest(&line),
+        "largest turn {} -> {}",
+        sharpest(&line),
+        sharpest(&out)
+    );
     let lower: Vec<P> = out
         .iter()
         .copied()
@@ -200,27 +209,32 @@ fn stiff_samples_stay_straighter() {
 #[test]
 fn degenerate_input_is_an_error_not_a_panic() {
     let p = SmoothParams::default();
-    for n in 0..3 {
+    for n in 0_u8..3 {
         let line: Vec<P> = (0..n).map(|i| (f64::from(i), 0.0)).collect();
+        let result = smooth_line(&samples(&line, &[]), &p);
         assert!(
-            smooth_line(&samples(&line, &[]), &p).is_err(),
-            "{n} samples"
+            matches!(result, Err(SmoothError::TooShort(k)) if k == usize::from(n)),
+            "{n} samples: {result:?}"
         );
     }
     let mut line: Vec<P> = (0..10).map(|i| (f64::from(i), 0.0)).collect();
     line[4].0 = f64::NAN;
-    assert!(smooth_line(&samples(&line, &[]), &p).is_err());
+    let result = smooth_line(&samples(&line, &[]), &p);
+    assert!(matches!(result, Err(SmoothError::NotFinite)), "{result:?}");
     let same = vec![(1.0, 1.0); 10];
-    assert!(smooth_line(&samples(&same, &[]), &p).is_err());
+    let result = smooth_line(&samples(&same, &[]), &p);
+    assert!(matches!(result, Err(SmoothError::Degenerate)), "{result:?}");
     let line: Vec<P> = (0..10).map(|i| (f64::from(i), 0.0)).collect();
     let mut s = samples(&line, &[]);
     s[3].stiffness = f64::INFINITY;
-    assert!(smooth_line(&s, &p).is_err());
+    let result = smooth_line(&s, &p);
+    assert!(matches!(result, Err(SmoothError::NotFinite)), "{result:?}");
     let bad = SmoothParams {
         corridor: -1.0,
         stay: 0.02,
     };
-    assert!(smooth_line(&samples(&line, &[]), &bad).is_err());
+    let result = smooth_line(&samples(&line, &[]), &bad);
+    assert!(matches!(result, Err(SmoothError::NotFinite)), "{result:?}");
 }
 
 #[test]
@@ -266,4 +280,39 @@ fn the_same_input_gives_the_same_bytes() {
         assert_eq!(x.0.to_bits(), y.0.to_bits());
         assert_eq!(x.1.to_bits(), y.1.to_bits());
     }
+}
+
+#[test]
+fn a_length_that_overflows_comes_back_unchanged() {
+    let line = [(-1e308, 0.0), (1e308, 0.0)];
+    assert_eq!(resample(&line, 2.0), line.to_vec());
+}
+
+#[test]
+fn a_sample_between_two_equal_neighbours_stays_where_it_is() {
+    let line = [(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)];
+    let out = smooth_line(&samples(&line, &[]), &SmoothParams::default()).unwrap();
+    assert_eq!(out.len(), 3);
+    assert_eq!(out[1].0.to_bits(), 1.0_f64.to_bits());
+    assert_eq!(out[1].1.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn stiffness_belongs_to_the_centre_sample() {
+    let line = an_l();
+    let last = line.len() - 1;
+    let run = |at: usize, stiffness: f64| {
+        let mut s = samples(&line, &[0, last]);
+        s[at].stiffness = stiffness;
+        smooth_line(&s, &SmoothParams::default()).unwrap()
+    };
+    let bits =
+        |l: &[P]| -> Vec<(u64, u64)> { l.iter().map(|p| (p.0.to_bits(), p.1.to_bits())).collect() };
+    let plain = bits(&run(5, 1.0));
+    // the ends have no bend of their own: their stiffness changes nothing
+    assert_eq!(bits(&run(0, 10.0)), plain);
+    assert_eq!(bits(&run(last, 10.0)), plain);
+    // an interior sample's does
+    let corner = line.iter().position(|p| *p == (40.0, 0.0)).unwrap();
+    assert_ne!(bits(&run(corner, 10.0)), plain);
 }

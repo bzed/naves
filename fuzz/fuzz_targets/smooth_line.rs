@@ -8,7 +8,9 @@ use naves_core::smooth::{Sample, SmoothParams, resample, smooth_line};
 
 /// Records of 17 bytes: x and y as little-endian `f64`, one flag byte (bit 0 fixed, bit 1 stiff).
 fn decode(data: &[u8]) -> Vec<Sample> {
-    data.as_chunks::<17>().0.iter()
+    data.as_chunks::<17>()
+        .0
+        .iter()
         .filter_map(|c| {
             let x = f64::from_le_bytes(c.get(0..8)?.try_into().ok()?);
             let y = f64::from_le_bytes(c.get(8..16)?.try_into().ok()?);
