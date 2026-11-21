@@ -33,6 +33,7 @@ fn feature(way: i64, family: Family, bridge: bool, nodes: &[i64], pts: &[(f64, f
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: pts.to_vec(),
         nodes: nodes.to_vec(),

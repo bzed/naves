@@ -40,6 +40,7 @@ fn road(family: Family, drivable: bool) -> Option<FeatureKind> {
         tunnel: false,
         roundabout: false,
         layer: 0,
+        use_sidepath: false,
     })
 }
 
@@ -739,7 +740,40 @@ fn a_road_serialized_before_these_fields_still_loads() {
         FeatureKind::Road {
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
             ..
         }
     ));
+}
+
+#[test]
+fn foot_use_sidepath_sets_its_flag_and_nothing_else_changes() {
+    let flags = |extra: &[(&str, &str)]| {
+        let mut t = vec![("highway", "service")];
+        t.extend_from_slice(extra);
+        match classify(&tags(&t)) {
+            Some(FeatureKind::Road { use_sidepath, .. }) => use_sidepath,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(!flags(&[]));
+    assert!(flags(&[("foot", "use_sidepath")]));
+    assert!(!flags(&[("foot", "yes"), ("footway", "sidewalk")]));
+    let rest = |extra: &[(&str, &str)]| {
+        let mut t = vec![("highway", "service")];
+        t.extend_from_slice(extra);
+        match classify(&tags(&t)) {
+            Some(FeatureKind::Road {
+                family,
+                drivable,
+                bridge,
+                tunnel,
+                roundabout,
+                layer,
+                ..
+            }) => (family, drivable, bridge, tunnel, roundabout, layer),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(rest(&[]), rest(&[("foot", "use_sidepath")]));
 }

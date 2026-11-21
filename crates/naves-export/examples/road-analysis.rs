@@ -53,7 +53,9 @@ use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, bridge_end_steps, check_roads};
 use naves_export::catalog_read::road_catalog;
-use naves_export::generate::{FittedGraph, Placed, fitted_graph, place_once, plan_roads};
+use naves_export::generate::{
+    FittedGraph, Placed, fitted_graph, fitted_graph_with, place_once, plan_roads,
+};
 use naves_export::tools::Tools;
 
 fn len(p: &PieceCheck) -> f64 {
@@ -171,16 +173,104 @@ fn main() {
     }
     let catalog = road_catalog(&tools, &tools.cache_dir).expect("catalog");
     let t_read = t0.elapsed();
+    let sources = LoadedSources::open(&project, dir, &|_| {}).expect("sources");
+    let lakes = sources
+        .osm
+        .as_ref()
+        .map_or(&[][..], |o| o.polygons.as_slice());
+    let in_water = naves_core::validate::water_test(lakes, &frame);
     let FittedGraph {
         graph: widened,
         built,
         duplicates,
+        clean,
+        smooth,
+        smooth_time,
         bridges,
-    } = fitted_graph(&features, &catalog, &base);
+    } = fitted_graph(&features, &catalog, &base, &in_water);
+    if smooth.is_some() {
+        println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
+    }
+    if let Some(report) = &smooth {
+        // the nodes of the graph against the graph without the smoothing: by how many stretch ends meet there
+        // (a node where only two meet may move with the road inside a curve zone; junctions, dead ends and bridge
+        // ends must not), and the point counts
+        let ends = |g: &naves_core::roadnet::RoadGraph| {
+            let mut at: BTreeMap<i64, ((f64, f64), usize, bool)> = BTreeMap::new();
+            for s in &g.stretches {
+                for (node, p) in [
+                    (s.start, s.points.first().copied()),
+                    (s.end, s.points.last().copied()),
+                ] {
+                    if let Some(p) = p {
+                        let e = at.entry(node).or_insert((p, 0, false));
+                        e.1 += 1;
+                        e.2 |= s.bridge;
+                    }
+                }
+            }
+            at
+        };
+        let plain = fitted_graph_with(&features, &catalog, &base, false, &in_water);
+        let (after, before) = (ends(&built), ends(&plain.built));
+        // classes: two-stretch, junction, dead end, bridge end
+        let mut totals = [0_usize; 4];
+        let mut moved = [0_usize; 4];
+        let mut furthest = 0.0_f64;
+        for (node, (p, count, bridge)) in &after {
+            let class = if *bridge {
+                3
+            } else if *count >= 3 {
+                1
+            } else if *count == 1 {
+                2
+            } else {
+                0
+            };
+            totals[class] += 1;
+            if let Some((q, _, _)) = before.get(node) {
+                let d = (p.0 - q.0).hypot(p.1 - q.1);
+                if d > 1e-6 {
+                    moved[class] += 1;
+                    furthest = furthest.max(d);
+                    println!(
+                        "SMOOTH_NODE {node} class {class} at ({:.1}, {:.1}) moved {d:.2} m",
+                        q.0, q.1
+                    );
+                }
+            }
+        }
+        println!(
+            "SMOOTH_NODES two_stretch {} moved {} furthest_m {furthest:.2}",
+            totals[0], moved[0]
+        );
+        println!(
+            "SMOOTH_FIXED junctions {} moved {}, dead ends {} moved {}, bridge ends {} moved {} (all must be 0)",
+            totals[1], moved[1], totals[2], moved[2], totals[3], moved[3]
+        );
+        let points = |g: &naves_core::roadnet::RoadGraph| -> usize {
+            g.stretches.iter().map(|s| s.points.len()).sum()
+        };
+        println!(
+            "SMOOTH_POINTS before {} (graph without the stage) fitted {} after the drop {} (graph {})",
+            report.points_before,
+            report.points_fitted,
+            report.points_after,
+            points(&built)
+        );
+    }
     if let Ok(spot) = std::env::var("NEARDUMP") {
-        // NEARDUMP=x,y: every stretch of the OpenStreetMap graph and of the fitted one within 40 m of the spot
+        // NEARDUMP=x,y: every stretch of the graph before the clean-up (PRE), after it (OSM) and fitted (FIT) within 40 m
+        // of the spot
         let v: Vec<f64> = spot.split(',').filter_map(|p| p.parse().ok()).collect();
-        for (label, g) in [("OSM", &built), ("FIT", &widened)] {
+        let pre = {
+            let (flat, _) = naves_core::roadnet::collapse_small_rings(
+                &naves_core::roadnet::build_graph(&features),
+                &|f| catalog.tightest_arc(f),
+            );
+            naves_core::roadnet::drop_duplicates(&flat).0
+        };
+        for (label, g) in [("PRE", &pre), ("OSM", &built), ("FIT", &widened)] {
             for s in &g.stretches {
                 let near = s
                     .points
@@ -217,6 +307,124 @@ fn main() {
                 d.at.1
             );
         }
+    }
+    if let Some(s) = &smooth {
+        // what the smoothing did: the totals, every stretch that has tight length, every zone
+        println!("SMOOTH {}", s.summary());
+        println!(
+            "SMOOTH totals chains {} max_move_m {:.3} max_outward_m {:.3} tight_before_m {:.1} tight_after_m {:.1} skipped_short {} kept {} widen_failed {}",
+            s.chains,
+            s.max_move_m,
+            s.max_outward_m,
+            s.tight_before_m,
+            s.tight_after_m,
+            s.skipped_short,
+            s.kept.len(),
+            s.widen_failed.len()
+        );
+        for p in s
+            .per_stretch
+            .iter()
+            .filter(|p| p.tight_before_m > 0.0 || p.tight_after_m > 0.0)
+        {
+            println!(
+                "SMOOTH_STRETCH {} tight_before_m {:.1} tight_after_m {:.1} max_move_m {:.2} max_outward_m {:.2}",
+                p.id, p.tight_before_m, p.tight_after_m, p.max_move_m, p.max_outward_m
+            );
+        }
+        for z in &s.zones {
+            println!(
+                "SMOOTH_ZONE at ({:.1}, {:.1}) stretches {} before {:.1} after {:.1} wanted {:.1} outward {:.2} inward {:.2} reached {} plate {} blocked {}",
+                z.at.0,
+                z.at.1,
+                z.stretches.join(","),
+                z.radius_before_m,
+                z.radius_after_m,
+                z.radius_wanted_m,
+                z.max_outward_m,
+                z.max_inward_m,
+                z.reached,
+                z.plate_candidate,
+                z.blocked_by_water
+            );
+        }
+        for (id, why) in &s.kept {
+            println!("SMOOTH_KEPT {id} {why}");
+        }
+    } else {
+        println!("SMOOTH off");
+    }
+    {
+        // what the clean-up of the graph did: one count per rule, and the connected components
+        for (rule, count) in [
+            ("road_roundabout_collapsed", clean.roundabouts.len()),
+            ("road_sidepath_dropped", clean.sidepaths.len()),
+            ("road_stub_dropped", clean.stubs.len()),
+            ("road_junctions_merged", clean.merged.len()),
+            ("road_junctions_not_merged", clean.not_merged.len()),
+            ("bridge_approach_made", clean.approaches.len()),
+            ("bridge_end_at_junction", clean.no_approach.len()),
+        ] {
+            println!("CLEAN {rule} {count}");
+        }
+        for a in &clean.approaches {
+            println!(
+                "CLEAN approach {} end {} {:?} moved {:?} at ({:.1}, {:.1})",
+                a.bridge, a.end, a.kind, a.moved, a.at.0, a.at.1
+            );
+        }
+        for n in &clean.no_approach {
+            println!(
+                "CLEAN no_approach {} end {} {} at ({:.1}, {:.1})",
+                n.bridge, n.end, n.reason, n.at.0, n.at.1
+            );
+        }
+        // what no rule reports: the speck points removed (each with its stretch), the clusters of close junctions
+        // that were left alone, the components after each step and the drivable length
+        println!("CLEAN sidepaths_kept {}", clean.sidepaths_kept.len());
+        for k in &clean.sidepaths_kept {
+            println!(
+                "CLEAN sidepath_kept {} beside {} at ({:.0}, {:.0}): {}",
+                k.stretch, k.road, k.at.0, k.at.1, k.reason
+            );
+        }
+        println!("CLEAN sidepaths {}", clean.sidepaths.len());
+        for d in &clean.sidepaths {
+            println!(
+                "CLEAN sidepath {} beside {} from {:.0} to {:.0} m ({:.0} m) at ({:.0}, {:.0}) connectors {:?}",
+                d.stretch,
+                d.road,
+                d.from_m,
+                d.to_m,
+                d.to_m - d.from_m,
+                d.at.0,
+                d.at.1,
+                d.connectors
+            );
+        }
+        println!("CLEAN specks {}", clean.specks.len());
+        for d in &clean.specks {
+            println!(
+                "CLEAN speck {} at ({:.1}, {:.1})",
+                d.stretch, d.at.0, d.at.1
+            );
+        }
+        println!("CLEAN not_merged {}", clean.not_merged.len());
+        for n in &clean.not_merged {
+            println!(
+                "CLEAN not_merged nodes {:?} at ({:.0}, {:.0}): {}",
+                n.nodes, n.at.0, n.at.1, n.reason
+            );
+        }
+        println!("CLEAN components_by_step {:?}", clean.components_by_step);
+        println!(
+            "CLEAN drivable_m before {:.0} after {:.0}",
+            clean.drivable_m_before, clean.drivable_m_after
+        );
+        println!(
+            "COMPONENTS {} {}",
+            clean.components_before, clean.components_after
+        );
     }
     {
         // what every OpenStreetMap bridge is built from (one line each, for a table)
@@ -321,11 +529,6 @@ fn main() {
             );
         }
     }
-    let sources = LoadedSources::open(&project, dir, &|_| {}).expect("sources");
-    let lakes = sources
-        .osm
-        .as_ref()
-        .map_or(&[][..], |o| o.polygons.as_slice());
     let streams = water_lines(&ways, &frame, project.map_size_m());
     if std::env::var("TIME_BEFORE").is_ok() {
         // the placement as it was before dips: the graph with the bridges of OpenStreetMap, once
@@ -357,6 +560,7 @@ fn main() {
     if std::env::var("NO_JUNCTIONS").is_ok() {
         profiles = solve_profiles(&net, &base, &Junctions::default(), &side).expect("solve");
     }
+    judging_figures(&graph, &net, &bridges);
     let t_place = t0.elapsed();
     let t_profiles = t_place;
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
@@ -503,7 +707,7 @@ fn main() {
     }
     crossing_report(&net, &profiles, &graph, &base, &junctions);
     let patches = naves_export::generate::level_patches(&junctions, f64::from(base.cell_m));
-    let spans = bridge_spans(&net, &profiles.strips, &catalog);
+    let spans = bridge_spans(&net, &profiles.strips, &catalog, &graph);
     // SPANS_OF=<stretch id prefix>: the spans of a bridge next to the placed roads they come from
     if let Ok(list) = std::env::var("SPANS_OF") {
         let matches = |id: &str| list.split(',').any(|p| id.starts_with(p));
@@ -1482,6 +1686,21 @@ fn main() {
                         graph: &naves_core::roadnet::RoadGraph,
                         list: &[(naves_core::dips::Dip, DipAction)]| {
             println!("DIPS {label}: {} found", list.len());
+            for (dip, _) in list.iter().filter(|(_, a)| *a == DipAction::Bridge) {
+                println!(
+                    "DIPBRIDGE {label} at ({:.0}, {:.0}) stretch {} {:.0} to {:.0} m depth {:.1} m{}",
+                    dip.at.0,
+                    dip.at.1,
+                    graph
+                        .stretches
+                        .get(dip.stretch)
+                        .map_or("?", |s| s.id.as_str()),
+                    dip.from_m,
+                    dip.to_m,
+                    dip.depth_m,
+                    if dip.over_water { " over water" } else { "" }
+                );
+            }
             for action in [DipAction::Bridge, DipAction::Fill, DipAction::Report] {
                 let mut by_family: BTreeMap<String, Vec<&naves_core::dips::Dip>> = BTreeMap::new();
                 for (dip, _) in list.iter().filter(|(_, a)| *a == action) {
@@ -7033,4 +7252,114 @@ fn crossing_report(
             );
         }
     }
+}
+
+/// The figures the spec's "How it is judged" names that no other line has: the turn of the bridge ends against the
+/// road that goes on, what the bridges are built from, and how far the placed pieces lie from the line of the graph.
+fn judging_figures(
+    graph: &naves_core::roadnet::RoadGraph,
+    net: &naves_core::roadplace::PlacedNetwork,
+    bridges: &[naves_core::bridgekind::BridgeFit],
+) {
+    use naves_core::bridgekind::BridgeKind;
+    let percentile = |v: &mut Vec<f64>, q: f64| -> f64 {
+        v.sort_by(f64::total_cmp);
+        v.get(((v.len() as f64 - 1.0) * q).round() as usize)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    // the direction in which a stretch leaves a node
+    let leaving = |s: &naves_core::roadnet::Stretch, at_start: bool| -> Option<(f64, f64)> {
+        let (a, b) = if at_start {
+            (*s.points.first()?, *s.points.get(1)?)
+        } else {
+            (
+                *s.points.last()?,
+                *s.points.get(s.points.len().checked_sub(2)?)?,
+            )
+        };
+        let len = (b.0 - a.0).hypot(b.1 - a.1);
+        (len > 0.0).then(|| ((b.0 - a.0) / len, (b.1 - a.1) / len))
+    };
+    // bridge ends: where exactly one other stretch meets the deck, its turn against the deck's direction
+    let mut turns = Vec::new();
+    for (i, deck) in graph.stretches.iter().enumerate().filter(|(_, s)| s.bridge) {
+        for at_start in [true, false] {
+            let node = if at_start { deck.start } else { deck.end };
+            let others: Vec<(usize, bool)> = graph
+                .stretches
+                .iter()
+                .enumerate()
+                .flat_map(|(j, s)| [(j, s.start == node), (j, s.end == node)])
+                .filter(|(j, here)| *here && *j != i)
+                .map(|(j, _)| (j, graph.stretches.get(j).is_some_and(|s| s.start == node)))
+                .collect();
+            let [(j, other_at_start)] = others.as_slice() else {
+                continue;
+            };
+            let (Some(d), Some(o)) = (
+                leaving(deck, at_start),
+                graph
+                    .stretches
+                    .get(*j)
+                    .and_then(|s| leaving(s, *other_at_start)),
+            ) else {
+                continue;
+            };
+            // a road that goes on leaves the node opposite to the deck's direction
+            let turn = (d.0 * o.1 - d.1 * o.0).atan2(-(d.0 * o.0 + d.1 * o.1));
+            turns.push(turn.abs().to_degrees());
+        }
+    }
+    println!(
+        "BRIDGEENDTURN ends {} p50 {:.1} p95 {:.1} max {:.1} deg",
+        turns.len(),
+        percentile(&mut turns.clone(), 0.5),
+        percentile(&mut turns.clone(), 0.95),
+        percentile(&mut turns, 1.0)
+    );
+    let (mut model, mut panels, mut fill) = (0, 0, 0);
+    for b in bridges {
+        match b.kind {
+            BridgeKind::Model { .. } => model += 1,
+            BridgeKind::Panels { .. } => panels += 1,
+            BridgeKind::Fill => fill += 1,
+        }
+    }
+    println!(
+        "BRIDGEKINDS model {model} panel grid {panels} other {fill} of {}",
+        bridges.len()
+    );
+    let by_id: BTreeMap<&str, &naves_core::roadnet::Stretch> =
+        graph.stretches.iter().map(|s| (s.id.as_str(), s)).collect();
+    let mut gaps: Vec<f64> = net
+        .roads
+        .iter()
+        .filter(|r| r.kind == PlacedKind::Piece)
+        .filter_map(|r| {
+            let s = by_id.get(r.slot.stretch.as_str())?;
+            s.points
+                .windows(2)
+                .map(|w| {
+                    let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                    let l2 = dx * dx + dy * dy;
+                    let t = if l2 > 0.0 {
+                        (((r.end.x - w[0].0) * dx + (r.end.y - w[0].1) * dy) / l2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    (r.end.x - w[0].0 - t * dx).hypot(r.end.y - w[0].1 - t * dy)
+                })
+                .min_by(f64::total_cmp)
+        })
+        .collect();
+    let over_1m = gaps.iter().filter(|d| **d > 1.0).count();
+    println!(
+        "JOINTLINE pieces {} p50 {:.2} p95 {:.2} max {:.2} m, over 1 m {:.1} %",
+        gaps.len(),
+        percentile(&mut gaps.clone(), 0.5),
+        percentile(&mut gaps.clone(), 0.95),
+        percentile(&mut gaps, 1.0),
+        100.0 * over_1m as f64 / gaps.len().max(1) as f64
+    );
 }

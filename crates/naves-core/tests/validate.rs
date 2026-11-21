@@ -22,7 +22,7 @@ use naves_core::project::Project;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, RoadKink, Slot};
 use naves_core::surface::SurfaceClass;
-use naves_core::validate::{Rule, Violation, check_roads};
+use naves_core::validate::{Rule, Violation, check_roads, water_test};
 
 fn road(index: u32, kind: PlacedKind, at: (f64, f64)) -> PlacedRoad {
     PlacedRoad {
@@ -267,6 +267,7 @@ fn the_other_rules_each_give_a_violation() {
         at: (10.0, 20.0),
         gap_m: 1.5,
         heading_error_deg: 3.0,
+        nothing_placed: false,
     });
     n.kinks.push(RoadKink {
         stretch: "7:1-2".to_string(),
@@ -305,6 +306,32 @@ fn the_other_rules_each_give_a_violation() {
     // the capped places are reported once per region of 50 m
     assert_eq!(only(Rule::EarthworksCapped, &v).len(), 2);
     assert!(only(Rule::RoadGap, &v)[0].message.contains("7:1-2"));
+    // a road with nothing placed on it says so
+    let mut unplaced = net(vec![]);
+    unplaced.gaps.push(RoadGap {
+        stretch: "8:3-4".to_string(),
+        at: (1.0, 2.0),
+        gap_m: 40.0,
+        heading_error_deg: 0.0,
+        nothing_placed: true,
+    });
+    let v2 = run(
+        &unplaced,
+        &Profiles::default(),
+        &conformed(),
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    let gap = only(Rule::RoadGap, &v2)[0];
+    assert!(
+        gap.message.contains("8:3-4")
+            && gap.message.contains("no pieces")
+            && gap.message.contains("40.0"),
+        "{}",
+        gap.message
+    );
     // a kink is its own finding, with the angle and the site, and no gap
     let kink = only(Rule::RoadKink, &v)[0];
     assert!(
@@ -494,6 +521,15 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeBuried,
         Rule::BridgePostFloats,
         Rule::BridgeEndStep,
+        Rule::RoadRoundaboutCollapsed,
+        Rule::RoadSidepathDropped,
+        Rule::RoadStubDropped,
+        Rule::RoadJunctionsMerged,
+        Rule::RoadJunctionsNotMerged,
+        Rule::BridgeApproachMade,
+        Rule::BridgeEndAtJunction,
+        Rule::RoadCurveWidened,
+        Rule::RoadCurveTooTight,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -513,6 +549,152 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::BridgePostFloats.id(), "bridge_post_floats");
     assert_eq!(Rule::BridgeEndStep.id(), "bridge_end_step");
     assert_eq!(Rule::RoadKink.id(), "road_kink");
+    assert_eq!(
+        Rule::RoadRoundaboutCollapsed.id(),
+        "road_roundabout_collapsed"
+    );
+    assert_eq!(Rule::RoadSidepathDropped.id(), "road_sidepath_dropped");
+    assert_eq!(Rule::RoadStubDropped.id(), "road_stub_dropped");
+    assert_eq!(Rule::RoadJunctionsMerged.id(), "road_junctions_merged");
+    assert_eq!(
+        Rule::RoadJunctionsNotMerged.id(),
+        "road_junctions_not_merged"
+    );
+    assert_eq!(Rule::BridgeApproachMade.id(), "bridge_approach_made");
+    assert_eq!(Rule::BridgeEndAtJunction.id(), "bridge_end_at_junction");
+    assert_eq!(Rule::RoadCurveWidened.id(), "road_curve_widened");
+    assert_eq!(Rule::RoadCurveTooTight.id(), "road_curve_too_tight");
+}
+
+#[test]
+fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place() {
+    use naves_core::smooth::{SmoothReport, WidenedZone};
+    let zone = |at: (f64, f64), after: f64, outward: f64, plate: bool| WidenedZone {
+        at,
+        stretches: vec!["7:1-2".to_string()],
+        radius_before_m: 10.0,
+        radius_after_m: after,
+        radius_wanted_m: 25.0,
+        max_outward_m: outward,
+        max_inward_m: 0.0,
+        reached: !plate,
+        plate_candidate: plate,
+        blocked_by_water: false,
+    };
+    let mut n = net(vec![]);
+    n.smooth = Some(SmoothReport {
+        chains: 1,
+        kept: Vec::new(),
+        skipped_short: 0,
+        max_move_m: 0.0,
+        tight_before_m: 0.0,
+        tight_after_m: 0.0,
+        per_stretch: Vec::new(),
+        zones: vec![
+            zone((1.0, 2.0), 25.0, 3.5, false),
+            zone((3.0, 4.0), 12.0, 0.0, true),
+            // a zone that did not move is no finding
+            zone((5.0, 6.0), 25.0, 0.0, false),
+            // a zone that widening would have put in water stays as drawn: it is too tight too
+            {
+                let mut z = zone((7.0, 8.0), 25.0, 0.0, false);
+                z.blocked_by_water = true;
+                z
+            },
+        ],
+        max_outward_m: 3.5,
+        widen_failed: Vec::new(),
+        points_before: 0,
+        points_fitted: 0,
+        points_after: 0,
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let widened = only(Rule::RoadCurveWidened, &v);
+    assert_eq!(widened.len(), 1);
+    assert_eq!(widened[0].at, (1.0, 2.0));
+    assert!(
+        widened[0].message.contains("7:1-2"),
+        "{}",
+        widened[0].message
+    );
+    let tight = only(Rule::RoadCurveTooTight, &v);
+    assert_eq!(tight.len(), 2);
+    assert_eq!(tight[1].at, (7.0, 8.0));
+    assert!(tight[1].message.contains("water"), "{}", tight[1].message);
+    assert_eq!(tight[0].at, (3.0, 4.0));
+    assert!(
+        tight[0].message.contains("12.0") && tight[0].message.contains("25.0"),
+        "{}",
+        tight[0].message
+    );
+    assert!(n.smooth.as_ref().unwrap().summary().contains("1 plate"));
+}
+
+#[test]
+fn every_change_of_the_clean_up_is_a_finding_at_its_place() {
+    use naves_core::catalog::Family;
+    use naves_core::netclean::{
+        Approach, ApproachKind, DroppedSidepath, DroppedStub, MergedJunction, NotMerged,
+    };
+    use naves_core::roadnet::Ring;
+    let mut n = net(vec![]);
+    n.clean.roundabouts.push(Ring {
+        stretches: vec![0],
+        centre: (1.0, 2.0),
+        radius: 6.0,
+        family: Family::City,
+    });
+    n.clean.sidepaths.push(DroppedSidepath {
+        stretch: "7:1-2".to_string(),
+        road: "8:3-4".to_string(),
+        from_m: 10.0,
+        to_m: 90.0,
+        at: (3.0, 4.0),
+        connectors: vec![],
+    });
+    n.clean.stubs.push(DroppedStub {
+        stretch: "9:5-6".to_string(),
+        length_m: 4.0,
+        at: (5.0, 6.0),
+    });
+    n.clean.merged.push(MergedJunction {
+        kept: 10,
+        merged: vec![11],
+        removed: vec![],
+        at: (7.0, 8.0),
+    });
+    n.clean.not_merged.push(NotMerged {
+        nodes: vec![20, 21],
+        reason: "a roundabout is among the junctions",
+        at: (11.0, 12.0),
+    });
+    n.clean.approaches.push(Approach {
+        bridge: "12:1-2".to_string(),
+        end: 1,
+        kind: ApproachKind::SideRoadsMoved,
+        moved: vec![],
+        at: (9.0, 10.0),
+    });
+    n.clean.no_approach.push(naves_core::netclean::NoApproach {
+        bridge: "13:1-2".to_string(),
+        end: 0,
+        reason: "no_room",
+        at: (13.0, 14.0),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    for (rule, at) in [
+        (Rule::RoadRoundaboutCollapsed, (1.0, 2.0)),
+        (Rule::RoadSidepathDropped, (3.0, 4.0)),
+        (Rule::RoadStubDropped, (5.0, 6.0)),
+        (Rule::RoadJunctionsMerged, (7.0, 8.0)),
+        (Rule::RoadJunctionsNotMerged, (11.0, 12.0)),
+        (Rule::BridgeApproachMade, (9.0, 10.0)),
+        (Rule::BridgeEndAtJunction, (13.0, 14.0)),
+    ] {
+        let found = only(rule, &v);
+        assert_eq!(found.len(), 1, "{rule:?}");
+        assert_eq!(found[0].at, at);
+    }
 }
 
 #[test]
@@ -958,6 +1140,7 @@ fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1015,6 +1198,7 @@ fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1454,4 +1638,33 @@ fn a_grade_break_in_a_ramp_zone_is_worded_as_a_change_of_grade() {
         found[0].message,
         "The grade changes by 14 % at one point, the most a vehicle takes there is 10 %"
     );
+}
+
+#[test]
+fn the_water_test_follows_the_rule_of_road_in_water() {
+    let mut holed = lake();
+    // a hole around the centre of the lake (about 110 m across)
+    holed.holes = vec![vec![
+        (47.5495, 12.9735),
+        (47.5495, 12.9765),
+        (47.5505, 12.9765),
+        (47.5505, 12.9735),
+        (47.5495, 12.9735),
+    ]];
+    let mut town = lake();
+    town.priority = 1;
+    // a ring that cannot be projected is left out, not a reason to lose the others
+    let mut broken = lake();
+    broken.outer = vec![(f64::NAN, 12.97), (47.55, 12.98), (47.56, 12.97)];
+    let frame = frame();
+    let in_lake = water_test(&[lake(), town.clone(), broken], &frame);
+    assert!(in_lake((250.0, 250.0)), "the middle of the lake");
+    assert!(!in_lake((50.0, 50.0)), "dry land");
+    // built-up ground (priority 1) is no water
+    assert!(!water_test(&[town], &frame)((250.0, 250.0)));
+    // holes are no water
+    let with_hole = water_test(&[holed], &frame);
+    assert!(!with_hole((250.0, 250.0)), "inside the hole");
+    // the map is half the size of the real ground: 80 map metres from the centre is within the lake
+    assert!(with_hole((250.0 + 80.0, 250.0)), "between hole and shore");
 }

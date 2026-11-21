@@ -31,6 +31,7 @@ use naves_core::objects::{OverridesError, piece_transform};
 use naves_core::profile::ProfileError;
 use naves_core::project::{ImageryFile, Project, ProjectError};
 use naves_core::roadplace::PlaceError;
+use naves_core::smooth::SmoothReport;
 use naves_core::surface::SurfaceError;
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::{EditableWorld, WorldObject};
@@ -60,6 +61,8 @@ pub struct BuildOutput {
     pub warnings: Vec<String>,
     /// What every OpenStreetMap bridge was built from, one line each, in the order of their stretches.
     pub bridges: Vec<String>,
+    /// One line on what the smoothing of the road graph did; `None` when the stage is off or there are no roads.
+    pub smoothing: Option<String>,
 }
 
 /// Errors from the build.
@@ -663,6 +666,56 @@ fn bridge_kind_json(kind: &BridgeKind) -> serde_json::Value {
     }
 }
 
+/// `roads.smoothing` of `build/report.json`: what the smoothing of the road graph did, or that it is off.
+fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
+    let Some(s) = smooth else {
+        return serde_json::json!({ "enabled": false });
+    };
+    let zones: Vec<serde_json::Value> = s
+        .zones
+        .iter()
+        .map(|z| {
+            serde_json::json!({
+                "at": [z.at.0, z.at.1],
+                "stretches": z.stretches,
+                "radius_before_m": z.radius_before_m,
+                "radius_after_m": z.radius_after_m,
+                "radius_wanted_m": z.radius_wanted_m,
+                "max_outward_m": z.max_outward_m,
+                "max_inward_m": z.max_inward_m,
+                "reached": z.reached,
+                "plate_candidate": z.plate_candidate,
+                "blocked_by_water": z.blocked_by_water,
+            })
+        })
+        .collect();
+    let kept: Vec<serde_json::Value> = s
+        .kept
+        .iter()
+        .map(|(stretch, reason)| serde_json::json!({ "stretch": stretch, "reason": reason }))
+        .collect();
+    let widen_failed: Vec<serde_json::Value> = s
+        .widen_failed
+        .iter()
+        .map(|(stretch, reason)| serde_json::json!({ "stretch": stretch, "reason": reason }))
+        .collect();
+    serde_json::json!({
+        "enabled": true,
+        "chains": s.chains,
+        "max_move_m": s.max_move_m,
+        "max_outward_m": s.max_outward_m,
+        "tight_before_m": s.tight_before_m,
+        "tight_after_m": s.tight_after_m,
+        "skipped_short": s.skipped_short,
+        "points_before": s.points_before,
+        "points_fitted": s.points_fitted,
+        "points_after": s.points_after,
+        "kept": kept,
+        "widen_failed": widen_failed,
+        "zones": zones,
+    })
+}
+
 /// `build/report.json`: the numbers, what every OpenStreetMap bridge was built from, and every violation.
 fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError> {
     let violations: Vec<serde_json::Value> = generated
@@ -708,8 +761,18 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
             })
         })
         .collect();
+    let mut roads = serde_json::to_value(&generated.stats).map_err(|e| BuildError::Io {
+        path: layout.project_dir.join("build/report.json"),
+        source: std::io::Error::other(e),
+    })?;
+    if let Some(object) = roads.as_object_mut() {
+        object.insert(
+            "smoothing".to_string(),
+            smoothing_json(generated.smooth.as_ref()),
+        );
+    }
     let report = serde_json::json!({
-        "roads": generated.stats,
+        "roads": roads,
         "bridges": bridges,
         "violations": violations,
     });
@@ -928,5 +991,49 @@ pub fn build(
         mission_dir,
         warnings,
         bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
+        smoothing: generated.smooth.as_ref().map(SmoothReport::summary),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naves_core::smooth::WidenedZone;
+
+    #[test]
+    fn a_failed_widening_keeps_its_reason_in_the_report() {
+        let report = SmoothReport {
+            chains: 1,
+            kept: vec![("k".to_string(), "too long".to_string())],
+            skipped_short: 0,
+            max_move_m: 0.0,
+            tight_before_m: 0.0,
+            tight_after_m: 0.0,
+            per_stretch: Vec::new(),
+            zones: vec![WidenedZone {
+                at: (1.0, 2.0),
+                stretches: vec!["s".to_string()],
+                radius_before_m: 1.0,
+                radius_after_m: 1.0,
+                radius_wanted_m: 10.0,
+                max_outward_m: 0.0,
+                max_inward_m: 0.0,
+                reached: false,
+                plate_candidate: false,
+                blocked_by_water: true,
+            }],
+            max_outward_m: 0.0,
+            widen_failed: vec![("s".to_string(), "the solver gave up".to_string())],
+            points_before: 10,
+            points_fitted: 8,
+            points_after: 4,
+        };
+        let json = smoothing_json(Some(&report));
+        assert_eq!(json["widen_failed"][0]["stretch"], "s");
+        assert_eq!(json["widen_failed"][0]["reason"], "the solver gave up");
+        assert_eq!(json["kept"][0]["reason"], "too long");
+        assert_eq!(json["zones"][0]["blocked_by_water"], true);
+        assert_eq!(json["points_after"], 4);
+        assert_eq!(smoothing_json(None)["enabled"], false);
+    }
 }

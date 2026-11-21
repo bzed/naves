@@ -26,7 +26,9 @@ use crate::roadnet::{Chain, Ring, RoadGraph, Stretch, chains_with, overlay_rank,
 /// A road that meets a bridge's end turned away from the deck's heading by more than this, in degrees, is a kink
 /// (a finding) even where its position is right.
 pub const HEADING_MISS_DEG: f64 = 5.0;
-const JUNCTION_SPACING_M: f64 = 12.5;
+/// The least distance between two junctions on one road: the length of a junction piece (its ports lie half of it from the
+/// centre).
+pub(crate) const JUNCTION_SPACING_M: f64 = 12.5;
 /// A junction piece has to sit this close to the crossing it replaces.
 const JUNCTION_TOLERANCE_M: f64 = 3.0;
 /// The steps in which a junction is tried along its through road when a road cannot close against it.
@@ -193,6 +195,9 @@ pub struct RoadGap {
     pub gap_m: f64,
     /// The heading difference there.
     pub heading_error_deg: f64,
+    /// Nothing could be placed on the stretch (its end is free, so it has nothing to miss): `gap_m` is the
+    /// length of the part and `at` its start.
+    pub nothing_placed: bool,
 }
 
 /// A place where roads meet without a junction piece and the higher road runs on over the lower one: the
@@ -238,10 +243,15 @@ pub struct PlacedNetwork {
     pub warnings: Vec<String>,
     /// Parts of roads left out because a higher road runs along them (one road drawn twice in the source).
     pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
+    /// What the clean-up of the graph did (set by the build after the placement, like `duplicates`).
+    pub clean: crate::netclean::CleanReport,
+    /// What the smoothing of the graph did (set by the build after the placement, like `duplicates`); `None`
+    /// when the stage is off.
+    pub smooth: Option<crate::smooth::SmoothReport>,
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,
-    /// The roundabouts that are placed as a closed loop (the others, smaller than the tightest arc of their
+    /// The roundabouts that are placed as a closed loop (the others, smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of their
     /// family, are ordinary crossings).
     pub rings: Vec<crate::roadnet::Ring>,
 }
@@ -436,6 +446,35 @@ fn end_violation(line: &Polyline, end: Pose, edge: f64) -> f64 {
     (d - edge).max(MIN_UNDER_M - d).max(0.0)
 }
 
+/// How a part of a placement unit ended, for [`next_pose`].
+#[derive(Clone, Copy)]
+enum PartEnd {
+    /// The part between two forced elements was fitted: the pose its pieces end in, the pose it was meant to end in
+    /// (where the line is at the next junction) and how many pieces it got.
+    Fitted {
+        end: Pose,
+        goal: Pose,
+        pieces: usize,
+    },
+    /// The junction after the part could not be placed. `reached` is the goal the part before it was fitted to, if
+    /// there was one.
+    JunctionDropped { reached: Option<Pose> },
+}
+
+/// The pose the next part of a placement unit starts from. A part that missed its goal by more than
+/// [`JUNCTION_TOLERANCE_M`] or got no pieces does not carry its stale pose on: the next part starts where the line
+/// is (the goal), so a miss stays in the part where it happened. Where the junction after a part is dropped, the
+/// line goes on from the goal the part was fitted to; if there was none, the pose stays.
+fn next_pose(pose: Pose, outcome: PartEnd) -> Pose {
+    match outcome {
+        PartEnd::Fitted { end, goal, pieces } => {
+            let missed = (end.x - goal.x).hypot(end.y - goal.y) > JUNCTION_TOLERANCE_M;
+            if missed || pieces == 0 { goal } else { end }
+        }
+        PartEnd::JunctionDropped { reached } => reached.unwrap_or(pose),
+    }
+}
+
 /// A forced element of a run.
 enum Event {
     /// A junction piece, by index into the plans.
@@ -510,7 +549,8 @@ fn bits(p: (f64, f64)) -> (u64, u64) {
 
 impl<'a> Placer<'a> {
     fn new(graph: &'a RoadGraph, catalog: &'a PieceCatalog, shifts: Shifts) -> Self {
-        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads
+        // a ring smaller than the tightest arc of its family cannot be laid out: its stretches are roads (the
+        // build has collapsed the rings below `ROUNDABOUT_KEEP_M` before, see `collapse_small_rings`)
         let rings: Vec<Ring> = rings(graph)
             .into_iter()
             .filter(|r| {
@@ -1004,6 +1044,36 @@ impl<'a> Placer<'a> {
                 at: (goal.x, goal.y),
                 gap_m: gap,
                 heading_error_deg: wrap(end.heading - goal.heading).abs().to_degrees(),
+                nothing_placed: false,
+            });
+        }
+    }
+
+    /// Reports a part with a free end that got no pieces although it is at least as long as the shortest piece
+    /// of its family: a gap as long as the part, at its start.
+    fn report_unplaced(&mut self, stretch: &str, family: Family, path: &[(f64, f64)]) {
+        let length: f64 = path
+            .windows(2)
+            .filter_map(|w| match w {
+                [a, b] => Some((b.0 - a.0).hypot(b.1 - a.1)),
+                _ => None,
+            })
+            .sum();
+        let shortest = self
+            .pieces(family)
+            .iter()
+            .filter(|p| p.kind != PieceKind::EndCap)
+            .map(|p| (p.end.x - p.start.x).hypot(p.end.z - p.start.z))
+            .fold(f64::INFINITY, f64::min);
+        if let Some(&(x, y)) = path.first()
+            && length >= shortest
+        {
+            self.out.gaps.push(RoadGap {
+                stretch: stretch.to_string(),
+                at: (x, y),
+                gap_m: length,
+                heading_error_deg: 0.0,
+                nothing_placed: true,
             });
         }
     }
@@ -1215,9 +1285,11 @@ impl<'a> Placer<'a> {
                 .and_then(|l| self.graph.stretches.get(l.stretch))
                 .map(|s| s.id.clone())
                 .unwrap_or_default();
+            let mut reached: Option<Pose> = None;
             if s_goal - s_cur > 1.0 {
                 let path = line.slice(s_cur, s_goal);
                 let goal = line.pose_at(s_goal);
+                reached = Some(goal);
                 let (pieces, end) =
                     self.fit_part(&path, pose, EndGoal::Fixed(goal), family, &stretch_id)?;
                 if let Some(plan) = self.plans.get(plan_id) {
@@ -1232,7 +1304,16 @@ impl<'a> Placer<'a> {
                     ));
                     items.push(make(p, PlacedKind::Piece, s, None));
                 }
-                pose = end;
+                // a part that missed its goal (or got no pieces) does not carry its stale pose on: the next part
+                // starts where the line is, and the failure stays in the part where it happened
+                pose = next_pose(
+                    pose,
+                    PartEnd::Fitted {
+                        end,
+                        goal,
+                        pieces: pieces.len(),
+                    },
+                );
                 s_cur = s_goal;
             }
             // place the junction at the end of the fit
@@ -1251,31 +1332,31 @@ impl<'a> Placer<'a> {
                 (moved.x, moved.y)
             };
             let placed = Self::place_junction(plan, at, pose, line.pose_at(s_cross).heading);
-            match placed {
-                Some((frame, flipped, exit)) => {
-                    let (entry_port, exit_port) = if flipped {
-                        (flip(&junction.end), flip(&junction.start))
-                    } else {
-                        (pose_of(&junction.start), pose_of(&junction.end))
-                    };
-                    let piece = FitPiece {
-                        model: junction.model.clone(),
-                        origin: frame.origin,
-                        start: frame.pose(&entry_port),
-                        end: frame.pose(&exit_port),
-                    };
-                    items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
-                    // the side ports become the fixed starts of the side roads
-                    let ports = self.side_poses(plan_id, &frame);
-                    let key = (plan.chain, plan.link);
-                    for (arm, port) in ports {
-                        self.fixed.insert(arm, port);
-                        self.fixed_from.insert(arm, key);
-                    }
-                    pose = exit;
-                    s_cur = s_cross + half;
+            if let Some((frame, flipped, exit)) = placed {
+                let (entry_port, exit_port) = if flipped {
+                    (flip(&junction.end), flip(&junction.start))
+                } else {
+                    (pose_of(&junction.start), pose_of(&junction.end))
+                };
+                let piece = FitPiece {
+                    model: junction.model.clone(),
+                    origin: frame.origin,
+                    start: frame.pose(&entry_port),
+                    end: frame.pose(&exit_port),
+                };
+                items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
+                // the side ports become the fixed starts of the side roads
+                let ports = self.side_poses(plan_id, &frame);
+                let key = (plan.chain, plan.link);
+                for (arm, port) in ports {
+                    self.fixed.insert(arm, port);
+                    self.fixed_from.insert(arm, key);
                 }
-                None => dropped.push(plan_id),
+                pose = exit;
+                s_cur = s_cross + half;
+            } else {
+                dropped.push(plan_id);
+                pose = next_pose(pose, PartEnd::JunctionDropped { reached });
             }
         }
         for plan_id in dropped {
@@ -1320,6 +1401,7 @@ impl<'a> Placer<'a> {
         {
             // the road arrives under another one: the pieces cannot be steered to a metre, so the cut is
             // moved until the last piece ends under the edge of the road above, short of its centre line
+            let whole = path.clone();
             let mut best: Option<(f64, Vec<FitPiece>, Pose)> = None;
             let depths =
                 std::iter::once(Self::cut_depth(edge)).chain(CUT_TRIES.iter().map(|f| edge * f));
@@ -1342,6 +1424,9 @@ impl<'a> Placer<'a> {
                 }
             }
             if let Some((_, pieces, end)) = best {
+                if pieces.is_empty() {
+                    self.report_unplaced(&stretch_id, family, &whole);
+                }
                 for p in &pieces {
                     let s = line.project((
                         f64::midpoint(p.start.x, p.end.x),
@@ -1357,6 +1442,9 @@ impl<'a> Placer<'a> {
             path.dedup();
             let before = pose;
             let (pieces, end) = self.fit_part(&path, pose, goal, family, &stretch_id)?;
+            if pieces.is_empty() && matches!(goal, EndGoal::Free) {
+                self.report_unplaced(&stretch_id, family, &path);
+            }
             if let EndGoal::Fixed(arrive) = goal
                 && fixed_end.is_some()
                 && !ring
@@ -2233,6 +2321,36 @@ mod tests {
         Pose { x, y, heading: 0.0 }
     }
 
+    #[test]
+    fn the_next_part_starts_where_the_line_is_unless_the_part_arrived() {
+        let start = pose(0.0, 0.0);
+        let goal = pose(0.0, 100.0);
+        // the part ended on its goal (within the tolerance) with pieces: the pose it ended in, as before
+        let end = pose(0.5, 99.0);
+        let part = |end, pieces| PartEnd::Fitted { end, goal, pieces };
+        assert_eq!(next_pose(start, part(end, 9)), end);
+        // it missed its goal by more than the tolerance: the stale pose is not carried on
+        let missed = pose(40.0, 60.0);
+        assert_eq!(next_pose(start, part(missed, 9)), goal);
+        // it got no pieces: its end is the start pose, which is where the line was before it
+        assert_eq!(next_pose(start, part(start, 0)), goal);
+        // the junction after it was not placed: the line goes on from the goal the part was fitted to ...
+        assert_eq!(
+            next_pose(
+                start,
+                PartEnd::JunctionDropped {
+                    reached: Some(goal)
+                }
+            ),
+            goal
+        );
+        // ... and where no part was fitted before it, the pose stays
+        assert_eq!(
+            next_pose(start, PartEnd::JunctionDropped { reached: None }),
+            start
+        );
+    }
+
     /// A road going north for 10 m that ends at the crossing (0, 10).
     fn line() -> Polyline {
         Polyline {
@@ -2295,6 +2413,7 @@ mod tests {
                 at: (0.0, 0.0),
                 gap_m: 1.0,
                 heading_error_deg: 0.0,
+                nothing_placed: false,
             });
         }
         for _ in 0..junctions {

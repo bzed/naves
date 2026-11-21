@@ -11,8 +11,83 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
+  (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
+  moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each
+  other is fitted by a smooth curve within 2 m of its OpenStreetMap line, with junctions, dead ends and bridge ends
+  fixed, and a curve tighter than the tightest curve piece of its road type is widened outward to that radius
+  (an open corner may be cut inward). Roads then move by up to 2 m, and inside a widened curve by up to two minimum radii (about 20 m), so edits that are keyed by slot can
+  be orphaned (`orphaned_edit`). With it on: new findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
+  section in `build/report.json`, a line in the build summary and a progress line with the time of the stage; off,
+  `roads.smoothing` is `{"enabled": false}`.
+  A curve that cannot be widened goes back to the line as drawn, keeping the vertices OpenStreetMap drew (not a
+  resampling at 2 m that could drop one and turn the first segment by several degrees; blended over 6 m at its ends),
+  a widened line does not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and
+  points within 0.20 m of the line through their neighbours are dropped after the stage (the placement walks fewer
+  points). The tight length of the report is measured the same way before and after: on samples of about 2 m, also
+  where a curve went back to the line as drawn with widely spaced vertices (a sharp corner no longer stops counting as
+  tight).
+- **Breaking:** the clean-up of the road graph removes and cuts road stretches (sidepaths, stubs, merged junctions,
+  collapsed small roundabouts, the cut-off end of a deck; cut pieces are `<id>/side<n>` and `<id>/approach<n>`), so an
+  edit on a stretch that went is orphaned, and an edit keyed by slot can lose its object where a stretch was cut or its
+  end moved. Both are reported as `orphaned_edit`.
+- A junction on the end of a bridge deck is moved off it (the clean-up of the graph, before bridges are fitted). Where
+  the bridge's road goes on, the roads that met the deck end are joined to it 8 m further along (a new node; the
+  first 8 m are the stretch `<id>/approach<n>`); where it ends in a T, the last 8 m of the bridge become an ordinary
+  stretch (only if the bridge stays 24 m long, no other deck, tunnel or loop ends at that junction and no road passes
+  under the cut-off part). What was done is
+  `bridge_approach_made`; a place that could not be changed is `bridge_end_at_junction` with the reason `no_room`,
+  `bridge_too_short` or `road_below`.
+- Sidepaths are cleaned up before bridges are fitted. A road or track of a lower family that runs within 15 m beside a
+  road of a higher family, on one side and along it, for at least 30 m (any length beside a road tagged
+  `foot=use_sidepath`), is not placed where it disturbs: where the two earthworks (half the width and the shoulder
+  ring of one and a half terrain cells each) overlap or leave less than a cell, or along a bridge of the road
+  (`road_sidepath_dropped`). Roads that met the removed part end on the road instead, by a straight connector (the
+  road within 15 m of the joint, the connector to where the joint moved on the road at most 30 m, never across a
+  third road, also after it moved onto another new junction); a run that would need a connector across a third road, or whose removal would split the network, stays
+  and is listed by the `road-analysis` example. Footways and paths are not touched. Stretch ids are kept; pieces of
+  a cut stretch are named `<id>/side<n>`. A removal never cuts a connected piece of the road network off from the
+  rest; a run is the whole part within 15 m of the road, also where the track bends to join it; roads that met it go on
+  along their own direction to the road, the rest of a track merges at a shallow angle, and joints use a node of the
+  road within 12.5 m (a junction piece), keep new nodes 12.5 m apart and keep 12.5 m off the end of a bridge (a road piece shorter than 25 m between two
+  bridges or tunnels is not joined). A road that merely ends at a removed track is joined to the
+  road, a junction approach with a short parallel tail is not a sidepath (the 30 m must be met along the road), and a
+  refused split is reported as `would_split`. A joint is never made onto the end node of the run's own stretch that the
+  run does not reach (the lower leg of a switchback stays, reported as `loops_back`), and a dead-end side street goes
+  whole instead of leaving a short rest joined to the road.
+- The roads that are drawn twice are dropped before a clean-up of the road graph, whose four steps (sidepaths, short
+  dead ends, close junctions, bridge approaches) are the next entries. Their findings (`road_sidepath_dropped`,
+  `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made` as information, `bridge_end_at_junction` as a
+  warning) are also in the MCP rule list. The tag `foot` is read from OpenStreetMap (`foot=use_sidepath` on a road).
+- Short dead ends and junctions too close to tell apart are cleaned up before bridges are fitted. A dead-end stretch
+  shorter than 6 m that is not drivable, or drivable and shorter than its own width, is not placed
+  (`road_stub_dropped`); points of a road closer than 0.5 m to the point before are merged. Junctions joined by a
+  stretch shorter than 6 m become one junction on the node whose roads rank highest, or on the end of a bridge or
+  tunnel (`road_junctions_merged`); the roads that met there end at the merged junction. Groups that cannot be merged
+  (a roundabout, two bridge ends, wider than 12 m, a straightened road that would cross another) are left as they
+  are and reported (`road_junctions_not_merged`, information). A road cut at the edge of the map is never a dead
+  end; a junction next to the end of a bridge counts as that end. Stretch ids of roads whose end moved are kept (edits
+  keyed by them survive); an edit on a stretch that went is orphaned. The `road-analysis` example lists every point that was
+  merged away, the components after each step and the drivable length.
+
+### Fixed
+
+- A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
+  starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
+  and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`
+  finding too (it was silent), unless it is shorter than the shortest piece.
+- The ground under a bridge reads the stretches' ends from the road graph, not from the node numbers in their ids
+  (the numbers are stale once a clean-up moved an end), and leaves map-edge nodes out as its comment says.
+
 ### Changed
 
+- Road placement is faster at equal input: a block-wise nearest-point lookup gives bit for bit the same result
+  (road placement on the Berchtesgaden example at terrain size 2048 went from about 729 s to about 550 s).
+- A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road
+  pieces allow; before, only a ring tighter than the tightest arc of its surface was. Each collapsed roundabout is a
+  new finding, `road_roundabout_collapsed`, at its centre.
 - A short ramp instead of a step next to junctions and bridge ends, where the geometry allows one. Where a road has to
   change height over a short length next to a junction or the end of a bridge deck, the height solve gives it a ramp
   inside its family's grade ceiling instead of a step. A road that passes through the patch of a junction it belongs

@@ -190,6 +190,37 @@ async fn lists_tools() {
     );
 }
 
+/// The ids of every rule must be in the tool description of `validation_list`, in `mcp.md` and in
+/// `troubleshooting.md`: the lists drifted when a rule was added.
+#[tokio::test]
+async fn every_rule_is_documented_where_rules_are_listed() {
+    use naves_core::validate::Rule;
+    let f = start().await;
+    let tools = f.client.list_all_tools().await.unwrap();
+    let description = tools
+        .iter()
+        .find(|t| t.name == "validation_list")
+        .and_then(|t| t.description.as_deref().map(str::to_string))
+        .unwrap();
+    let manual = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/manual/src");
+    let mcp = std::fs::read_to_string(manual.join("mcp.md")).unwrap();
+    let troubleshooting = std::fs::read_to_string(manual.join("troubleshooting.md")).unwrap();
+    let mut missing = Vec::new();
+    for rule in Rule::ALL {
+        let id = rule.id();
+        for (place, text) in [
+            ("the validation_list description", &description),
+            ("mcp.md", &mcp),
+            ("troubleshooting.md", &troubleshooting),
+        ] {
+            if !text.contains(id) {
+                missing.push(format!("{id} is not in {place}"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{missing:#?}");
+}
+
 #[tokio::test]
 async fn imagery_options_lists_the_same() {
     use naves_core::heightmap::MapGeo;

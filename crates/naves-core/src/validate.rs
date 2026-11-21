@@ -15,11 +15,13 @@ use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
+use crate::netclean::{ApproachKind, CleanReport};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
+use crate::smooth::SmoothReport;
 
 /// A bridge's deck that ends this far (metres) above or below the road or junction it joins is a finding.
 pub const END_STEP_TOL_M: f64 = 0.5;
@@ -88,11 +90,32 @@ pub enum Rule {
     /// The end of a bridge's deck and the road or junction it joins differ in height by more than
     /// [`END_STEP_TOL_M`]: the deck is level and the roads on its two sides want different heights.
     BridgeEndStep,
+    /// A roundabout too small to be built (a radius below [`crate::roadnet::ROUNDABOUT_KEEP_M`] or the tightest
+    /// arc of its surface) that became a plain junction.
+    RoadRoundaboutCollapsed,
+    /// A part of a road that runs beside a road of higher rank, and was not placed (the clean-up of the graph).
+    RoadSidepathDropped,
+    /// A short dead end that was not placed (the clean-up of the graph).
+    RoadStubDropped,
+    /// Junctions so close together that they became one (the clean-up of the graph).
+    RoadJunctionsMerged,
+    /// Close junctions that were left as they are, with the reason (the clean-up of the graph).
+    RoadJunctionsNotMerged,
+    /// A junction that was moved off the end of a bridge, so that the bridge's end touches only the road that
+    /// goes on.
+    BridgeApproachMade,
+    /// A junction on the end of a bridge that could not be moved off it: the bridge is too short, a road passes
+    /// below, or there is no room.
+    BridgeEndAtJunction,
+    /// A curve tighter than the road pieces can build that was widened outward (the smoothing of the graph).
+    RoadCurveWidened,
+    /// A curve that cannot be built as a curve: widening did not reach the radius of the road pieces.
+    RoadCurveTooTight,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 22] = [
+    pub const ALL: [Rule; 31] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -115,6 +138,15 @@ impl Rule {
         Rule::BridgeBuried,
         Rule::BridgePostFloats,
         Rule::BridgeEndStep,
+        Rule::RoadRoundaboutCollapsed,
+        Rule::RoadSidepathDropped,
+        Rule::RoadStubDropped,
+        Rule::RoadJunctionsMerged,
+        Rule::RoadJunctionsNotMerged,
+        Rule::BridgeApproachMade,
+        Rule::BridgeEndAtJunction,
+        Rule::RoadCurveWidened,
+        Rule::RoadCurveTooTight,
     ];
 
     /// The stable id of the rule.
@@ -143,6 +175,15 @@ impl Rule {
             Rule::BridgeBuried => "bridge_buried",
             Rule::BridgePostFloats => "bridge_post_floats",
             Rule::BridgeEndStep => "bridge_end_step",
+            Rule::RoadRoundaboutCollapsed => "road_roundabout_collapsed",
+            Rule::RoadSidepathDropped => "road_sidepath_dropped",
+            Rule::RoadStubDropped => "road_stub_dropped",
+            Rule::RoadJunctionsMerged => "road_junctions_merged",
+            Rule::RoadJunctionsNotMerged => "road_junctions_not_merged",
+            Rule::BridgeApproachMade => "bridge_approach_made",
+            Rule::BridgeEndAtJunction => "bridge_end_at_junction",
+            Rule::RoadCurveWidened => "road_curve_widened",
+            Rule::RoadCurveTooTight => "road_curve_too_tight",
         }
     }
 }
@@ -169,10 +210,17 @@ fn meeting_violations(net: &PlacedNetwork) -> Vec<Violation> {
         violation(
             Rule::RoadGap,
             g.at,
-            format!(
-                "Road {} misses what it has to meet by {:.1} m",
-                g.stretch, g.gap_m
-            ),
+            if g.nothing_placed {
+                format!(
+                    "Road {} has no pieces: nothing could be placed on its {:.1} m",
+                    g.stretch, g.gap_m
+                )
+            } else {
+                format!(
+                    "Road {} misses what it has to meet by {:.1} m",
+                    g.stretch, g.gap_m
+                )
+            },
         )
     }));
     out.extend(net.kinks.iter().map(|k| {
@@ -279,15 +327,57 @@ pub(crate) fn outer_bounds(polygon: &LandPolygon) -> Bounds {
 /// Whether a position lies in one of the lakes, each given with the box around its outer ring: a position
 /// outside the box is not in the lake, which spares the walk over the ring.
 pub(crate) fn in_water(water: &[(Bounds, &LandPolygon)], lat: f64, lon: f64) -> bool {
-    water.iter().any(|((lat0, lat1, lon0, lon1), polygon)| {
-        (*lat0..=*lat1).contains(&lat)
-            && (*lon0..=*lon1).contains(&lon)
-            && ring_contains(&polygon.outer, (lat, lon))
-            && !polygon
-                .holes
-                .iter()
-                .any(|hole| ring_contains(hole, (lat, lon)))
-    })
+    water
+        .iter()
+        .any(|(bounds, polygon)| in_area(bounds, polygon, lat, lon))
+}
+
+/// Whether a position lies in one area, given the box around its outer ring.
+fn in_area(bounds: &Bounds, polygon: &LandPolygon, lat: f64, lon: f64) -> bool {
+    let (lat0, lat1, lon0, lon1) = *bounds;
+    (lat0..=lat1).contains(&lat)
+        && (lon0..=lon1).contains(&lon)
+        && ring_contains(&polygon.outer, (lat, lon))
+        && !polygon
+            .holes
+            .iter()
+            .any(|hole| ring_contains(hole, (lat, lon)))
+}
+
+/// A test "is this point of the map in water" with the rule of `road_in_water` (the areas of
+/// `WATER_PRIORITY` (3), their holes left out), for the smoothing of the road lines. The areas are turned into map
+/// metres once, so the test can be shared between threads, which a [`MapGeo`] cannot. A ring that cannot be
+/// projected is left out.
+pub fn water_test(
+    water: &[LandPolygon],
+    frame: &MapGeo,
+) -> impl Fn((f64, f64)) -> bool + Sync + use<> {
+    let to_map = |ring: &[(f64, f64)]| -> Option<Vec<(f64, f64)>> {
+        ring.iter()
+            .map(|&(lat, lon)| frame.to_map(lat, lon).ok())
+            .collect()
+    };
+    // the "lat" of a position is its x and the "lon" its y: the ring walk does not care
+    let areas: Vec<(Bounds, LandPolygon)> = water
+        .iter()
+        .filter(|p| p.priority == WATER_PRIORITY)
+        .filter_map(|p| {
+            let outer = to_map(&p.outer)?;
+            let holes = p.holes.iter().filter_map(|h| to_map(h)).collect();
+            let area = LandPolygon {
+                class: p.class,
+                priority: p.priority,
+                outer,
+                holes,
+            };
+            Some((outer_bounds(&area), area))
+        })
+        .collect();
+    move |(x, y)| {
+        areas
+            .iter()
+            .any(|(bounds, polygon)| in_area(bounds, polygon, x, y))
+    }
 }
 
 /// The road pieces that stand in water (bridges may).
@@ -405,6 +495,134 @@ fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
             )
         })
         .collect()
+}
+
+/// One violation for each curve the smoothing widened (`road_curve_widened`) and one for each curve that could
+/// not be built as a curve (`road_curve_too_tight`), at the tightest point of the curve.
+fn smooth_violations(smooth: Option<&SmoothReport>) -> Vec<Violation> {
+    let Some(smooth) = smooth else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for z in &smooth.zones {
+        let road = z.stretches.join(", ");
+        if z.blocked_by_water {
+            out.push(violation(
+                Rule::RoadCurveTooTight,
+                z.at,
+                format!(
+                    "The curve of {road} was left as drawn: widening it would put the road in water (radius {:.1} m, {:.1} m wanted)",
+                    z.radius_before_m, z.radius_wanted_m
+                ),
+            ));
+        } else if z.plate_candidate {
+            out.push(violation(
+                Rule::RoadCurveTooTight,
+                z.at,
+                format!(
+                    "The curve of {road} cannot be built as a curve: radius {:.1} m reached, {:.1} m wanted",
+                    z.radius_after_m, z.radius_wanted_m
+                ),
+            ));
+        } else if z.max_outward_m > 0.0 || z.max_inward_m > 0.0 {
+            out.push(violation(
+                Rule::RoadCurveWidened,
+                z.at,
+                format!(
+                    "The curve of {road} was widened: radius {:.1} m -> {:.1} m, moved by up to {:.1} m",
+                    z.radius_before_m,
+                    z.radius_after_m,
+                    z.max_outward_m.max(z.max_inward_m)
+                ),
+            ));
+        }
+    }
+    out
+}
+
+/// One violation for each change the clean-up of the graph made, at the place of the change. Nothing is changed
+/// silently.
+fn clean_violations(clean: &CleanReport) -> Vec<Violation> {
+    let mut out = Vec::new();
+    out.extend(clean.roundabouts.iter().map(|r| {
+        violation(
+            Rule::RoadRoundaboutCollapsed,
+            r.centre,
+            format!(
+                "A roundabout of {:.1} m radius is too small: it is a plain junction",
+                r.radius
+            ),
+        )
+    }));
+    out.extend(clean.sidepaths.iter().map(|d| {
+        violation(
+            Rule::RoadSidepathDropped,
+            d.at,
+            format!(
+                "Road {} runs beside {} for {:.0} m: this part is not placed",
+                d.stretch,
+                d.road,
+                d.to_m - d.from_m
+            ),
+        )
+    }));
+    out.extend(clean.stubs.iter().map(|d| {
+        violation(
+            Rule::RoadStubDropped,
+            d.at,
+            format!(
+                "Road {} is a dead end of {:.1} m: it is not placed",
+                d.stretch, d.length_m
+            ),
+        )
+    }));
+    out.extend(clean.merged.iter().map(|m| {
+        violation(
+            Rule::RoadJunctionsMerged,
+            m.at,
+            format!(
+                "The junctions {:?} are close to {}: they are one junction",
+                m.merged, m.kept
+            ),
+        )
+    }));
+    out.extend(clean.not_merged.iter().map(|n| {
+        violation(
+            Rule::RoadJunctionsNotMerged,
+            n.at,
+            format!(
+                "The junctions {:?} are close together but were left as they are: {}",
+                n.nodes, n.reason
+            ),
+        )
+    }));
+    out.extend(clean.approaches.iter().map(|a| {
+        let what = match a.kind {
+            ApproachKind::SideRoadsMoved => {
+                format!("{} road(s) were joined further along", a.moved.len())
+            }
+            ApproachKind::BridgeShortened => "the bridge was shortened".to_string(),
+        };
+        violation(
+            Rule::BridgeApproachMade,
+            a.at,
+            format!(
+                "A junction was moved off the end {} of bridge {}: {what}",
+                a.end, a.bridge
+            ),
+        )
+    }));
+    out.extend(clean.no_approach.iter().map(|n| {
+        violation(
+            Rule::BridgeEndAtJunction,
+            n.at,
+            format!(
+                "A junction sits on the end {} of bridge {} and could not be moved off it: {}",
+                n.end, n.bridge, n.reason
+            ),
+        )
+    }));
+    out
 }
 
 /// An OpenStreetMap bridge that the install has no part for: one violation in its middle.
@@ -985,6 +1203,8 @@ pub fn check_roads(
     }));
     out.extend(clearance_violations(profiles));
     out.extend(duplicate_violations(&net.duplicates));
+    out.extend(clean_violations(&net.clean));
+    out.extend(smooth_violations(net.smooth.as_ref()));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));

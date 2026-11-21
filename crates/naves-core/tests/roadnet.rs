@@ -36,6 +36,7 @@ fn feature(
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1087,4 +1088,48 @@ fn two_dead_ends_drawn_into_one_node_stay_apart() {
     ]);
     let c = chain_ids(&g);
     assert_eq!(c.len(), 2, "{c:?}");
+}
+
+// ---- the sidepath tags ----
+
+/// A road feature, with `foot=use_sidepath` when `use_sidepath`.
+fn tagged(way: i64, nodes: &[i64], points: &[(f64, f64)], use_sidepath: bool) -> Feature {
+    let mut f = road(way, nodes, points);
+    if let FeatureKind::Road {
+        use_sidepath: u, ..
+    } = &mut f.kind
+    {
+        *u = use_sidepath;
+    }
+    f
+}
+
+#[test]
+fn the_use_sidepath_tag_reaches_the_stretch_and_does_not_cut_it() {
+    let g = build_graph(&[road(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)])]);
+    assert!(!g.stretches[0].use_sidepath);
+    // two ways, one tagged, joined at a plain joint: one stretch that carries the tag
+    let g = build_graph(&[
+        tagged(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)], true),
+        tagged(2, &[2, 3], &[(50.0, 0.0), (100.0, 0.0)], false),
+    ]);
+    assert_eq!(ids(&g), vec!["1:1-3"]);
+    assert!(g.stretches[0].use_sidepath);
+}
+
+#[test]
+fn a_cut_piece_keeps_the_use_sidepath_tag_of_its_stretch() {
+    let g = build_graph(&[
+        tagged(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)], true),
+        way(2, Family::Asf3, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)]),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1, "{out:?}");
+    let rest: Vec<_> = out
+        .stretches
+        .iter()
+        .filter(|s| s.id.starts_with("1:"))
+        .collect();
+    assert_ne!(rest.len(), 0);
+    assert!(rest.iter().all(|s| s.use_sidepath), "{rest:?}");
 }

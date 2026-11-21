@@ -408,6 +408,7 @@ fn road_feature(family: Family, points: &[(f64, f64)]) -> Feature {
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: (1..=i64::try_from(points.len()).unwrap()).collect(),

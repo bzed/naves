@@ -32,6 +32,7 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             tunnel: false,
             roundabout: false,
             layer: 0,
+            use_sidepath: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1184,7 +1185,8 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     let as_roads = place(&features);
     assert_eq!(as_roads.rings.len(), 0);
     // collapsed first, as the build does: the three streets meet at one crossing at the centre
-    let graph = collapse_small_rings(&build_graph(&features), &tightest);
+    let (graph, collapsed) = collapse_small_rings(&build_graph(&features), &tightest);
+    assert_eq!(collapsed.len(), 1);
     assert!(graph.stretches.iter().all(|s| !s.roundabout));
     assert_eq!(graph.stretches.len(), 3);
     assert_eq!(graph.crossings.len(), 1);
@@ -1200,10 +1202,11 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
             || !net.joins_without_junction.is_empty()
     );
     // a ring that is big enough is left alone
-    let big = collapse_small_rings(
+    let (big, none) = collapse_small_rings(
         &build_graph(&roundabout(12.0, Family::City, &[0, 8, 16])),
         &tightest,
     );
+    assert_eq!(none.len(), 0);
     assert!(big.stretches.iter().any(|s| s.roundabout));
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }
@@ -1668,4 +1671,154 @@ fn two_higher_roads_leaving_on_one_side_do_not_cut_the_lower_road() {
             "a hole in the Mud road"
         );
     }
+}
+
+#[test]
+fn a_roundabout_stays_only_above_the_keep_radius_and_the_tightest_arc() {
+    use naves_core::roadnet::ROUNDABOUT_KEEP_M;
+    assert!((ROUNDABOUT_KEEP_M - 10.0).abs() < 1e-9);
+    let ring = |radius: f64, arc: f64| {
+        let tightest = move |_| Some(arc);
+        collapse_small_rings(
+            &build_graph(&roundabout(radius, Family::City, &[0, 8, 16])),
+            &tightest,
+        )
+    };
+    // 9 m, the family's tightest arc is 8 m: below the keep radius, collapsed and reported
+    let (graph, collapsed) = ring(9.0, 8.0);
+    assert_eq!(collapsed.len(), 1);
+    assert!((collapsed[0].radius - 9.0).abs() < 0.5);
+    assert!(graph.stretches.iter().all(|s| !s.roundabout));
+    // 12 m, tightest arc 8 m: stays
+    let (graph, collapsed) = ring(12.0, 8.0);
+    assert_eq!(collapsed.len(), 0);
+    assert!(graph.stretches.iter().any(|s| s.roundabout));
+    // 12 m, but the arc needs 14 m: collapsed as before
+    let (_, collapsed) = ring(12.0, 14.0);
+    assert_eq!(collapsed.len(), 1);
+    // a family without an arc: any ring is collapsed, as before
+    let (_, collapsed) = collapse_small_rings(
+        &build_graph(&roundabout(12.0, Family::City, &[0, 8, 16])),
+        &|_| None,
+    );
+    assert_eq!(collapsed.len(), 1);
+}
+
+/// A through road with junctions at three places and a turn of 135 degrees 3 m behind the first one: the exit of
+/// the first junction points 135 degrees away from the road that goes on, so that no piece gets forward on it.
+fn corner_behind_a_junction() -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 5, 3, 4, 6],
+            &[
+                (0.0, 500.0),
+                (300.0, 500.0),
+                (305.0, 500.0),
+                (205.0, 600.0),
+                (105.0, 700.0),
+                (5.0, 800.0),
+            ],
+        ),
+        feature(2, Family::Asf3, &[2, 7], &[(300.0, 500.0), (300.0, 200.0)]),
+        feature(3, Family::Asf3, &[3, 8], &[(205.0, 600.0), (305.0, 700.0)]),
+        feature(4, Family::Asf3, &[4, 9], &[(105.0, 700.0), (205.0, 800.0)]),
+    ]
+}
+
+#[test]
+fn a_part_that_cannot_be_fitted_does_not_take_the_rest_of_its_road_with_it() {
+    let net = place(&corner_behind_a_junction());
+    // the part after the first junction misses and says so, once; before the change the parts after it started
+    // from the same stale pose and all three reported gaps measured from it
+    let gaps: Vec<_> = net
+        .gaps
+        .iter()
+        .filter(|g| g.stretch.starts_with("1:"))
+        .collect();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0].stretch, "1:2-3");
+    // the later parts are placed from where they have to start: their junctions and their pieces are there
+    assert_eq!(of_kind(&net, PlacedKind::Junction).len(), 3);
+    for later in ["1:3-4", "1:4-6"] {
+        let pieces = net
+            .roads
+            .iter()
+            .filter(|r| r.kind == PlacedKind::Piece && r.slot.stretch == later)
+            .count();
+        assert!(pieces > 5, "{later} has {pieces} pieces");
+    }
+}
+
+/// A T whose side road turns back on itself 5 m after the crossing, `reach` metres long in all.
+fn side_road_that_turns_back(end: (f64, f64)) -> Vec<Feature> {
+    vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 3],
+            &[(100.0, 500.0), (500.0, 500.0), (900.0, 500.0)],
+        ),
+        feature(
+            2,
+            Family::Asf3,
+            &[2, 4, 5],
+            &[(500.0, 500.0), (500.0, 505.0), end],
+        ),
+    ]
+}
+
+#[test]
+fn a_side_road_with_a_free_end_that_gets_no_piece_is_reported() {
+    // the port is 6.25 m up the side road, 1.25 m past its corner: the road runs away from it at 135 degrees
+    let net = place(&side_road_that_turns_back((450.0, 455.0)));
+    let side: Vec<_> = net
+        .gaps
+        .iter()
+        .filter(|g| g.stretch.starts_with("2:"))
+        .collect();
+    assert_eq!(side.len(), 1, "{:?}", net.gaps);
+    // the gap is the length of the part: from the port's end of the road to its end, about 69 m
+    assert!((side[0].gap_m - 68.8).abs() < 2.0, "{:?}", side[0]);
+    assert!(
+        net.roads
+            .iter()
+            .all(|r| r.kind != PlacedKind::Piece || r.slot.stretch != side[0].stretch),
+        "the road has pieces after all"
+    );
+}
+
+#[test]
+fn a_part_shorter_than_the_shortest_piece_is_not_reported() {
+    let net = place(&side_road_that_turns_back((497.0, 507.0)));
+    assert!(
+        net.gaps.iter().all(|g| !g.stretch.starts_with("2:")),
+        "{:?}",
+        net.gaps
+    );
+}
+
+#[test]
+fn a_road_that_ends_under_another_and_gets_no_piece_is_reported() {
+    // the exit of the junction at node 2 points 135 degrees away from the road that goes on, which ends under a
+    // gravel road that has no junction model with it: the cut at the end finds no piece
+    let mut features = vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 5, 3],
+            &[(0.0, 500.0), (300.0, 500.0), (305.0, 500.0), (225.0, 580.0)],
+        ),
+        feature(2, Family::Asf3, &[2, 7], &[(300.0, 500.0), (300.0, 200.0)]),
+    ];
+    features.push(feature(
+        3,
+        Family::Grav,
+        &[8, 3, 9],
+        &[(100.0, 680.0), (225.0, 580.0), (400.0, 440.0)],
+    ));
+    let net = place(&features);
+    let gaps: Vec<_> = net.gaps.iter().filter(|g| g.nothing_placed).collect();
+    assert_eq!(gaps.len(), 1, "{:?} / {:?}", net.gaps, net.overlays);
 }

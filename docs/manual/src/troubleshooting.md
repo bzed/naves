@@ -218,6 +218,57 @@ there. The choice of `bridge_wood_25` looks at the original ground; this finding
 under the deck as it was placed (with the height the road got). The position is the sample furthest from the ground.
 Use a bridge that does not stand on the ground (a panel grid).
 
+**`road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged`, `bridge_approach_made` (information)**
+The build changed the road graph on purpose and says where: a roundabout smaller than 10 m on the map, or tighter than the
+tightest arc of its surface, became a plain crossing, a part of a road that runs beside a road of higher rank, a short dead end or a junction next to another was
+left out or merged, or a junction was moved off the end of a bridge. Nothing to do; look at the place if the result is
+not what you want and change the data (OpenStreetMap) there. The position is the place of the change. For
+`road_sidepath_dropped` the message names the stretch, the road it runs beside and the length of the part that was left out
+(the `road-analysis` example also lists the roads that were joined to the road instead, and the candidates that stayed with
+the reason `clear`, `crosses`, `would_disconnect`, `would_split` or `loops_back`); for
+`road_stub_dropped` the message names the stretch and its length (a dead end shorter than 6 m that is not drivable, or
+shorter than its own width); for `road_junctions_merged` it names the junction that stays and those that went into it (nodes
+of the data, joined by a stretch shorter than 6 m, all within 12 m of each other). `road_junctions_not_merged` names the close
+junctions that were left as they are and why (a roundabout among them, two bridge ends or junctions next to them, a longer
+road between them, a straightened road that would cross another road, too wide a group, or junctions that a merge itself brought
+closer than 6 m). The points of a line that were merged because they lay closer than 0.5 m are not a finding; the
+`road-analysis` example lists each (`CLEAN speck`).
+
+**`road_curve_widened` (information), `road_curve_too_tight` (warning)**
+The smoothing of the road lines (switched off in this release, so these two findings do not appear) found a curve tighter than the tightest curve piece of its road type. For
+`road_curve_widened` it was widened outward (an open corner, a turn of up to 120 degrees, may be cut inward instead)
+to the radius of the piece; the message names the stretches, the radius before and after and the furthest move, which
+can be several metres, and the position is the tightest point of the curve. A widened curve may end a little under
+the wanted radius; the zone is then in `roads.smoothing.zones` of `build/report.json` with `reached: false`. For
+`road_curve_too_tight` the curve could not be widened to 90 % of the wanted radius, or widening it would have put the
+road in water (`blocked_by_water` in the report), so the road keeps the line OpenStreetMap draws and **cannot be built
+as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of a bridge end are not widened at all.
+Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
+
+**Other road findings: `road_not_drivable`, `path_too_steep`, `road_in_water`, `earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `road_duplicate_dropped`**
+Each finding names its rule and a position in map metres. `road_not_drivable` is explained above (steeper or more tilted
+than a vehicle manages) and `path_too_steep` is a path that is too steep to walk. `road_in_water` is a road piece
+standing in water, `earthworks_capped` a place where the earthworks stop at their cap and leave a step (reported once
+per square), `orphaned_edit` an edit that outlived its object (the road it was made on was removed, replaced or moved to
+another stretch), `join_without_junction` roads that all end at one point without a junction piece, `tunnel_omitted` a
+tunnel that got no pieces, and `road_duplicate_dropped` the part of a road that OpenStreetMap draws a second time under
+a higher road and that is not placed. None of them stops the build.
+
+**`road_gap` (warning)**
+A road misses what it has to meet: the pieces end more than 0.5 m from a junction's port, a bridge's end or the road
+it has to close on (the message gives the distance). A road on which **nothing could be placed** is reported too, also
+when its end is free (a dead end or an end under another road): the message says "has no pieces", the distance is the
+length of the part that has none, and the position is where the part starts. Typically the road turns away sharply
+right behind a junction, so that no piece gets forward. A part shorter than the shortest piece is not reported. A part
+that cannot be fitted no longer takes the rest of its road with it: the next part starts where the line is, so only the
+part itself is reported. Look at the place; change the data (OpenStreetMap) so that the road does not turn away
+within a few metres of a junction.
+
+**`bridge_end_at_junction` (warning)**
+A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road
+passes below the part that would be cut off, or there is no room). The bridge is left as it is. Move the junction
+away from the bridge's end in the data (OpenStreetMap).
+
 **`bridge_end_step`: "The deck of bridge ... ends 1.1 m below the junction at (100, 200) it joins: nothing in the project sets heights, look at the site"**
 A bridge's deck is level, and one end of it lies at a junction of the bridge's roads (or at the end of another road) that
 the height solve put more than 0.5 m above or below it. The deck is held to one junction at the end that faces it; where

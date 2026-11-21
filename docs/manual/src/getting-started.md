@@ -254,8 +254,92 @@ a ring on a steep street needs no large flat bench, and the roads that join it e
 own roads) cannot be laid out with the game's pieces; it is taken as a **plain crossing**: the ring is left out and the
 roads that joined it meet at one point at its centre, with a junction piece where the game has one and the overlay
 rule elsewhere. This is the common case on a map at a small scale (a mini roundabout of 9 m radius is 4.6 m at half
-scale). An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
+scale). A ring is also taken as a plain crossing when its radius is below 10 m on the map (about 20 m in reality at
+the usual scale), whatever the pieces allow, so that "small roundabout" is one number: a 9 m ring of a surface whose
+tightest arc is 8 m is a plain crossing, a 12 m ring stays. Each ring that is turned into a crossing is the finding
+`road_roundabout_collapsed`, at its centre. An open arc of roundabout ways, a loop with a way in it that is not tagged as a roundabout, one that a third
 roundabout way leaves, and one with several surfaces are not rings; they stay ordinary roads.
+
+**The clean-up of the road graph.** After the roads that are drawn twice have been dropped and before anything is
+built on the graph, the build cleans it in four steps: sidepaths that run beside a road, short dead ends, junctions
+that lie close together, and junctions on the end of a bridge. Each change is a finding of its own (information, at the
+place of the change) and nothing is changed that is not reported; no step ever splits the network into more connected
+pieces than it had. **Sidepaths:** a road or track of a lower family (asphalt before gravel before mud) that
+runs beside a road of a higher family, within 15 m of it and on one side of it, for at least 30 m
+(for any length beside a road tagged `foot=use_sidepath`), is removed where it disturbs. The run is the whole part that
+stays within 15 m, also where the track bends towards the road to join it; at least 30 m between its first and last metre that heads the way the road
+does must be along the road (any length beside a tagged road), so that a road that joins at an angle is no sidepath. It disturbs when, along the part that heads along the road, the two
+earthworks (half the road's width and the shoulder ring of one and a half terrain cells on each side) overlap or leave
+less than one cell between them, or when it passes a bridge of that road (the bridge's length and one cell at each
+end; a bridge of another road does not count). A run that keeps its distance and passes no bridge stays, and the
+`road-analysis` example lists it as `clear`. A run that crosses the road is not removed across the crossing, and a run
+between two roads is judged against the nearer. Footways, paths and cycleways are painted strokes, not stretches of
+the graph, and are not touched. Nothing that met the removed part is lost: a road that joined it goes on along its own
+direction to the road (if that is within 30 m), the rest of a track at the end of a removed part meets the road at a
+shallow angle ahead of that end, and the road is cut there by a new node. A node of the road within 12.5 m (the length of a junction piece) is used instead
+of a new one, two new nodes on one road piece are 12.5 m apart, and no node is made within 12.5 m of the end of a bridge (a road
+piece shorter than 25 m between two bridges or tunnels is not joined at all). The road must be within 15 m of the joint
+(measured to the nearest point of the road; beside a bridge, to the nearer end of its deck); the connector to the place the joint moved to may be up to 30 m long. The removed run's stretch keeps its id and the pieces
+that follow the first are named `<id>/side<n>`. Where a connector would cross a third road (also one that moved onto
+another new junction) or be too long, or the road is out of reach, the run next to
+the joint stays (the `road-analysis` example lists it, with `crosses` or `would_disconnect`); no removal may cut a connected piece of the road network
+off from the rest (`would_split`). A rest of the run's own stretch is never joined back to the junction it started from: such a run stays (`loops_back`), for instance the lower leg of a switchback. A dead-end side street whose short rest at a junction would be left is removed whole instead of being joined to the road. Each removed part is a finding (`road_sidepath_dropped`).
+**Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
+shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
+roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).
+**Close junctions:** junctions joined by a stretch shorter than 6 m become one junction (`road_junctions_merged`),
+on the node whose roads rank highest (or on the end of a bridge or tunnel, which never moves, or on a junction that is joined to such an end by a stretch shorter than 6 m); the short stretch between
+them goes and the roads that met there end at the merged junction, straight for their last 6 m. A group of such junctions
+is merged only if they all lie within 12 m of each other and no roundabout, no longer stretch between them and not two bridge ends
+are among them, and none of the straightened roads would cross another road; otherwise it is left as it is and reported (`road_junctions_not_merged`, information). Junctions that a merge itself brings closer than 6 m are reported the same way.
+**Bridge approaches:** where three or more roads meet on the end of a bridge deck, the junction is moved 8 m off the
+deck. If the bridge's road goes on, the other roads are taken off the deck end and joined to the road 8 m beyond it
+(the road gets a new node there; its first 8 m are a stretch named `<id>/approach<n>`; this is refused with `no_room` if another deck, tunnel or closed loop ends at that junction); this needs the road to go on for
+at least 8 m plus 12.5 m, or exactly 8 m to the next junction (a road of 8 m within 0.5 m counts as exactly 8 m: the
+other roads then join its far end, which can be up to 0.5 m less than 8 m from the deck end), and no moved road may
+cross a road it did not cross before. That crossing is counted only against roads that touch none of the nodes
+involved, so a crossing with a road that meets the deck end, the new node, the far node of the moved road or the far
+end of the road is not seen. If the bridge's road ends at the junction (a T), the last 8 m of the bridge become an
+ordinary stretch of the same road, but only if the bridge stays at least 24 m long, no other bridge, tunnel or closed
+loop ends at that junction (a junction where several decks end stays as it is), and no road passes under the part that
+is cut off. Otherwise nothing changes and the place is reported with the reason `no_room`, `bridge_too_short` or
+`road_below` (`bridge_end_at_junction`). The findings are `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged` and
+`bridge_approach_made` (information), and `bridge_end_at_junction` (warning: a junction on a bridge's end that could
+not be moved off it). The tag `foot=use_sidepath` on a road is read from
+OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
+fix, "warning" means a place worth a look.
+
+**Road lines can be smoothed (switched off in this release).** The stage exists but is off: the road planning is being
+built first, and it will then be decided whether the stage is still needed; with it on, road placement was about
+44 % slower on the example. Nothing below happens in a build of this release; `roads.smoothing` in `build/report.json`
+says `{"enabled": false}`. With the stage on, after the clean-up and before bridges are fitted, the build smooths the lines of the
+roads. A chain is a run of stretches that merely continue each other (nodes where exactly two stretches meet). Junctions,
+dead ends and bridge ends stay where they are, and the direction a road leaves a junction does not change. Between
+them each line is fitted by a smooth curve that stays within 2 m of its OpenStreetMap line; a bridge deck is only held
+stiffer in the fit, so its inside can still bend a little there, and the widening below leaves it where it is. Where a curve is
+tighter than the tightest curve piece of its road type, it is widened outward to the piece's radius; this may move the
+line by more than 2 m, and an open corner (a turn of up to 120 degrees) may be cut inward as well. Inside such a curve
+zone a node where a road merely continues moves with the line.
+Four rules keep the widening from doing harm:
+
+- A curve that cannot be widened to 90 % of the wanted radius (for instance because a junction holds the bend) goes back
+  to the line as OpenStreetMap draws it, not to the fitted one, which had made the bend tighter. The two ends of the
+  zone are blended over 6 m where the zone meets a held point, so the line has no step. The zone gets the vertices
+  OpenStreetMap drew (none is lost or moved by resampling), so a zone that reaches the end of a road is the drawn line
+  point for point. It is reported as one that cannot be built as a curve.
+- A widened line that would stand in water where the OpenStreetMap line does not (the water of the `road_in_water`
+  rule) goes back the same way; the zone is flagged `blocked_by_water` in the report and the curve stays as drawn.
+- The approach of a bridge is not widened: samples within 25 m of a bridge end are held where the fit has put them.
+- After all this, points of a line that lie within 0.20 m of the line through their neighbours are dropped (a straight
+  100 m road is two points), so the placement has less to walk over. The tight-length figures and the zone report are
+  those of the line before the drop.
+
+With the stage on it can move roads, so edits to the road objects that are keyed by slot may no longer find their object
+(`orphaned_edit`). The findings are `road_curve_widened` and `road_curve_too_tight`; `build/report.json` has
+`roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`, `tight_before_m`, `tight_after_m`, `skipped_short`, the
+point counts `points_before`, `points_fitted` and `points_after`, `kept` and `widen_failed` as lists of
+`{stretch, reason}`, and `zones`), and the build prints one line with the chains, the largest move, the tight length
+before and after and the zones reached. The progress output (also the one the MCP `build` tool returns) has a line `Smoothing the road lines (0.4 s)` with the time the stage took.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its
