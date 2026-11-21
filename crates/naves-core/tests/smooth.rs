@@ -928,6 +928,10 @@ fn a_mirrored_open_corner_gives_the_mirror_image() {
 
 /// The turn that counts for the inward allowance is the net turn of the zone: a corner of 110 degrees is an
 /// open corner, and may cut inward by what a fillet of 10 m needs (10 * (1 - cos 55) = 4.26 m from the legs).
+///
+/// Known limit: the solver does not find the fillet itself. This corner reaches the radius by a 9 m outward detour with
+/// two reverse curves and only a little inward (a geometric fillet is the open task 3d), so the test pins the
+/// allowance, not the shape.
 #[test]
 fn a_corner_of_110_degrees_is_an_open_corner() {
     let corner = (60.0, 0.0);

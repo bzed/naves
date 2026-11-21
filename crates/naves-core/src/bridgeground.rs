@@ -190,22 +190,19 @@ fn node_ids(id: &str) -> Vec<String> {
 /// shares. A stretch the graph does not have is read from its id. The ids of the map's edge (negative) are left
 /// out.
 fn nodes_of_stretches(graph: &RoadGraph) -> BTreeMap<String, Vec<String>> {
-    let mut count: BTreeMap<String, BTreeMap<i64, usize>> = BTreeMap::new();
+    // per base id: the number of pieces and how many pieces have each node
+    let mut count: BTreeMap<String, (usize, BTreeMap<i64, usize>)> = BTreeMap::new();
     for s in &graph.stretches {
         let base = s.id.split('/').next().unwrap_or(&s.id).to_string();
-        let nodes = count.entry(base).or_default();
+        let (pieces, nodes) = count.entry(base).or_default();
+        *pieces += 1;
         for node in [s.start, s.end] {
             *nodes.entry(node).or_default() += 1;
         }
     }
     count
         .into_iter()
-        .map(|(base, nodes)| {
-            let pieces = graph
-                .stretches
-                .iter()
-                .filter(|s| s.id.split('/').next() == Some(base.as_str()))
-                .count();
+        .map(|(base, (pieces, nodes))| {
             let ends = nodes
                 .into_iter()
                 // the ends of one piece are all there is; of several, the nodes that only one piece has
@@ -345,7 +342,53 @@ pub fn bridge_spans(
 
 #[cfg(test)]
 mod tests {
-    use super::node_ids;
+    use super::{node_ids, nodes_of_stretches};
+    use crate::catalog::Family;
+    use crate::roadnet::{RoadGraph, Stretch};
+
+    fn piece(id: &str, start: i64, end: i64) -> Stretch {
+        Stretch {
+            id: id.to_string(),
+            family: Family::Asf3,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+            points: vec![(0.0, 0.0), (1.0, 0.0)],
+            start,
+            end,
+            bridge_kind: None,
+            bridge_offset: 0.0,
+            use_sidepath: false,
+        }
+    }
+
+    #[test]
+    fn a_stretch_cut_into_pieces_has_the_ends_that_only_one_piece_has() {
+        // `5:1-2` was cut at nodes 8 and 9 (a clean-up); its id still spells 1 and 2
+        let graph = RoadGraph {
+            stretches: vec![
+                piece("5:1-2", 1, 8),
+                piece("5:1-2/approach0", 8, 9),
+                piece("5:1-2/side0", 9, 2),
+                piece("6:3-4", 3, 4),
+                piece("7:-1-5", -1, 5),
+            ],
+            crossings: Vec::new(),
+        };
+        let nodes = nodes_of_stretches(&graph);
+        assert_eq!(
+            nodes.get("5:1-2"),
+            Some(&vec!["1".to_string(), "2".to_string()])
+        );
+        // one piece: both of its ends, but not the map's edge
+        assert_eq!(
+            nodes.get("6:3-4"),
+            Some(&vec!["3".to_string(), "4".to_string()])
+        );
+        assert_eq!(nodes.get("7:-1-5"), Some(&vec!["5".to_string()]));
+    }
 
     #[test]
     fn the_nodes_of_an_id_leave_out_the_ids_of_the_maps_edge() {

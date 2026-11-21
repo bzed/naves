@@ -70,7 +70,7 @@ fn a_loop_of_one_stretch_is_one_component() {
 }
 
 #[test]
-fn clean_with_empty_steps_returns_the_same_graph_and_an_empty_report() {
+fn a_graph_with_nothing_to_clean_comes_back_the_same_with_an_empty_report() {
     let graphs = [
         RoadGraph::default(),
         build_graph(&[
@@ -1889,16 +1889,81 @@ fn a_side_street_whose_far_end_joins_another_road_keeps_its_rest_and_is_joined_t
     )));
     let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
     assert_eq!(dropped.len(), 1, "{dropped:?}");
-    // the 9 m rest at the junction stays and the new junction on the road is a node more than before
+    // the 9 m rest at the junction stays; the street's end and the rest are joined to the road by two new nodes
     assert!(
         out.stretches.iter().any(|s| s.id.starts_with("2:")),
         "{:?}",
         stretch_ids(&out)
     );
+    assert_eq!(
+        end_nodes(&out).len(),
+        end_nodes(&g).len() + 2,
+        "{:?} {:?}",
+        end_nodes(&out),
+        end_nodes(&g)
+    );
+}
+
+#[test]
+fn a_dead_end_side_street_whose_near_node_has_one_other_road_goes_whole_and_that_road_is_joined() {
+    // the City road ends at the node where the street leaves: the street continues it, so it is still removed whole, but
+    // the City road then ends at nothing and is joined to the main road by a connector
+    let g = build_graph(&[
+        plain(1, &[1, 2], &[(-50.0, 0.0), (150.0, 0.0)], Family::Asf1),
+        plain(3, &[10, 11], &[(0.0, 60.0), (0.0, 12.0)], Family::City),
+        plain(
+            2,
+            &[11, 20, 21],
+            &[(0.0, 12.0), (0.0, 8.0), (100.0, 8.0)],
+            Family::Grav,
+        ),
+    ]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((dropped.len(), kept.len()), (1, 0), "{dropped:?} {kept:?}");
     assert!(
-        end_nodes(&out).len() >= end_nodes(&g).len(),
+        out.stretches.iter().all(|s| !s.id.starts_with("2:")),
         "{:?}",
-        end_nodes(&out)
+        stretch_ids(&out)
+    );
+    // the road that continued into the street now ends on the main road
+    let city = by_id(&out, "3:10-11");
+    assert_eq!(
+        city.points.last().map(|p| p.1.abs() < 1e-6),
+        Some(true),
+        "{:?}",
+        city.points
+    );
+    // joined to the main road: two pieces of road network before, one after
+    assert_eq!((components(&g), components(&out)), (2, 1));
+}
+
+#[test]
+fn a_dead_end_side_street_whose_free_end_is_far_beyond_the_run_does_not_go_whole() {
+    // the street runs on 40 m away from the road after the 100 m beside it, to a free end
+    let g = build_graph(&[
+        plain(1, &[1, 2], &[(-50.0, 0.0), (150.0, 0.0)], Family::Asf1),
+        plain(
+            3,
+            &[10, 11, 12],
+            &[(-60.0, 23.0), (0.0, 23.0), (60.0, 23.0)],
+            Family::City,
+        ),
+        plain(
+            2,
+            &[11, 20, 21, 22],
+            &[(0.0, 23.0), (0.0, 8.0), (100.0, 8.0), (100.0, 60.0)],
+            Family::City,
+        ),
+    ]);
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    let d = &dropped[0];
+    assert!(d.to_m < 115.0 + 15.0, "the run is the part beside: {d:?}");
+    // the far part beyond the run is not removed with it
+    assert!(
+        out.stretches.iter().any(|s| s.id.starts_with("2:")),
+        "{:?}",
+        stretch_ids(&out)
     );
 }
 
@@ -2512,6 +2577,68 @@ fn a_side_road_that_would_cross_another_road_when_moved_stays_and_leaves_no_room
     ];
     features.push(asf(9, &[20, 21], &[(42.0, 20.0), (60.0, 20.0)]));
     let g = build_graph(&features);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(
+        none.iter().map(|n| n.reason).collect::<Vec<_>>(),
+        vec!["no_room"]
+    );
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_side_road_that_is_a_deck_itself_stays_and_leaves_no_room() {
+    // a second deck leaves the end node of the first, beside the road that goes on
+    let g = build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[2, 3], &[(40.0, 0.0), (140.0, 0.0)]),
+        asf(5, &[3, 7], &[(140.0, 0.0), (140.0, -50.0)]),
+        asf(6, &[3, 9], &[(140.0, 0.0), (240.0, 0.0)]),
+        deck(3, &[2, 4], &[(40.0, 0.0), (40.0, 20.0)]),
+    ]);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert!(
+        none.iter().all(|n| n.reason == "no_room") && !none.is_empty(),
+        "{none:?}"
+    );
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_road_that_goes_on_exactly_the_approach_to_a_deck_end_leaves_no_room() {
+    // the far node of the 8 m road is the end of another deck (too short to be shortened itself)
+    let g = build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[2, 3], &[(40.0, 0.0), (48.0, 0.0)]),
+        deck(7, &[3, 10], &[(48.0, 0.0), (48.0, 20.0)]),
+        asf(6, &[3, 9], &[(48.0, 0.0), (148.0, 0.0)]),
+        grav(3, &[2, 4], &[(40.0, 0.0), (40.0, 50.0)]),
+    ]);
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert!(
+        none.iter()
+            .any(|n| n.bridge == "1:1-2" && n.reason == "no_room"),
+        "{none:?}"
+    );
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_side_road_whose_other_end_is_the_node_it_would_be_joined_to_stays_and_leaves_no_room() {
+    // the road goes on exactly 8 m to node 3, and a second road runs from node 2 round to node 3 as well: moving it
+    // onto node 3 would make a stretch from the node to itself
+    let g = build_graph(&[
+        deck(1, &[1, 2], &[(0.0, 0.0), (40.0, 0.0)]),
+        asf(2, &[2, 3], &[(40.0, 0.0), (48.0, 0.0)]),
+        asf(6, &[3, 9], &[(48.0, 0.0), (148.0, 0.0)]),
+        grav(
+            3,
+            &[2, 4, 3],
+            &[(40.0, 0.0), (40.0, 20.0), (48.0, 20.0), (48.0, 0.0)],
+        ),
+    ]);
     let (out, approaches, none) = make_approaches(&g);
     assert_eq!(approaches, Vec::new());
     assert_eq!(

@@ -8,6 +8,8 @@ use naves_core::catalog::Family;
 use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
+use naves_core::netclean;
+use naves_core::roadnet::{build_graph, collapse_small_rings, drop_duplicates};
 use naves_core::smooth::SMOOTH_ENABLED;
 use naves_export::generate::{fitted_graph, fitted_graph_with};
 
@@ -108,6 +110,15 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     let base = flat();
     let off = fitted_graph_with(&features, &catalog, &base, false, &|_| false);
     assert!(off.smooth.is_none());
+    // the graph is the cleaned graph itself: nothing of the stage is in it
+    let (flat_graph, _) =
+        collapse_small_rings(&build_graph(&features), &|f| catalog.tightest_arc(f));
+    let (deduplicated, _) = drop_duplicates(&flat_graph);
+    let (cleaned, _) = netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
+    assert_eq!(off.built, cleaned);
+    // and the stage on does change it (this corner is one the stage widens), so the pin above means something
+    let on = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
+    assert_ne!(on.built, cleaned);
     // the graph is what fit_bridges makes of the cleaned graph
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
     let (graph, bridges) = fit_bridges(&off.built, &|s| choose(&catalog, s), &ground);

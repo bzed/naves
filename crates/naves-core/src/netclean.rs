@@ -997,9 +997,35 @@ mod tests {
         assert_eq!((&out, dropped.len(), kept.len()), (&g, 0, 0));
     }
 
+    /// A 40 m deck from the origin east that ends in a T at x = 40.
+    fn with_a_deck_that_ends_in_a_t() -> RoadGraph {
+        let stretch = |id: &str, bridge, points: Vec<(f64, f64)>, start, end| Stretch {
+            id: id.to_string(),
+            family: Family::Asf3,
+            bridge,
+            points,
+            start,
+            end,
+            ..graph().stretches[0].clone()
+        };
+        let stretches = vec![
+            stretch("1:1-2", true, vec![(0.0, 0.0), (40.0, 0.0)], 1, 2),
+            stretch("2:2-5", false, vec![(40.0, 0.0), (40.0, -50.0)], 2, 5),
+            stretch("2:2-6", false, vec![(40.0, 0.0), (40.0, 50.0)], 2, 6),
+        ];
+        let crossings = crossings_of(&stretches);
+        RoadGraph {
+            stretches,
+            crossings,
+        }
+    }
+
     #[test]
-    fn the_empty_steps_that_are_left_return_the_graph_unchanged() {
-        let g = graph();
+    fn the_approach_step_that_is_switched_off_returns_the_graph_unchanged_though_it_would_change_it()
+     {
+        let g = with_a_deck_that_ends_in_a_t();
+        let (out, report, none) = make_approaches_if(true, &g);
+        assert_eq!((report.len(), none.len(), out.stretches.len()), (1, 0, 4));
         let (out, report, none) = make_approaches_if(false, &g);
         assert_eq!((&out, report.len(), none.len()), (&g, 0, 0));
     }

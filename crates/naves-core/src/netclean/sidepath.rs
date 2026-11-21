@@ -746,7 +746,7 @@ impl<'a> Ctx<'a> {
             let other = if at_end { s.start } else { s.end };
             // (the far end is taken in its turn when its own rest is short, as it is free)
             let far_gap = if at_end { run.from } else { total - run.to };
-            let whole_spur = (far_gap <= EPS_M || far_gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M)
+            let spur_goes_whole = (far_gap <= EPS_M || far_gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M)
                 && self
                     .ends
                     .get(&other)
@@ -755,7 +755,7 @@ impl<'a> Ctx<'a> {
                     .all(|(x, _)| *x == run.stretch);
             if gap > EPS_M
                 && gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M
-                && (free_or_on_road || whole_spur)
+                && (free_or_on_road || spur_goes_whole)
                 && let Some(run) = self.runs.get_mut(k)
             {
                 if at_end {
