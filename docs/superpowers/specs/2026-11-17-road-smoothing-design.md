@@ -166,8 +166,9 @@ A bridge stretch inside a zone keeps its ends and its stiffness; the zone widens
 ### What a failed fit does
 
 If the solver does not converge for a chain, or the input is degenerate (NaN, or a line that collapses to one point),
-the chain keeps its original line and the report counts it. Nothing panics. A stretch with fewer than three samples has
-nothing to smooth: it keeps its line and is counted separately (`skipped_short`), not listed among the failures.
+the chain keeps its original line and the report counts it. Nothing panics. A sound stretch with fewer than three samples
+has nothing to smooth: it keeps its line and is counted separately (`skipped_short`), not listed among the failures. A
+stretch whose line is not finite or collapses to one point is a failure even when it has fewer than three samples.
 
 ### Effects on other stages
 

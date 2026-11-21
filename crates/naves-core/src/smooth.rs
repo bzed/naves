@@ -294,11 +294,13 @@ pub struct SmoothReport {
     /// The number of chains.
     pub chains: usize,
     /// Stretches whose chain could not be fitted (input that is not finite, degenerate input, a failed
-    /// solve), with the reason, in stretch order. A stretch too short to smooth is counted in
+    /// solve), with the reason, in stretch order. A sound stretch too short to smooth is counted in
     /// [`Self::skipped_short`] instead.
     pub kept: Vec<(StretchId, String)>,
-    /// Stretches too short to smooth (fewer than three samples, a line of less than one step): they keep
-    /// their line and are counted here, not listed among the failures in [`Self::kept`].
+    /// Sound stretches too short to smooth (fewer than three samples, a line of less than one step): they
+    /// keep their line and are counted here, not listed among the failures in [`Self::kept`]. A stretch
+    /// that is too short because its line is not finite or collapses to one point is a failure and is
+    /// listed there.
     pub skipped_short: usize,
     /// The furthest any sample moved, in metres.
     pub max_move_m: f64,
@@ -339,6 +341,21 @@ fn leaving(s: &Stretch, at_start: bool) -> Option<(f64, f64)> {
 fn sound(s: &Stretch) -> bool {
     s.points.iter().all(|p| p.0.is_finite() && p.1.is_finite())
         && s.points.windows(2).any(|w| w.first() != w.get(1))
+}
+
+/// Why a stretch the fit calls [`SmoothError::TooShort`] is a failure rather than merely short: its line
+/// is not finite, or it collapses to one point.
+fn unsound_reason(s: Option<&Stretch>) -> String {
+    let not_finite = s.is_some_and(|s| {
+        s.points
+            .iter()
+            .any(|p| !p.0.is_finite() || !p.1.is_finite())
+    });
+    if not_finite {
+        SmoothError::NotFinite.to_string()
+    } else {
+        SmoothError::Degenerate.to_string()
+    }
 }
 
 /// The end point of a stretch at `at_start`.
@@ -567,8 +584,8 @@ fn tight_lengths(points: &[(f64, f64)], bounds: &[usize], minimum: &[f64]) -> Ve
 
 /// The graph with every stretch's line smoothed, chain by chain. Node positions, node ids and stretch ids
 /// are unchanged; no sample moves more than [`CORRIDOR_M`] sideways. A stretch whose chain cannot be fitted
-/// keeps its line and is listed in [`SmoothReport::kept`]; a stretch with fewer than three samples has
-/// nothing to smooth, keeps its line and is counted in [`SmoothReport::skipped_short`] instead.
+/// keeps its line and is listed in [`SmoothReport::kept`]; a sound stretch with fewer than three samples
+/// has nothing to smooth, keeps its line and is counted in [`SmoothReport::skipped_short`] instead.
 ///
 /// `min_radius` gives the tightest radius of a stretch's family (`NaN` or `0.0` for none); it only feeds
 /// the figures of the report.
@@ -613,13 +630,24 @@ pub fn smooth_graph(
             Err(e) => (before.clone(), Some(e)),
         };
         let tight_after = tight_lengths(&after, &prepared.bounds, &minimum);
+        // A stretch that is not sound is never joined to a neighbour, so its chain has one link. The
+        // condition still covers every link, so a chain of sound stretches is counted as short as a whole.
+        let all_sound = plan
+            .links
+            .iter()
+            .all(|l| graph.stretches.get(l.stretch).is_some_and(sound));
         let mut first = 0;
         for (j, (link, &last)) in plan.links.iter().zip(&prepared.bounds).enumerate() {
             if let Some(error) = failure {
-                if matches!(error, SmoothError::TooShort(_)) {
+                let short = matches!(error, SmoothError::TooShort(_));
+                if short && all_sound {
                     skipped_short += 1;
                 } else if let Some(k) = kept.get_mut(link.stretch) {
-                    *k = Some(error.to_string());
+                    *k = Some(if short {
+                        unsound_reason(graph.stretches.get(link.stretch))
+                    } else {
+                        error.to_string()
+                    });
                 }
             } else if let Some(s) = result.stretches.get_mut(link.stretch) {
                 let mut line: Vec<(f64, f64)> = after

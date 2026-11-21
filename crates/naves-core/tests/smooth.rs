@@ -687,9 +687,41 @@ fn a_stretch_of_one_point_keeps_its_line_and_does_not_hold_back_its_neighbour() 
         stretch("a", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 0.0)]),
         stretch("z", 2, 3, &[(40.0, 0.0), (40.0, 0.0)]),
     ]);
-    let (_, report) = run(&g);
-    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    let (out, report) = run(&g);
+    assert_eq!(
+        report.kept,
+        vec![("z".to_string(), SmoothError::Degenerate.to_string())]
+    );
+    assert_eq!(report.skipped_short, 0);
+    assert_eq!(out.stretches[1].points, vec![(40.0, 0.0), (40.0, 0.0)]);
+    assert!(out.stretches[0].points.len() > 3);
+}
+
+#[test]
+fn a_zero_length_or_broken_short_stretch_is_a_failure_not_a_short_one() {
+    let g = graph(vec![
+        stretch("broken", 1, 2, &[(0.0, 0.0), (f64::NAN, 1.0)]),
+        stretch("zero", 3, 4, &[(10.0, 0.0), (10.0, 0.0), (10.0, 0.0)]),
+        stretch("short", 5, 6, &[(100.0, 0.0), (101.0, 0.0)]),
+        stretch("long", 7, 8, &[(200.0, 0.0), (220.0, 0.0), (240.0, 10.0)]),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 4);
+    assert_eq!(
+        report.kept,
+        vec![
+            ("broken".to_string(), SmoothError::NotFinite.to_string()),
+            ("zero".to_string(), SmoothError::Degenerate.to_string()),
+        ]
+    );
     assert_eq!(report.skipped_short, 1);
+    assert!(out.stretches[3].points.len() > 3);
+    assert_eq!(
+        format!("{:?}", out.stretches[0].points),
+        format!("{:?}", [(0.0, 0.0), (f64::NAN, 1.0)])
+    );
+    assert_eq!(out.stretches[1].points, vec![(10.0, 0.0); 3]);
+    assert_eq!(out.stretches[2].points, vec![(100.0, 0.0), (101.0, 0.0)]);
 }
 
 #[test]
