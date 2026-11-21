@@ -14,7 +14,11 @@ mod approach;
 pub mod lot;
 mod sidepath;
 
-pub use lot::{CutAccess, DroppedInLot, LotGroup, components_with, drop_lot_roads};
+use lot::components_each;
+pub use lot::{
+    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads,
+    drop_lot_roads_full,
+};
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -193,15 +197,20 @@ pub struct CleanReport {
     pub lot_roads: Vec<DroppedInLot>,
     /// Access roads that were cut at the edge of a lot.
     pub lot_access: Vec<CutAccess>,
+    /// Stretches inside a lot that stay because they are part of a road through it (between two nodes that roads
+    /// leave the lot from).
+    pub lot_through_kept: usize,
     /// The groups whose removal would have split a component and that were left as they are.
     pub lots_split: Vec<usize>,
-    /// The junctions (three or more stretch ends) at which a removed stretch ended.
+    /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
+    /// the lot step.
     pub junctions_in_lots: usize,
     /// The connected components of the graph before the clean-up (with lot groups, each counted as one node).
     pub components_before: usize,
     /// The connected components of the graph after it.
     pub components_after: usize,
-    /// The connected components after each step, in the order of the steps (no step makes more).
+    /// The connected components after each step, in the order of the steps (no step makes more): 4 entries (sidepaths,
+    /// stubs, merge, approaches) without lot groups, 5 with them, the lot step's first.
     pub components_by_step: Vec<usize>,
     /// The length of the drivable stretches before the clean-up, in metres.
     pub drivable_m_before: f64,
@@ -865,21 +874,38 @@ pub fn clean_with(
     cell_m: f64,
     groups: &[LotGroup],
 ) -> (RoadGraph, CleanReport) {
-    let (graph0, lot_roads, lot_access, lots_split) = if groups.is_empty() {
-        (graph.clone(), Vec::new(), Vec::new(), Vec::new())
+    let step = if groups.is_empty() {
+        LotStep {
+            graph: graph.clone(),
+            dropped: Vec::new(),
+            access: Vec::new(),
+            unchanged: Vec::new(),
+            through: Vec::new(),
+            entries: BTreeSet::new(),
+        }
     } else {
-        drop_lot_roads(graph, groups)
+        drop_lot_roads_full(graph, groups)
     };
-    let protected: BTreeSet<i64> = lot_access.iter().map(|c| c.node).collect();
-    let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(&graph0, widths, cell_m);
-    let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths, &protected);
+    let graph0 = &step.graph;
+    let protected = &step.entries;
+    let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(graph0, widths, cell_m);
+    let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths, protected);
     let (graph3, merged, not_merged) = merge_junctions(&graph2);
     let (graph4, approaches, no_approach) = make_approaches(&graph3);
     let steps: Vec<&RoadGraph> = if groups.is_empty() {
         vec![&graph1, &graph2, &graph3, &graph4]
     } else {
-        vec![&graph0, &graph1, &graph2, &graph3, &graph4]
+        vec![graph0, &graph1, &graph2, &graph3, &graph4]
     };
+    // the graph before, the graph after, then the graph after each step
+    let counted = components_each(
+        &[graph, &graph4]
+            .into_iter()
+            .chain(steps)
+            .collect::<Vec<_>>(),
+        groups,
+    );
+    let (components_before, components_after) = (counted.first().copied(), counted.get(1).copied());
     let report = CleanReport {
         sidepaths,
         sidepaths_kept,
@@ -890,13 +916,14 @@ pub fn clean_with(
         approaches,
         no_approach,
         roundabouts: Vec::new(),
-        junctions_in_lots: lot::junctions_removed(graph, &lot_roads),
-        lot_roads,
-        lot_access,
-        lots_split,
-        components_before: components_with(graph, groups),
-        components_after: components_with(&graph4, groups),
-        components_by_step: steps.iter().map(|g| components_with(g, groups)).collect(),
+        junctions_in_lots: lot::junctions_removed(graph, graph0, &step.dropped),
+        lot_through_kept: step.through.len(),
+        lot_roads: step.dropped.clone(),
+        lot_access: step.access.clone(),
+        lots_split: step.unchanged.clone(),
+        components_before: components_before.unwrap_or_default(),
+        components_after: components_after.unwrap_or_default(),
+        components_by_step: counted.iter().skip(2).copied().collect(),
         drivable_m_before: drivable_m(graph),
         drivable_m_after: drivable_m(&graph4),
     };

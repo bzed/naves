@@ -186,20 +186,35 @@ ones:
 - **Painted paths.** A path that is a driveway or a parking aisle (`service=driveway`, `parking_aisle`; today a
   `FeatureKind::Path` of 3 m) inside a lot is a street and is not painted. A footway, path or cycleway through a lot is
   not a street; it stays painted, on top of the lot's surface **(controller)**.
+- **Roads through the lot stay whole (ruling).** "Every inside stretch is removed" is read together with "a road
+  through a lot stays": after the inside stretches are chosen, an *exit* is a node that an inside stretch ends at and
+  that still has a stretch which is not removed (a road leaving the lot). For every pair of exits the shortest chain of
+  inside stretches between them (by length, ties by the order of the stretch ids) is kept; everything else inside
+  (aisles, dead ends, loops, longer chains) is removed. So a road with aisles off it keeps all its stretches, and two
+  access roads joined by an inside driveway keep the driveway. A kept stretch is not reported as removed (it is counted
+  in `CleanReport::lot_through_kept`), and the outside parts it joins are not dead ends, so they are not cut.
 - **Access roads.** After the removal, a node inside a member by more than the tolerance that has exactly one
   stretch left, and is not a map-edge cut end, is a dead end inside the lot. Its stretch is cut where its line last
   enters the group, and kept to `LOT_ENTRY_M` (4 m, one terrain cell, `limits::RAMP_JOINT_MIN_M`) beyond that
-  crossing, inside; a new node ends it there (id above all others, sorted order), and the cut piece keeps the
-  stretch's id. A stretch whose inside part is shorter than `LOT_ENTRY_M` is not cut. The end is the lot's **entry**
-  for that road. Four metres inside, so that the road's last joint and its core lie on the smoothed ground, not on the
-  shoulder, and the road bed overlaps the paint.
+  crossing, measured along the road, inside; a new node ends it there (id above all others, sorted order, the start of
+  a stretch before its end), and the cut piece keeps the stretch's id. "Enters" means the line passes from not well
+  inside a member (outside, or on its outline) to well inside it, so a road that runs along an edge enters where it
+  turns away from the edge, whichever edge it is. A stretch whose inside part is shorter than `LOT_ENTRY_M` is not cut.
+  A stretch with a dead end inside at both ends is cut at both. The end is the lot's **entry** for that road. Four
+  metres inside, so that the road's last joint and its core lie on the smoothed ground, not on the shoulder, and the
+  road bed overlaps the paint.
 - **A road that enters, leaves and re-enters** is cut only at its last entry before its dead end. A stretch with both
   ends outside stays whole.
+- **A street within the tolerance of the edge** (the first sample of an access road within `LOT_INSIDE_TOL_M`) is a
+  stretch inside by the rule above: the whole access road goes and the lot has no cut access road. Its street node
+  counts as the lot's connection (it is near the group), and the lot has no entry junction.
 - **Through roads.** A node inside where two or more stretches are left is not a dead end; the roads there stay.
 - **Every access road stays.** The step removes only stretches wholly inside, and the stub step of the clean-up is
-  told the entry nodes: a dead end at an entry is not a stub. This matters most for a surface-only lot (`no_vertex`):
-  its access road ends at the edge of ground that was not shaped, as a plain dead end with no height tie, and without
-  the protection a short access piece would be dropped as a stub and the lot would lose its access.
+  told the entry nodes: a dead end at an entry is not a stub. The entry nodes are every node the step leaves with
+  exactly one stretch, cut or not (a short access road ending at a junction that went, or on the outline, is not cut,
+  and must not be taken for a stub either), and the new ends of the cut roads. This matters most for a surface-only
+  lot (`no_vertex`): its access road ends at the edge of ground that was not shaped, as a plain dead end with no height
+  tie, and without the protection a short access piece would be dropped as a stub and the lot would lose its access.
 - **Connections.** A group counts as one node for the connectivity check (a vehicle drives across a lot). The removal
   may not split a component counted this way; if it would (by construction it should not), nothing changes for that
   group and it is reported (`would_split`).

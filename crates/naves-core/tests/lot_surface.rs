@@ -486,7 +486,7 @@ fn a_hollow_just_outside_is_a_plane_and_one_far_outside_is_not() {
     // 4.5 m beyond the corner (150.5, 50.5): within two cells of the lot
     let (near, _) = one(area.clone(), &bowl(154.5, 48.5));
     assert_eq!(near.outcome, Outcome::Smoothed { form: Form::Plane });
-    // 12.6 m beyond it: not
+    // 13.0 m beyond it: not
     let (far, _) = one(area, &bowl(162.5, 45.5));
     assert_eq!(
         far.outcome,

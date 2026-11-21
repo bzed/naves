@@ -16,6 +16,7 @@
 //! A group counts as one node for the connectivity check (a vehicle drives across a lot): the removal for a group
 //! that would split a component counted that way is not made, and the group is reported.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::sidepath::splits;
@@ -31,6 +32,8 @@ use crate::roadnet::{
 /// A position in map metres.
 type Point = (f64, f64);
 
+/// A point closer than this to an outline is on it, in metres.
+const EDGE_M: f64 = 1e-6;
 /// How far either side of a crossing the line is probed for being inside, in metres.
 const PROBE_M: f64 = 1e-3;
 
@@ -48,6 +51,10 @@ pub struct LotGroup {
     pub members: Vec<String>,
     /// The members' outer rings and holes, in member order.
     pub polygons: Vec<Polygon>,
+    /// The members' areas ([`LotArea::area_m2`](crate::lot::LotArea::area_m2): the samples of a 1 m grid inside, so a
+    /// self-intersecting outline is counted as [`contains`](crate::lot::contains) sees it), in member order. The
+    /// smallest member that holds a road is the one reported for it.
+    pub areas_m2: Vec<f64>,
 }
 
 /// A stretch wholly inside a lot that was removed.
@@ -123,6 +130,7 @@ pub fn groups(assessed: &[Assessed]) -> Vec<LotGroup> {
                 .iter()
                 .map(|m| (m.area.outer.clone(), m.area.holes.clone()))
                 .collect(),
+            areas_m2: members.iter().map(|m| m.area.area_m2).collect(),
         })
         .collect()
 }
@@ -154,28 +162,12 @@ fn is_strict(polygon: &Polygon, p: Point) -> bool {
     polygon_contains(polygon, p) && edge_distance(polygon, p) > LOT_INSIDE_TOL_M
 }
 
-/// The area of a polygon by the shoelace formula, holes taken off (never below 0).
-fn polygon_area(polygon: &Polygon) -> f64 {
-    let ring = |points: &[Point]| -> f64 {
-        points
-            .windows(2)
-            .map(|pair| match pair {
-                [a, b] => a.0 * b.1 - b.0 * a.1,
-                _ => 0.0,
-            })
-            .sum::<f64>()
-            .abs()
-            / 2.0
-    };
-    (ring(&polygon.0) - polygon.1.iter().map(|h| ring(h)).sum::<f64>()).max(0.0)
-}
-
 /// A group with what the tests on it need.
 struct Shape<'a> {
     group: &'a LotGroup,
     /// min x, min y, max x, max y of the members' outer rings, widened by the tolerance.
     bounds: (f64, f64, f64, f64),
-    /// The members' indices, smallest area first (the order of the ids on a tie).
+    /// The members' indices, smallest area ([`LotGroup::areas_m2`]) first (the order of the ids on a tie).
     by_size: Vec<usize>,
 }
 
@@ -197,11 +189,8 @@ impl<'a> Shape<'a> {
                 );
             }
         }
-        let mut by_size: Vec<(usize, f64)> = group
-            .polygons
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, polygon_area(p)))
+        let mut by_size: Vec<(usize, f64)> = (0..group.polygons.len())
+            .map(|i| (i, group.areas_m2.get(i).copied().unwrap_or(f64::INFINITY)))
             .collect();
         by_size.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
         Shape {
@@ -229,9 +218,12 @@ impl<'a> Shape<'a> {
         self.in_bounds(p) && self.group.polygons.iter().any(|m| is_strict(m, p))
     }
 
-    /// Inside a member, no tolerance.
-    fn in_union(&self, p: Point) -> bool {
-        self.group.polygons.iter().any(|m| polygon_contains(m, p))
+    /// Inside a member and not on its outline (more than [`EDGE_M`] from it).
+    fn well_inside(&self, p: Point) -> bool {
+        self.group
+            .polygons
+            .iter()
+            .any(|m| polygon_contains(m, p) && edge_distance(m, p) > EDGE_M)
     }
 
     /// The id of a member by its index.
@@ -301,15 +293,25 @@ fn judgeable(s: &Stretch) -> bool {
         && s.points.iter().all(|p| p.0.is_finite() && p.1.is_finite())
 }
 
-/// A stretch to be cut: where it ends, from the node that stays to the new end.
+/// The new nodes of a cut stretch: which end (true for the `end`) and the node.
+type NewNodes = Vec<(bool, i64)>;
+
+/// One end of a stretch that is cut.
+struct CutEnd {
+    /// The stretch's `end` (else its `start`).
+    at_end: bool,
+    /// What is reported; the node is put in when the ids are given.
+    report: CutAccess,
+}
+
+/// A stretch to be cut at one or both of its dead ends.
 struct Cut {
     index: usize,
-    /// The node that stays.
-    other: i64,
-    /// The line from `other` to the new end.
+    /// The line as it is after, from the stretch's start to its end as before.
     points: Vec<Point>,
     before_m: f64,
-    report: CutAccess,
+    /// The cut ends, the start's first.
+    ends: Vec<CutEnd>,
 }
 
 /// What a group does to the graph.
@@ -318,15 +320,20 @@ struct Plan {
     group: usize,
     removed: Vec<(usize, DroppedInLot)>,
     cuts: Vec<Cut>,
+    /// The ids of the inside stretches that stay because they are part of a road through the lot.
+    through: Vec<String>,
+    /// The nodes that the removal leaves with exactly one stretch (cut or not): the stub step leaves them alone.
+    ends: BTreeSet<i64>,
 }
 
 impl Plan {
     fn is_empty(&self) -> bool {
-        self.removed.is_empty() && self.cuts.is_empty()
+        self.removed.is_empty() && self.cuts.is_empty() && self.through.is_empty()
     }
 }
 
-/// The parameter along `a`-`b` where it meets `c`-`d` (0 to 1), if it does and they are not parallel.
+/// The parameter along `from`-`to` where it meets `edge_from`-`edge_to` (0 to 1), if it does and they are not
+/// parallel.
 fn crossing(from: Point, to: Point, edge_from: Point, edge_to: Point) -> Option<f64> {
     let line = (to.0 - from.0, to.1 - from.1);
     let edge = (edge_to.0 - edge_from.0, edge_to.1 - edge_from.1);
@@ -340,8 +347,9 @@ fn crossing(from: Point, to: Point, edge_from: Point, edge_to: Point) -> Option<
     ((0.0..=1.0).contains(&along_line) && (0.0..=1.0).contains(&along_edge)).then_some(along_line)
 }
 
-/// How far along `points` the line last enters the group: the last crossing of an outline with the line outside the
-/// union just before it and inside just after.
+/// How far along `points` the line last enters the group: the last crossing of an outline with the line not well
+/// inside a member just before it and well inside just after (so a road that runs along an outline enters where it
+/// turns away from it, whichever edge it is).
 fn last_entry(shape: &Shape<'_>, points: &[Point]) -> Option<f64> {
     let total = polyline_length(points);
     let mut hits: Vec<f64> = Vec::new();
@@ -365,48 +373,137 @@ fn last_entry(shape: &Shape<'_>, points: &[Point]) -> Option<f64> {
     hits.sort_by(|x, y| y.total_cmp(x));
     hits.into_iter().find(|&d| {
         let probe = |along: f64| point_along(points, along.clamp(0.0, total));
-        !shape.in_union(probe(d - PROBE_M)) && shape.in_union(probe(d + PROBE_M))
+        !shape.well_inside(probe(d - PROBE_M)) && shape.well_inside(probe(d + PROBE_M))
     })
 }
 
-/// The cut of stretch `index` at its end `dead_end` (true for its `end`), if there is one to make.
-fn cut_at(shape: &Shape<'_>, index: usize, s: &Stretch, dead_end: bool) -> Option<Cut> {
-    let line: Vec<Point> = if dead_end {
-        s.points.clone()
-    } else {
-        s.points.iter().rev().copied().collect()
-    };
-    let total = polyline_length(&line);
-    let enter = last_entry(shape, &line)?;
-    let stop = enter + LOT_ENTRY_M;
+/// `line` (a dead end last) cut [`LOT_ENTRY_M`] beyond its last entry: the new line, its end and the length cut off.
+fn cut_end(shape: &Shape<'_>, line: &[Point]) -> Option<(Vec<Point>, Point, f64)> {
+    let total = polyline_length(line);
+    let stop = last_entry(shape, line)? + LOT_ENTRY_M;
     if total - stop <= EPS_M {
         return None;
     }
-    let points = slice_points(&line, 0.0, stop);
+    let points = slice_points(line, 0.0, stop);
     let entry = points.last().copied()?;
-    if points.len() < 2 {
-        return None;
-    }
-    Some(Cut {
-        index,
-        other: if dead_end { s.start } else { s.end },
-        before_m: polyline_length(&s.points),
-        report: CutAccess {
-            stretch: s.id.clone(),
-            lot: shape.lot_at(entry),
-            cut_m: total - stop,
-            entry,
-            node: 0,
-        },
-        points,
-    })
+    (points.len() >= 2).then_some((points, entry, total - stop))
 }
 
-/// What `shape` does to the graph: the stretches inside it and the access roads to cut. Stretches in `claimed` are
-/// left to the group that took them; the ones this plan takes are added.
+/// The inside stretches (graph index and stretch) that lie on the shortest chain (by length, then by the order of the
+/// stretches) between two exits: nodes that are an end of an inside stretch and for which `exit` is true. The result
+/// holds graph indices.
+fn through_chains(inside: &[(usize, &Stretch)], exit: &dyn Fn(i64) -> bool) -> BTreeSet<usize> {
+    let mut at: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for (k, (_, s)) in inside.iter().enumerate() {
+        at.entry(s.start).or_default().push(k);
+        at.entry(s.end).or_default().push(k);
+    }
+    let exits: Vec<i64> = at.keys().copied().filter(|&n| exit(n)).collect();
+    let mut kept: BTreeSet<usize> = BTreeSet::new();
+    for (k, &from) in exits.iter().enumerate() {
+        // Dijkstra over the inside stretches from `from`; a label is (metres, the stretches walked)
+        let mut best: BTreeMap<i64, (f64, Vec<usize>)> = BTreeMap::new();
+        let mut done: BTreeSet<i64> = BTreeSet::new();
+        best.insert(from, (0.0, Vec::new()));
+        while let Some((&node, label)) = best
+            .iter()
+            .filter(|(n, _)| !done.contains(*n))
+            .min_by(|a, b| a.1.0.total_cmp(&b.1.0).then_with(|| a.1.1.cmp(&b.1.1)))
+        {
+            let label = label.clone();
+            done.insert(node);
+            for &j in at.get(&node).map(Vec::as_slice).unwrap_or_default() {
+                let Some((_, s)) = inside.get(j) else {
+                    continue;
+                };
+                let next = if s.start == node { s.end } else { s.start };
+                let mut path = label.1.clone();
+                path.push(j);
+                let reach = (label.0 + polyline_length(&s.points), path);
+                let better = best.get(&next).is_none_or(|old| {
+                    reach.0.total_cmp(&old.0).then_with(|| reach.1.cmp(&old.1)) == Ordering::Less
+                });
+                if better && !done.contains(&next) {
+                    best.insert(next, reach);
+                }
+            }
+        }
+        for &to in exits.iter().skip(k + 1) {
+            if let Some((_, path)) = best.get(&to) {
+                kept.extend(path.iter().filter_map(|&j| inside.get(j).map(|(i, _)| *i)));
+            }
+        }
+    }
+    kept
+}
+
+/// The access roads of `shape` to cut: stretches with a dead end inside it (`left` is what stays at a node).
+fn plan_cuts(
+    graph: &RoadGraph,
+    judged: &[bool],
+    shape: &Shape<'_>,
+    claimed: &mut BTreeSet<usize>,
+    left: &dyn Fn(i64) -> usize,
+) -> Vec<Cut> {
+    let mut cuts: Vec<Cut> = Vec::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        if claimed.contains(&i) || !judged.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        let ends = [
+            (s.start, s.points.first(), false),
+            (s.end, s.points.last(), true),
+        ];
+        let mut line = s.points.clone();
+        let mut cut_ends: Vec<CutEnd> = Vec::new();
+        for (node, place, at_end) in ends {
+            let Some(&place) = place else { continue };
+            if !shape.in_bounds(place) || node <= 0 || left(node) != 1 || !shape.strict(place) {
+                continue;
+            }
+            let oriented: Vec<Point> = if at_end {
+                line.clone()
+            } else {
+                line.iter().rev().copied().collect()
+            };
+            let Some((mut cut, entry, cut_m)) = cut_end(shape, &oriented) else {
+                continue;
+            };
+            if !at_end {
+                cut.reverse();
+            }
+            line = cut;
+            cut_ends.push(CutEnd {
+                at_end,
+                report: CutAccess {
+                    stretch: s.id.clone(),
+                    lot: shape.lot_at(entry),
+                    cut_m,
+                    entry,
+                    node: 0,
+                },
+            });
+        }
+        if !cut_ends.is_empty() {
+            claimed.insert(i);
+            cuts.push(Cut {
+                index: i,
+                points: line,
+                before_m: polyline_length(&s.points),
+                ends: cut_ends,
+            });
+        }
+    }
+    cuts
+}
+
+/// What `shape` does to the graph: the stretches inside it (less those of a road through it) and the access roads to
+/// cut. Stretches in `claimed` are left to the group that took them; the ones this plan takes or keeps are added.
+/// `judged` says per stretch whether it can be judged at all ([`judgeable`]).
 fn plan_group(
     graph: &RoadGraph,
     input: &BTreeMap<i64, usize>,
+    judged: &[bool],
     shape: &Shape<'_>,
     claimed: &mut BTreeSet<usize>,
 ) -> Plan {
@@ -414,10 +511,12 @@ fn plan_group(
         group: shape.group.group,
         removed: Vec::new(),
         cuts: Vec::new(),
+        through: Vec::new(),
+        ends: BTreeSet::new(),
     };
-    let mut lost: BTreeMap<i64, usize> = BTreeMap::new();
+    let mut inside: Vec<(usize, &Stretch, DroppedInLot)> = Vec::new();
     for (i, s) in graph.stretches.iter().enumerate() {
-        if claimed.contains(&i) || !judgeable(s) {
+        if claimed.contains(&i) || !judged.get(i).copied().unwrap_or(false) {
             continue;
         }
         if !s.points.first().is_some_and(|&p| shape.near(p)) {
@@ -428,11 +527,9 @@ fn plan_group(
             continue;
         }
         claimed.insert(i);
-        for node in [s.start, s.end] {
-            *lost.entry(node).or_default() += 1;
-        }
-        plan.removed.push((
+        inside.push((
             i,
+            s,
             DroppedInLot {
                 stretch: s.id.clone(),
                 lot: shape.lot_of(&places),
@@ -441,75 +538,116 @@ fn plan_group(
             },
         ));
     }
-    let left = |node: i64| {
+    // what stays at a node if every inside stretch went
+    let mut lost: BTreeMap<i64, usize> = BTreeMap::new();
+    for (_, s, _) in &inside {
+        for node in [s.start, s.end] {
+            *lost.entry(node).or_default() += 1;
+        }
+    }
+    let left_of = |lost: &BTreeMap<i64, usize>, node: i64| {
         input
             .get(&node)
             .copied()
             .unwrap_or(0)
             .saturating_sub(lost.get(&node).copied().unwrap_or(0))
     };
-    for (i, s) in graph.stretches.iter().enumerate() {
-        if claimed.contains(&i) || !judgeable(s) {
-            continue;
-        }
-        let ends = [
-            (s.end, s.points.last(), true),
-            (s.start, s.points.first(), false),
-        ];
-        for (node, place, dead_end) in ends {
-            let Some(&place) = place else { continue };
-            if node > 0
-                && left(node) == 1
-                && shape.strict(place)
-                && let Some(cut) = cut_at(shape, i, s, dead_end)
-            {
-                claimed.insert(i);
-                plan.cuts.push(cut);
-                break;
+    // a road through the lot stays whole: the shortest chain between two nodes that a road leaves the lot from
+    let pairs: Vec<(usize, &Stretch)> = inside.iter().map(|(i, s, _)| (*i, *s)).collect();
+    let through = through_chains(&pairs, &|n| left_of(&lost, n) >= 1);
+    let mut gone: BTreeMap<i64, usize> = BTreeMap::new();
+    for (i, s, report) in inside {
+        if through.contains(&i) {
+            plan.through.push(report.stretch);
+        } else {
+            for node in [s.start, s.end] {
+                *gone.entry(node).or_default() += 1;
             }
+            plan.removed.push((i, report));
         }
     }
+    let lost = gone;
+    plan.ends = lost
+        .keys()
+        .copied()
+        .filter(|&n| left_of(&lost, n) == 1)
+        .collect();
+    plan.cuts = plan_cuts(graph, judged, shape, claimed, &|n| left_of(&lost, n));
     plan
 }
 
 // ----- the graph -----
 
+/// What the lot step did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LotStep {
+    /// The graph after the step.
+    pub graph: RoadGraph,
+    /// The stretches removed.
+    pub dropped: Vec<DroppedInLot>,
+    /// The access roads cut.
+    pub access: Vec<CutAccess>,
+    /// The groups left as they are because their removal would have split a component.
+    pub unchanged: Vec<usize>,
+    /// The ids of the inside stretches that stay because they are part of a road through a lot.
+    pub through: Vec<String>,
+    /// The nodes the step leaves with exactly one stretch, cut or not (the new ends of the cut access roads included):
+    /// the stub step must not take their stretch for a dead-end stub.
+    pub entries: BTreeSet<i64>,
+}
+
 /// The graph after `plans`: their stretches removed, their access roads cut, the new nodes numbered from `first` in
-/// the order of the stretch ids; the removed stretches and the cuts as reported.
-fn apply(
-    graph: &RoadGraph,
-    plans: &[&Plan],
-    first: i64,
-) -> (RoadGraph, Vec<DroppedInLot>, Vec<CutAccess>) {
+/// the order of the stretch ids (the start of a stretch before its end); the removed stretches, the cuts and the
+/// nodes the step leaves as the only end of a stretch.
+fn apply(graph: &RoadGraph, plans: &[&Plan], first: i64) -> LotStep {
     let mut dropped: Vec<DroppedInLot> = Vec::new();
     let mut gone: BTreeSet<usize> = BTreeSet::new();
     let mut cuts: Vec<&Cut> = Vec::new();
+    let mut through: Vec<String> = Vec::new();
+    let mut entries: BTreeSet<i64> = BTreeSet::new();
     for plan in plans {
         for (i, report) in &plan.removed {
             gone.insert(*i);
             dropped.push(report.clone());
         }
         cuts.extend(plan.cuts.iter());
+        through.extend(plan.through.iter().cloned());
+        entries.extend(plan.ends.iter().copied());
     }
-    if dropped.is_empty() && cuts.is_empty() {
-        return (graph.clone(), dropped, Vec::new());
-    }
+    through.sort();
     dropped.sort_by(|a, b| a.stretch.cmp(&b.stretch));
     cuts.sort_by(|a, b| {
-        a.report
-            .stretch
-            .cmp(&b.report.stretch)
+        graph
+            .stretches
+            .get(a.index)
+            .map(|s| &s.id)
+            .cmp(&graph.stretches.get(b.index).map(|s| &s.id))
             .then(a.index.cmp(&b.index))
     });
     let mut access: Vec<CutAccess> = Vec::new();
-    let mut at: BTreeMap<usize, (i64, &Cut)> = BTreeMap::new();
+    let mut at: BTreeMap<usize, (NewNodes, &Cut)> = BTreeMap::new();
     let mut node = first;
     for cut in cuts {
-        let mut report = cut.report.clone();
-        report.node = node;
-        access.push(report);
-        at.insert(cut.index, (node, cut));
-        node = node.saturating_add(1);
+        let mut nodes = Vec::new();
+        for end in &cut.ends {
+            let mut report = end.report.clone();
+            report.node = node;
+            entries.insert(node);
+            nodes.push((end.at_end, node));
+            access.push(report);
+            node = node.saturating_add(1);
+        }
+        at.insert(cut.index, (nodes, cut));
+    }
+    if dropped.is_empty() && access.is_empty() {
+        return LotStep {
+            graph: graph.clone(),
+            dropped,
+            access,
+            unchanged: Vec::new(),
+            through,
+            entries,
+        };
     }
     let stretches: Vec<Stretch> = graph
         .stretches
@@ -517,17 +655,39 @@ fn apply(
         .enumerate()
         .filter(|(i, _)| !gone.contains(i))
         .map(|(i, s)| match at.get(&i) {
-            Some(&(node, cut)) => Stretch {
-                start: cut.other,
-                end: node,
-                points: cut.points.clone(),
-                ..s.clone()
+            Some((nodes, cut)) => {
+                let (mut start, mut end) = (s.start, s.end);
+                for &(at_end, node) in nodes {
+                    if at_end {
+                        end = node;
+                    } else {
+                        start = node;
+                    }
+                }
+                let mut points = cut.points.clone();
+                if start > end {
+                    std::mem::swap(&mut start, &mut end);
+                    points.reverse();
+                }
+                Stretch {
+                    points,
+                    start,
+                    end,
+                    ..s.clone()
+                }
+                .rescaled(cut.before_m)
             }
-            .rescaled(cut.before_m),
             None => s.clone(),
         })
         .collect();
-    (rebuilt(stretches), dropped, access)
+    LotStep {
+        graph: rebuilt(stretches),
+        dropped,
+        access,
+        unchanged: Vec::new(),
+        through,
+        entries,
+    }
 }
 
 /// A stretch with only its nodes, for counting components.
@@ -551,24 +711,44 @@ fn thin(s: &Stretch, start: i64, end: i64) -> Stretch {
     }
 }
 
+/// The group of a node (as the virtual node it is made), by the node's place.
+fn virtual_node(shapes: &[Shape<'_>], point: Option<&Point>) -> Option<i64> {
+    let k = shapes
+        .iter()
+        .position(|sh| point.is_some_and(|&p| sh.near(p)))?;
+    Some(i64::try_from(k).map_or(i64::MIN, |k| i64::MIN.saturating_add(k)))
+}
+
 /// The graph with every node that is inside (or at the edge of) a group made the node of that group, for
-/// connectivity: only the nodes of the stretches are left, in no particular geometry.
-fn quotient(graph: &RoadGraph, shapes: &[Shape<'_>]) -> RoadGraph {
-    let mut place: BTreeMap<i64, i64> = BTreeMap::new();
-    let mut seen: BTreeSet<i64> = BTreeSet::new();
+/// connectivity: only the nodes of the stretches are left, in no particular geometry. `known` holds the nodes of
+/// `graph` below `fresh` (their place does not change from one call to the next); the others are looked up.
+fn quotient(
+    graph: &RoadGraph,
+    shapes: &[Shape<'_>],
+    fresh: i64,
+    known: &mut BTreeMap<i64, Option<i64>>,
+) -> RoadGraph {
+    let mut local: BTreeMap<i64, Option<i64>> = BTreeMap::new();
     for s in &graph.stretches {
         for (node, point) in [(s.start, s.points.first()), (s.end, s.points.last())] {
-            if !seen.insert(node) {
-                continue;
-            }
-            let found = point.and_then(|&p| shapes.iter().position(|sh| sh.near(p)));
-            if let Some(k) = found {
-                let virt = i64::try_from(k).map_or(i64::MIN, |k| i64::MIN.saturating_add(k));
-                place.insert(node, virt);
-            }
+            let table = if node < fresh {
+                &mut *known
+            } else {
+                &mut local
+            };
+            table
+                .entry(node)
+                .or_insert_with(|| virtual_node(shapes, point));
         }
     }
-    let map = |node: i64| place.get(&node).copied().unwrap_or(node);
+    let map = |node: i64| {
+        let found = if node < fresh {
+            known.get(&node)
+        } else {
+            local.get(&node)
+        };
+        found.copied().flatten().unwrap_or(node)
+    };
     RoadGraph {
         stretches: graph
             .stretches
@@ -579,35 +759,45 @@ fn quotient(graph: &RoadGraph, shapes: &[Shape<'_>]) -> RoadGraph {
     }
 }
 
-/// [`drop_lot_roads`] with the test for a split as an argument: it gets the graph before and after, each with
+/// [`drop_lot_roads_full`] with the test for a split as an argument: it gets the graph before and after, each with
 /// every group made one node.
 fn drop_lot_roads_with(
     graph: &RoadGraph,
     groups: &[LotGroup],
     splits: &dyn Fn(&RoadGraph, &RoadGraph) -> bool,
-) -> (RoadGraph, Vec<DroppedInLot>, Vec<CutAccess>, Vec<usize>) {
+) -> LotStep {
     let shapes: Vec<Shape<'_>> = groups.iter().map(Shape::new).collect();
     let input = degrees(graph);
+    let judged: Vec<bool> = graph.stretches.iter().map(judgeable).collect();
     let mut claimed: BTreeSet<usize> = BTreeSet::new();
     let plans: Vec<Plan> = shapes
         .iter()
-        .map(|shape| plan_group(graph, &input, shape, &mut claimed))
+        .map(|shape| plan_group(graph, &input, &judged, shape, &mut claimed))
         .filter(|plan| !plan.is_empty())
         .collect();
     if plans.is_empty() {
-        return (graph.clone(), Vec::new(), Vec::new(), Vec::new());
+        return LotStep {
+            graph: graph.clone(),
+            dropped: Vec::new(),
+            access: Vec::new(),
+            unchanged: Vec::new(),
+            through: Vec::new(),
+            entries: BTreeSet::new(),
+        };
     }
     let first = first_free_node(graph);
-    let before = quotient(graph, &shapes);
-    let splits_with = |chosen: &[&Plan]| {
-        let (after, _, _) = apply(graph, chosen, first);
-        splits(&before, &quotient(&after, &shapes))
+    let mut known: BTreeMap<i64, Option<i64>> = BTreeMap::new();
+    let before = quotient(graph, &shapes, first, &mut known);
+    let mut splits_with = |chosen: &[&Plan]| {
+        let after = apply(graph, chosen, first).graph;
+        splits(&before, &quotient(&after, &shapes, first, &mut known))
     };
-    let every: Vec<&Plan> = plans.iter().collect();
-    let accepted: Vec<&Plan> = if splits_with(&every) {
-        // one group at a time: the ones that would cut a piece off stay as they are
+    // each group alone first (they touch different stretches); the ones that fit are then tried together, one at a
+    // time, in case they cut a piece off between them
+    let fitting: Vec<&Plan> = plans.iter().filter(|p| !splits_with(&[p])).collect();
+    let accepted: Vec<&Plan> = if splits_with(&fitting) {
         let mut accepted: Vec<&Plan> = Vec::new();
-        for plan in &every {
+        for plan in fitting {
             let mut trial = accepted.clone();
             trial.push(plan);
             if !splits_with(&trial) {
@@ -616,50 +806,76 @@ fn drop_lot_roads_with(
         }
         accepted
     } else {
-        every
+        fitting
     };
     let unchanged: Vec<usize> = plans
         .iter()
         .filter(|p| !accepted.iter().any(|a| a.group == p.group))
         .map(|p| p.group)
         .collect();
-    let (out, dropped, access) = apply(graph, &accepted, first);
-    (out, dropped, access, unchanged)
+    LotStep {
+        unchanged,
+        ..apply(graph, &accepted, first)
+    }
+}
+
+/// [`drop_lot_roads`] with everything the step found out, for [`super::clean_with`].
+#[must_use]
+pub fn drop_lot_roads_full(graph: &RoadGraph, groups: &[LotGroup]) -> LotStep {
+    drop_lot_roads_with(graph, groups, &splits)
 }
 
 /// Takes the roads inside the groups out of the graph and cuts the access roads at the edge, as described in the
 /// module. Returns the graph, the stretches removed and the access roads cut (each in the order of the stretch ids),
 /// and the numbers of the groups whose removal would have split a component (with every group counted as one node) and
-/// that were left as they are. A stretch that two groups both claim goes to the first.
+/// that were left as they are. A stretch that two groups both claim goes to the first. See [`drop_lot_roads_full`] for
+/// the rest.
 #[must_use]
 pub fn drop_lot_roads(
     graph: &RoadGraph,
     groups: &[LotGroup],
 ) -> (RoadGraph, Vec<DroppedInLot>, Vec<CutAccess>, Vec<usize>) {
-    drop_lot_roads_with(graph, groups, &splits)
+    let step = drop_lot_roads_full(graph, groups);
+    (step.graph, step.dropped, step.access, step.unchanged)
 }
 
 /// The connected components of the graph with every group counted as one node: nodes inside a group, or at the
 /// edge of it, are one. Without groups this is [`super::components`].
 #[must_use]
 pub fn components_with(graph: &RoadGraph, groups: &[LotGroup]) -> usize {
-    if groups.is_empty() {
-        return super::components(graph);
-    }
-    let shapes: Vec<Shape<'_>> = groups.iter().map(Shape::new).collect();
-    super::components(&quotient(graph, &shapes))
+    components_each(&[graph], groups)
+        .first()
+        .copied()
+        .unwrap_or_default()
 }
 
-/// The junctions (three or more stretch ends) at which a removed stretch ended.
-pub(super) fn junctions_removed(graph: &RoadGraph, dropped: &[DroppedInLot]) -> usize {
-    let degree = degrees(graph);
+/// [`components_with`] for several graphs, the groups' shapes made once.
+pub(super) fn components_each(graphs: &[&RoadGraph], groups: &[LotGroup]) -> Vec<usize> {
+    if groups.is_empty() {
+        return graphs.iter().map(|g| super::components(g)).collect();
+    }
+    let shapes: Vec<Shape<'_>> = groups.iter().map(Shape::new).collect();
+    graphs
+        .iter()
+        .map(|g| super::components(&quotient(g, &shapes, i64::MIN, &mut BTreeMap::new())))
+        .collect()
+}
+
+/// The junctions (three or more stretch ends) of `before` at which a stretch was removed and that are no junction in
+/// `after` (a node of two stretches, one or none).
+pub(super) fn junctions_removed(
+    before: &RoadGraph,
+    after: &RoadGraph,
+    dropped: &[DroppedInLot],
+) -> usize {
+    let (was, is) = (degrees(before), degrees(after));
     let ids: BTreeSet<&str> = dropped.iter().map(|d| d.stretch.as_str()).collect();
-    graph
+    before
         .stretches
         .iter()
         .filter(|s| ids.contains(s.id.as_str()))
         .flat_map(|s| [s.start, s.end])
-        .filter(|n| degree.get(n).copied().unwrap_or(0) >= 3)
+        .filter(|n| was.get(n).copied().unwrap_or(0) >= 3 && is.get(n).copied().unwrap_or(0) < 3)
         .collect::<BTreeSet<i64>>()
         .len()
 }
@@ -705,6 +921,7 @@ mod tests {
             group,
             members: vec![format!("osm/way/{group}")],
             polygons: vec![(ring, Vec::new())],
+            areas_m2: vec![1600.0],
         }
     }
 
@@ -720,9 +937,12 @@ mod tests {
     #[test]
     fn a_removal_that_would_split_leaves_the_group_as_it_is() {
         let (g, lots) = two_lots();
-        let (out, dropped, cut, split) = drop_lot_roads_with(&g, &lots, &|_, _| true);
-        assert_eq!((&out, dropped.len(), cut.len()), (&g, 0, 0));
-        assert_eq!(split, [0, 1]);
+        let step = drop_lot_roads_with(&g, &lots, &|_, _| true);
+        assert_eq!(
+            (&step.graph, step.dropped.len(), step.access.len()),
+            (&g, 0, 0)
+        );
+        assert_eq!(step.unchanged, [0, 1]);
         // the real test finds nothing to cut off
         let (out, dropped, _, split) = drop_lot_roads(&g, &lots);
         assert_eq!((out.stretches.len(), dropped.len(), split.len()), (0, 2, 0));
@@ -735,10 +955,10 @@ mod tests {
         let refuses_two = |before: &RoadGraph, after: &RoadGraph| {
             before.stretches.len() - after.stretches.len() > 1
         };
-        let (out, dropped, _, split) = drop_lot_roads_with(&g, &lots, &refuses_two);
-        assert_eq!(split, [1]);
-        assert_eq!(out.stretches.len(), 1);
-        assert_eq!(dropped.len(), 1);
-        assert_eq!(dropped[0].stretch, "1:1-2");
+        let step = drop_lot_roads_with(&g, &lots, &refuses_two);
+        assert_eq!(step.unchanged, [1]);
+        assert_eq!(step.graph.stretches.len(), 1);
+        assert_eq!(step.dropped.len(), 1);
+        assert_eq!(step.dropped[0].stretch, "1:1-2");
     }
 }
