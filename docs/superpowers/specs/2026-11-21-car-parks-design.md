@@ -37,7 +37,7 @@ inside; the motorhome car park P2 next to it (way 374744306) is `tourism=caravan
 
 On the example the lots hold 85 stretches (2064 m) wholly inside, most of them in the four camp sites (69 stretches,
 1481 m); car parks hold 14 (456 m). The ground inside them is a surface model with local bumps: the 95th percentile
-of the local relief (defined below) is 0.31 m on average over the car parks and 0.53 m over the camp sites, up to
+of the local relief (defined below) is 0.31 m on average over the car parks and 0.50 m over the camp sites, up to
 1.64 m (Campingplatz Simonhof).
 
 ## Goal
@@ -234,8 +234,9 @@ stretch id stay as they are; a cut piece takes them in proportion to its length.
 On the example: Grafenlehen is **grass** (404 m of its roads are tagged unpaved, 34 m paved, 132 m untagged
 `City`); Camping Allweglehen (way 38834406) and Campingplatz Simonhof (way 174787106) are paved (asphalt roads, 287
 against 118 and 263 against 189 m); Camping Mühlleiten (way 174716692) is paved by family (its roads are untagged);
-the caravan site P2 is grass (155 m unpaved); the car park P2 Hirschbichlstraße is grass (98 m of unpaved against 6 m of paved road once every way of a stretch is counted). Of the 252 car parks of at least 20 m², 12 are paved and 7 grass by their
-own roads; the other 230 are decided by the street beside them or are grass for want of any road.
+the caravan site P2 is grass (155 m unpaved); the car park P2 Hirschbichlstraße is grass (98 m of unpaved against 6 m of paved road once every way of a stretch is counted). Over the lots of at least 20 m² that are smoothed or surface only, the surface is decided by (Task 1's count) the
+lot's own tag for 51, its own roads for 19 (12 paved, 7 grass), its group for 3, the street beside it for 183 and
+by nothing, so grass, for 6.
 
 **Which ground layer.** Náves's four ground classes (grass, rock, forest, soil) come from `surfaces_bliss`
 (`en_grass1`, `en_stones`, `en_forest_con`, `en_soil`); road beds are painted soil. The same PBO has two paved
@@ -277,7 +278,7 @@ the group's members (the terrain is its vertices; the fit is what the shaping wr
    eigenvalues of its Hessian are clipped to `±1 / LOT_MIN_RADIUS_M`, and the plane part re-fitted with the curvature
    fixed. `LOT_MIN_RADIUS_M` = 600 m = `limits::min_vertical_radius(Asf1)`, the largest vertical radius any road
    needs: the lot is never more curved than the gentlest road. If the capped quadratic has its stationary point inside
-   the lot and its Hessian is definite (an interior hump or hollow), the plane is used instead. On the example 52 lots,
+   the lot and its Hessian is definite (an interior hump or hollow), the plane is used instead. On the example 53 lots,
    among them all four camp sites and the caravan site.
 
 So the slope of the surface changes linearly and slowly, and it reverses at most once along a line, and then only in
@@ -308,8 +309,9 @@ the move is 0.25 m at the median lot, 0.94 m at the 90th percentile, 2.37 m at t
 would move any vertex more is not clipped vertex by vertex, which would bring back exactly the local height changes the
 surface is there to remove. Instead the whole change is scaled: the result is `ground + λ·(surface − ground)` with
 one `λ = LOT_MAX_MOVE_M / largest move` for the lot, and the lot is reported (`lot_move_limited`) with λ. Its local
-relief is then at most `(1 − λ)` of what it was plus 0.12 m. On the example two camp sites: Simonhof (λ 0.67, relief
-1.64 m before, about 0.6 m after) and Allweglehen (λ 0.88). These two are where facets would help (open points).
+relief is then at most `(1 − λ)` of what it was plus 0.12 m. On the example three lots: Simonhof (λ 0.67, relief
+1.64 m before, 0.248 m at the 95th percentile and 0.526 m at most after), Allweglehen (λ 0.88) and the caravan site P2
+Königssee (λ 0.911). These are where facets would help (open points).
 
 **Overshoot.** A least-squares plane or quadratic can lie slightly outside the range of the original heights at a
 corner of the lot. It is not clamped (clamping makes a kink); the move guard bounds it, and the report gives each
@@ -401,9 +403,10 @@ through a lot and stay. By kind: camp sites 69 stretches (1481 m, 32 junction no
 (456 m, 13, 25), caravan site 2 (127 m, 2, 2). (The first version counted 16 stretches, 549 m, in car parks; this
 count drops bridge stretches and applies `LOT_INSIDE_SHARE`.)
 
-**Local relief before** (95th percentile per lot, then averaged): car parks 0.31 m (88 of the 115 car parks large
-enough to measure are above 0.12 m; the largest 1.61 m), camp sites 0.53 m (largest 1.64 m), caravan site 0.90 m.
-After: at most 0.12 m by construction, except in the two move-limited camp sites.
+**Local relief before** (95th percentile per lot, then averaged): car parks 0.31 m (90 of the 116 car parks large
+enough to measure are above 0.12 m; the largest 1.61 m), camp sites 0.50 m (largest 1.64 m), caravan site 0.90 m.
+After: at most 0.12 m by construction, except in the move-limited lots (camp sites 0.248 m at the 95th percentile,
+0.526 m at most).
 
 **Named lots:**
 
@@ -433,7 +436,7 @@ All in `naves-core/src/lot.rs`, `pub const`.
 | `LOT_MIN_RADIUS_M` | 600 m | smallest radius of curvature of the surface | `limits::min_vertical_radius(Family::Asf1)` |
 | `LOT_RELIEF_LENGTH_M` | 24 m | the "short distance" of "no local height changes" | six terrain cells, about five car lengths |
 | relief target | 0.12 m | largest local relief over 24 m | `L² / (8 · LOT_MIN_RADIUS_M)` |
-| `LOT_MAX_MOVE_M` | 3.0 m | largest move of a vertex; beyond it the change is scaled for the whole lot | assistant, from the table (2 lots) **(judge)** |
+| `LOT_MAX_MOVE_M` | 3.0 m | largest move of a vertex; beyond it the change is scaled for the whole lot | assistant, from the table (3 lots) **(judge)** |
 | `LOT_STEEP` | 0.20 | slope (95th percentile) above which a lot is reported steep | `limits::CROSS_FALL_LIMIT` |
 | `LOT_MIN_VERTICES` | 3 | fewer terrain vertices inside: surface only | a plane needs three |
 | `LOT_WATER_MAX` | 0.5 | share of the ground in water above which a lot is excluded | controller ("mostly in water") |
@@ -496,8 +499,8 @@ judged there.
   makes it surface only: the bridge's ground rules and the clipping at the edge already do the right thing, and
   Grafenlehen would otherwise not be smoothed.
 - **Streets beside a lot serve it** when it has no road of its own. The controller's rule counts removed and access
-  roads only; on the example 230 of the 252 car parks of at least 20 m² have neither, and would all be grass beside
-  paved streets.
+  roads only; on the example 183 lots of at least 20 m² are decided by the street beside them (6 have no road at all), and
+  without the rule they would all be grass beside paved streets.
 - **The move guard scales the whole change** rather than limiting it vertex by vertex: limiting each vertex would
   reintroduce local height changes.
 - **Through roads are pulled to the lot's surface** in the solve (the surface replaces the ground as their target
@@ -514,8 +517,8 @@ judged there.
 - **Paved camp sites.** By the serving-roads rule three of the four camp sites are paved, because their roads are
   asphalt or untagged `City`. A camp site paved from edge to edge may read wrong; a camp site could be grass unless it
   is tagged paved, and only its car park (if mapped) paved. For the maintainer.
-- **Facets for large lots.** Two camp sites (Simonhof 9902 m², Allweglehen 15 962 m²) need more than 3 m of move
-  for one surface and are scaled down. A few large facets, each a capped quadratic, joined without a step along their
+- **Facets for large lots.** Two camp sites (Simonhof 9902 m², Allweglehen 15 962 m²) and the caravan site P2 Königssee (1615 m²) need more than
+  3 m of move for one surface and are scaled down. A few large facets, each a capped quadratic, joined without a step along their
   shared edges, would fit them. Needed from about 10 000 m² with a move above 3 m on this example; not in v1.
 - **Terraces** for the 44 steep lots, from the report's list. Later work.
 - **Through roads.** If the soft target is not enough (the judging counts faces within 50 m of lots), a hard hold of

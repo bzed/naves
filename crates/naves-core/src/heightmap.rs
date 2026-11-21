@@ -103,6 +103,12 @@ impl MapGeo {
         })
     }
 
+    /// The side of the map in metres on the map's own scale (positions run from 0 to this).
+    #[must_use]
+    pub fn map_size_m(&self) -> f64 {
+        self.half * 2.0
+    }
+
     /// Latitude and longitude of the map position (`x`, `y`) in metres.
     ///
     /// # Errors

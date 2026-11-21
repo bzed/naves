@@ -105,6 +105,9 @@ pub struct OsmLand {
     /// Rings skipped because they are unclosed, miss nodes or ways, or have no outer ring (the usual
     /// result of an extract that cuts a polygon at its border).
     pub skipped_rings: usize,
+    /// Rings of lots (car parks, camp sites and similar areas) skipped for the same reasons. Counted apart from
+    /// [`OsmLand::skipped_rings`], which the land cover's warning reads: a lot is not decided by the land cover.
+    pub skipped_lot_rings: usize,
 }
 
 /// A way as a member of an area: its node ids.
@@ -453,7 +456,12 @@ fn add_group(land: &mut OsmLand, group: &Group, nodes: &BTreeMap<i64, Point>, wi
         return;
     }
     let rings = assemble(&group.ways, nodes);
-    land.skipped_rings += rings.skipped + group.missing;
+    // The land cover's warning reads `skipped_rings`; a group that is only a lot is counted apart.
+    if group.area.is_some() {
+        land.skipped_rings += rings.skipped + group.missing;
+    } else {
+        land.skipped_lot_rings += rings.skipped + group.missing;
+    }
     for (part, (outer, holes)) in rings.polygons.into_iter().enumerate() {
         if !touches(window, &outer) {
             continue;

@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use naves_core::landcover::GeoWindow;
 use naves_core::osm::{LandPolygon, RawWay, assemble, read_land, read_land_from_bytes};
-
 use naves_core::surface::SurfaceClass;
 
 fn fixture() -> PathBuf {
@@ -489,8 +488,8 @@ fn lots_are_read_with_their_tags() {
     let land = read_land(&[lots_fixture("lots.osm.pbf")], lots_window()).unwrap();
     let ways: Vec<_> = land.lots.iter().filter(|l| !l.relation).collect();
     let ids: Vec<i64> = ways.iter().map(|l| l.id).collect();
-    // parking, camp site, caravan site, rest area, bus parking; not the bay and not the pitch
-    assert_eq!(ids, [101, 102, 103, 104, 105]);
+    // parking, camp site, caravan site, rest area, bus parking, a layered building; not the bay and not the pitch
+    assert_eq!(ids, [101, 102, 103, 104, 105, 109]);
     let parking = ways[0];
     assert_eq!(parking.part, 0);
     assert_eq!(parking.outer.len(), 5);
@@ -570,4 +569,39 @@ fn lots_outside_the_window_are_dropped() {
     };
     let land = read_land(&[lots_fixture("lots.osm.pbf")], far).unwrap();
     assert_eq!(land.lots, []);
+}
+
+#[test]
+fn layer_building_and_location_are_kept() {
+    let land = read_land(&[lots_fixture("lots.osm.pbf")], lots_window()).unwrap();
+    let layered = land.lots.iter().find(|l| l.id == 109).unwrap();
+    assert_eq!(
+        layered.tags,
+        BTreeMap::from([
+            ("amenity".to_string(), "parking".to_string()),
+            ("building".to_string(), "yes".to_string()),
+            ("layer".to_string(), "-1".to_string()),
+            ("location".to_string(), "underground".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn a_broken_lot_ring_is_not_a_skipped_land_ring() {
+    // an unclosed car park and a sound lake
+    let land = read_land(&[lots_fixture("lot_broken.osm.pbf")], lots_window()).unwrap();
+    assert_eq!(land.polygons.len(), 1, "the lake");
+    assert_eq!(land.lots, []);
+    assert_eq!(land.skipped_rings, 0, "the land cover's warning reads this");
+    assert_eq!(land.skipped_lot_rings, 1);
+}
+
+#[test]
+fn a_broken_land_ring_is_not_a_skipped_lot_ring() {
+    // an unclosed lake and a sound car park
+    let land = read_land(&[lots_fixture("water_broken.osm.pbf")], lots_window()).unwrap();
+    assert_eq!(land.polygons, []);
+    assert_eq!(land.lots.len(), 1, "the car park");
+    assert_eq!(land.skipped_rings, 1);
+    assert_eq!(land.skipped_lot_rings, 0);
 }

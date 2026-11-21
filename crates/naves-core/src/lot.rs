@@ -6,16 +6,14 @@
 //! [`areas`] turns the [`LotPolygon`]s that [`crate::osm::read_land`] reads into map metres and says what each one
 //! is ([`LotKind`]), whether it lies on the ground ([`Placement`]), how big it is and what its `surface` tag says.
 //! Inside means even-odd inside the outer ring and in no hole ([`contains`]); a self-intersecting ring is not
-//! rejected, and its area is counted from samples on a [`LOT_SAMPLE_M`] grid.
+//! rejected, and its area is the number of samples on a [`LOT_SAMPLE_M`] grid for which [`contains`] is true, counted
+//! on the part of the lot that lies on the map.
 
 use crate::heightmap::MapGeo;
 use crate::osm::{LotPolygon, OsmLand};
 
 /// The distance between the samples that count the area of a lot, in metres.
 pub const LOT_SAMPLE_M: f64 = 1.0;
-
-/// The most sample rows one lot may have (50 km); a taller ring is not on any map and is skipped.
-const MAX_ROWS: f64 = 50_000.0;
 
 /// What the lot is, by its tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +85,9 @@ pub struct LotArea {
     pub placement: Placement,
     /// The outer ring, closed, as map (x, y) in metres.
     pub outer: Vec<(f64, f64)>,
-    /// Holes in the lot, closed rings. A hole is taken to lie inside the outer ring.
+    /// Holes in the lot, closed rings.
     pub holes: Vec<Vec<(f64, f64)>>,
-    /// The area of the outer ring less the holes, counted on a [`LOT_SAMPLE_M`] grid.
+    /// The area in square metres: the samples of a [`LOT_SAMPLE_M`] grid inside [`contains`], on the map only.
     pub area_m2: f64,
     /// What the `surface` tag of the lot says, if anything.
     pub surface_tag: Option<Paving>,
@@ -144,47 +142,80 @@ fn corners(ring: &[(f64, f64)]) -> usize {
     sorted.len()
 }
 
-/// The number of sample centres (a grid of [`LOT_SAMPLE_M`], offset by half a cell) inside `ring`, even-odd.
-/// `None` if the ring is too tall for the sample rows.
-fn sample_count(ring: &[(f64, f64)]) -> Option<f64> {
-    let (mut min_x, mut min_y, mut max_y) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY);
-    for &(x, y) in ring {
-        min_x = min_x.min(x);
+/// The sample indices `[from, to)` of the row at `y` that lie inside `ring` (even-odd), clipped to `0..=cap`.
+fn row_spans(ring: &[(f64, f64)], y: f64, cap: f64, spans: &mut Vec<(f64, f64)>) {
+    let mut crossings: Vec<f64> = Vec::new();
+    for pair in ring.windows(2) {
+        let [(xa, ya), (xb, yb)] = pair else { continue };
+        if (*ya > y) != (*yb > y) {
+            crossings.push(xa + (y - ya) / (yb - ya) * (xb - xa));
+        }
+    }
+    crossings.sort_by(f64::total_cmp);
+    for [from, to] in crossings.as_chunks::<2>().0 {
+        // the sample centres are at i + 0.5
+        let first = (from - 0.5).ceil().clamp(0.0, cap);
+        let last = (to - 0.5).ceil().clamp(0.0, cap);
+        if last > first {
+            spans.push((first, last));
+        }
+    }
+}
+
+/// A row or sample index as an integer, for a value already clamped to `0..=limit`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to the map, a few thousand at most"
+)]
+fn index(value: f64, limit: f64) -> u32 {
+    value.clamp(0.0, limit) as u32
+}
+
+/// The number of samples of the 1 m grid (centres at `i + 0.5`) inside the outer ring and in no hole, on the map
+/// (`0..size` in both directions): one count per row, the outer ring's spans less the union of the holes' spans.
+fn area_of(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>], size: f64) -> f64 {
+    let cap = (size - 0.5).ceil().max(0.0);
+    let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &(_, y) in outer {
         min_y = min_y.min(y);
         max_y = max_y.max(y);
     }
-    if (max_y - min_y) / LOT_SAMPLE_M > MAX_ROWS {
-        return None;
-    }
+    // rows are integers, bounded by the map
+    let first_row = index((min_y - 0.5).floor().max(0.0), cap);
+    let end_row = index((max_y + 0.5).ceil().max(0.0), cap);
     let mut total = 0.0;
-    let mut crossings: Vec<f64> = Vec::new();
-    let mut y = min_y + LOT_SAMPLE_M / 2.0;
-    while y < max_y {
-        crossings.clear();
-        for pair in ring.windows(2) {
-            let [(xa, ya), (xb, yb)] = pair else { continue };
-            if (*ya > y) != (*yb > y) {
-                crossings.push(xa + (y - ya) / (yb - ya) * (xb - xa));
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let mut cut: Vec<(f64, f64)> = Vec::new();
+    for row in first_row..end_row {
+        let y = f64::from(row) + 0.5;
+        spans.clear();
+        row_spans(outer, y, cap, &mut spans);
+        if spans.is_empty() {
+            continue;
+        }
+        cut.clear();
+        for hole in holes {
+            row_spans(hole, y, cap, &mut cut);
+        }
+        cut.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        // merge the holes' spans into disjoint ones
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for &(from, to) in &cut {
+            match merged.last_mut() {
+                Some(last) if from <= last.1 => last.1 = last.1.max(to),
+                _ => merged.push((from, to)),
             }
         }
-        crossings.sort_by(f64::total_cmp);
-        for [from, to] in crossings.as_chunks::<2>().0 {
-            // sample centres at min_x + (i + 0.5) * step inside [from, to)
-            let first = ((from - min_x) / LOT_SAMPLE_M - 0.5).ceil();
-            let last = ((to - min_x) / LOT_SAMPLE_M - 0.5).ceil();
-            total += (last - first).max(0.0);
+        for &(from, to) in &spans {
+            let covered: f64 = merged
+                .iter()
+                .map(|&(a, b)| (to.min(b) - from.max(a)).max(0.0))
+                .sum();
+            total += (to - from) - covered;
         }
-        y += LOT_SAMPLE_M;
     }
-    Some(total)
-}
-
-fn area_of(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<f64> {
-    let mut count = sample_count(outer)?;
-    for hole in holes {
-        count -= sample_count(hole)?;
-    }
-    Some(count.max(0.0) * LOT_SAMPLE_M * LOT_SAMPLE_M)
+    total
 }
 
 fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
@@ -196,12 +227,12 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
     let mut holes = Vec::new();
     for hole in &lot.holes {
         let hole = project_ring(frame, hole)?;
-        // a hole of fewer than three corners has no area
-        if corners(&hole) >= 3 {
-            holes.push(hole);
+        if corners(&hole) < 3 {
+            return None;
         }
+        holes.push(hole);
     }
-    let area_m2 = area_of(&outer, &holes)?;
+    let area_m2 = area_of(&outer, &holes, frame.map_size_m()) * LOT_SAMPLE_M * LOT_SAMPLE_M;
     let id = if lot.relation {
         format!("osm/relation/{}/{}", lot.id, lot.part)
     } else {
@@ -223,7 +254,8 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
 
 /// The lots of `land` in map metres, ways before relations and each in id order (the parts of a relation in ring
 /// order), and the number of lots skipped: fewer than three distinct corners, a point that cannot be projected or
-/// is not finite, a ring too tall to count, or tags that make no lot.
+/// is not finite (in the outer ring or in a hole), a hole with fewer than three distinct corners, or tags that make
+/// no lot.
 #[must_use]
 pub fn areas(land: &OsmLand, frame: &MapGeo) -> (Vec<LotArea>, usize) {
     let mut lots: Vec<&LotPolygon> = land.lots.iter().collect();

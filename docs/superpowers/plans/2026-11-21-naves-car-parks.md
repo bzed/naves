@@ -497,7 +497,7 @@ this task creates `Stages { pub smooth: bool, pub lots: bool }` with `Stages::DE
 - [ ] **Step 2:** Two runs of `road-analysis` on Berchtesgaden at 2048 with the same binary: `LOTS=off` and `LOTS=on`.
   Logs `judge/<off|on>/ra-2048.log`, `RULES_OUT=judge/<off|on>/rules.tsv`.
 - [ ] **Step 3:** Write `judge/compare.md`, one table, two columns, beside Task 1's baseline:
-  - lots by kind and outcome, plane and quadratic, paved and grass, steep (spec: 44), move limited (spec: 2);
+  - lots by kind and outcome, plane and quadratic, paved and grass, steep (spec: 44), move limited (spec: 3);
   - stretches and metres removed (spec: 85, 2064 m), access roads (32 dead ends, 21 cut), junction nodes removed (47);
   - components with groups as nodes (must not grow); drivable length (must fall by no more than the removed and cut
     metres);

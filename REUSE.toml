@@ -119,7 +119,7 @@ SPDX-License-Identifier = "ODbL-1.0"
 
 # Synthetic: written by the tests' own generator, not OpenStreetMap data.
 [[annotations]]
-path = ["tests/fixtures/osm/waterways.osm.pbf", "tests/fixtures/osm/lots.osm.pbf", "tests/fixtures/osm/water_only.osm.pbf"]
+path = ["tests/fixtures/osm/waterways.osm.pbf", "tests/fixtures/osm/lots.osm.pbf", "tests/fixtures/osm/water_only.osm.pbf", "tests/fixtures/osm/lot_broken.osm.pbf", "tests/fixtures/osm/water_broken.osm.pbf", "tests/fixtures/osm/lots.opl", "tests/fixtures/osm/water_only.opl", "tests/fixtures/osm/lot_broken.opl", "tests/fixtures/osm/water_broken.opl"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"

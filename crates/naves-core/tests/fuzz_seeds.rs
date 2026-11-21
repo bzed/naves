@@ -102,7 +102,7 @@ fn osm_read_seeds() {
             let (areas, skipped) = naves_core::lot::areas(&land, &frame);
             assert_eq!(areas.len() + skipped, land.lots.len(), "seed {name}");
             if name == "valid_lots" {
-                assert_eq!(areas.len(), 7, "five ways and two rings");
+                assert_eq!(areas.len(), 8, "six ways and two rings");
             }
         }
     }

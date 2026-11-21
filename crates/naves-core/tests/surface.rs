@@ -204,6 +204,7 @@ fn osm(polygons: Vec<LandPolygon>) -> OsmLand {
         polygons,
         lots: Vec::new(),
         skipped_rings: 0,
+        skipped_lot_rings: 0,
     }
 }
 
