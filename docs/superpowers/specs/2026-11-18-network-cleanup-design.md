@@ -148,6 +148,11 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
 - After the step no connected component of the graph may be split: the nodes of a component that are still in the
   graph must lie in one component afterwards (a component that goes whole is no split, and does not make up for
   another). A group of runs whose removal would split one is not removed and is reported (`would_split`).
+- A joint that would land on an end node of the run's own stretch that the run does not reach (a switchback's lower leg
+  joined back to the junction it started from) is refused, and the run stays, reported as `loops_back`; there is no fall back to
+  the nearest point.
+- A short end piece also goes with the run when the run covers the other end of its stretch and that end is free: a
+  dead-end spur is removed whole, without a joint or a new node, and a node that two or more roads still pass through needs no connector.
 
 This is the duplicate drop (`drop_duplicates`, which removes a road lying on a higher road) with a wider distance and
 the "disturbs" test; it reuses that code's sampling and leaving points where it fits.

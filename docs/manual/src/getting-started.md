@@ -284,7 +284,7 @@ piece shorter than 25 m between two bridges or tunnels is not joined at all). Th
 that follow the first are named `<id>/side<n>`. Where a connector would cross a third road (also one that moved onto
 another new junction) or be too long, or the road is out of reach, the run next to
 the joint stays and is reported (`crosses`, `would_disconnect`); no removal may cut a connected piece of the road network
-off from the rest (`would_split`). Each removed part is a finding (`road_sidepath_dropped`).
+off from the rest (`would_split`). A rest of the run's own stretch is never joined back to the junction it started from: such a run stays (`loops_back`), for instance the lower leg of a switchback. A dead-end side street whose short rest at a junction would be left is removed whole instead of being joined to the road. Each removed part is a finding (`road_sidepath_dropped`).
 **Dead ends:** a dead-end stretch (a road cut at the edge of the map is not one) shorter than 6 m that is not drivable, or is drivable and
 shorter than its own width, is not placed (`road_stub_dropped`); the last of several short pieces that hang on one junction stays; a short stretch that stands alone, a bridge and a
 roundabout are left alone, and points of a line closer than 0.5 m to the point before are merged into one (the ends stay; the `road-analysis` example lists each).

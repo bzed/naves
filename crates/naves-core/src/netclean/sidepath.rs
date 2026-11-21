@@ -31,7 +31,10 @@
 //! two runs) and is reported. A short end piece that would be left between the road and a node that is already on the
 //! road the run is beside (or free) goes with the run. If the removal would split a component of the network (checked
 //! by membership of its nodes, so that a component that goes whole does not make up for it), the groups are tried one
-//! at a time and the ones that would split it stay (`would_split`).
+//! at a time and the ones that would split it stay (`would_split`). A joint that would land on an end node of the run's
+//! own stretch that the run does not reach (a switchback's lower leg joined to the junction it started from) is
+//! refused and the run stays (`loops_back`). A short end piece goes with the run also when the run covers the other end
+//! of its stretch and that end is free: a dead-end spur is removed whole, not joined to the road.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -739,9 +742,20 @@ impl<'a> Ctx<'a> {
                 .flatten()
                 .all(|(x, _)| *x == run.stretch)
                 || self.on_road(node, run);
+            // the run covers the other end of a dead-end spur: the whole spur goes, it is not joined to the road
+            let other = if at_end { s.start } else { s.end };
+            // (the far end is taken in its turn when its own rest is short, as it is free)
+            let far_gap = if at_end { run.from } else { total - run.to };
+            let whole_spur = (far_gap <= EPS_M || far_gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M)
+                && self
+                    .ends
+                    .get(&other)
+                    .into_iter()
+                    .flatten()
+                    .all(|(x, _)| *x == run.stretch);
             if gap > EPS_M
                 && gap - DUPLICATE_STEP_M < SIDEPATH_MAX_M
-                && free_or_on_road
+                && (free_or_on_road || whole_spur)
                 && let Some(run) = self.runs.get_mut(k)
             {
                 if at_end {
@@ -751,6 +765,45 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
+    }
+
+    /// Whether the joint `found` is an end node of the run's own stretch that the run does not reach: the rest would
+    /// loop back onto the road it came from.
+    fn loops_back(&self, run: &SideRun, found: Hit) -> bool {
+        let (Some(s), Some(road)) = (self.stretch(run.stretch), self.stretch(found.stretch)) else {
+            return false;
+        };
+        let length = self.total(found.stretch);
+        let node = if found.along <= EPS_M {
+            road.start
+        } else if found.along >= length - EPS_M {
+            road.end
+        } else {
+            return false;
+        };
+        (node == s.start && run.from > EPS_M)
+            || (node == s.end && run.to < self.total(run.stretch) - EPS_M)
+    }
+
+    /// Whether the run `k`, which reaches the `at_end` end of its stretch, reaches the other end too, and that end is
+    /// free: the stretch is a dead-end spur that goes whole.
+    fn whole_spur(&self, k: usize, at_end: bool) -> bool {
+        let Some(r) = self.runs.get(k) else {
+            return false;
+        };
+        let far_reached = if at_end {
+            r.from <= EPS_M
+        } else {
+            r.to >= self.total(r.stretch) - EPS_M
+        };
+        far_reached
+            && self.stretch(r.stretch).is_some_and(|s| {
+                self.ends
+                    .get(if at_end { &s.start } else { &s.end })
+                    .into_iter()
+                    .flatten()
+                    .all(|(x, _)| *x == r.stretch)
+            })
     }
 
     /// The runs that end at `node` (the stretch's start or end is the node and the run reaches it) and are `On`.
@@ -871,6 +924,14 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let first_run = removed.iter().find_map(|&(k, _)| self.runs.get(k))?;
+        // a dead-end spur that goes whole leaves a node that two or more roads still pass through: nothing to join
+        if kept.len() >= 2
+            && removed
+                .iter()
+                .all(|&(k, at_end)| self.whole_spur(k, at_end))
+        {
+            return None;
+        }
         let on_road = self.on_road(node, first_run);
         let beside_kept_run = kept.iter().any(|x| {
             self.of_stretch
@@ -969,6 +1030,9 @@ impl<'a> Ctx<'a> {
                 }
                 plain.unwrap_or(nearest)
             };
+            if self.loops_back(run, found) {
+                return Err("loops_back");
+            }
             if let Some(slot) = chosen.get_mut(end) {
                 *slot = Some(found);
             }
