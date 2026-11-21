@@ -303,6 +303,32 @@ a saddle or outside the lot.
   car lengths); 0.12 m is the rise of a 600 m radius over 24 m (`L² / 8R`), so a capped quadratic meets it by
   construction and a plane has none. A tent pitch and a parked car need no more than that.
 
+**Choices of the implementation** (Task 4, read the same way by the later tasks and the judge):
+
+- The quadratic needs at least 10 terrain vertices in the group; fewer get the plane.
+- "Stationary point inside the lot" means inside a member's outer ring (a summit in a hole counts) or within two
+  cells of a member's edge; a grid vertex can be a discrete extremum when the stationary point lies up to about one
+  and a half cells outside. In addition, a quadratic with a vertex that has all eight neighbours in the group and is
+  strictly (more than 1e-9 m) higher or lower than all of them becomes the plane.
+- `Assessed.relief_before_m` and `relief_after_m` are the largest local relief, not the 95th percentile: only a
+  subadditive measure gives "at most `(1 − λ)` of before plus 0.12 m". `local_relief` returns both; the judging
+  report calls it for the 95th percentile.
+- λ and the move guard are computed over the terrain vertices inside the group's members only; the shoulder outside
+  the edge is not covered.
+- The least squares is solved by normal equations in coordinates scaled to the group, Gaussian elimination with
+  partial pivoting, and a ridge of 1e-12 (relative) on every term but the constant, so a lot one row of vertices
+  wide gets no slope across it.
+- Touching: an outline point of one lot inside the other, or any two edges (outer rings and holes) within
+  `LOT_INSIDE_TOL_M`. Duplicates (the same area as a way and as a relation) touch and are fitted once: each vertex
+  counts once.
+- Only lots that would be smoothed form groups; surface-only and excluded lots are in none (`group` is `NO_GROUP`,
+  `usize::MAX`). Figures that need a surface are NaN for them; the water share is kept for a lot excluded for water
+  and is NaN only for `not_at_ground`. The water share is counted on 1 m samples on the heightmap's extent, so a lot
+  off the map has share 0.
+- Vertices with a non-finite ground height are skipped.
+- `assess` returns its lots sorted by id as a string (`osm/way/10` before `osm/way/9`, and relations before ways,
+  unlike `lot::areas`) and numbers the groups by their lowest member id, so that the input order does not matter.
+
 **How far the ground moves.** Measured with this form (`form.tsv`): over the 191 smoothed lots the 95th percentile of
 the move is 0.25 m at the median lot, 0.94 m at the 90th percentile, 2.37 m at the most (Task 1 fitted each lot on its own, while the design fits one surface per group of touching lots, 29 groups of two or three, so these numbers may move again when groups are built). The largest move by lot:
 

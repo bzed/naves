@@ -48,7 +48,8 @@ pub struct Surface {
     pub coeffs: [f64; 6],
     /// Plane or quadratic.
     pub form: Form,
-    /// 1, unless the move guard scaled the change of the ground by this factor.
+    /// 1, unless the move guard scaled the change of the ground by this factor. The guard looks at the terrain
+    /// vertices inside the lot only: a vertex beyond the edge (a shoulder) is not covered by it.
     pub lambda: f64,
 }
 
@@ -366,6 +367,10 @@ fn ground(base: &Heightmap, (col, row): (i64, i64)) -> Option<f64> {
 /// The share of the lot's 1 m samples on the map (`0..=extent` metres) that are in water; 0 when none are on the
 /// map (a lot off the map has area 0).
 fn water_share(area: &LotArea, extent: f64, in_water: WaterTest<'_>) -> f64 {
+    // a heightmap with a negative or non-finite cell has no map to count on
+    if !(extent.is_finite() && extent >= 0.0) {
+        return 0.0;
+    }
     let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for &(x, y) in &area.outer {
@@ -438,7 +443,7 @@ fn segment_gap(p1: (f64, f64), p2: (f64, f64), q1: (f64, f64), q2: (f64, f64)) -
 }
 
 /// Whether two lots touch or overlap: an outline point of one inside the other, or edges within `tol` metres.
-fn touches(a: &LotArea, b: &LotArea, tol: f64) -> bool {
+pub(crate) fn touches(a: &LotArea, b: &LotArea, tol: f64) -> bool {
     let (ax0, ay0, ax1, ay1) = bounds(&a.outer);
     let (bx0, by0, bx1, by1) = bounds(&b.outer);
     if ax1 + tol < bx0 || bx1 + tol < ax0 || ay1 + tol < by0 || by1 + tol < ay0 {
@@ -536,7 +541,8 @@ fn has_interior_extremum(vertices: &BTreeSet<(i64, i64)>, cell: f64, surface: &S
 }
 
 /// Whether the quadratic's stationary point is within two cells of the group while its Hessian is definite: an
-/// interior hump or hollow, which a lot must not have.
+/// interior hump or hollow, which a lot must not have. Inside means inside a member's outer ring: a summit in a
+/// large hole counts.
 fn definite_near_group(surface: &Surface, members: &[&LotArea], cell: f64) -> bool {
     let [_, gx, gy, xx, xy, yy] = surface.coeffs;
     let (e1, e2) = eigenvalues(xx, xy, yy);
@@ -549,7 +555,7 @@ fn definite_near_group(surface: &Surface, members: &[&LotArea], cell: f64) -> bo
     let stop = (surface.at.0 + dx, surface.at.1 + dy);
     members
         .iter()
-        .any(|m| contains(m, stop) || edge_distance(m, stop) <= 2.0 * cell)
+        .any(|m| ring_contains(&m.outer, stop) || edge_distance(m, stop) <= 2.0 * cell)
 }
 
 /// Fits the group's surface to the ground at `vertices`; `None` if the points cannot be fitted at all.

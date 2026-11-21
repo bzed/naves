@@ -8,10 +8,12 @@
     reason = "test helper code; failing loudly is the point"
 )]
 
+use naves_core::catalog::Family;
 use naves_core::heightmap::Heightmap;
+use naves_core::limits::min_vertical_radius;
 use naves_core::lot::{
-    Assessed, Form, LotArea, LotKind, LotSurface, Outcome, Placement, assess, contains,
-    local_relief,
+    Assessed, Form, LOT_MIN_RADIUS_M, LotArea, LotKind, LotSurface, Outcome, Placement, assess,
+    contains, local_relief,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -361,13 +363,140 @@ fn a_lot_off_the_map_is_surface_only_and_a_lot_over_the_edge_uses_its_map_part()
         }
     );
     assert_eq!(surfaces.len(), 0);
-    assert!(!assessed[0].water_share.is_infinite());
+    assert!(
+        assessed[0].water_share.abs() < 1e-12,
+        "{}",
+        assessed[0].water_share
+    );
 
     // 200 to 300 m, the map ends at 252 m: ground clamped past the edge would flatten the fit
     let (a, surfaces) = one(rect("osm/way/1", 200.5, 100.5, 100.0, 40.0), &base);
     assert_eq!(a.outcome, Outcome::Smoothed { form: Form::Plane });
     let (gx, _) = surfaces[0].surface.gradient_at((220.0, 120.0));
     assert!((gx - 0.05).abs() < 1e-6, "{gx}");
+}
+
+#[test]
+fn the_curvature_cap_is_the_gentlest_roads_radius() {
+    assert_eq!(
+        LOT_MIN_RADIUS_M.to_bits(),
+        min_vertical_radius(Family::Asf1).to_bits()
+    );
+}
+
+#[test]
+fn a_broken_heightmap_extent_does_not_panic() {
+    for cell in [-4.0_f32, f32::NAN] {
+        let base = Heightmap {
+            size: SIZE,
+            cell_m: cell,
+            h: vec![100.0; (SIZE * SIZE) as usize],
+        };
+        let wet = |p: (f64, f64)| p.0 < 120.0;
+        let (assessed, surfaces) =
+            assess(&[rect("osm/way/1", 100.5, 100.5, 40.0, 40.0)], &base, &wet);
+        assert_eq!(assessed.len(), 1, "cell {cell}");
+        assert_eq!(
+            assessed[0].outcome,
+            Outcome::SurfaceOnly {
+                reason: "no_vertex"
+            }
+        );
+        assert_eq!(surfaces.len(), 0);
+    }
+}
+
+#[test]
+fn a_nan_height_is_skipped_and_a_one_row_lot_is_a_plane() {
+    let base = heightmap(|x, y| {
+        if (x - 120.0).abs() < 1e-9 && (y - 120.0).abs() < 1e-9 {
+            f64::NAN
+        } else {
+            100.0
+        }
+    });
+    let (a, surfaces) = one(rect("osm/way/1", 100.5, 100.5, 40.0, 40.0), &base);
+    assert_eq!(a.outcome, Outcome::Smoothed { form: Form::Plane });
+    assert!((surfaces[0].surface.height_at((120.0, 120.0)) - 100.0).abs() < 1e-6);
+    for v in [
+        a.move_p95_m,
+        a.move_max_m,
+        a.slope_p95,
+        a.relief_before_m,
+        a.relief_after_m,
+        a.range_before.0,
+        a.range_after.1,
+    ] {
+        assert!(v.is_finite(), "{a:?}");
+    }
+
+    // a strip on one row of vertices (y = 120): the ridge keeps the missing direction flat
+    let rising = heightmap(|x, _| 100.0 + 0.05 * x);
+    let (a, surfaces) = one(rect("osm/way/2", 100.5, 119.0, 40.0, 2.0), &rising);
+    assert_eq!(a.outcome, Outcome::Smoothed { form: Form::Plane });
+    let (gx, gy) = surfaces[0].surface.gradient_at((120.0, 120.0));
+    assert!((gx - 0.05).abs() < 1e-6 && gy.abs() < 1e-6, "{gx} {gy}");
+    assert!(a.move_max_m.is_finite() && a.relief_after_m.is_finite());
+}
+
+#[test]
+fn the_capped_curvature_keeps_its_direction() {
+    // curvature 1/150 across a diagonal, the minimum line outside the lot: capped to 1/600 along the same diagonal
+    let sqrt2 = std::f64::consts::SQRT_2;
+    let down = heightmap(|x, y| {
+        let u = (x - y) / sqrt2 - 60.0;
+        100.0 + u * u / 300.0
+    });
+    let (a, surfaces) = one(rect("osm/way/1", 100.5, 100.5, 60.0, 60.0), &down);
+    assert_eq!(
+        a.outcome,
+        Outcome::Smoothed {
+            form: Form::Quadratic
+        }
+    );
+    let c = surfaces[0].surface.coeffs;
+    assert!((c[3] - 1.0 / 2400.0).abs() < 1e-9, "{c:?}");
+    assert!((c[4] + 1.0 / 1200.0).abs() < 1e-9, "{c:?}");
+    assert!((c[5] - 1.0 / 2400.0).abs() < 1e-9, "{c:?}");
+    let up = heightmap(|x, y| {
+        let u = (x + y) / sqrt2 - 100.0;
+        100.0 + u * u / 300.0
+    });
+    let (_, surfaces) = one(rect("osm/way/1", 100.5, 100.5, 60.0, 60.0), &up);
+    let c = surfaces[0].surface.coeffs;
+    assert!((c[3] - 1.0 / 2400.0).abs() < 1e-9, "{c:?}");
+    assert!((c[4] - 1.0 / 1200.0).abs() < 1e-9, "{c:?}");
+    assert!((c[5] - 1.0 / 2400.0).abs() < 1e-9, "{c:?}");
+}
+
+#[test]
+fn a_hollow_just_outside_is_a_plane_and_one_far_outside_is_not() {
+    // a bowl of exactly the capped curvature, so the fitted stationary point is the bowl's minimum
+    let bowl =
+        |s: f64| heightmap(move |x, y| 100.0 + ((x - s).powi(2) + (y - 128.0).powi(2)) / 1200.0);
+    let area = rect("osm/way/1", 100.5, 78.5, 100.0, 100.0);
+    let (near, _) = one(area.clone(), &bowl(96.5));
+    assert_eq!(near.outcome, Outcome::Smoothed { form: Form::Plane });
+    let (far, _) = one(area, &bowl(84.5));
+    assert_eq!(
+        far.outcome,
+        Outcome::Smoothed {
+            form: Form::Quadratic
+        }
+    );
+}
+
+#[test]
+fn a_summit_in_a_large_hole_still_counts_as_inside_the_lot() {
+    let base = heightmap(|x, y| 100.0 + ((x - 128.0).powi(2) + (y - 128.0).powi(2)) / 400.0);
+    let area = lot_from(
+        "osm/way/1",
+        rect_ring(98.5, 98.5, 158.5, 158.5),
+        vec![rect_ring(113.5, 113.5, 143.5, 143.5)],
+        2700.0,
+    );
+    let (a, _) = one(area, &base);
+    assert_eq!(a.outcome, Outcome::Smoothed { form: Form::Plane });
 }
 
 // ----- groups -----
@@ -405,9 +534,9 @@ fn the_gap_decides_one_group_or_two() {
 #[test]
 fn a_car_park_in_a_camp_site_shares_its_surface() {
     let base = heightmap(|x, y| 100.0 + 0.02 * x + 0.03 * y);
-    let camp = rect("osm/way/10", 100.5, 100.5, 60.0, 60.0);
-    let mut park = rect("osm/way/20", 120.5, 120.5, 20.0, 20.0);
-    park.kind = LotKind::CarPark;
+    let mut camp = rect("osm/way/10", 100.5, 100.5, 60.0, 60.0);
+    camp.kind = LotKind::CampSite;
+    let park = rect("osm/way/20", 120.5, 120.5, 20.0, 20.0);
     let (assessed, surfaces) = assess(&[park, camp], &base, &dry);
     assert_eq!(surfaces.len(), 1);
     assert_eq!(assessed.len(), 2);
