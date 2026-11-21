@@ -272,7 +272,7 @@ the work in `conform`, the wording of findings and report lines, and the order o
   match the road's width (it came out up to 6.6 m wider or 4.7 m narrower on the example); `k` panels side by side
   with one scale in `PANEL_SCALE_MIN..=PANEL_SCALE_MAX` give both. `BridgeKind::Panels { count, abreast, scale }`.
   The maintainer: panels are used for any length where no bridge fits (no length limit for rows).
-- **A straight lead on the deck's axis** (Task 5, fix round 2). A deck lies node to node on its OpenStreetMap line
+- **A straight lead on the deck's axis** (Task 5, fix round 2). Since the road smoothing (`2026-11-17-road-smoothing-design.md`) runs first in `fitted_graph`, the lead is decided on the smoothed line. A deck lies node to node on its OpenStreetMap line
   (a model on its ports, a grid on its steps, each step from the line's point at its start to the one at its end, on
   the heading of that chord). A road that leaves the node turned away from the deck cannot arrive on the deck's
   heading at the node: the pieces would need an S-bend, and the fit gave up on the position (a 37 m gap on the

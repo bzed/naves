@@ -37,6 +37,7 @@ use naves_core::roadnet::{
 };
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
 use naves_core::sideslope::side_slopes;
+use naves_core::smooth::{SMOOTH_ENABLED, SmoothParams, SmoothReport, min_radius, smooth_graph};
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
 use naves_core::validate::{Violation, check_roads};
 use serde::Serialize;
@@ -113,6 +114,8 @@ pub struct Generated {
     pub used_osm: bool,
     /// What every OpenStreetMap bridge was built from, and why, in the order of their stretches.
     pub bridges: Vec<BridgeFit>,
+    /// What the smoothing of the road graph did; `None` when the stage is off or there are no roads.
+    pub smooth: Option<SmoothReport>,
 }
 
 /// The roads of a project: nothing when it has none.
@@ -211,14 +214,28 @@ pub struct FittedGraph {
     /// What the clean-up of the graph did after that (see [`netclean::clean`]), and the roundabouts that were
     /// collapsed before it.
     pub clean: CleanReport,
+    /// What the smoothing of the graph did; `None` when the stage is off ([`SMOOTH_ENABLED`]).
+    pub smooth: Option<SmoothReport>,
     /// What every OpenStreetMap bridge was built from, and why.
     pub bridges: Vec<BridgeFit>,
 }
 
 /// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, the graph
-/// cleaned ([`netclean::clean`]), and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
+/// cleaned ([`netclean::clean`]), smoothed ([`smooth_graph`], unless [`SMOOTH_ENABLED`] is off) and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
 #[must_use]
 pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightmap) -> FittedGraph {
+    fitted_graph_with(features, catalog, base, SMOOTH_ENABLED)
+}
+
+/// [`fitted_graph`] with the smoothing stage switched on or off: off, the graph is the cleaned graph with the
+/// bridges fitted, as it was before the stage existed.
+#[must_use]
+pub fn fitted_graph_with(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+    smooth: bool,
+) -> FittedGraph {
     // a roundabout smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of its surface is a plain crossing
     let (flat, roundabouts) =
         collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
@@ -226,6 +243,16 @@ pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightm
     let (built, mut clean) =
         netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
     clean.roundabouts = roundabouts;
+    // a family without a curve piece has nothing that counts as tight
+    let (built, smooth) = if smooth {
+        let radius = |s: &naves_core::roadnet::Stretch| {
+            min_radius(catalog, s.family).unwrap_or(f64::INFINITY)
+        };
+        let (smoothed, report) = smooth_graph(&built, &radius, &SmoothParams::default());
+        (smoothed, Some(report))
+    } else {
+        (built, None)
+    };
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
     let (graph, bridges) = fit_bridges(&built, &|site| choose(catalog, site), &ground);
     FittedGraph {
@@ -233,6 +260,7 @@ pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightm
         graph,
         duplicates,
         clean,
+        smooth,
         bridges,
     }
 }
@@ -279,6 +307,7 @@ pub fn plan_roads(
         graph: widened,
         duplicates,
         clean,
+        smooth,
         bridges,
         ..
     } = fitted_graph(features, catalog, base);
@@ -322,6 +351,7 @@ pub fn plan_roads(
     };
     placed.net.duplicates = duplicates;
     placed.net.clean = clean;
+    placed.net.smooth = smooth;
     placed.net.bridge_fits = bridges;
     mark_placed(&mut placed.net.bridge_fits, &placed.net.roads);
     Ok(RoadPlan {
@@ -782,5 +812,6 @@ pub fn generate(
         used_land_cover: sources.land_cover.is_some(),
         used_osm: sources.osm.is_some(),
         bridges: roads.net.bridge_fits.clone(),
+        smooth: roads.net.smooth.clone(),
     })
 }

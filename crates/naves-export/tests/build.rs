@@ -1111,6 +1111,23 @@ fn the_report_has_the_violations() {
         serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
             .unwrap();
     assert!(report["roads"]["pieces"].as_u64().unwrap() > 20);
+    let smoothing = &report["roads"]["smoothing"];
+    for key in [
+        "chains",
+        "max_move_m",
+        "max_outward_m",
+        "tight_before_m",
+        "tight_after_m",
+        "skipped_short",
+    ] {
+        assert!(smoothing[key].is_number(), "{key}: {smoothing}");
+    }
+    for key in ["kept", "widen_failed", "zones"] {
+        assert!(smoothing[key].is_array(), "{key}: {smoothing}");
+    }
+    assert!(smoothing["chains"].as_u64().unwrap() > 0, "{smoothing}");
+    let line = out.smoothing.as_deref().expect("a summary line");
+    assert!(line.contains("chains"), "{line}");
     let violations = report["violations"].as_array().unwrap();
     for v in violations {
         assert!(v["rule"].is_string() && v["message"].is_string() && v["x"].is_number());

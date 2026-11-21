@@ -31,6 +31,7 @@ use naves_core::objects::{OverridesError, piece_transform};
 use naves_core::profile::ProfileError;
 use naves_core::project::{ImageryFile, Project, ProjectError};
 use naves_core::roadplace::PlaceError;
+use naves_core::smooth::SmoothReport;
 use naves_core::surface::SurfaceError;
 use naves_formats::paa::{ColourTags, PaaError, with_colour_tags, without_stray_lzo_bytes};
 use naves_formats::wrp8::{EditableWorld, WorldObject};
@@ -60,6 +61,8 @@ pub struct BuildOutput {
     pub warnings: Vec<String>,
     /// What every OpenStreetMap bridge was built from, one line each, in the order of their stretches.
     pub bridges: Vec<String>,
+    /// One line on what the smoothing of the road graph did; `None` when the stage is off or there are no roads.
+    pub smoothing: Option<String>,
 }
 
 /// Errors from the build.
@@ -663,6 +666,48 @@ fn bridge_kind_json(kind: &BridgeKind) -> serde_json::Value {
     }
 }
 
+/// `roads.smoothing` of `build/report.json`: what the smoothing of the road graph did, or that it is off.
+fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
+    let Some(s) = smooth else {
+        return serde_json::json!({ "enabled": false });
+    };
+    let zones: Vec<serde_json::Value> = s
+        .zones
+        .iter()
+        .map(|z| {
+            serde_json::json!({
+                "at": [z.at.0, z.at.1],
+                "stretches": z.stretches,
+                "radius_before_m": z.radius_before_m,
+                "radius_after_m": z.radius_after_m,
+                "radius_wanted_m": z.radius_wanted_m,
+                "max_outward_m": z.max_outward_m,
+                "max_inward_m": z.max_inward_m,
+                "reached": z.reached,
+                "plate_candidate": z.plate_candidate,
+            })
+        })
+        .collect();
+    let kept: Vec<serde_json::Value> = s
+        .kept
+        .iter()
+        .map(|(stretch, reason)| serde_json::json!({ "stretch": stretch, "reason": reason }))
+        .collect();
+    let widen_failed: Vec<&String> = s.widen_failed.iter().map(|(stretch, _)| stretch).collect();
+    serde_json::json!({
+        "enabled": true,
+        "chains": s.chains,
+        "max_move_m": s.max_move_m,
+        "max_outward_m": s.max_outward_m,
+        "tight_before_m": s.tight_before_m,
+        "tight_after_m": s.tight_after_m,
+        "skipped_short": s.skipped_short,
+        "kept": kept,
+        "widen_failed": widen_failed,
+        "zones": zones,
+    })
+}
+
 /// `build/report.json`: the numbers, what every OpenStreetMap bridge was built from, and every violation.
 fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError> {
     let violations: Vec<serde_json::Value> = generated
@@ -708,8 +753,18 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
             })
         })
         .collect();
+    let mut roads = serde_json::to_value(&generated.stats).map_err(|e| BuildError::Io {
+        path: layout.project_dir.join("build/report.json"),
+        source: std::io::Error::other(e),
+    })?;
+    if let Some(object) = roads.as_object_mut() {
+        object.insert(
+            "smoothing".to_string(),
+            smoothing_json(generated.smooth.as_ref()),
+        );
+    }
     let report = serde_json::json!({
-        "roads": generated.stats,
+        "roads": roads,
         "bridges": bridges,
         "violations": violations,
     });
@@ -928,5 +983,6 @@ pub fn build(
         mission_dir,
         warnings,
         bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
+        smoothing: generated.smooth.as_ref().map(SmoothReport::summary),
     })
 }

@@ -54,6 +54,8 @@ pub const WIDEN_SLACK_COST: f64 = 1e4;
 pub const WIDEN_PASSES: usize = 3;
 /// Switches the widening pass; off returns exactly what the fit alone gives.
 pub const WIDEN_ENABLED: bool = true;
+/// Switches the smoothing stage of the build; off, the road graph is what it was before the stage existed.
+pub const SMOOTH_ENABLED: bool = true;
 
 /// Down to this many degrees of summed turn a tight run is an open corner: its zone may cut inward as well
 /// (up to what a fillet of the minimum radius needs); a bend that turns more is widened outward only.
@@ -382,6 +384,26 @@ pub struct SmoothReport {
     /// Stretches whose chain was fitted but whose widening failed in the solver (the chain keeps the fit),
     /// with the reason, in stretch order.
     pub widen_failed: Vec<(StretchId, String)>,
+}
+
+impl SmoothReport {
+    /// One line for the build summary: the chains, the largest move, the tight length before and after, the
+    /// zones reached and not reached and the plate candidates.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let reached = self.zones.iter().filter(|z| z.reached).count();
+        let plates = self.zones.iter().filter(|z| z.plate_candidate).count();
+        format!(
+            "Road smoothing: {} chains, largest move {:.1} m (outward {:.1} m), tight length {:.0} m -> {:.0} m, \
+             curve zones {reached} reached / {} not reached, {plates} plate candidate(s)",
+            self.chains,
+            self.max_move_m,
+            self.max_outward_m,
+            self.tight_before_m,
+            self.tight_after_m,
+            self.zones.len() - reached,
+        )
+    }
 }
 
 /// The tightest curve piece's radius of a road family in the catalog (`None` if it has no curve piece).

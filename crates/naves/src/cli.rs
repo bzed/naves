@@ -169,6 +169,9 @@ fn build_project(dir: &Path) -> Result<()> {
     for bridge in &out.bridges {
         output::note(bridge);
     }
+    if let Some(line) = &out.smoothing {
+        output::note(line);
+    }
     output::result(&format!("Mod:     {}", out.mod_dir.display()));
     output::result(&format!("Mission: {}", out.mission_dir.display()));
     Ok(())

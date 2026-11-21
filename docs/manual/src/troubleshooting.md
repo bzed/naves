@@ -234,6 +234,16 @@ road between them, a straightened road that would cross another road, too wide a
 closer than 6 m). The points of a line that were merged because they lay closer than 0.5 m are not a finding; the
 `road-analysis` example lists each (`CLEAN speck`).
 
+**`road_curve_widened` (information), `road_curve_too_tight` (warning)**
+The smoothing of the road lines found a curve tighter than the tightest curve piece of its road type. For
+`road_curve_widened` it was widened outward (an open corner, a turn of up to 120 degrees, may be cut inward instead)
+to the radius of the piece; the message names the stretches, the radius before and after and the furthest move, which
+can be several metres, and the position is the tightest point of the curve. A widened curve may end a little under
+the wanted radius; the zone is then in `roads.smoothing.zones` of `build/report.json` with `reached: false`. For
+`road_curve_too_tight` the curve could not be widened to 90 % of the wanted radius, so the road keeps the fitted line
+and **cannot be built as a curve**: the pieces will leave a kink or a gap there. Look at the place; change the data
+(OpenStreetMap) so that the curve is wider or has a junction.
+
 **`bridge_end_at_junction` (warning)**
 A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road
 passes below the part that would be cut off, or there is no room). The bridge is left as it is. Move the junction

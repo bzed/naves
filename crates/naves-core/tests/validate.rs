@@ -501,6 +501,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::RoadJunctionsNotMerged,
         Rule::BridgeApproachMade,
         Rule::BridgeEndAtJunction,
+        Rule::RoadCurveWidened,
+        Rule::RoadCurveTooTight,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -533,6 +535,60 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     );
     assert_eq!(Rule::BridgeApproachMade.id(), "bridge_approach_made");
     assert_eq!(Rule::BridgeEndAtJunction.id(), "bridge_end_at_junction");
+    assert_eq!(Rule::RoadCurveWidened.id(), "road_curve_widened");
+    assert_eq!(Rule::RoadCurveTooTight.id(), "road_curve_too_tight");
+}
+
+#[test]
+fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place() {
+    use naves_core::smooth::{SmoothReport, WidenedZone};
+    let zone = |at: (f64, f64), after: f64, outward: f64, plate: bool| WidenedZone {
+        at,
+        stretches: vec!["7:1-2".to_string()],
+        radius_before_m: 10.0,
+        radius_after_m: after,
+        radius_wanted_m: 25.0,
+        max_outward_m: outward,
+        max_inward_m: 0.0,
+        reached: !plate,
+        plate_candidate: plate,
+    };
+    let mut n = net(vec![]);
+    n.smooth = Some(SmoothReport {
+        chains: 1,
+        kept: Vec::new(),
+        skipped_short: 0,
+        max_move_m: 0.0,
+        tight_before_m: 0.0,
+        tight_after_m: 0.0,
+        per_stretch: Vec::new(),
+        zones: vec![
+            zone((1.0, 2.0), 25.0, 3.5, false),
+            zone((3.0, 4.0), 12.0, 0.0, true),
+            // a zone that did not move is no finding
+            zone((5.0, 6.0), 25.0, 0.0, false),
+        ],
+        max_outward_m: 3.5,
+        widen_failed: Vec::new(),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let widened = only(Rule::RoadCurveWidened, &v);
+    assert_eq!(widened.len(), 1);
+    assert_eq!(widened[0].at, (1.0, 2.0));
+    assert!(
+        widened[0].message.contains("7:1-2"),
+        "{}",
+        widened[0].message
+    );
+    let tight = only(Rule::RoadCurveTooTight, &v);
+    assert_eq!(tight.len(), 1);
+    assert_eq!(tight[0].at, (3.0, 4.0));
+    assert!(
+        tight[0].message.contains("12.0") && tight[0].message.contains("25.0"),
+        "{}",
+        tight[0].message
+    );
+    assert!(n.smooth.as_ref().unwrap().summary().contains("1 plate"));
 }
 
 #[test]

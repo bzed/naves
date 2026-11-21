@@ -53,7 +53,9 @@ use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, bridge_end_steps, check_roads};
 use naves_export::catalog_read::road_catalog;
-use naves_export::generate::{FittedGraph, Placed, fitted_graph, place_once, plan_roads};
+use naves_export::generate::{
+    FittedGraph, Placed, fitted_graph, fitted_graph_with, place_once, plan_roads,
+};
 use naves_export::tools::Tools;
 
 fn len(p: &PieceCheck) -> f64 {
@@ -176,8 +178,47 @@ fn main() {
         built,
         duplicates,
         clean,
+        smooth,
         bridges,
     } = fitted_graph(&features, &catalog, &base);
+    if smooth.is_some() {
+        // the nodes where exactly two stretch ends meet, against the graph without the smoothing
+        let ends = |g: &naves_core::roadnet::RoadGraph| {
+            let mut at: BTreeMap<i64, ((f64, f64), usize)> = BTreeMap::new();
+            for s in &g.stretches {
+                for (node, p) in [
+                    (s.start, s.points.first().copied()),
+                    (s.end, s.points.last().copied()),
+                ] {
+                    if let Some(p) = p {
+                        at.entry(node).or_insert((p, 0)).1 += 1;
+                    }
+                }
+            }
+            at
+        };
+        let plain = fitted_graph_with(&features, &catalog, &base, false);
+        let (after, before) = (ends(&built), ends(&plain.built));
+        let (mut two, mut moved, mut furthest) = (0, 0, 0.0_f64);
+        for (node, (p, count)) in &after {
+            if *count != 2 {
+                continue;
+            }
+            two += 1;
+            if let Some((q, _)) = before.get(node) {
+                let d = (p.0 - q.0).hypot(p.1 - q.1);
+                if d > 1e-6 {
+                    moved += 1;
+                    furthest = furthest.max(d);
+                    println!(
+                        "SMOOTH_NODE {node} at ({:.1}, {:.1}) moved {d:.2} m",
+                        q.0, q.1
+                    );
+                }
+            }
+        }
+        println!("SMOOTH_NODES two_stretch {two} moved {moved} furthest_m {furthest:.2}");
+    }
     if let Ok(spot) = std::env::var("NEARDUMP") {
         // NEARDUMP=x,y: every stretch of the graph before the clean-up (PRE), after it (OSM) and fitted (FIT) within 40 m
         // of the spot
@@ -226,6 +267,51 @@ fn main() {
                 d.at.1
             );
         }
+    }
+    if let Some(s) = &smooth {
+        // what the smoothing did: the totals, every stretch that has tight length, every zone
+        println!("SMOOTH {}", s.summary());
+        println!(
+            "SMOOTH totals chains {} max_move_m {:.3} max_outward_m {:.3} tight_before_m {:.1} tight_after_m {:.1} skipped_short {} kept {} widen_failed {}",
+            s.chains,
+            s.max_move_m,
+            s.max_outward_m,
+            s.tight_before_m,
+            s.tight_after_m,
+            s.skipped_short,
+            s.kept.len(),
+            s.widen_failed.len()
+        );
+        for p in s
+            .per_stretch
+            .iter()
+            .filter(|p| p.tight_before_m > 0.0 || p.tight_after_m > 0.0)
+        {
+            println!(
+                "SMOOTH_STRETCH {} tight_before_m {:.1} tight_after_m {:.1} max_move_m {:.2} max_outward_m {:.2}",
+                p.id, p.tight_before_m, p.tight_after_m, p.max_move_m, p.max_outward_m
+            );
+        }
+        for z in &s.zones {
+            println!(
+                "SMOOTH_ZONE at ({:.1}, {:.1}) stretches {} before {:.1} after {:.1} wanted {:.1} outward {:.2} inward {:.2} reached {} plate {}",
+                z.at.0,
+                z.at.1,
+                z.stretches.join(","),
+                z.radius_before_m,
+                z.radius_after_m,
+                z.radius_wanted_m,
+                z.max_outward_m,
+                z.max_inward_m,
+                z.reached,
+                z.plate_candidate
+            );
+        }
+        for (id, why) in &s.kept {
+            println!("SMOOTH_KEPT {id} {why}");
+        }
+    } else {
+        println!("SMOOTH off");
     }
     {
         // what the clean-up of the graph did: one count per rule, and the connected components

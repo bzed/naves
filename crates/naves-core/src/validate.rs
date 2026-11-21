@@ -21,6 +21,7 @@ use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
+use crate::smooth::SmoothReport;
 
 /// A bridge's deck that ends this far (metres) above or below the road or junction it joins is a finding.
 pub const END_STEP_TOL_M: f64 = 0.5;
@@ -106,11 +107,15 @@ pub enum Rule {
     /// A junction on the end of a bridge that could not be moved off it: the bridge is too short, a road passes
     /// below, or there is no room.
     BridgeEndAtJunction,
+    /// A curve tighter than the road pieces can build that was widened outward (the smoothing of the graph).
+    RoadCurveWidened,
+    /// A curve that cannot be built as a curve: widening did not reach the radius of the road pieces.
+    RoadCurveTooTight,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 29] = [
+    pub const ALL: [Rule; 31] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -140,6 +145,8 @@ impl Rule {
         Rule::RoadJunctionsNotMerged,
         Rule::BridgeApproachMade,
         Rule::BridgeEndAtJunction,
+        Rule::RoadCurveWidened,
+        Rule::RoadCurveTooTight,
     ];
 
     /// The stable id of the rule.
@@ -175,6 +182,8 @@ impl Rule {
             Rule::RoadJunctionsNotMerged => "road_junctions_not_merged",
             Rule::BridgeApproachMade => "bridge_approach_made",
             Rule::BridgeEndAtJunction => "bridge_end_at_junction",
+            Rule::RoadCurveWidened => "road_curve_widened",
+            Rule::RoadCurveTooTight => "road_curve_too_tight",
         }
     }
 }
@@ -437,6 +446,40 @@ fn duplicate_violations(duplicates: &[DroppedDuplicate]) -> Vec<Violation> {
             )
         })
         .collect()
+}
+
+/// One violation for each curve the smoothing widened (`road_curve_widened`) and one for each curve that could
+/// not be built as a curve (`road_curve_too_tight`), at the tightest point of the curve.
+fn smooth_violations(smooth: Option<&SmoothReport>) -> Vec<Violation> {
+    let Some(smooth) = smooth else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for z in &smooth.zones {
+        let road = z.stretches.join(", ");
+        if z.plate_candidate {
+            out.push(violation(
+                Rule::RoadCurveTooTight,
+                z.at,
+                format!(
+                    "The curve of {road} cannot be built as a curve: radius {:.1} m reached, {:.1} m wanted",
+                    z.radius_after_m, z.radius_wanted_m
+                ),
+            ));
+        } else if z.max_outward_m > 0.0 || z.max_inward_m > 0.0 {
+            out.push(violation(
+                Rule::RoadCurveWidened,
+                z.at,
+                format!(
+                    "The curve of {road} was widened: radius {:.1} m -> {:.1} m, moved by up to {:.1} m",
+                    z.radius_before_m,
+                    z.radius_after_m,
+                    z.max_outward_m.max(z.max_inward_m)
+                ),
+            ));
+        }
+    }
+    out
 }
 
 /// One violation for each change the clean-up of the graph made, at the place of the change. Nothing is changed
@@ -1103,6 +1146,7 @@ pub fn check_roads(
     out.extend(clearance_violations(profiles));
     out.extend(duplicate_violations(&net.duplicates));
     out.extend(clean_violations(&net.clean));
+    out.extend(smooth_violations(net.smooth.as_ref()));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));

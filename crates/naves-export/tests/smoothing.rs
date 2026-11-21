@@ -1,0 +1,101 @@
+// SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! The smoothing stage of `fitted_graph`: it runs before the bridges are fitted, and a switch turns it off.
+
+use naves_core::bridgekind::{Lead, choose, fit_bridges};
+use naves_core::catalog::Family;
+use naves_core::catalog::testing::synthetic_catalog;
+use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::heightmap::Heightmap;
+use naves_core::roadnet::build_graph;
+use naves_core::smooth::SMOOTH_ENABLED;
+use naves_export::generate::{fitted_graph, fitted_graph_with};
+
+fn way(id: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool) -> Feature {
+    Feature {
+        id: format!("osm/way/{id}/0"),
+        way_id: id,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family: Family::Asf3,
+            drivable: true,
+            bridge,
+            tunnel: false,
+            roundabout: false,
+            layer: i8::from(bridge),
+            use_sidepath: false,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    }
+}
+
+fn flat() -> Heightmap {
+    Heightmap {
+        size: 250,
+        cell_m: 4.0,
+        h: vec![100.0; 250 * 250],
+    }
+}
+
+/// A road that turns by 60 degrees `d` m before a 30 m bridge on a straight road. At 10 m the bridge's part
+/// grows into the corner and the road beyond needs a lead on the unsmoothed line.
+fn corner_at(d: f64) -> Vec<Feature> {
+    vec![
+        way(
+            1,
+            &[1, 2, 3],
+            &[
+                (500.0 - d - 100.0, 500.0 - 173.2),
+                (500.0 - d, 500.0),
+                (500.0, 500.0),
+            ],
+            false,
+        ),
+        way(2, &[3, 4], &[(500.0, 500.0), (530.0, 500.0)], true),
+        way(3, &[4, 5], &[(530.0, 500.0), (900.0, 500.0)], false),
+    ]
+}
+
+fn lead_is_laid(fits: &[naves_core::bridgekind::BridgeFit]) -> bool {
+    fits.iter()
+        .any(|f| matches!(f.lead.0, Lead::Laid { .. }) || matches!(f.lead.1, Lead::Laid { .. }))
+}
+
+#[test]
+fn smoothing_runs_before_the_bridges_are_fitted() {
+    let catalog = synthetic_catalog();
+    let features = corner_at(10.0);
+    let base = flat();
+    let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
+    // the same graph without smoothing needs a lead at the bridge
+    let (_, plain) = fit_bridges(&build_graph(&features), &|s| choose(&catalog, s), &ground);
+    assert!(lead_is_laid(&plain), "{plain:?}");
+
+    let fitted = fitted_graph_with(&features, &catalog, &base, true);
+    let report = fitted.smooth.as_ref().expect("smoothing ran");
+    assert!(
+        report.max_move_m > 0.0 || report.max_outward_m > 0.0,
+        "{report:?}"
+    );
+    assert_eq!(fitted.bridges.len(), 1);
+    assert!(!lead_is_laid(&fitted.bridges), "{:?}", fitted.bridges);
+}
+
+#[test]
+fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
+    let catalog = synthetic_catalog();
+    let features = corner_at(10.0);
+    let base = flat();
+    let off = fitted_graph_with(&features, &catalog, &base, false);
+    assert!(off.smooth.is_none());
+    // the graph is what fit_bridges makes of the cleaned graph
+    let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
+    let (graph, bridges) = fit_bridges(&off.built, &|s| choose(&catalog, s), &ground);
+    assert_eq!(off.graph, graph);
+    assert_eq!(off.bridges, bridges);
+    // and `fitted_graph` follows the constant
+    let default = fitted_graph(&features, &catalog, &base);
+    assert_eq!(default.smooth.is_some(), SMOOTH_ENABLED);
+}

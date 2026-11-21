@@ -310,6 +310,19 @@ not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
 fix, "warning" means a place worth a look.
 
+**Road lines are smoothed.** After the clean-up and before bridges are fitted, the build smooths the lines of the
+roads. A chain is a run of stretches that merely continue each other (nodes where exactly two stretches meet); every
+node of a chain, every junction and every bridge end stays where it is, and the direction a road leaves a junction
+does not change. Between them each line is fitted by a smooth curve that stays within 2 m of its OpenStreetMap line
+(a bridge deck is kept straight). Where a curve is tighter than the tightest curve piece of its road type, it is
+widened outward to the piece's radius; this may move the line by more than 2 m, and an open corner (a turn of up to
+120 degrees) may be cut inward as well. A curve that cannot be widened to 90 % of the wanted radius keeps the fitted
+line and is reported as one that cannot be built as a curve. The stage can move roads, so edits to the road objects
+that are keyed by slot may no longer find their object (`orphaned_edit`). The findings are `road_curve_widened` and
+`road_curve_too_tight`; `build/report.json` has `roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`,
+`tight_before_m`, `tight_after_m`, `skipped_short`, `kept`, `widen_failed` and `zones`), and the build prints one
+line with the chains, the largest move, the tight length before and after and the zones reached.
+
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its
 line (0.25 m steps, the shortest slide first) until the road ends within 0.1 m and 1 degree of the deck's port. The road

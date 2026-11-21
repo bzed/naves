@@ -242,6 +242,9 @@ pub struct PlacedNetwork {
     pub duplicates: Vec<crate::roadnet::DroppedDuplicate>,
     /// What the clean-up of the graph did (set by the build after the placement, like `duplicates`).
     pub clean: crate::netclean::CleanReport,
+    /// What the smoothing of the graph did (set by the build after the placement, like `duplicates`); `None`
+    /// when the stage is off.
+    pub smooth: Option<crate::smooth::SmoothReport>,
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,
