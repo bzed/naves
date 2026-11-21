@@ -61,22 +61,37 @@ impl Band {
 }
 
 /// The interval of road heights reachable at a point, in metres.
+///
+/// A start can only be made with [`Reach::pinned`], at an anchor; every other reach comes out of the propagation
+/// of [`band_step`]. A start that floats in the band (the spike's `[z - 6, z + 6]`) cannot be written from
+/// outside this module, because it would let the road put the climb of a hillside into embankments at the anchor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reach {
-    /// Lowest reachable height.
-    pub lo: f64,
-    /// Highest reachable height.
-    pub hi: f64,
+    lo: f64,
+    hi: f64,
 }
 
 impl Reach {
-    /// The road is at the height `z` within `tol`.
+    /// The road is at the height `z` within `tol`: the start of a route at its anchor, with `z` the terrain
+    /// height there and `tol` the [`Band::anchor_tol_m`].
     #[must_use]
     pub fn pinned(z: f64, tol: f64) -> Reach {
         Reach {
             lo: z - tol,
             hi: z + tol,
         }
+    }
+
+    /// Lowest reachable height.
+    #[must_use]
+    pub fn lo(&self) -> f64 {
+        self.lo
+    }
+
+    /// Highest reachable height.
+    #[must_use]
+    pub fn hi(&self) -> f64 {
+        self.hi
     }
 }
 
@@ -94,7 +109,8 @@ pub struct BandStep {
 /// Why a route fails the band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BandFail {
-    /// A segment is blocked.
+    /// A segment is blocked. [`Blocked::Outside`] (an end outside the raster, or not a number) is a step not taken
+    /// for the search, a failed check for the final check of a route, and never a reason for keeping a zone.
     #[error("blocked: {0:?}")]
     Blocked(Blocked),
     /// A point has no terrain height (outside the map, no data, not a number).
@@ -106,6 +122,11 @@ pub enum BandFail {
     /// The road does not reach the end anchor's height.
     #[error("the road does not reach the end anchor's height")]
     Arrival,
+    /// A parameter is not usable: a grade, cut, fill or anchor tolerance that is NaN or negative, or a start reach
+    /// that is not finite or empty. The band refuses it, because `f64::max` and `f64::min` drop a NaN and would
+    /// remove the bound.
+    #[error("a band parameter is not usable")]
+    Invalid,
 }
 
 /// The terrain height at a map position, or `None` outside the map or where the height is not a number.
@@ -222,6 +243,27 @@ fn clamp_in(v: f64, lo: f64, hi: f64) -> f64 {
     v.max(lo).min(hi)
 }
 
+/// A grade (infinite allowed), cut, fill and tolerance that are numbers and not negative; `!(v >= 0.0)` is also true
+/// for NaN, which `f64::max` and `f64::min` would drop silently.
+fn check_band(band: &Band) -> Result<(), BandFail> {
+    let usable = |v: f64| v >= 0.0;
+    if usable(band.grade) && usable(band.cut_m) && usable(band.fill_m) && usable(band.anchor_tol_m)
+    {
+        Ok(())
+    } else {
+        Err(BandFail::Invalid)
+    }
+}
+
+/// A start reach that is finite and not empty.
+fn check_start(start: Reach) -> Result<(), BandFail> {
+    if start.lo.is_finite() && start.hi.is_finite() && start.lo <= start.hi + SLACK {
+        Ok(())
+    } else {
+        Err(BandFail::Invalid)
+    }
+}
+
 /// The forward pass: the reach at each sample, from the reach at the first.
 fn forward(z: &[f64], samples: &[At], band: &Band, start: Reach) -> Result<Vec<Reach>, BandFail> {
     let mut out = Vec::with_capacity(z.len());
@@ -245,12 +287,21 @@ fn forward(z: &[f64], samples: &[At], band: &Band, start: Reach) -> Result<Vec<R
 /// the end of the polyline is carried on from `start` (the reach at its first point), and the climb and the
 /// earthwork of the nominal height (the terrain clamped into the reach) are reported.
 ///
-/// The earthwork is a lower bound: [`profile`] never needs less over the same route.
+/// This is for pruning inside the search. It never accepts a route: only [`arrive`] does. The forward band's
+/// earthwork is 0 at the ceiling for the switchback whose real profile needs 67.6 m², and `band_step` with
+/// [`arrives`] may accept, by a nanometre per sample, a route that [`arrive`] refuses (this function widens the
+/// reach by `10^-9` per sample); [`arrive`] decides.
+///
+/// The earthwork is a lower bound of the earthwork of [`arrive`], pointwise, only when both sample the same line
+/// at the same points. A search that adds the lower bounds of its steps (each step is sampled by itself, [`arrive`]
+/// samples the whole route) must charge `max(Σ low, real)` for an arrived state, not the sum alone.
 ///
 /// # Errors
 ///
 /// [`BandFail::Blocked`] for an obstacle, [`BandFail::NoGround`] where there is no terrain height,
-/// [`BandFail::Grade`] where no road height is reachable.
+/// [`BandFail::Grade`] where no road height is reachable, [`BandFail::Invalid`] for a parameter that is not
+/// usable (see [`BandFail::Invalid`]; a grade of `f64::INFINITY` is allowed, the cost field runs the band with
+/// the grade limit removed).
 pub fn band_step(
     line: &[(f64, f64)],
     ground: &dyn Fn((f64, f64)) -> Option<f64>,
@@ -259,6 +310,8 @@ pub fn band_step(
     obstacles: &Obstacles,
     clear: Clearance,
 ) -> Result<BandStep, BandFail> {
+    check_band(band)?;
+    check_start(start)?;
     let samples = sample_line(line, band.spacing_m)?;
     for (a, b) in line.iter().zip(line.iter().skip(1)) {
         obstacles
@@ -284,7 +337,8 @@ pub fn band_step(
     })
 }
 
-/// The reach arrives at an anchor at the terrain height `z_end` if it meets `z_end` within `tol`.
+/// The reach arrives at an anchor at the terrain height `z_end` if it meets `z_end` within `tol`. For pruning
+/// inside the search only (see [`band_step`]); a NaN anywhere gives `false`.
 #[must_use]
 pub fn arrives(reach: Reach, z_end: f64, tol: f64) -> bool {
     reach.lo <= z_end + tol + SLACK && reach.hi >= z_end - tol - SLACK
@@ -295,7 +349,10 @@ pub fn arrives(reach: Reach, z_end: f64, tol: f64) -> bool {
 pub struct Profile {
     /// The road height at every sample, from the start anchor to the end anchor.
     pub heights: Vec<f64>,
-    /// The earthwork, `Σ|h − z| · ds`, in m².
+    /// The terrain height at every sample.
+    pub ground: Vec<f64>,
+    /// The earthwork, `Σ|h − z| · ds`, in m²: per sample, times the spacing before it (the first sample, at the
+    /// start anchor, adds nothing).
     pub earthwork_m2: f64,
     /// The deepest cut, in metres.
     pub cut_max_m: f64,
@@ -305,24 +362,29 @@ pub struct Profile {
     pub max_grade: f64,
 }
 
-/// The profile closest to the terrain that keeps the grade, the cut and the fill, with both ends pinned to the
-/// terrain within [`Band::anchor_tol_m`]: the forward pass, the backward pass, then the profile picked closest to
-/// the terrain (notes 5.1, steps 1 to 4).
+/// The only way to turn a candidate route into an accepted route. Both ends are pinned to the terrain of the
+/// route's own first and last point (within [`Band::anchor_tol_m`]); the result is the profile closest to the
+/// terrain that keeps the grade, the cut and the fill: the forward pass, the backward pass, then the pick (notes
+/// 5.1, steps 1 to 4). Its earthwork, cut and fill are the real ones. [`band_step`] and [`arrives`] are for
+/// pruning inside the search and never for acceptance.
 ///
 /// # Errors
 ///
 /// [`BandFail::NoGround`] where there is no terrain height, [`BandFail::Grade`] when the forward pass empties,
-/// [`BandFail::Arrival`] when the road cannot reach the end anchor.
-pub fn profile(
+/// [`BandFail::Arrival`] when the road cannot reach the end anchor, [`BandFail::Invalid`] for a grade, cut, fill or
+/// tolerance that is NaN or negative (a grade of `f64::INFINITY` is allowed).
+pub fn arrive(
     line: &[(f64, f64)],
     ground: &dyn Fn((f64, f64)) -> Option<f64>,
     band: &Band,
 ) -> Result<Profile, BandFail> {
+    check_band(band)?;
     let samples = sample_line(line, band.spacing_m)?;
     let z = heights_at(&samples, ground)?;
     let (Some(&z_first), Some(&z_last)) = (z.first(), z.last()) else {
         return Ok(Profile {
             heights: Vec::new(),
+            ground: Vec::new(),
             earthwork_m2: 0.0,
             cut_max_m: 0.0,
             fill_max_m: 0.0,
@@ -374,6 +436,7 @@ pub fn profile(
     }
     Ok(Profile {
         heights,
+        ground: z,
         earthwork_m2: earth,
         cut_max_m: cut,
         fill_max_m: fill,
@@ -422,12 +485,13 @@ pub fn drawn_grade(
     })
 }
 
-/// The grade limit of a leg: `min(ceiling, max(aim, drawn mean))`, with the smallest aim and ceiling of the
-/// families of the zone. No families: 0.
+/// The grade limit of a leg and the ceiling it may be relaxed to: `min(ceiling, max(aim, drawn mean))` and
+/// `ceiling`, with the smallest aim and ceiling of the families of the zone. `None` without families: a zone
+/// always has one, so that is a bug of the caller and must not become a grade of 0.
 #[must_use]
-pub fn leg_limit(families: &[Family], drawn: &DrawnGrade) -> f64 {
+pub fn leg_limit(families: &[Family], drawn: &DrawnGrade) -> Option<(f64, f64)> {
     if families.is_empty() {
-        return 0.0;
+        return None;
     }
     let aim = families
         .iter()
@@ -437,14 +501,18 @@ pub fn leg_limit(families: &[Family], drawn: &DrawnGrade) -> f64 {
         .iter()
         .map(|&f| grade_ceiling(f))
         .fold(f64::INFINITY, f64::min);
-    ceiling.min(aim.max(drawn.mean))
+    Some((ceiling.min(aim.max(drawn.mean)), ceiling))
 }
 
 /// The limits tried in turn: the limit, then thirds (`steps` of them) of the gap to the ceiling, ending with
-/// the ceiling. Only the limit when it is at the ceiling already.
+/// the ceiling. Only the limit when it is at the ceiling already; nothing at all when either is NaN (there is no
+/// limit to try).
 #[must_use]
 pub fn relaxed_limits(limit: f64, ceiling: f64, steps: usize) -> Vec<f64> {
-    if steps == 0 || limit.partial_cmp(&ceiling) != Some(std::cmp::Ordering::Less) {
+    if limit.is_nan() || ceiling.is_nan() {
+        return Vec::new();
+    }
+    if steps == 0 || limit >= ceiling {
         return vec![limit];
     }
     let gap = ceiling - limit;
