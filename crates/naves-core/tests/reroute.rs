@@ -3,10 +3,17 @@
 
 //! Tests of the road-planning obstacle raster, its distance maps and its wall lines.
 
+use naves_core::catalog::Family;
+use naves_core::heightmap::Heightmap;
+use naves_core::reroute::band::{
+    Band, BandFail, DrawnGrade, Reach, arrives, band_step, drawn_grade, ground_at, leg_limit,
+    profile, relaxed_limits,
+};
 use naves_core::reroute::raster::{
     Blocked, Clearance, Obstacles, Wall, WallKind, chamfer, crossings_away, exempt_samples,
 };
 use naves_core::reroute::{CHAMFER_ERROR, RerouteParams};
+use proptest::prelude::*;
 
 const NONE: Clearance = Clearance {
     water_m: 0.0,
@@ -308,4 +315,333 @@ fn parameters_default_to_the_constants() {
     assert_eq!(p.raster_max_cells, 4_000_000);
     assert_eq!(p.crossing_end_m, 10.0);
     assert!(!p.enabled);
+}
+
+// ---- the feasibility band ----
+
+fn band(grade: f64) -> Band {
+    Band {
+        cut_m: 6.0,
+        fill_m: 6.0,
+        grade,
+        spacing_m: 2.0,
+        anchor_tol_m: 0.5,
+    }
+}
+
+/// An obstacle-free raster over a 400 m box.
+fn open() -> Obstacles {
+    let mut o = Obstacles::new((0.0, 0.0), (400.0, 400.0), 4.0, 400.0, 0.0, 4_000_000);
+    o.finish();
+    o
+}
+
+/// A line of `len` metres from (10, 10) towards the east.
+fn east(from: f64, to: f64) -> Vec<(f64, f64)> {
+    vec![(10.0 + from, 10.0), (10.0 + to, 10.0)]
+}
+
+/// Ground that depends on the distance east of x = 10 only.
+fn along(f: impl Fn(f64) -> f64) -> impl Fn((f64, f64)) -> Option<f64> {
+    move |p: (f64, f64)| Some(f(p.0 - 10.0))
+}
+
+fn close(a: f64, b: f64, tol: f64) -> bool {
+    (a - b).abs() <= tol
+}
+
+#[test]
+fn flat_ground_keeps_the_pinned_start_in_reach() {
+    let flat = along(|_| 100.0);
+    let step = band_step(
+        &east(0.0, 100.0),
+        &flat,
+        &band(0.1),
+        Reach::pinned(100.0, 0.5),
+        &open(),
+        NONE,
+    )
+    .unwrap();
+    assert_eq!(step.climb_m, 0.0);
+    assert_eq!(step.earthwork_low_m2, 0.0);
+    // The brief says [99.5, 100.5]; after 100 m at 10 % the reach has widened by 10 m each way and is held by the
+    // band [94, 106] (spec: the interval propagates by +-g*ds).
+    assert!(step.reach.lo <= 99.5 && step.reach.hi >= 100.5);
+    assert!(close(step.reach.lo, 94.0, 1e-9) && close(step.reach.hi, 106.0, 1e-9));
+    let p = profile(&east(0.0, 100.0), &flat, &band(0.1)).unwrap();
+    assert_eq!(p.earthwork_m2, 0.0);
+    assert_eq!(p.cut_max_m, 0.0);
+    assert_eq!(p.fill_max_m, 0.0);
+    assert_eq!(p.heights.len(), 51);
+}
+
+#[test]
+fn a_climb_the_band_allows_but_the_anchors_do_not() {
+    let ramp = along(|x| 100.0 + 0.2 * x);
+    let start = Reach::pinned(100.0, 0.5);
+    let step = band_step(&east(0.0, 60.0), &ramp, &band(0.1), start, &open(), NONE).unwrap();
+    assert!(close(step.reach.lo, 106.0, 1e-6), "{:?}", step.reach);
+    assert!(close(step.reach.hi, 106.5, 1e-6), "{:?}", step.reach);
+    assert!(!arrives(step.reach, 112.0, 0.5));
+    assert!(arrives(step.reach, 106.2, 0.5));
+    assert_eq!(
+        band_step(&east(0.0, 70.0), &ramp, &band(0.1), start, &open(), NONE),
+        Err(BandFail::Grade)
+    );
+    // The interval empties only after 65 m.
+    assert!(band_step(&east(0.0, 65.0), &ramp, &band(0.1), start, &open(), NONE).is_ok());
+    assert_eq!(
+        profile(&east(0.0, 60.0), &ramp, &band(0.1)),
+        Err(BandFail::Arrival)
+    );
+}
+
+#[test]
+fn a_steeper_limit_arrives() {
+    let ramp = along(|x| 100.0 + 0.2 * x);
+    let start = Reach::pinned(100.0, 0.5);
+    let step = band_step(&east(0.0, 60.0), &ramp, &band(0.2), start, &open(), NONE).unwrap();
+    assert!(arrives(step.reach, 112.0, 0.5));
+    let p = profile(&east(0.0, 60.0), &ramp, &band(0.2)).unwrap();
+    assert!(p.max_grade <= 0.2 + 1e-9, "{}", p.max_grade);
+    assert!(p.earthwork_m2 < 1e-6);
+}
+
+/// Switchback-1 as a line along x: 90.8 m, net rise 21.4 m, a 20 m stretch at 54.9 % in the middle, the rest gentler.
+fn switchback() -> impl Fn((f64, f64)) -> Option<f64> {
+    let steep = 0.549;
+    let rest = (21.4 - 20.0 * steep) / 70.8;
+    along(move |x| {
+        let a = x.clamp(0.0, 35.0);
+        let b = (x - 35.0).clamp(0.0, 20.0);
+        let c = (x - 55.0).max(0.0);
+        100.0 + a * rest + b * steep + c * rest
+    })
+}
+
+#[test]
+fn switchback_needs_real_earthwork() {
+    let line = east(0.0, 90.8);
+    let ground = switchback();
+    let start = Reach::pinned(100.0, 0.5);
+    let step = band_step(&line, &ground, &band(0.36), start, &open(), NONE).unwrap();
+    assert_eq!(step.earthwork_low_m2, 0.0, "the lower bound");
+    assert!(arrives(step.reach, 121.4, 0.5));
+    let p = profile(&line, &ground, &band(0.36)).unwrap();
+    // Measured: earthwork 67.6 m2, cut 3.62 m, no fill.
+    assert!(close(p.earthwork_m2, 67.6, 1.0) && close(p.cut_max_m, 3.62, 0.1));
+    assert!(p.earthwork_m2 > 10.0, "{}", p.earthwork_m2);
+    assert!(p.cut_max_m.max(p.fill_max_m) > 1.0);
+    assert!(p.max_grade <= 0.36 + 1e-9);
+    assert!(step.earthwork_low_m2 <= p.earthwork_m2);
+    // 90.8 m at 18 % climbs 16.3 m, the anchors want 21.4 - 1.0.
+    assert_eq!(profile(&line, &ground, &band(0.18)), Err(BandFail::Arrival));
+}
+
+fn slope(len: f64, rise: f64) -> impl Fn((f64, f64)) -> Option<f64> {
+    along(move |x| 100.0 + rise / len * x)
+}
+
+#[test]
+fn drawn_grade_and_leg_limit() {
+    let w = 20.0;
+    let (line, g) = (east(0.0, 145.7), slope(145.7, 21.9));
+    let d = drawn_grade(&line, &g, w).unwrap();
+    assert!(close(d.mean, 0.150, 0.001), "{d:?}");
+    assert!(close(d.delta_z, 21.9, 1e-6));
+    assert_eq!(leg_limit(&[Family::Grav], &d), 0.18);
+    let (line, g) = (east(0.0, 145.7), slope(145.7, 36.4));
+    let d = drawn_grade(&line, &g, w).unwrap();
+    assert!(close(leg_limit(&[Family::Grav], &d), 0.25, 0.001));
+    let (line, g) = (east(0.0, 145.7), slope(145.7, 60.0));
+    let d = drawn_grade(&line, &g, w).unwrap();
+    assert!(close(leg_limit(&[Family::Grav], &d), 0.36, 1e-12));
+    // Narrow asphalt: mean 0.074, a 20 m window of 0.264: the window is reported, not used.
+    let d = DrawnGrade {
+        delta_z: 7.6,
+        mean: 0.074,
+        window: 0.264,
+    };
+    assert_eq!(leg_limit(&[Family::Asf3], &d), 0.12);
+    // The smallest aim and ceiling of several families.
+    assert_eq!(leg_limit(&[Family::Grav, Family::Asf3], &d), 0.12);
+    assert_eq!(leg_limit(&[], &d), 0.0);
+}
+
+#[test]
+fn drawn_grade_reports_the_steepest_window() {
+    let steep = switchback();
+    let line = east(0.0, 90.8);
+    let d = drawn_grade(&line, &steep, 20.0).unwrap();
+    assert!(close(d.window, 0.549, 0.01), "{d:?}");
+    assert!(close(d.mean, 21.4 / 90.8, 1e-6));
+    // A line shorter than the window: the window is the whole line.
+    let d = drawn_grade(&east(0.0, 10.0), &steep, 20.0).unwrap();
+    assert!(d.window.is_finite());
+    assert!(drawn_grade(&[(1.0, 1.0)], &steep, 20.0).is_none());
+    assert!(drawn_grade(&east(0.0, 10.0), &|_| None, 20.0).is_none());
+}
+
+#[test]
+fn relaxation_steps() {
+    let r = relaxed_limits(0.18, 0.36, 3);
+    let want = [0.18, 0.24, 0.30, 0.36];
+    assert_eq!(r.len(), 4);
+    assert!(
+        r.iter().zip(want).all(|(a, b)| close(*a, b, 1e-12)),
+        "{r:?}"
+    );
+    assert_eq!(r.last(), Some(&0.36));
+    assert_eq!(relaxed_limits(0.36, 0.36, 3), vec![0.36]);
+    assert_eq!(relaxed_limits(0.2, 0.36, 0), vec![0.2]);
+}
+
+#[test]
+fn no_ground_and_water() {
+    let start = Reach::pinned(100.0, 0.5);
+    let nan = |_: (f64, f64)| Some(f64::NAN);
+    assert_eq!(
+        band_step(&east(0.0, 10.0), &nan, &band(0.1), start, &open(), NONE),
+        Err(BandFail::NoGround)
+    );
+    let none = |_: (f64, f64)| None;
+    assert_eq!(
+        profile(&east(0.0, 10.0), &none, &band(0.1)),
+        Err(BandFail::NoGround)
+    );
+    let bad = [(10.0, 10.0), (f64::NAN, 10.0)];
+    let flat = along(|_| 100.0);
+    assert_eq!(
+        band_step(&bad, &flat, &band(0.1), start, &open(), NONE),
+        Err(BandFail::NoGround)
+    );
+    let mut lake = open();
+    lake.stamp_water(&|p| (50.0..60.0).contains(&p.0) && (0.0..40.0).contains(&p.1));
+    lake.finish();
+    assert_eq!(
+        band_step(&east(0.0, 100.0), &flat, &band(0.1), start, &lake, NONE),
+        Err(BandFail::Blocked(Blocked::Water))
+    );
+    // A line without segments is a point.
+    let step = band_step(&[(10.0, 10.0)], &flat, &band(0.1), start, &open(), NONE).unwrap();
+    assert_eq!(step.reach, start);
+    let step = band_step(&[], &flat, &band(0.1), start, &open(), NONE).unwrap();
+    assert_eq!(step.reach, start);
+    let p = profile(&[(10.0, 10.0)], &flat, &band(0.1)).unwrap();
+    assert_eq!(p.heights.len(), 1);
+}
+
+#[test]
+fn ground_from_the_heightmap() {
+    let mut h = vec![10.0_f32; 16];
+    h[15] = f32::NAN;
+    let map = Heightmap {
+        size: 4,
+        cell_m: 10.0,
+        h,
+    };
+    assert_eq!(ground_at(&map, (0.0, 0.0)), Some(10.0));
+    assert_eq!(ground_at(&map, (10.0, 10.0)), Some(10.0));
+    assert_eq!(ground_at(&map, (-0.1, 5.0)), None);
+    assert_eq!(ground_at(&map, (30.1, 5.0)), None);
+    assert_eq!(ground_at(&map, (f64::NAN, 5.0)), None);
+    assert_eq!(ground_at(&map, (25.0, 25.0)), None, "NODATA corner");
+}
+
+#[test]
+fn consecutive_steps_carry_the_reach() {
+    let ramp = along(|x| 100.0 + 0.05 * x);
+    let start = Reach::pinned(100.0, 0.5);
+    let b = band(0.05);
+    let whole = band_step(&east(0.0, 100.0), &ramp, &b, start, &open(), NONE).unwrap();
+    let one = band_step(&east(0.0, 50.0), &ramp, &b, start, &open(), NONE).unwrap();
+    let two = band_step(&east(50.0, 100.0), &ramp, &b, one.reach, &open(), NONE).unwrap();
+    assert!(close(whole.reach.lo, two.reach.lo, 1e-9));
+    assert!(close(whole.reach.hi, two.reach.hi, 1e-9));
+    assert!(close(whole.climb_m, one.climb_m + two.climb_m, 1e-9));
+    assert!(close(whole.climb_m, 5.0, 1e-9));
+}
+
+#[test]
+fn band_from_the_parameters() {
+    let p = RerouteParams::default();
+    let b = Band::from_params(&p, 0.18, 4.0);
+    assert_eq!(
+        (b.cut_m, b.fill_m, b.grade, b.spacing_m),
+        (6.0, 6.0, 0.18, 2.0)
+    );
+    assert_eq!(b.anchor_tol_m, 0.5);
+    assert_eq!(Band::from_params(&p, 0.1, 100.0).spacing_m, 5.0);
+    assert_eq!(Band::from_params(&p, 0.1, 0.0).spacing_m, 0.1);
+    assert_eq!(Band::from_params(&p, 0.1, f64::NAN).spacing_m, 2.0);
+}
+
+proptest! {
+    #[test]
+    fn the_lower_bound_never_exceeds_the_profile(
+        seed in any::<u64>(),
+        grade in 0.05_f64..0.5,
+        cut in 1.0_f64..8.0,
+        len in 20.0_f64..200.0,
+    ) {
+        let mut state = seed | 1;
+        let mut noise = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            f64::from(u32::try_from(state % 10_000).unwrap_or(0)) / 10_000.0
+        };
+        let bumps: Vec<(f64, f64, f64)> =
+            (0..8).map(|_| (noise() * 300.0, noise() * 300.0, noise() * 25.0)).collect();
+        let ground = move |p: (f64, f64)| {
+            Some(100.0 + bumps.iter().map(|(bx, by, a)| a * (-((p.0 - bx).powi(2) + (p.1 - by).powi(2)) / 3000.0).exp()).sum::<f64>())
+        };
+        let (a, b) = ((20.0, 20.0), (20.0 + len * 0.8, 20.0 + len * 0.6));
+        let line = [a, (f64::midpoint(a.0, b.0), a.1 + 5.0), b];
+        let bd = Band { cut_m: cut, fill_m: cut, grade, spacing_m: 2.0, anchor_tol_m: 0.5 };
+        let z0 = ground(a).unwrap();
+        let low = band_step(&line, &ground, &bd, Reach::pinned(z0, 0.5), &open(), NONE);
+        let real = profile(&line, &ground, &bd);
+        if let (Ok(low), Ok(real)) = (low, real) {
+            prop_assert!(low.earthwork_low_m2 <= real.earthwork_m2 + 1e-6);
+            prop_assert!(real.max_grade <= grade + 1e-9);
+        }
+    }
+}
+
+#[test]
+fn degenerate_bands_do_not_panic() {
+    let flat = along(|_| 100.0);
+    // An empty line has an empty profile.
+    let p = profile(&[], &flat, &band(0.1)).unwrap();
+    assert_eq!(p.heights, Vec::<f64>::new());
+    // A spacing that is not positive or not a number falls back to 2 m.
+    for spacing_m in [0.0, -1.0, f64::NAN] {
+        let b = Band {
+            spacing_m,
+            ..band(0.1)
+        };
+        let p = profile(&east(0.0, 10.0), &flat, &b).unwrap();
+        assert_eq!(p.heights.len(), 6);
+    }
+    // A reach that is empty by less than the tolerance is a point.
+    let b = Band {
+        cut_m: 0.0,
+        fill_m: 0.0,
+        ..band(0.1)
+    };
+    let low = along(|_| 100.000_000_000_5);
+    let step = band_step(
+        &east(0.0, 10.0),
+        &low,
+        &b,
+        Reach {
+            lo: 100.0,
+            hi: 100.0,
+        },
+        &open(),
+        NONE,
+    )
+    .unwrap();
+    assert!(close(step.reach.lo, step.reach.hi, 1e-9));
 }
