@@ -1274,3 +1274,17 @@ fn an_unpaved_stretch_stays_unpaved_when_cut() {
         assert!((s.unpaved_m - len(s)).abs() < 1e-9 && s.paved_m.abs() < 1e-9);
     }
 }
+
+#[test]
+fn the_untagged_metres_are_what_no_way_tags_and_never_negative() {
+    let g = build_graph(&[
+        with_paving(road(1, &[1, 2], &[(0.0, 0.0), (30.0, 0.0)]), Paving::Paved),
+        road(2, &[2, 3], &[(30.0, 0.0), (50.0, 0.0)]),
+    ]);
+    assert!((g.stretches[0].untagged_m() - 20.0).abs() < 1e-6);
+    // rounding in the sums can leave a fully tagged stretch a hair over its length
+    let mut s = g.stretches[0].clone();
+    s.paved_m = len(&s) + 1e-13;
+    s.unpaved_m = 0.0;
+    assert!(s.untagged_m().abs() < 1e-12 && s.untagged_m() >= 0.0);
+}

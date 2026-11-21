@@ -228,7 +228,12 @@ choose the family of a track, and `FeatureKind::Road` and `Stretch` do not carry
 `FeatureKind::Road::paving: Option<Paving>` (`Paving::{Paved, Unpaved}`, from the lists above, `None` when the tag
 is missing or unknown; `serde(default)`), and on `Stretch` the metres of its line whose way is tagged paved and
 unpaved (`paved_m`, `unpaved_m`). They are not part of the attributes that cut a stretch, so the graph and every
-stretch id stay as they are; a cut piece takes them in proportion to its length. `FeatureKind::Path` gets
+stretch id stay as they are; a cut piece takes them in proportion to its length, that is the stretch's average
+share, not the surface of the way the piece lies on, so the metres inside a lot are found by clipping the roads by
+geometry, not by reading the pieces. A line that is moved or shortened (junction merge, bridge approach, smoothing)
+keeps its share of its new length, so the sum over pieces equals the original only for pure cuts; a line under
+`EPS_M` has 0 metres, and a non-finite line has 0, never NaN. `Stretch::untagged_m()` is the length less both
+figures, never below 0. `FeatureKind::Path` gets
 `street: bool` (true for `service=driveway` and `parking_aisle`).
 
 On the example: Grafenlehen is **grass** (404 m of its roads are tagged unpaved, 34 m paved, 132 m untagged

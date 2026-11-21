@@ -2712,7 +2712,7 @@ fn removing_specks_keeps_the_metres_of_the_stretch() {
     let g = paved(build_graph(&[plain(
         1,
         &[1, 11, 12, 2],
-        &[(0.0, 0.0), (10.0, 0.0), (10.2, 0.0), (50.0, 0.0)],
+        &[(0.0, 0.0), (10.0, 0.0), (10.1, 0.3), (50.0, 0.0)],
         Family::Asf3,
     )]));
     let (out, report) = clean(&g, &widths, 8.0);

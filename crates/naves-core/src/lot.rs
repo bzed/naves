@@ -51,14 +51,6 @@ pub enum Paving {
     Unpaved,
 }
 
-impl Paving {
-    /// The paving of a `surface` tag value; `None` for a value that is on neither list.
-    #[must_use]
-    pub fn from_surface(value: &str) -> Option<Paving> {
-        paving(value)
-    }
-}
-
 /// The paving of a `surface` tag value (the spec's two lists); `None` for a value that is on neither list.
 #[must_use]
 pub fn paving(value: &str) -> Option<Paving> {
@@ -245,10 +237,7 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
         outer,
         holes,
         area_m2,
-        surface_tag: lot
-            .tags
-            .get("surface")
-            .and_then(|value| Paving::from_surface(value)),
+        surface_tag: lot.tags.get("surface").and_then(|value| paving(value)),
     })
 }
 

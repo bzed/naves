@@ -59,15 +59,28 @@ pub struct Stretch {
     /// A road tagged `foot=use_sidepath` (any of the ways it is made of): its pedestrians use a path beside it.
     pub use_sidepath: bool,
     /// The metres of the stretch's line whose way is tagged with a paved `surface`. Not one of the attributes that cut a
-    /// stretch; a piece cut from a stretch takes its share in proportion to its length.
+    /// stretch. A piece cut from a stretch takes the stretch's average share in proportion to its length, not the
+    /// surface of the way it happens to lie on: whoever needs the metres inside an area must clip by geometry. A
+    /// line that is moved or shortened (a merged junction, a bridge approach, smoothing) keeps its share of its new
+    /// length, so the sum over the pieces equals the original only for pure cuts; a line under 1 micrometre long has 0
+    /// metres of each.
     pub paved_m: f64,
     /// The metres of the line whose way is tagged with an unpaved `surface` (see [`Stretch::paved_m`]).
     pub unpaved_m: f64,
 }
 
 impl Stretch {
+    /// The metres of the line that no way tags paved or unpaved: the line's length less [`Stretch::paved_m`] and
+    /// [`Stretch::unpaved_m`], never below 0 (the sums are made in a different order from the length's, so a fully
+    /// tagged stretch can come out about 1e-13 short).
+    #[must_use]
+    pub fn untagged_m(&self) -> f64 {
+        (polyline_length(&self.points) - self.paved_m - self.unpaved_m).max(0.0)
+    }
+
     /// The stretch with its metres paved and unpaved scaled to its line: they were those of a line of `from_m` metres
-    /// (the line before it was cut, shortened or moved), so each keeps its share of the length.
+    /// (the line before it was cut, shortened or moved), so each keeps its share of the length. A line that is
+    /// shorter than 1 micrometre before or not a finite length after gets 0 metres of each, never NaN.
     #[must_use]
     pub(crate) fn rescaled(mut self, from_m: f64) -> Stretch {
         self.rescale(from_m);
@@ -78,6 +91,11 @@ impl Stretch {
     pub(crate) fn rescale(&mut self, from_m: f64) {
         let factor = if from_m > EPS_M {
             polyline_length(&self.points) / from_m
+        } else {
+            0.0
+        };
+        let factor = if factor.is_finite() && factor >= 0.0 {
+            factor
         } else {
             0.0
         };
@@ -1870,4 +1888,47 @@ fn rebuild_stretch(s: &Stretch, list: &[Mark], word: &str, out: &mut Vec<Stretch
         part += 1;
     }
     emit(cursor, total, (node, s.end), (head, None), part);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stretch(points: Vec<(f64, f64)>, paved_m: f64) -> Stretch {
+        Stretch {
+            id: "1:1-2".to_string(),
+            family: Family::Asf3,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+            points,
+            start: 1,
+            end: 2,
+            bridge_kind: None,
+            bridge_offset: 0.0,
+            use_sidepath: false,
+            paved_m,
+            unpaved_m: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_finite_leaves_no_nan_in_the_metres() {
+        for paved in [0.0, 50.0] {
+            let mut s = stretch(vec![(0.0, 0.0), (f64::NAN, 0.0)], paved);
+            s.rescale(100.0);
+            assert!(
+                s.paved_m.abs() < 1e-12 && s.unpaved_m.abs() < 1e-12,
+                "{s:?}"
+            );
+            let mut s = stretch(vec![(0.0, 0.0), (f64::INFINITY, 0.0)], paved);
+            s.rescale(100.0);
+            assert!(
+                s.paved_m.abs() < 1e-12 && s.unpaved_m.abs() < 1e-12,
+                "{s:?}"
+            );
+        }
+    }
 }
