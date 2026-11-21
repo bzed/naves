@@ -63,7 +63,7 @@ specified; the controller may delegate them to a cheaper model.
   `LOT_INSIDE_SHARE = 0.5`, `LOT_ENTRY_M = 4.0`, `LOT_PLANE_FIT_M = 0.5`, `LOT_MIN_RADIUS_M = 600.0`
   (`limits::min_vertical_radius(Family::Asf1)`), `LOT_RELIEF_LENGTH_M = 24.0`, the relief target
   `LOT_RELIEF_LENGTH_M² / (8 · LOT_MIN_RADIUS_M)` (0.12 m), `LOT_MAX_MOVE_M = 3.0`, `LOT_STEEP =
-  limits::CROSS_FALL_LIMIT` (0.20), `LOT_MIN_VERTICES = 3`, `LOT_WATER_MAX = 0.5`, `LOT_SAMPLE_M = 1.0`; the lot patch
+  limits::CROSS_FALL_LIMIT` (0.20), `LOT_MIN_VERTICES = 3`, `LOT_WATER_MAX = 0.5` (samples are on a fixed 1 m grid, not a constant); the lot patch
   has rank 0; reused, not copied: `conform::SHOULDER_CELLS`, `conform::core_reach_m`, `limits::RAMP_JOINT_MIN_M`.
   Paved families `Asf1`, `Asf2`, `Asf3`, `City`; grass `Grav`, `Mud`. The paved and unpaved `surface` values are the
   spec's two lists, verbatim.
@@ -172,7 +172,7 @@ No commit.
   with a NaN point or only two distinct corners is skipped and counted; `edge_distance` of the square's centre is 20;
   `surface_tag` `Paved` for `asphalt`, `Unpaved` for `grass`, `None` for `foo`; ids `osm/way/7` and
   `osm/relation/9/1`; the same output for reversed input.
-- [ ] **Step 3:** RED. **Step 4:** implement; the area is counted on a `LOT_SAMPLE_M` grid of even-odd samples.
+- [ ] **Step 3:** RED. **Step 4:** implement; the area is counted on a fixed 1 m grid of even-odd samples.
   **Step 5:** GREEN, the fuzz seeds, `make check`.
 - [ ] **Step 6:** Commit `feat: the lot areas of OpenStreetMap are read` (nothing consumes them yet; no CHANGELOG
   line).

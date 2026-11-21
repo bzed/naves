@@ -289,7 +289,7 @@ fn absurd_coordinates_end_with_a_result() {
 }
 
 #[test]
-fn a_degenerate_hole_is_counted_like_any_skipped_ring() {
+fn a_degenerate_hole_is_dropped_and_the_lot_stays() {
     let f = frame();
     let mut p = lot(
         7,
@@ -299,6 +299,28 @@ fn a_degenerate_hole_is_counted_like_any_skipped_ring() {
     let a = f.to_geo(1010.0, 1010.0).unwrap();
     let b = f.to_geo(1020.0, 1010.0).unwrap();
     p.holes.push(vec![a, b, a, b, a]);
+    let (found, skipped) = areas(&land(vec![p]), &f);
+    assert_eq!(skipped, 0, "skipped counts lots");
+    assert_eq!(found.len(), 1);
+    assert!(
+        (found[0].area_m2 - 1600.0).abs() <= 1.0,
+        "{}",
+        found[0].area_m2
+    );
+    assert_eq!(found[0].holes.len(), 0);
+    assert_eq!(found[0].holes_dropped, 1);
+}
+
+#[test]
+fn a_hole_with_a_point_that_is_not_finite_skips_the_lot() {
+    let f = frame();
+    let mut p = lot(
+        7,
+        &[("amenity", "parking")],
+        square(&f, 1000.0, 1000.0, 40.0),
+    );
+    let a = f.to_geo(1010.0, 1010.0).unwrap();
+    p.holes.push(vec![a, (f64::NAN, 12.985), a]);
     let good = lot(
         8,
         &[("amenity", "parking")],
@@ -307,6 +329,7 @@ fn a_degenerate_hole_is_counted_like_any_skipped_ring() {
     let (found, skipped) = areas(&land(vec![p, good]), &f);
     assert_eq!(skipped, 1);
     assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, "osm/way/8");
 }
 
 #[test]

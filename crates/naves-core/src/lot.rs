@@ -6,14 +6,11 @@
 //! [`areas`] turns the [`LotPolygon`]s that [`crate::osm::read_land`] reads into map metres and says what each one
 //! is ([`LotKind`]), whether it lies on the ground ([`Placement`]), how big it is and what its `surface` tag says.
 //! Inside means even-odd inside the outer ring and in no hole ([`contains`]); a self-intersecting ring is not
-//! rejected, and its area is the number of samples on a [`LOT_SAMPLE_M`] grid for which [`contains`] is true, counted
-//! on the part of the lot that lies on the map.
+//! rejected, and its area is the number of samples on a 1 m grid for which [`contains`] is true, counted
+//! on the part of the lot that lies on the map. The grid is fixed at 1 m.
 
 use crate::heightmap::MapGeo;
 use crate::osm::{LotPolygon, OsmLand};
-
-/// The distance between the samples that count the area of a lot, in metres.
-pub const LOT_SAMPLE_M: f64 = 1.0;
 
 /// What the lot is, by its tags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,10 +76,14 @@ pub struct LotArea {
     pub outer: Vec<(f64, f64)>,
     /// Holes in the lot, closed rings.
     pub holes: Vec<Vec<(f64, f64)>>,
-    /// The area in square metres: the samples of a [`LOT_SAMPLE_M`] grid inside [`contains`], on the map only.
+    /// The area in square metres: the samples of a fixed 1 m grid inside [`contains`], on the map only. A lot that
+    /// lies off the map has area 0, so a caller that computes a share of the area must guard against zero.
     pub area_m2: f64,
     /// What the `surface` tag of the lot says, if anything.
     pub surface_tag: Option<Paving>,
+    /// Holes of the lot's ring that were dropped because they have fewer than three distinct corners (no area, no
+    /// point inside). Not part of the skipped count, which counts lots.
+    pub holes_dropped: usize,
 }
 
 fn kind_of(tags: &std::collections::BTreeMap<String, String>) -> Option<LotKind> {
@@ -135,8 +136,14 @@ fn corners(ring: &[(f64, f64)]) -> usize {
 }
 
 /// The sample indices `[from, to)` of the row at `y` that lie inside `ring` (even-odd), clipped to `0..=cap`.
-fn row_spans(ring: &[(f64, f64)], y: f64, cap: f64, spans: &mut Vec<(f64, f64)>) {
-    let mut crossings: Vec<f64> = Vec::new();
+fn row_spans(
+    ring: &[(f64, f64)],
+    y: f64,
+    cap: f64,
+    crossings: &mut Vec<f64>,
+    spans: &mut Vec<(f64, f64)>,
+) {
+    crossings.clear();
     for pair in ring.windows(2) {
         let [(xa, ya), (xb, yb)] = pair else { continue };
         if (*ya > y) != (*yb > y) {
@@ -179,16 +186,17 @@ fn area_of(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>], size: f64) -> f64 {
     let mut total = 0.0;
     let mut spans: Vec<(f64, f64)> = Vec::new();
     let mut cut: Vec<(f64, f64)> = Vec::new();
+    let mut crossings: Vec<f64> = Vec::new();
     for row in first_row..end_row {
         let y = f64::from(row) + 0.5;
         spans.clear();
-        row_spans(outer, y, cap, &mut spans);
+        row_spans(outer, y, cap, &mut crossings, &mut spans);
         if spans.is_empty() {
             continue;
         }
         cut.clear();
         for hole in holes {
-            row_spans(hole, y, cap, &mut cut);
+            row_spans(hole, y, cap, &mut crossings, &mut cut);
         }
         cut.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
         // merge the holes' spans into disjoint ones
@@ -217,14 +225,18 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
         return None;
     }
     let mut holes = Vec::new();
+    let mut holes_dropped = 0;
     for hole in &lot.holes {
+        // a point that cannot be projected leaves the hole's extent unknown: the lot is skipped
         let hole = project_ring(frame, hole)?;
         if corners(&hole) < 3 {
-            return None;
+            // no area and no point inside: dropping it changes nothing about the lot
+            holes_dropped += 1;
+        } else {
+            holes.push(hole);
         }
-        holes.push(hole);
     }
-    let area_m2 = area_of(&outer, &holes, frame.map_size_m()) * LOT_SAMPLE_M * LOT_SAMPLE_M;
+    let area_m2 = area_of(&outer, &holes, frame.map_size_m());
     let id = if lot.relation {
         format!("osm/relation/{}/{}", lot.id, lot.part)
     } else {
@@ -238,13 +250,14 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
         holes,
         area_m2,
         surface_tag: lot.tags.get("surface").and_then(|value| paving(value)),
+        holes_dropped,
     })
 }
 
 /// The lots of `land` in map metres, ways before relations and each in id order (the parts of a relation in ring
 /// order), and the number of lots skipped: fewer than three distinct corners, a point that cannot be projected or
-/// is not finite (in the outer ring or in a hole), a hole with fewer than three distinct corners, or tags that make
-/// no lot.
+/// is not finite (in the outer ring or in a hole), or tags that make no lot. A hole with fewer than three distinct
+/// corners and finite points is dropped and the lot stays ([`LotArea::holes_dropped`]).
 #[must_use]
 pub fn areas(land: &OsmLand, frame: &MapGeo) -> (Vec<LotArea>, usize) {
     let mut lots: Vec<&LotPolygon> = land.lots.iter().collect();

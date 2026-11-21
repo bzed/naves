@@ -117,7 +117,9 @@ example) are not lots of their own. A lot mapped as a node has no area and is no
 The areas are turned into map metres with `MapGeo::to_map` and given stable ids: `osm/way/<id>` or
 `osm/relation/<id>/<part>` (one per outer ring), in id order. Inside means even-odd inside the outer ring and not in
 a hole; a self-intersecting ring is not rejected, every test uses the even-odd rule and the area is counted from
-samples. A ring with fewer than three distinct corners or a non-finite point is skipped and counted.
+samples. An outer ring with fewer than three distinct corners, or a ring (outer or hole) with a non-finite point, skips the
+lot and is counted as a skipped lot. A hole with fewer than three distinct corners and finite points has no area: the
+hole is dropped, the lot stays, and the dropped holes are counted apart (`LotArea::holes_dropped`).
 
 **Which tags were looked at.** Every area tag on the example was measured for graph stretches wholly inside it
 (`scan2.tsv`; mean of the free-fit slope over all areas of the tag):
@@ -239,9 +241,10 @@ figures, never below 0. `FeatureKind::Path` gets
 On the example: Grafenlehen is **grass** (404 m of its roads are tagged unpaved, 34 m paved, 132 m untagged
 `City`); Camping Allweglehen (way 38834406) and Campingplatz Simonhof (way 174787106) are paved (asphalt roads, 287
 against 118 and 263 against 189 m); Camping Mühlleiten (way 174716692) is paved by family (its roads are untagged);
-the caravan site P2 is grass (155 m unpaved); the car park P2 Hirschbichlstraße is grass (98 m of unpaved against 6 m of paved road once every way of a stretch is counted). Over the lots of at least 20 m² that are smoothed or surface only, the surface is decided by (Task 1's count) the
-lot's own tag for 51, its own roads for 19 (12 paved, 7 grass), its group for 3, the street beside it for 183 and
-by nothing, so grass, for 6.
+the caravan site P2 is grass (155 m unpaved); the car park P2 Hirschbichlstraße is grass (98 m of unpaved against 6 m of paved road once every way of a stretch is counted). Of the 254 car parks of at least 20 m² that are not excluded, the surface is decided (Task 1's count) by their own
+tag for 51, by their own roads for 11 (7 paved, 4 grass), by their group for 3, by the road beside them for 183 and
+by nothing, so grass, for 6. A different count: 19 car parks have roads of their own (12 paved, 7 grass by those
+roads), whatever decided them; do not add it to the others.
 
 **Which ground layer.** Náves's four ground classes (grass, rock, forest, soil) come from `surfaces_bliss`
 (`en_grass1`, `en_stones`, `en_forest_con`, `en_soil`); road beds are painted soil. The same PBO has two paved
@@ -445,7 +448,7 @@ All in `naves-core/src/lot.rs`, `pub const`.
 | `LOT_STEEP` | 0.20 | slope (95th percentile) above which a lot is reported steep | `limits::CROSS_FALL_LIMIT` |
 | `LOT_MIN_VERTICES` | 3 | fewer terrain vertices inside: surface only | a plane needs three |
 | `LOT_WATER_MAX` | 0.5 | share of the ground in water above which a lot is excluded | controller ("mostly in water") |
-| `LOT_SAMPLE_M` | 1.0 m | samples for the area, the inside test and the water share | `ring_plane`'s 1 m |
+| the 1 m sample grid | 1.0 m | samples for the area (fixed in the area code, not a tunable); the water share is counted on a 1 m grid too | `ring_plane`'s 1 m |
 | patch rank | 0 | the lot loses compatible ties to every road | assistant |
 | shoulder | `conform::SHOULDER_CELLS` (1.5 cells) | ground beyond the edge held to the surface | reused |
 | serving reach | `core_reach_m(half width, cell) + cell` | a street within this of the edge serves a lot without roads of its own | the clean-up's "earthworks touch" |
@@ -504,7 +507,7 @@ judged there.
   makes it surface only: the bridge's ground rules and the clipping at the edge already do the right thing, and
   Grafenlehen would otherwise not be smoothed.
 - **Streets beside a lot serve it** when it has no road of its own. The controller's rule counts removed and access
-  roads only; on the example 183 lots of at least 20 m² are decided by the street beside them (6 have no road at all), and
+  roads only; on the example 183 car parks of at least 20 m² are decided by the road beside them (6 have no road at all), and
   without the rule they would all be grass beside paved streets.
 - **The move guard scales the whole change** rather than limiting it vertex by vertex: limiting each vertex would
   reintroduce local height changes.
@@ -524,7 +527,7 @@ judged there.
   is tagged paved, and only its car park (if mapped) paved. For the maintainer.
 - **Facets for large lots.** Two camp sites (Simonhof 9902 m², Allweglehen 15 962 m²) and the caravan site P2 Königssee (1615 m²) need more than
   3 m of move for one surface and are scaled down. A few large facets, each a capped quadratic, joined without a step along their
-  shared edges, would fit them. Needed from about 10 000 m² with a move above 3 m on this example; not in v1.
+  shared edges, would fit them. Needed where the largest move of one surface is above 3 m (three lots on this example); not in v1.
 - **Terraces** for the 44 steep lots, from the report's list. Later work.
 - **Through roads.** If the soft target is not enough (the judging counts faces within 50 m of lots), a hard hold of
   through-road joints over a lot could replace it where the surface's slope is under the road's ceiling.
