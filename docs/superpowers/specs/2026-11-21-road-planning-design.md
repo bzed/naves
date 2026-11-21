@@ -234,7 +234,8 @@ mean, which the spike's band allowed (see the band). The rule may push switchbac
 ### Obstacles and the distance raster
 
 Notes section 3.2, built once per leg over its box: the bounding box of the leg's original line, grown by
-`PLAN_STRAY_MAX` minimum radii, the largest clearance and two raster cells.
+`PLAN_STRAY_MAX · R` (the stray cap, with the planning radius `R` of the margin), the largest clearance and two raster
+cells.
 
 - **Resolution:** half the terrain cell, clamped to 1 to 2.5 m (2 m at 4 m cells), multiplied by 1.25 until the
   raster has at most `PLAN_RASTER_MAX_CELLS` cells.
@@ -275,7 +276,7 @@ Notes section 3.2, built once per leg over its box: the bounding box of the leg'
   the leg's original line (for the stray term and the cap).
 - **One threshold for every test.** A segment is blocked if a cell it touches is an obstacle cell, or its chamfer
   distance is below `thr(c) = (c + res) · CHAMFER_ERROR + res · √2` for the clearance `c` (notes 3.2). The same
-  `thr` is used for the exemption above and for the water cap below. Reason: in the spec as first written the test
+  `thr` is used for the exemption above; the water cap below is in the same stored measure. Reason: in the spec as first written the test
   used `thr` but the exemption and the water cap used the bare clearance, so 170 of 1645 original lines failed their
   own test (the anchor lay in blocked space). The spike's alternative, the bare clearance plus half a cell, left 68 of
   1645 failing and planned 22 more zones (1485 against 1463, at lead 4); it lets the true distance fall about 8 %
@@ -284,11 +285,14 @@ Notes section 3.2, built once per leg over its box: the bounding box of the leg'
 - **Clearances:**
   - roads: `core_reach_m(own half width) + one terrain cell` (12.5 to 15 m); with the stamped earthwork of the other
     road this is the clean-up's "earthworks touch" test (two reaches and a cell);
-  - water: `core_reach_m(own half width)`, but no more than the clearance whose threshold equals the original line's
-    own smallest chamfer distance to water, `(d_orig − res · √2) / CHAMFER_ERROR − res`, so a riverside road may stay
-    as near the water as it already was.
-- **Crossings near the anchors.** Wall crossings (exempt roads, streams) are counted only farther than
-  `PLAN_CROSSING_END_M` (10 m) from either anchor. Reason: an exempt road that shares geometry with the original line
+  - water: the threshold `min(thr(core_reach_m(own half width)), d_orig)`, where `d_orig` is the smallest stored
+    chamfer distance to water of the cells the original line touches. The cap is taken in the map's own measure (the
+    stored value), not by inverting `thr`: the inverse `(d_orig − res · √2) / CHAMFER_ERROR − res` is not positive for
+    an original line nearer than about 5 m to the water, and the cap then collapsed to "no clearance", letting a route
+    go nearer to the water than the original was. With the cap in the stored measure the original line passes its
+    own test exactly, and a riverside road may stay as near the water as it already was, however near that is.
+- **Crossings near the anchors.** Wall crossings (exempt roads, streams) are counted, and block a segment of the
+  route when the wall allows none, only farther than `PLAN_CROSSING_END_M` (10 m) from either anchor. Reason: an exempt road that shares geometry with the original line
   near its node made the counts unstable; 7 good routes failed their check, 1 with the rule.
 
 **What remains.** With these rules, 84 of the 2227 legs on the example still have an original line that fails the
@@ -559,7 +563,7 @@ re-check with the grade rule (plan Task 7b) must confirm before they are frozen.
 | `CHAMFER_ERROR` | 1.0824 | chamfer and octile excess | notes 3.2, 3.4 | |
 | test threshold `thr(c)` | `(c + res) · CHAMFER_ERROR + res · √2` | one threshold for test, exemption, water cap | notes 3.2; spike 8.1 | yes: against `c + res/2` |
 | road clearance | `core_reach_m(own half) + cell` | earthworks touch, with the other road stamped at its reach | `netclean`, `conform::core_reach_m` | |
-| water clearance | `min(core_reach_m(own half), (d_orig − res·√2)/CHAMFER_ERROR − res)` | | spike 8.1 | |
+| water threshold | `min(thr(core_reach_m(own half)), d_orig)`, `d_orig` the stored chamfer distance of the original line | the cap is in the map's measure, not an inverted `thr` | spike 8.1; review of Task 2 | |
 
 ## How it is judged
 

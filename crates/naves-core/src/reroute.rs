@@ -16,6 +16,8 @@ pub mod raster;
 pub const REROUTE_ENABLED: bool = false;
 /// Octile and chamfer excess: a chamfer distance is up to this much longer than the straight one.
 pub const CHAMFER_ERROR: f64 = 1.0824;
+/// A two-stretch node that turns more than this (degrees) ends a chain.
+pub const CHAIN_TURN_MAX_DEG: f64 = crate::smooth::CHAIN_TURN_MAX_DEG;
 /// Spacing of the samples of a road for the exemption and the stamping, in metres.
 pub const SAMPLE_M: f64 = crate::smooth::SAMPLE_M;
 /// Minimum radii of road beside a tight run that belong to its zone.

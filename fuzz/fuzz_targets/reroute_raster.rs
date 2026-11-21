@@ -45,11 +45,13 @@ fuzz_target!(|data: &[u8]| {
     let [road, original, wall, probes, polygon] = decode(data);
     let mut o = Obstacles::new((-50.0, -50.0), (250.0, 250.0), 4.0, 200.0, 3.0, 20_000);
     o.stamp_water(&|p| inside(&polygon, p));
-    o.stamp_road(&road, 6.0, &|p| p.0 < 100.0);
+    let flags: Vec<bool> = samples(&road).iter().map(|p| p.0 < 100.0).collect();
+    o.stamp_road(&road, 6.0, &flags);
     o.set_original(&original);
     o.finish();
     let clear = Clearance {
         water_m: 5.0,
+        water_cap_m: o.water_cap_m(&original),
         road_m: 12.0,
     };
     for pair in probes.windows(2) {
@@ -59,6 +61,8 @@ fuzz_target!(|data: &[u8]| {
                 line: wall.clone(),
                 allowed: 0,
                 kind: WallKind::Stream,
+                anchors: [(0.0, 0.0), (1.0, 1.0)],
+                end_m: 10.0,
             };
             let _ = w.blocks(a, b);
             let _ = o.stray_m(a);

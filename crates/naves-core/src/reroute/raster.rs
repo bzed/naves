@@ -43,17 +43,25 @@ pub enum Blocked {
     Water,
     /// Another road's earthwork, or too near to it.
     Road,
-    /// The map edge, its margin, a point outside the raster, or a coordinate that is not a number.
+    /// A cell outside the map or inside its margin.
     Edge,
     /// A wall line (a stream, an exempt road's centre line).
     Wall,
+    /// An end of the segment is outside the raster, or is not a number. The search treats it as a step not
+    /// taken; the final check of a route as a failed check; it is never turned into a reason for keeping a zone
+    /// (`held`, `blocked_by_*`).
+    Outside,
 }
 
 /// The clearances of a segment test, in metres. Zero means only obstacle cells block.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clearance {
-    /// Clearance to water.
+    /// Clearance to water, as [`Obstacles::threshold`] turns it into a chamfer distance.
     pub water_m: f64,
+    /// Upper limit of that water threshold, in metres of the map's own (stored chamfer) measure: what
+    /// [`Obstacles::water_cap_m`] returns for the original line, so that a road beside water may stay as near
+    /// as the original was. `f64::INFINITY` for no limit.
+    pub water_cap_m: f64,
     /// Clearance to other roads.
     pub road_m: f64,
 }
@@ -328,12 +336,14 @@ impl Obstacles {
                 return None;
             }
         }
-        (t0 <= t1).then_some({
+        // rounding may put an end a hair outside the box: clamp it in
+        let inside = |t: f64| {
             (
-                (a.0 + t0 * d.0, a.1 + t0 * d.1),
-                (a.0 + t1 * d.0, a.1 + t1 * d.1),
+                (a.0 + t * d.0).clamp(self.min.0, hi.0),
+                (a.1 + t * d.1).clamp(self.min.1, hi.1),
             )
-        })
+        };
+        (t0 <= t1).then_some((inside(t0), inside(t1)))
     }
 
     /// Marks the cells the (clipped) segment touches.
@@ -366,73 +376,78 @@ impl Obstacles {
         }
     }
 
-    /// Stamps another road's earthwork: every cell within `reach_m` of a sample of the line (every
-    /// [`SAMPLE_M`]) and every cell the line touches. A sample for which `exempt` is true is not stamped.
-    pub fn stamp_road(
-        &mut self,
-        line: &[(f64, f64)],
-        reach_m: f64,
-        exempt: &dyn Fn((f64, f64)) -> bool,
-    ) {
-        let samples: Vec<(f64, f64)> = samples_with_arc(line).into_iter().map(|(p, _)| p).collect();
-        let exempt: Vec<bool> = samples.iter().map(|&p| exempt(p)).collect();
+    /// Stamps another road's earthwork: every cell within `reach_m` of the line, and every cell the line touches.
+    /// `exempt` holds one flag per sample of the line (see [`samples`], from [`exempt_samples`]); the piece of the
+    /// line between two consecutive samples is stamped only when neither is exempt (a flag missing counts as not
+    /// exempt). Cells are kept by their distance to the segments of the line, so a corner whose vertex is not a
+    /// sample keeps its tip.
+    pub fn stamp_road(&mut self, line: &[(f64, f64)], reach_m: f64, exempt: &[bool]) {
+        let samples = samples_with_arc(line);
         let reach = if reach_m.is_finite() {
             reach_m.max(0.0)
         } else {
             0.0
         };
-        for (&p, &skip) in samples.iter().zip(&exempt) {
-            if !skip {
-                self.stamp_disc(p, reach);
+        let skip = |k: usize| exempt.get(k).copied().unwrap_or(false);
+        if let [(only, _)] = samples.as_slice() {
+            if !skip(0) {
+                self.stamp_segment(*only, *only, reach);
             }
+            return;
         }
-        for (i, pair) in samples.windows(2).enumerate() {
-            let free = |k: usize| exempt.get(k).copied().unwrap_or(true);
-            if let [a, b] = *pair
-                && !free(i)
-                && !free(i + 1)
-            {
-                self.mark_segment(a, b, F_ROAD);
+        let vertices = vertices_with_arc(line);
+        for (k, pair) in samples.windows(2).enumerate() {
+            let [(a, sa), (b, sb)] = pair else {
+                continue;
+            };
+            if skip(k) || skip(k + 1) {
+                continue;
             }
+            // the piece from sample to sample, through the vertices between them
+            let mut from = *a;
+            for &(v, sv) in &vertices {
+                if sv > *sa && sv < *sb {
+                    self.stamp_segment(from, v, reach);
+                    from = v;
+                }
+            }
+            self.stamp_segment(from, *b, reach);
         }
     }
 
-    fn stamp_disc(&mut self, p: (f64, f64), reach: f64) {
+    /// Marks the cells whose centre is within `reach` of the segment, and the cells the segment touches.
+    fn stamp_segment(&mut self, a: (f64, f64), b: (f64, f64), reach: f64) {
+        if !finite(a) || !finite(b) {
+            return;
+        }
         let hi = (
             self.min.0 + self.cols_f * self.res,
             self.min.1 + self.rows_f * self.res,
         );
-        if p.0 + reach < self.min.0
-            || p.1 + reach < self.min.1
-            || p.0 - reach > hi.0
-            || p.1 - reach > hi.1
-        {
+        let (lo_x, hi_x) = (a.0.min(b.0) - reach, a.0.max(b.0) + reach);
+        let (lo_y, hi_y) = (a.1.min(b.1) - reach, a.1.max(b.1) + reach);
+        if hi_x < self.min.0 || hi_y < self.min.1 || lo_x > hi.0 || lo_y > hi.1 {
             return;
         }
         let cols = (
-            index_clamped((p.0 - reach - self.min.0) / self.res, self.cols),
-            index_clamped((p.0 + reach - self.min.0) / self.res, self.cols),
+            index_clamped((lo_x - self.min.0) / self.res, self.cols),
+            index_clamped((hi_x - self.min.0) / self.res, self.cols),
         );
         let rows = (
-            index_clamped((p.1 - reach - self.min.1) / self.res, self.rows),
-            index_clamped((p.1 + reach - self.min.1) / self.res, self.rows),
+            index_clamped((lo_y - self.min.1) / self.res, self.rows),
+            index_clamped((hi_y - self.min.1) / self.res, self.rows),
         );
         for row in rows.0..=rows.1 {
             for col in cols.0..=cols.1 {
-                let c = self.centre(col, row);
-                if (c.0 - p.0).hypot(c.1 - p.1) <= reach
+                if seg_dist(self.centre(col, row), a, b) <= reach
                     && let Some(f) = self.flags.get_mut(row * self.cols + col)
                 {
                     *f |= F_ROAD;
                 }
             }
         }
-        // a reach smaller than a cell still marks the cell the sample is in
-        if let Some(i) = self.index_of(p)
-            && let Some(f) = self.flags.get_mut(i)
-        {
-            *f |= F_ROAD;
-        }
+        // a reach smaller than a cell still marks the cells the line touches
+        self.mark_segment(a, b, F_ROAD);
     }
 
     /// Marks the cells the leg's original line touches, for the stray distance.
@@ -477,20 +492,21 @@ impl Obstacles {
         }
     }
 
-    /// Whether a planned segment from `a` to `b` is free: `Err` names the first thing in its way. A point
-    /// outside the raster, a coordinate that is not a number and the map edge are `Edge`.
+    /// Whether a planned segment from `a` to `b` is free: `Err` names the first thing in its way. An end outside
+    /// the raster or not a number is `Outside`; `Edge` is only for cells outside the map or in its margin. The
+    /// water test uses the threshold of `clear.water_m`, but no more than `clear.water_cap_m`.
     ///
     /// # Errors
     ///
     /// The kind of obstacle in the way, see [`Blocked`].
     pub fn segment(&self, a: (f64, f64), b: (f64, f64), clear: Clearance) -> Result<(), Blocked> {
         if !self.covers(a) || !self.covers(b) {
-            return Err(Blocked::Edge);
+            return Err(Blocked::Outside);
         }
-        let (road_dm, water_dm) = (
-            self.threshold(clear.road_m) * 10.0,
-            self.threshold(clear.water_m) * 10.0,
-        );
+        let water_thr = self
+            .threshold(clear.water_m)
+            .min(clear.water_cap_m.max(0.0));
+        let (road_dm, water_dm) = (self.threshold(clear.road_m) * 10.0, water_thr * 10.0);
         let mut result = Ok(());
         self.touches(a, b, &mut |i| {
             let blocked = self.cell_blocked(i, water_dm, road_dm);
@@ -525,41 +541,48 @@ impl Obstacles {
         near(&self.water, water_dm).then_some(Blocked::Water)
     }
 
-    /// The distance map value at the point in metres, measured from the edge of the nearest stamped cell
-    /// (the chamfer distance of the centres less half a cell). `INFINITY` outside the raster.
-    fn distance_at(&self, map: &[u16], p: (f64, f64), half_cell: f64) -> f64 {
+    /// The distance map value of the point's cell in metres, with `shift` added (not below 0). `INFINITY`
+    /// outside the raster; a saturated cell gives exactly 6553.5 whatever the shift.
+    fn distance_at(&self, map: &[u16], p: (f64, f64), shift: f64) -> f64 {
         let Some(&raw) = self.index_of(p).and_then(|i| map.get(i)) else {
             return f64::INFINITY;
         };
         if raw == FAR {
             return f64::from(FAR) / 10.0;
         }
-        (f64::from(raw) / 10.0 + half_cell).max(0.0)
+        (f64::from(raw) / 10.0 + shift).max(0.0)
     }
 
-    /// Distance of the point to the original line as the raster sees it: the chamfer distance of the cell
-    /// centres plus half a cell. `INFINITY` outside the raster.
+    /// Distance of the point to the original line: the stored chamfer distance of the point's cell, as it is,
+    /// the measure the stray weight and the stray cap are calibrated on. It is **not** an upper bound of the
+    /// true distance (it may fall short by about a cell), so the search and the final check of a route must
+    /// use this same measure for the cap. `INFINITY` outside the raster; saturated at 6553.5 m.
     #[must_use]
     pub fn stray_m(&self, p: (f64, f64)) -> f64 {
-        self.distance_at(&self.orig, p, self.res / 2.0)
+        self.distance_at(&self.orig, p, 0.0)
     }
 
-    /// Distance of the point to water: the chamfer distance of the cell centres less half a cell (the water
-    /// cell reaches half a cell beyond its centre). `INFINITY` outside the raster; 6553.5 m is the far end.
+    /// An estimate of the distance of the point to water, for diagnostics: the chamfer distance of the cell
+    /// centres less half a cell. It can be off by about a cell and the chamfer excess in either direction
+    /// (11 m for a true 10 m in the tests); never use it for a clearance test, that is [`Obstacles::segment`].
+    /// `INFINITY` outside the raster; saturated at 6553.5 m.
     #[must_use]
     pub fn water_distance_m(&self, p: (f64, f64)) -> f64 {
         self.distance_at(&self.water, p, -self.res / 2.0)
     }
 
-    /// Distance of the point to other roads' earthwork, measured as [`Obstacles::water_distance_m`].
+    /// An estimate of the distance of the point to other roads' earthwork, measured and limited as
+    /// [`Obstacles::water_distance_m`]; for diagnostics, never for a clearance test. Saturated at 6553.5 m.
     #[must_use]
     pub fn road_distance_m(&self, p: (f64, f64)) -> f64 {
         self.distance_at(&self.road, p, -self.res / 2.0)
     }
 
-    /// The largest water clearance the original line passes: the clearance whose [`Obstacles::threshold`] equals
-    /// the smallest chamfer distance to water of the cells the line touches, so that a road along a river may stay
-    /// as near as it was. Zero when the line is in water; `INFINITY` when no cell of it is in the raster.
+    /// The water cap for [`Clearance::water_cap_m`]: the smallest stored chamfer distance to water, in metres, of
+    /// the cells the original line touches. A route is tested against `min(threshold(reach), cap)` in this same
+    /// stored measure, so the original line passes its own test exactly and a road beside water may stay as near
+    /// as it was, however near that is. Zero when the line is in water; `INFINITY` when no cell of it is in
+    /// the raster.
     #[must_use]
     pub fn water_cap_m(&self, original: &[(f64, f64)]) -> f64 {
         let mut least: Option<u16> = None;
@@ -581,10 +604,7 @@ impl Obstacles {
                 self.touches(a, b, &mut see);
             }
         }
-        least.map_or(f64::INFINITY, |d| {
-            let d = f64::from(d) / 10.0;
-            ((d - self.res * std::f64::consts::SQRT_2) / CHAMFER_ERROR - self.res).max(0.0)
-        })
+        least.map_or(f64::INFINITY, |d| f64::from(d) / 10.0)
     }
 }
 
@@ -733,6 +753,25 @@ fn samples_with_arc(line: &[(f64, f64)]) -> Vec<((f64, f64), f64)> {
     out
 }
 
+/// The vertices of `line` with their distance along it, leaving out repeated points.
+fn vertices_with_arc(line: &[(f64, f64)]) -> Vec<((f64, f64), f64)> {
+    let mut out: Vec<((f64, f64), f64)> = Vec::new();
+    let mut arc = 0.0;
+    for &p in line {
+        match out.last() {
+            Some(&(q, _)) => {
+                let len = (p.0 - q.0).hypot(p.1 - q.1);
+                if len > 0.0 {
+                    arc += len;
+                    out.push((p, arc));
+                }
+            }
+            None => out.push((p, 0.0)),
+        }
+    }
+    out
+}
+
 /// The samples of a road, every 2 m from its start and its end: the points [`exempt_samples`] answers for.
 /// Empty for a line with a coordinate that is not a number.
 #[must_use]
@@ -818,18 +857,30 @@ pub struct Wall {
     pub allowed: usize,
     /// What the line is.
     pub kind: WallKind,
+    /// The two anchors of the leg.
+    pub anchors: [(f64, f64); 2],
+    /// A crossing this near (or nearer) to either anchor neither counts nor blocks, as in [`crossings_away`].
+    pub end_m: f64,
 }
 
 impl Wall {
-    /// Whether the segment is blocked: the wall allows no crossing and the segment crosses its line.
+    /// Whether the segment is blocked: the wall allows no crossing and the segment crosses its line farther
+    /// than `end_m` from both anchors.
     #[must_use]
     pub fn blocks(&self, a: (f64, f64), b: (f64, f64)) -> bool {
         self.allowed == 0
-            && self
-                .line
-                .windows(2)
-                .any(|s| matches!(s, [r, t] if cross_point(a, b, *r, *t).is_some()))
+            && self.line.windows(2).any(|s| {
+                matches!(s, [r, t] if cross_point(a, b, *r, *t)
+                    .is_some_and(|x| away_from(x, self.anchors, self.end_m)))
+            })
     }
+}
+
+/// The point is farther than `end_m` from both anchors.
+fn away_from(x: (f64, f64), anchors: [(f64, f64); 2], end_m: f64) -> bool {
+    anchors
+        .iter()
+        .all(|e| (e.0 - x.0).hypot(e.1 - x.1) > end_m + CROSS_EPS)
 }
 
 /// How often `route` crosses `line` farther than `end_m` from both `anchors` (a crossing near an anchor is
@@ -846,9 +897,7 @@ pub fn crossings_away(
         for b in line.windows(2) {
             if let ([p, q], [r, s]) = (a, b)
                 && let Some(x) = cross_point(*p, *q, *r, *s)
-                && anchors
-                    .iter()
-                    .all(|e| (e.0 - x.0).hypot(e.1 - x.1) > end_m + CROSS_EPS)
+                && away_from(x, anchors, end_m)
             {
                 n += 1;
             }
