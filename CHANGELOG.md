@@ -64,6 +64,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A curve that the smoothing leaves as drawn (it could not be widened, or the widened line would stand in water) keeps
+  the vertices OpenStreetMap drew, not a resampling at 2 m that could drop one and turn the first segment by several
+  degrees.
 - A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
   starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
   and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`

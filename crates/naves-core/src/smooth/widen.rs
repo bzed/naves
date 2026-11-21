@@ -51,6 +51,9 @@ use crate::qp::{Problem, Row, solve};
 
 type P = (f64, f64);
 
+/// Two positions along the original line this close (in metres of arc) are the same place.
+const ARC_SAME_M: f64 = 1e-9;
+
 /// A zone counts as reached when no sample is tighter than this fraction of its minimum. The polygon that
 /// bounds the second difference lets the length exceed the bound by at most 8.3 %, and the bound is taken
 /// 8 % lower, so a solved zone is within 0.3 % of the minimum.
@@ -683,11 +686,154 @@ fn arc_lengths(line: &[P]) -> Vec<f64> {
     out
 }
 
-/// The samples `start..end` of a zone that goes back: the original resampled line, with the fit's offset from it
-/// at the held sample before and the one after taken up linearly over [`WIDEN_REVERT_BLEND_M`] of the zone at
-/// each end (a zone shorter than twice that blends over half its length), so that the line has no step. The
-/// fitted samples are the fallback where the original is not there.
-fn reverted_samples(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<P> {
+/// The samples `start..end` of a zone that goes back, each with the index of the fitted sample it stands for.
+///
+/// The span is the original polyline between the zone's ends: its own vertices (an OpenStreetMap vertex that
+/// does not fall on a [`SAMPLE_M`] sample is not lost), and, where the zone has a held sample before or after
+/// it, the original's samples over [`WIDEN_REVERT_BLEND_M`] of the zone at that end. At the held sample on each
+/// side the fit's offset from the original is taken up linearly over that length, so that the line has no
+/// step (a zone shorter than twice that blends over half its length). Where a zone reaches the end of the chain
+/// there is no blend and the span is the original's vertices, point for point. If the arc of the samples on the
+/// original cannot be found, the original resampled line is used (see [`resampled_span`]).
+fn reverted_samples(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<(Option<usize>, P)> {
+    let Some((cum, arcs)) = original_arcs(c) else {
+        return resampled_span(c, start, end);
+    };
+    let offset = |k: Option<usize>| -> P {
+        match k.and_then(|k| Some((c.fitted.get(k)?, c.resampled.get(k)?))) {
+            Some((fit, original)) => (fit.0 - original.0, fit.1 - original.1),
+            None => (0.0, 0.0),
+        }
+    };
+    let before = start.checked_sub(1);
+    let after = (end < c.fitted.len()).then_some(end);
+    let (a_off, b_off) = (offset(before), offset(after));
+    let at = |k: usize| arcs.get(k).copied().unwrap_or(0.0);
+    let from = before.map_or(0.0, at);
+    let to = after.map_or_else(|| cum.last().copied().unwrap_or(0.0), at);
+    let blend = WIDEN_REVERT_BLEND_M.min((to - from) / 2.0);
+    let weight = |distance: f64| {
+        if blend > 0.0 {
+            (1.0 - distance / blend).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let weights = |arc: f64| {
+        (
+            if before.is_some() {
+                weight(arc - from)
+            } else {
+                0.0
+            },
+            if after.is_some() {
+                weight(to - arc)
+            } else {
+                0.0
+            },
+        )
+    };
+    let moved = |arc: f64, original: P| -> P {
+        let (wa, wb) = weights(arc);
+        (
+            original.0 + a_off.0 * wa + b_off.0 * wb,
+            original.1 + a_off.1 * wa + b_off.1 * wb,
+        )
+    };
+    let same = |x: f64, y: f64| (x - y).abs() < ARC_SAME_M;
+    // (arc, origin, point, is a sample of the fit's resampling)
+    let mut items: Vec<(f64, Option<usize>, P, bool)> = Vec::new();
+    for k in start..end {
+        let (Some(&arc), Some(&original)) = (arcs.get(k), c.resampled.get(k)) else {
+            continue;
+        };
+        let (wa, wb) = weights(arc);
+        if wa > 0.0 || wb > 0.0 {
+            items.push((arc, Some(k), moved(arc, original), true));
+        }
+    }
+    let span = arcs.get(start..end).unwrap_or_default();
+    // the held samples on both sides are not part of the span, the ends of the chain are
+    let (lo, hi) = (
+        if before.is_some() {
+            from + ARC_SAME_M
+        } else {
+            from - ARC_SAME_M
+        },
+        if after.is_some() {
+            to - ARC_SAME_M
+        } else {
+            to + ARC_SAME_M
+        },
+    );
+    for (&arc, &original) in cum.iter().zip(c.original) {
+        if arc <= lo || arc >= hi {
+            continue;
+        }
+        // a vertex stands for no sample of the fit (it has no origin, so the move of the zone is not measured
+        // against a sample that lies elsewhere on the line), except the end of a link, which is that sample
+        let near = start + span.partition_point(|&a| a < arc);
+        let origin = [near.checked_sub(1), Some(near)]
+            .into_iter()
+            .flatten()
+            .find(|&k| k < end && c.bounds.binary_search(&k).is_ok() && same(at(k), arc));
+        items.push((arc, origin, moved(arc, original), false));
+    }
+    items.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let mut out: Vec<(f64, Option<usize>, P, bool)> = Vec::with_capacity(items.len());
+    for item in items {
+        match out.last_mut() {
+            // a vertex on a sample of the fit is that sample; two vertices on one spot are one point
+            Some(last) if same(last.0, item.0) => {
+                if item.3 && !last.3 {
+                    *last = item;
+                }
+            }
+            _ => out.push(item),
+        }
+    }
+    out.into_iter().map(|(_, k, p, _)| (k, p)).collect()
+}
+
+/// The arc length of the original line at each of its vertices, and of every sample of the fit along it (the
+/// samples are equally spaced along each link of the original, the ends of a link are its vertices), or `None`
+/// where the samples and the original do not belong together.
+fn original_arcs(c: &ChainLine<'_>) -> Option<(Vec<f64>, Vec<f64>)> {
+    let cum = arc_lengths(c.original);
+    if c.resampled.len() != c.fitted.len()
+        || c.bounds.last() != Some(&c.resampled.len().checked_sub(1)?)
+    {
+        return None;
+    }
+    let mut arcs = vec![0.0; c.resampled.len()];
+    let (mut first_k, mut first_v) = (0_usize, 0_usize);
+    for &last_k in c.bounds {
+        let end_point = c.resampled.get(last_k)?;
+        let end_v = first_v
+            + 1
+            + c.original
+                .get(first_v + 1..)?
+                .iter()
+                .position(|p| p == end_point)?;
+        let (link_from, link_to) = (*cum.get(first_v)?, *cum.get(end_v)?);
+        let width = f64::from(u32::try_from(last_k.checked_sub(first_k)?).ok()?);
+        for k in first_k..=last_k {
+            let t = if width > 0.0 {
+                f64::from(u32::try_from(k - first_k).ok()?) / width
+            } else {
+                0.0
+            };
+            *arcs.get_mut(k)? = link_from + (link_to - link_from) * t;
+        }
+        (first_k, first_v) = (last_k, end_v);
+    }
+    Some((cum, arcs))
+}
+
+/// The samples `start..end` of a zone that goes back, as the original resampled line with the fit's offset from
+/// it at the held sample before and the one after taken up linearly over [`WIDEN_REVERT_BLEND_M`] of the zone
+/// at each end. The fitted samples are the fallback where the original is not there.
+fn resampled_span(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<(Option<usize>, P)> {
     let offset = |k: Option<usize>| -> P {
         match k.and_then(|k| Some((c.fitted.get(k)?, c.resampled.get(k)?))) {
             Some((fit, original)) => (fit.0 - original.0, fit.1 - original.1),
@@ -709,7 +855,7 @@ fn reverted_samples(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<P> {
     (start..end)
         .map(|k| {
             let Some(original) = c.resampled.get(k).copied() else {
-                return c.fitted.get(k).copied().unwrap_or_default();
+                return (Some(k), c.fitted.get(k).copied().unwrap_or_default());
             };
             let weight = |distance: f64| {
                 if blend > 0.0 {
@@ -729,8 +875,11 @@ fn reverted_samples(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<P> {
                 0.0
             };
             (
-                original.0 + a_off.0 * wa + b_off.0 * wb,
-                original.1 + a_off.1 * wa + b_off.1 * wb,
+                Some(k),
+                (
+                    original.0 + a_off.0 * wa + b_off.0 * wb,
+                    original.1 + a_off.1 * wa + b_off.1 * wb,
+                ),
             )
         })
         .collect()
@@ -773,13 +922,14 @@ fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
     let mut i = 0;
     while i < n {
         if let Some(&(_, hi, start, end)) = spans.iter().find(|s| s.0 == i) {
-            for (k, p) in (start..end).zip(reverted_samples(c, start, end)) {
+            for (k, p) in reverted_samples(c, start, end) {
                 out.line.push(p);
                 out.mask.push(false);
                 out.side.push(1.0);
                 out.inward.push(0.0);
-                out.movable.push(c.movable.get(k).copied().unwrap_or(false));
-                out.origin.push(Some(k));
+                out.movable
+                    .push(k.is_some_and(|k| c.movable.get(k).copied().unwrap_or(false)));
+                out.origin.push(k);
             }
             i = hi + 1;
         } else {

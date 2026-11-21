@@ -6,17 +6,14 @@
 
 #![expect(
     clippy::indexing_slicing,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
     reason = "test code; failing loudly is the point"
 )]
 
 use naves_core::catalog::Family;
 use naves_core::roadnet::{Crossing, RoadGraph, Stretch};
 use naves_core::smooth::{
-    SAMPLE_M, SIMPLIFY_TOL_M, SmoothParams, SmoothReport, WIDEN_BRIDGE_HOLD_M,
-    WIDEN_REVERT_BLEND_M, radius_at, resample, simplify_line, smooth_graph, smooth_graph_fit_only,
-    smooth_graph_in_water,
+    SAMPLE_M, SIMPLIFY_TOL_M, SmoothParams, SmoothReport, WIDEN_BRIDGE_HOLD_M, radius_at, resample,
+    simplify_line, smooth_graph, smooth_graph_fit_only, smooth_graph_in_water,
 };
 
 type P = (f64, f64);
@@ -199,35 +196,61 @@ fn a_zone_that_cannot_be_widened_goes_back_to_the_original_line() {
         "{:?}",
         report.zones
     );
-    // the original, resampled: the stretches' own lines
+    // the original: the stretches' own lines, with the points the road was drawn with
     let original: Vec<P> = hairpin_of(8.0)[3..].to_vec();
-    let resampled = resample(&original, SAMPLE_M);
     let b = &out.stretches[1].points;
     let fit_b = &fit.stretches[1].points;
-    assert_eq!(b.len(), resampled.len());
-    // the zone is where the line is not the fit's bitwise, plus the blend at its two ends
-    let changed: Vec<usize> = (0..b.len())
-        .filter(|&k| bits(b[k]) != bits(fit_b[k]))
+    // the zone is the run of points from the node that lie on the original line (the fit's offset is blended in
+    // over WIDEN_REVERT_BLEND_M at the held ends, which is off it); in it the points are the original's vertices, bit for
+    // bit, and nothing else
+    let arc_of = |p: P| {
+        let mut run = 0.0;
+        for w in original.windows(2) {
+            if dist_to_line(p, &[w[0], w[1]]) < 1e-9 {
+                return run + (p.0 - w[0].0).hypot(p.1 - w[0].1);
+            }
+            run += (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        }
+        f64::INFINITY
+    };
+    let on: Vec<usize> = (0..b.len())
+        .take_while(|&k| dist_to_line(b[k], &original) < 1e-9)
         .collect();
-    let (lo, hi) = (*changed.first().unwrap(), *changed.last().unwrap());
-    let blend = (WIDEN_REVERT_BLEND_M / SAMPLE_M).ceil() as usize + 1;
-    assert!(hi - lo > 2 * blend + 4, "zone {lo}..{hi}");
-    for k in lo + blend..=hi - blend {
+    let (lo, hi) = (0, *on.last().unwrap());
+    let (from, to) = (arc_of(b[lo]), arc_of(b[hi]));
+    let inside: Vec<&P> = original
+        .iter()
+        .filter(|v| arc_of(**v) > from + 1e-9 && arc_of(**v) < to - 1e-9)
+        .collect();
+    assert!(inside.len() >= 3, "{} vertices in the zone", inside.len());
+    for v in &inside {
         assert!(
-            dist_to_line(b[k], &original) < 1e-9,
-            "sample {k} is {} m off the original",
-            dist_to_line(b[k], &original)
-        );
-        assert!(
-            radius_at(b[k - 1], b[k], b[k + 1])
-                >= radius_at(resampled[k - 1], resampled[k], resampled[k + 1]) - 1e-9
+            b.iter().any(|q| bits(*q) == bits(**v)),
+            "the vertex {v:?} of the original is not in the line"
         );
     }
-    // no step, anywhere
+    // and no other point: the zone has 2 m samples only where the original has none, and it has none there
+    let strangers = b[lo..=hi]
+        .iter()
+        .filter(|q| !original.iter().any(|v| bits(*v) == bits(**q)))
+        .count();
+    assert!(strangers <= 2, "{strangers} points are not vertices");
+    let resampled = resample(&original, SAMPLE_M);
+    assert!(
+        b.len() < resampled.len(),
+        "{} against {}",
+        b.len(),
+        resampled.len()
+    );
+    // no step: nothing is longer than the longest segment of the original
+    let longest = original
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .fold(0.0, f64::max);
     for s in &out.stretches {
         for w in s.points.windows(2) {
             let step = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
-            assert!(step <= SAMPLE_M * 1.5 + 1e-9, "a step of {step} m");
+            assert!(step <= longest + 1e-9, "a step of {step} m");
         }
     }
     // and the fit pulled the bend tighter than the original, which is what the revert undoes
@@ -291,6 +314,27 @@ fn a_widened_line_that_enters_water_goes_back() {
             .zones
             .iter()
             .all(|z| !z.blocked_by_water || z.max_outward_m.abs() < 1e-9)
+    );
+}
+
+#[test]
+fn a_curve_left_as_drawn_keeps_the_points_it_was_drawn_with() {
+    // the arc of the hairpin is drawn with a vertex every 10 degrees of a 4 m radius (0.7 m apart): the 2 m
+    // samples of the fit do not fall on them, and a curve that goes back to the line as drawn is that line
+    let points = hairpin_of(8.0);
+    let g = graph(vec![stretch("h", 1, 2, &points)]);
+    let water = |p: P| p.1 < -0.5;
+    let (out, report) = smooth_graph_in_water(&g, &ten, &water, &keep_all());
+    assert!(report.zones.iter().any(|z| z.blocked_by_water));
+    let arc =
+        |line: &[P]| -> Vec<P> { line.iter().filter(|p| p.0 > 80.0 + 1e-9).copied().collect() };
+    let drawn = arc(&points);
+    assert_eq!(drawn.len(), 17);
+    let kept = arc(&out.stretches[0].points);
+    assert_eq!(
+        kept.iter().map(|p| bits(*p)).collect::<Vec<_>>(),
+        drawn.iter().map(|p| bits(*p)).collect::<Vec<_>>(),
+        "the arc is not the line as it was drawn"
     );
 }
 

@@ -322,7 +322,9 @@ Four rules keep the widening from doing harm:
 
 - A curve that cannot be widened to 90 % of the wanted radius (for instance because a junction holds the bend) goes back
   to the line as OpenStreetMap draws it, not to the fitted one, which had made the bend tighter. The two ends of the
-  zone are blended over 6 m, so the line has no step. It is reported as one that cannot be built as a curve.
+  zone are blended over 6 m where the zone meets a held point, so the line has no step. The zone gets the vertices
+  OpenStreetMap drew (none is lost or moved by resampling), so a zone that reaches the end of a road is the drawn line
+  point for point. It is reported as one that cannot be built as a curve.
 - A widened line that would stand in water where the OpenStreetMap line does not (the water of the `road_in_water`
   rule) goes back the same way; the zone is flagged `blocked_by_water` in the report and the curve stays as drawn.
 - The approach of a bridge is not widened: samples within 25 m of a bridge end are held where the fit has put them.
