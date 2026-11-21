@@ -245,6 +245,15 @@ road in water (`blocked_by_water` in the report), so the road keeps the line Ope
 as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of a bridge end are not widened at all.
 Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
 
+**Other road findings: `road_not_drivable`, `path_too_steep`, `road_in_water`, `earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `road_duplicate_dropped`**
+Each finding names its rule and a position in map metres. `road_not_drivable` is explained above (steeper or more tilted
+than a vehicle manages) and `path_too_steep` is a path that is too steep to walk. `road_in_water` is a road piece
+standing in water, `earthworks_capped` a place where the earthworks stop at their cap and leave a step (reported once
+per square), `orphaned_edit` an edit that outlived its object (the road it was made on was removed, replaced or moved to
+another stretch), `join_without_junction` roads that all end at one point without a junction piece, `tunnel_omitted` a
+tunnel that got no pieces, and `road_duplicate_dropped` the part of a road that OpenStreetMap draws a second time under
+a higher road and that is not placed. None of them stops the build.
+
 **`road_gap` (warning)**
 A road misses what it has to meet: the pieces end more than 0.5 m from a junction's port, a bridge's end or the road
 it has to close on (the message gives the distance). A road on which **nothing could be placed** is reported too, also
