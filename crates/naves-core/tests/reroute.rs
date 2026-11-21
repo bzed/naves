@@ -9,6 +9,7 @@ use naves_core::reroute::band::{
     Band, BandFail, DrawnGrade, Reach, arrive, arrives, band_step, drawn_grade, ground_at,
     leg_limit, relaxed_limits,
 };
+use naves_core::reroute::field::Field;
 use naves_core::reroute::raster::{
     Blocked, Clearance, Obstacles, Wall, WallKind, chamfer, crossings_away, exempt_samples, samples,
 };
@@ -806,8 +807,8 @@ fn the_property_is_not_vacuous() {
 
 #[test]
 fn a_start_cannot_float_and_a_route_is_accepted_through_arrive() {
-    // The spike's start [z - 6, z + 6] is not expressible: Reach has no public fields and at_anchor takes its tolerance
-    // from the band, which refuses an infinite or negative one.
+    // The spike's start [z - 6, z + 6] cannot be built except from a band with that tolerance; acceptance does not
+    // depend on it.
     // arrive pins both ends itself, from the route's own terrain.
     let line = east(0.0, 90.8);
     let ground = switchback();
@@ -959,4 +960,241 @@ fn a_corner_tip_is_stamped_by_distance_to_the_segments() {
         o.segment((46.5, 104.5), (47.5, 105.5), NONE),
         Err(Blocked::Road)
     );
+}
+
+// ---- the cost-to-go field ----
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature of a ground function"
+)]
+fn flat(_: (f64, f64)) -> Option<f64> {
+    Some(0.0)
+}
+
+fn field_band(grade: f64) -> Band {
+    Band::from_params(&RerouteParams::default(), grade, 4.0)
+}
+
+/// The field of the examples: box (0, 0)-(200, 200), step 6, target (100, 100).
+fn field_with(
+    obstacles: &Obstacles,
+    walls: &[Wall],
+    ground: &dyn Fn((f64, f64)) -> Option<f64>,
+    band: &Band,
+) -> Field {
+    Field::build(
+        (0.0, 0.0),
+        (200.0, 200.0),
+        (100.0, 100.0),
+        6.0,
+        4.0,
+        band,
+        ground,
+        obstacles,
+        walls,
+        NONE,
+        1.0e9,
+        1_000_000,
+    )
+}
+
+fn open_world() -> Obstacles {
+    let mut o = world(0.0);
+    o.finish();
+    o
+}
+
+fn wall_of_water(p: (f64, f64)) -> bool {
+    (120.0..124.0).contains(&p.0) && (0.0..180.0).contains(&p.1)
+}
+
+#[test]
+fn the_field_estimates_the_straight_distance_on_open_ground() {
+    let f = field_with(&open_world(), &[], &flat, &field_band(0.1));
+    let e = f.estimate((142.0, 100.0));
+    let want = 42.0 / CHAMFER_ERROR - 6.0;
+    assert!((e - want).abs() < 0.5, "{e} vs {want}");
+    // never above the true distance, and no estimate below 0 at the target
+    assert!(f.estimate((100.0, 100.0)).abs() < 1e-9);
+    assert!(f.estimate((180.0, 180.0)) <= 80.0 * 2.0_f64.sqrt());
+}
+
+#[test]
+fn water_and_stream_walls_make_the_estimate_go_around() {
+    let mut lake_world = world(0.0);
+    lake_world.stamp_water(&wall_of_water);
+    lake_world.finish();
+    let by_water = field_with(&lake_world, &[], &flat, &field_band(0.1));
+    let e = by_water.estimate((160.0, 100.0));
+    assert!(e >= 150.0, "water: {e}");
+    // the same wall as a stream the route may not cross
+    let stream = Wall {
+        line: vec![(122.0, -10.0), (122.0, 180.0)],
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors: [(100.0, 100.0), (160.0, 100.0)],
+        end_m: 10.0,
+    };
+    let by_stream = field_with(
+        &open_world(),
+        std::slice::from_ref(&stream),
+        &flat,
+        &field_band(0.1),
+    );
+    let e = by_stream.estimate((160.0, 100.0));
+    assert!(e >= 150.0, "stream: {e}");
+    // a stream the route may cross once does not hold the field back
+    let open = Wall {
+        allowed: 1,
+        ..stream
+    };
+    let crossable = field_with(&open_world(), &[open], &flat, &field_band(0.1));
+    let e = crossable.estimate((160.0, 100.0));
+    assert!(e < 60.0, "allowed crossing: {e}");
+}
+
+#[test]
+fn a_cell_enclosed_by_water_has_no_estimate() {
+    let mut o = world(0.0);
+    let ring = |p: (f64, f64)| {
+        let d = (p.0 - 160.0).hypot(p.1 - 40.0);
+        (8.0..16.0).contains(&d)
+    };
+    o.stamp_water(&ring);
+    o.finish();
+    let f = field_with(&o, &[], &flat, &field_band(0.1));
+    assert!(f.estimate((160.0, 40.0)).abs() < 1e-9);
+    // outside the ring the estimate is the open one
+    assert!(f.estimate((160.0, 100.0)) > 40.0);
+}
+
+#[test]
+fn the_field_is_bounded_by_max_cells() {
+    let far = 100_000.0;
+    let o = Obstacles::new((0.0, 0.0), (far, far), 4.0, far, 0.0, 4_000_000);
+    let nowhere = |_: (f64, f64)| None;
+    let f = Field::build(
+        (0.0, 0.0),
+        (far, far),
+        (far / 2.0, far / 2.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        &nowhere,
+        &o,
+        &[],
+        NONE,
+        1.0e9,
+        1_000_000,
+    );
+    assert!(f.cells() > 0 && f.cells() <= 1_000_000, "{}", f.cells());
+    // a small cap holds as well, and the estimate still grows with the distance
+    let o = Obstacles::new((0.0, 0.0), (2000.0, 2000.0), 4.0, 2000.0, 0.0, 4_000_000);
+    let f = Field::build(
+        (0.0, 0.0),
+        (2000.0, 2000.0),
+        (1000.0, 1000.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        &flat,
+        &o,
+        &[],
+        NONE,
+        1.0e9,
+        5_000,
+    );
+    assert!(f.cells() <= 5_000, "{}", f.cells());
+    assert!(f.estimate((1500.0, 1000.0)) > f.estimate((1200.0, 1000.0)));
+}
+
+#[test]
+fn the_field_ignores_the_grade() {
+    let slope = |p: (f64, f64)| Some(0.5 * p.0);
+    let o = open_world();
+    let steep = field_with(&o, &[], &slope, &field_band(0.05));
+    let level = field_with(&o, &[], &flat, &field_band(0.05));
+    for p in [(142.0, 100.0), (30.0, 170.0), (190.0, 20.0)] {
+        assert_eq!(steep.estimate(p).to_bits(), level.estimate(p).to_bits());
+    }
+}
+
+#[test]
+fn two_builds_agree_bit_for_bit() {
+    let mut o = world(0.0);
+    o.stamp_water(&wall_of_water);
+    o.finish();
+    let hill = |p: (f64, f64)| Some(3.0 * (p.0 / 40.0).sin());
+    let a = field_with(&o, &[], &hill, &field_band(0.1));
+    let b = field_with(&o, &[], &hill, &field_band(0.1));
+    assert_eq!(a.cells(), b.cells());
+    for x in (0..200).step_by(7) {
+        for y in (0..200).step_by(11) {
+            let p = (f64::from(x), f64::from(y));
+            assert_eq!(a.estimate(p).to_bits(), b.estimate(p).to_bits());
+        }
+    }
+}
+
+#[test]
+fn points_outside_the_field_and_odd_input_do_not_panic() {
+    let field = field_with(&open_world(), &[], &flat, &field_band(0.1));
+    for p in [
+        (-50.0, 10.0),
+        (f64::NAN, 1.0),
+        (1.0, f64::INFINITY),
+        (1e300, 1e300),
+    ] {
+        assert!(field.estimate(p).abs() < 1e-9);
+    }
+    let obstacles = open_world();
+    let nan = f64::NAN;
+    let broken = Field::build(
+        (nan, 0.0),
+        (200.0, f64::INFINITY),
+        (nan, nan),
+        0.0,
+        nan,
+        &field_band(0.1),
+        &flat,
+        &obstacles,
+        &[],
+        NONE,
+        nan,
+        0,
+    );
+    assert!(broken.estimate((1.0, 1.0)).abs() < 1e-9);
+    // a clearance still gives a field
+    let cleared = Field::build(
+        (0.0, 0.0),
+        (200.0, 200.0),
+        (150.0, 100.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        &flat,
+        &obstacles,
+        &[],
+        Clearance::new(5.0, 5.0).unwrap(),
+        1.0e9,
+        1_000_000,
+    );
+    assert!(cleared.estimate((20.0, 100.0)) > 100.0);
+    // a target outside the box is covered by the grid all the same
+    let outside = Field::build(
+        (0.0, 0.0),
+        (100.0, 100.0),
+        (150.0, 100.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        &flat,
+        &obstacles,
+        &[],
+        NONE,
+        1.0e9,
+        1_000_000,
+    );
+    assert!(outside.estimate((60.0, 100.0)) > 60.0);
 }

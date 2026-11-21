@@ -338,6 +338,8 @@ the spec changes, not just the code:
 1. **Pinned anchors.** The start interval is `[z₀ − PLAN_ANCHOR_TOL_M, z₀ + PLAN_ANCHOR_TOL_M]`; a route arrives only
    if its final interval meets `[z_end − tol, z_end + tol]`. In the code a start is made only by
    `Reach::at_anchor(z, &Band)`, whose tolerance is the band's own, and the other reaches come out of the propagation.
+   The spike's floating start `[z − 6, z + 6]` cannot be built except from a band with that tolerance; acceptance does
+   not depend on it.
 2. **The grade is the leg's limit** `g_leg`, not the ceiling (above).
 3. **Real earthwork at arrival.** When an arrival candidate has passed the forward band, the two-pass profile of notes
    5.1 (forward and backward passes over the whole candidate route from anchor to anchor, then the profile closest to
@@ -364,14 +366,15 @@ Notes section 3.4, one field per leg, over the leg's box:
 
 - Grid resolution `max(PLAN_STEP_M, terrain cell)` (6 m), multiplied by 1.25 until there are at most
   `PLAN_FIELD_MAX_CELLS` cells.
-- Dijkstra from the cell of the leg's end anchor; the start cost is the distance from the cell centre to the anchor.
-  8-connected.
+- The grid is laid out so that the end anchor is the centre of a cell (it covers the leg's box and the anchor), so the
+  start cost of the Dijkstra from that cell is 0, not a distance inside the cell. 8-connected; the heap is ordered by
+  cost (`total_cmp`), then cell index. Not a number in the box, anchor or parameters gives an empty field (estimate 0).
 - An edge between neighbouring cell centres is allowed if the band test passes with the grade limit removed (cut,
   fill, no data, obstacles, walls still apply), run in the direction of travel, and both cells are within the stray
   cap.
 - Edge cost: since cut + fill > 0, it is the distance (the notes' rule for that case).
 - Estimate at a point: the cell's value divided by `CHAMFER_ERROR`, minus one field cell, not below 0. A cell without
-  a value gives 0.
+  a value (cut off by the band, water or a wall), and a point outside the grid, give 0.
 
 ### The search for one leg
 

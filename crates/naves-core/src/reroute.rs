@@ -7,9 +7,10 @@
 //! The design is in `docs/superpowers/specs/2026-11-21-road-planning-design.md`. This module holds the named
 //! constants of its constants table and [`RerouteParams`], which collects them so that tests can change them.
 //! The parts are sub-modules: [`raster`] is the obstacle raster with its distance maps and wall lines, [`band`] the
-//! feasibility band, the profile and the grade limit of a leg.
+//! feasibility band, the profile and the grade limit of a leg, [`field`] the cost-to-go field of a leg.
 
 pub mod band;
+pub mod field;
 pub mod raster;
 
 /// The switch: road planning runs only when this is on. Off until the result is judged.
