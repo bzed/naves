@@ -1129,7 +1129,92 @@ fn zone_figures(chain: &ChainLine<'_>, st: &State, judge: bool) -> Vec<ZoneFigur
 
 #[cfg(test)]
 mod tests {
-    use super::{Verdict, verdict};
+    use super::{ChainLine, Verdict, original_arcs, resampled_span, reverted_samples, verdict};
+
+    type P = (f64, f64);
+
+    fn close(got: P, want: P) -> bool {
+        (got.0 - want.0).abs() < 1e-12 && (got.1 - want.1).abs() < 1e-12
+    }
+
+    #[test]
+    fn a_span_whose_arcs_are_not_found_is_the_resampled_original_line() {
+        // the original line stops a metre short of the last sample the fit started from, so the samples
+        // cannot be placed on it; the fit lies 1 m off the original
+        let original = [(0.0, 0.0), (5.0, 0.0)];
+        let resampled = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0)];
+        let fitted = [(0.0, 1.0), (2.0, 1.0), (4.0, 1.0), (6.0, 1.0)];
+        let dry = |_: P| false;
+        let chain = ChainLine {
+            original: &original,
+            fitted: &fitted,
+            bounds: &[3],
+            link_minimum: &[10.0],
+            link_bridge: &[false],
+            movable: &[true, true, true, true],
+            resampled: &resampled,
+            in_water: &dry,
+        };
+        assert!(original_arcs(&chain).is_none());
+        // a zone between two held samples is the resampled original line, and each point keeps the sample it
+        // stands for; the fit's 1 m offset is taken up over half the zone's 6 m at each end, so each of the
+        // two samples inside, 2 m from one of the held ones, has a third of it
+        let inside = resampled_span(&chain, 1, 3);
+        assert_eq!(
+            inside.iter().map(|&(k, _)| k).collect::<Vec<_>>(),
+            vec![Some(1), Some(2)]
+        );
+        assert!(close(inside[0].1, (2.0, 1.0 / 3.0)), "{:?}", inside[0].1);
+        assert!(close(inside[1].1, (4.0, 1.0 / 3.0)), "{:?}", inside[1].1);
+        // where the zone reaches the end of the chain there is no held sample to blend into: the span runs to
+        // the last sample and that sample is the original's, mark for mark
+        let tail = resampled_span(&chain, 2, 4);
+        assert_eq!(
+            tail.iter().map(|&(k, _)| k).collect::<Vec<_>>(),
+            vec![Some(2), Some(3)]
+        );
+        assert!(close(tail[0].1, (4.0, 0.0)), "{:?}", tail[0].1);
+        assert!(close(tail[1].1, (6.0, 0.0)), "{:?}", tail[1].1);
+        // and at the start of the chain the first sample is the original's too
+        let head = resampled_span(&chain, 0, 2);
+        assert_eq!(
+            head.iter().map(|&(k, _)| k).collect::<Vec<_>>(),
+            vec![Some(0), Some(1)]
+        );
+        assert!(close(head[0].1, (0.0, 0.0)), "{:?}", head[0].1);
+        assert!(close(head[1].1, (2.0, 0.0)), "{:?}", head[1].1);
+        // so a zone that goes back where the arcs are not found is that span
+        assert_eq!(reverted_samples(&chain, 1, 3), inside);
+    }
+
+    #[test]
+    fn a_sample_the_original_does_not_carry_falls_back_to_the_fit() {
+        // the fit has a sample the resampling of the original does not (the two do not belong together, so
+        // the arcs are not found), and under that sample there is no original point at all
+        let original = [(0.0, 0.0), (5.0, 0.0)];
+        let resampled = [(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (6.0, 0.0)];
+        let fitted = [(0.0, 1.0), (2.0, 1.0), (4.0, 1.0), (6.0, 1.0), (8.0, 1.5)];
+        let dry = |_: P| false;
+        let chain = ChainLine {
+            original: &original,
+            fitted: &fitted,
+            bounds: &[3],
+            link_minimum: &[10.0],
+            link_bridge: &[false],
+            movable: &[true, true, true, true, true],
+            resampled: &resampled,
+            in_water: &dry,
+        };
+        assert!(original_arcs(&chain).is_none());
+        let span = resampled_span(&chain, 3, 5);
+        assert_eq!(
+            span.iter().map(|&(k, _)| k).collect::<Vec<_>>(),
+            vec![Some(3), Some(4)]
+        );
+        // the fourth sample is the original's, the fifth -- with nothing under it -- the fit's own
+        assert!(close(span[0].1, (6.0, 0.0)), "{:?}", span[0].1);
+        assert!(close(span[1].1, (8.0, 1.5)), "{:?}", span[1].1);
+    }
 
     #[test]
     fn a_zone_is_judged_by_its_radius() {
