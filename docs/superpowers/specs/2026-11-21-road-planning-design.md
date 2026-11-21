@@ -336,17 +336,23 @@ cut of 1.6 m and a fill of 2.3 m; with the anchors free in the band 64 m² and 3
 the spec changes, not just the code:
 
 1. **Pinned anchors.** The start interval is `[z₀ − PLAN_ANCHOR_TOL_M, z₀ + PLAN_ANCHOR_TOL_M]`; a route arrives only
-   if its final interval meets `[z_end − tol, z_end + tol]`.
+   if its final interval meets `[z_end − tol, z_end + tol]`. In the code a start is made only by
+   `Reach::at_anchor(z, &Band)`, whose tolerance is the band's own, and the other reaches come out of the propagation.
 2. **The grade is the leg's limit** `g_leg`, not the ceiling (above).
 3. **Real earthwork at arrival.** When an arrival candidate has passed the forward band, the two-pass profile of notes
    5.1 (forward and backward passes over the whole candidate route from anchor to anchor, then the profile closest to
    the terrain) is computed once, and its earthwork `Σ|h − z| · ds` replaces the lower bound in the route's cost. Its
    deepest cut and highest fill are reported. Because the lower bound never exceeds the real earthwork, the
-   correction only raises the cost of an arrived state, and the search stays exact at weight 1.
+   correction only raises the cost of an arrived state, and the search stays exact at weight 1. `arrive` is the only
+   way to accept a route (it pins both ends at the terrain of the route's own ends, and a `Profile` can only come from
+   it; its fields are read through accessors); `band_step` and `arrives` only prune.
 
 Otherwise as the notes: every segment passes the segment test; the step is sampled at half the terrain cell, clamped to
 0.1 to 5 m (2 m); the band at a sample is `[z − PLAN_CUT_M, z + PLAN_FILL_M]`; empty (lo > hi by more than 10⁻⁹)
-fails the step; a sample with no terrain (outside the map, non-finite) fails the step.
+fails the step; a sample with no terrain (outside the map, non-finite) fails the step. A band with a NaN or negative
+grade, or a cut, fill or anchor tolerance that is NaN, negative or infinite, or a start that is not finite or is empty,
+is refused (`BandFail::Invalid`); only the grade may be infinite (the cost field removes the grade limit). `leg_limit`
+gives `(limit, ceiling)` and `None` without families; `relaxed_limits` gives `None` for a NaN.
 
 The band and the profile keep the grade only. The height solve later sets the heights and keeps the vertical radius
 and the grade-break rules. If the judging shows planned routes that the height solve can only make with sharp grade

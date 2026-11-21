@@ -62,9 +62,10 @@ impl Band {
 
 /// The interval of road heights reachable at a point, in metres.
 ///
-/// A start can only be made with [`Reach::pinned`], at an anchor; every other reach comes out of the propagation
-/// of [`band_step`]. A start that floats in the band (the spike's `[z - 6, z + 6]`) cannot be written from
-/// outside this module, because it would let the road put the climb of a hillside into embankments at the anchor.
+/// A start can only be made with [`Reach::at_anchor`], whose tolerance is the band's own; every other reach comes
+/// out of the propagation of [`band_step`]. A start that floats in the band (the spike's `[z - 6, z + 6]`) cannot be
+/// written from outside this module, because it would let the road put the climb of a hillside into embankments at
+/// the anchor.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reach {
     lo: f64,
@@ -72,10 +73,18 @@ pub struct Reach {
 }
 
 impl Reach {
-    /// The road is at the height `z` within `tol`: the start of a route at its anchor, with `z` the terrain
-    /// height there and `tol` the [`Band::anchor_tol_m`].
+    /// The road is at the terrain height `z` of an anchor within the band's [`Band::anchor_tol_m`]: the start of a
+    /// route. [`band_step`] refuses a start that is not finite or is empty (a NaN or negative tolerance).
     #[must_use]
-    pub fn pinned(z: f64, tol: f64) -> Reach {
+    pub fn at_anchor(z: f64, band: &Band) -> Reach {
+        Reach {
+            lo: z - band.anchor_tol_m,
+            hi: z + band.anchor_tol_m,
+        }
+    }
+
+    /// The same, from a bare tolerance, for the ends pinned inside this module.
+    fn pinned(z: f64, tol: f64) -> Reach {
         Reach {
             lo: z - tol,
             hi: z + tol,
@@ -243,12 +252,13 @@ fn clamp_in(v: f64, lo: f64, hi: f64) -> f64 {
     v.max(lo).min(hi)
 }
 
-/// A grade (infinite allowed), cut, fill and tolerance that are numbers and not negative; `!(v >= 0.0)` is also true
-/// for NaN, which `f64::max` and `f64::min` would drop silently.
+/// A grade that is not negative and not NaN (infinite allowed: the cost field runs the band with the grade limit
+/// removed), and a cut, fill and anchor tolerance that are finite and not negative. NaN would be dropped silently by
+/// `f64::max` and `f64::min`; an infinite tolerance would float the anchors, an infinite cut or fill would remove
+/// the band, and the field removes only the grade.
 fn check_band(band: &Band) -> Result<(), BandFail> {
-    let usable = |v: f64| v >= 0.0;
-    if usable(band.grade) && usable(band.cut_m) && usable(band.fill_m) && usable(band.anchor_tol_m)
-    {
+    let finite = |v: f64| v.is_finite() && v >= 0.0;
+    if band.grade >= 0.0 && finite(band.cut_m) && finite(band.fill_m) && finite(band.anchor_tol_m) {
         Ok(())
     } else {
         Err(BandFail::Invalid)
@@ -344,22 +354,55 @@ pub fn arrives(reach: Reach, z_end: f64, tol: f64) -> bool {
     reach.lo <= z_end + tol + SLACK && reach.hi >= z_end - tol - SLACK
 }
 
-/// A road height profile along a route.
+/// A road height profile along a route. Only [`arrive`] makes one, so a `Profile` is the proof that a route was
+/// accepted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
+    heights: Vec<f64>,
+    ground: Vec<f64>,
+    earthwork_m2: f64,
+    cut_max_m: f64,
+    fill_max_m: f64,
+    max_grade: f64,
+}
+
+impl Profile {
     /// The road height at every sample, from the start anchor to the end anchor.
-    pub heights: Vec<f64>,
+    #[must_use]
+    pub fn heights(&self) -> &[f64] {
+        &self.heights
+    }
+
     /// The terrain height at every sample.
-    pub ground: Vec<f64>,
+    #[must_use]
+    pub fn ground(&self) -> &[f64] {
+        &self.ground
+    }
+
     /// The earthwork, `Σ|h − z| · ds`, in m²: per sample, times the spacing before it (the first sample, at the
     /// start anchor, adds nothing).
-    pub earthwork_m2: f64,
+    #[must_use]
+    pub fn earthwork_m2(&self) -> f64 {
+        self.earthwork_m2
+    }
+
     /// The deepest cut, in metres.
-    pub cut_max_m: f64,
+    #[must_use]
+    pub fn cut_max_m(&self) -> f64 {
+        self.cut_max_m
+    }
+
     /// The highest fill, in metres.
-    pub fill_max_m: f64,
+    #[must_use]
+    pub fn fill_max_m(&self) -> f64 {
+        self.fill_max_m
+    }
+
     /// The steepest grade of the profile.
-    pub max_grade: f64,
+    #[must_use]
+    pub fn max_grade(&self) -> f64 {
+        self.max_grade
+    }
 }
 
 /// The only way to turn a candidate route into an accepted route. Both ends are pinned to the terrain of the
@@ -505,19 +548,19 @@ pub fn leg_limit(families: &[Family], drawn: &DrawnGrade) -> Option<(f64, f64)> 
 }
 
 /// The limits tried in turn: the limit, then thirds (`steps` of them) of the gap to the ceiling, ending with
-/// the ceiling. Only the limit when it is at the ceiling already; nothing at all when either is NaN (there is no
-/// limit to try).
+/// the ceiling. Only the limit when it is at the ceiling already. `None` when either is NaN: that is a bug of the
+/// caller (a leg with a limit from [`leg_limit`] always has numbers), not a leg without a route.
 #[must_use]
-pub fn relaxed_limits(limit: f64, ceiling: f64, steps: usize) -> Vec<f64> {
+pub fn relaxed_limits(limit: f64, ceiling: f64, steps: usize) -> Option<Vec<f64>> {
     if limit.is_nan() || ceiling.is_nan() {
-        return Vec::new();
+        return None;
     }
     if steps == 0 || limit >= ceiling {
-        return vec![limit];
+        return Some(vec![limit]);
     }
     let gap = ceiling - limit;
     let n = to_f64(steps);
     let mut out: Vec<f64> = (0..steps).map(|k| limit + gap * to_f64(k) / n).collect();
     out.push(ceiling);
-    out
+    Some(out)
 }
