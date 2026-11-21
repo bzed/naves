@@ -1798,3 +1798,27 @@ fn a_part_shorter_than_the_shortest_piece_is_not_reported() {
         net.gaps
     );
 }
+
+#[test]
+fn a_road_that_ends_under_another_and_gets_no_piece_is_reported() {
+    // the exit of the junction at node 2 points 135 degrees away from the road that goes on, which ends under a
+    // gravel road that has no junction model with it: the cut at the end finds no piece
+    let mut features = vec![
+        feature(
+            1,
+            Family::Asf3,
+            &[1, 2, 5, 3],
+            &[(0.0, 500.0), (300.0, 500.0), (305.0, 500.0), (225.0, 580.0)],
+        ),
+        feature(2, Family::Asf3, &[2, 7], &[(300.0, 500.0), (300.0, 200.0)]),
+    ];
+    features.push(feature(
+        3,
+        Family::Grav,
+        &[8, 3, 9],
+        &[(100.0, 680.0), (225.0, 580.0), (400.0, 440.0)],
+    ));
+    let net = place(&features);
+    let gaps: Vec<_> = net.gaps.iter().filter(|g| g.nothing_placed).collect();
+    assert_eq!(gaps.len(), 1, "{:?} / {:?}", net.gaps, net.overlays);
+}
