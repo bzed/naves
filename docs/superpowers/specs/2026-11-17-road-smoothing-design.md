@@ -141,16 +141,22 @@ A second pass does this after the fit, chain by chain:
   run. Its zone is the run plus `WIDEN_LEAD · min_radius` of road before and after it along the chain (the legs
   must be able to spread before the bend). Zones that touch are one zone. A zone's outside is the side away from
   the centre of its bend (the sign of the summed turn over the tight run).
-- **Corridor in a zone.** No sample of a zone may move inward of the *original* line (not of the fitted one: the fit
+- **Open corners may cut inward** (maintainer ruling, 2026-11-21). Let θ be the summed absolute turn of the fitted line
+  over a tight run's zone. If θ ≤ `WIDEN_INWARD_MAX_DEG` (120°), the samples of that zone may also move inward of the
+  original line, up to `E = min_radius · (sec(θ/2) − 1)` (4.14 m for 90° at 10 m); above 120° the zone is outward
+  only. In the first pass such a zone moves inward only (with both directions free the cheapest way to meet the
+  chord-length bound is a 9 m outward detour); the later passes allow both. Measured: a right angle comes out at
+  9.22 m with the legs 1.6 m inward and 0.9 m outward of the original.
+- **Corridor in a zone.** Unless the zone is an open corner, no sample of a zone may move inward of the *original* line (not of the fitted one: the fit
   pulls curves inward); a sample may retreat toward the original line once an earlier pass pushed it out. Outward it
   may move up to `WIDEN_REACH · min_radius` from the original line. Outside the zones the corridor stays `CORRIDOR_M` on both sides.
 - **Radius bound.** For every sample of a zone the second difference is bounded:
   `|q_{i-1} − 2·q_i + q_{i+1}| ≤ h² / min_radius + s_i`, with `h` the sample step and a slack `s_i ≥ 0` that costs
   `WIDEN_SLACK_COST · s_i`. The solver wrapper has only linear rows, so the length is bounded by its projections on
-  `WIDEN_DIRECTIONS` (8) evenly spaced directions, which lets the length exceed the bound by at most 8 %; the bound is therefore taken as
+  `WIDEN_DIRECTIONS` (8) evenly spaced directions, which lets the length exceed the bound by at most 1/cos(π/8) − 1 = 8.24 %; the bound is therefore taken as
   `h² / (min_radius · 1.08)`.
 - **What is fixed.** Junction nodes (and the next sample), dead ends' positions and bridge end nodes, as in the
-  fit. Nodes where a road merely continues are free inside a zone and move with the line; the graph's crossing
+  fit; the samples of a bridge deck are held inside a zone (the zone widens the approaches). Nodes where a road merely continues are free inside a zone and move with the line; the graph's crossing
   list is rebuilt from the stretches afterwards, so that every reader of a node's position sees the new one.
   Outside zones nothing changes.
 - **Passes.** Moving outward stretches the spacing, so the line is resampled and the pass repeated, at most
@@ -158,16 +164,20 @@ A second pass does this after the fit, chain by chain:
   zones are resampled, and only between held samples (zone ends, fixed samples, nodes), so held samples and nodes
   keep their positions. A sample that is in a zone keeps its outward side in later passes, so the reverse bends
   of the spreading legs cannot turn the zone around.
-- **Where it cannot be done.** A zone that still has a tight sample after the last pass (a junction or a bridge end
-  holds the bend, or the slack was used) keeps the widened line and is reported with its position, the radius
-  reached and the radius wanted. These are the candidates for the second allowed form, a concrete plate joining
-  the two legs (maintainer, 2026-11-21); the plate is its own later task, designed from this list.
+- **Where it cannot be done.** A zone whose smallest radius (its samples and the held sample on each side) is still
+  below `WIDEN_KEEP_FRACTION` (0.9) of the wanted radius after the last pass goes back to the fit's samples (its
+  boundary samples are held, so this is seamless, and it moves no node). It stays in the report with its position,
+  the radius the attempt reached, the radius wanted and `plate_candidate: true`: the bend cannot be built as a curve,
+  and these are the candidates for the second allowed form, a concrete plate joining the two legs (maintainer,
+  2026-11-21); the plate is its own later task, designed from this list. Between 0.9 and 0.99 the widened line is
+  kept (`reached` false, `plate_candidate` false). A chain of more than `MAX_CHAIN_SAMPLES` samples (counted from the
+  lengths of its stretches) is neither fitted nor widened and is listed in `kept` as too long.
 - **Report.** `SmoothReport` gains, per stretch and in total, the largest outward move and the list of zones with
   radius before, after, and whether the minimum was reached (no zone sample tighter than 0.99 of the wanted
-  radius). `max_move_m` counts only samples outside zones; the zone samples are in `max_outward_m`. A chain whose
+  radius; the held sample on each side of a zone is included). A zone also reports `max_inward_m`. `max_move_m` counts only samples outside zones; the zone samples are in `max_outward_m`. A chain whose
   widening solve fails keeps the fit and is listed in `SmoothReport::widen_failed`.
 
-A bridge stretch inside a zone keeps its ends and its stiffness; the zone widens its approaches.
+A bridge stretch inside a zone keeps its ends and its line; the zone widens its approaches.
 
 ### What a failed fit does
 
@@ -201,6 +211,9 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 | `WIDEN_DIRECTIONS` | 8 | directions that bound the second difference |
 | `WIDEN_SLACK_COST` | 1e4 | cost of exceeding the radius bound |
 | `WIDEN_PASSES` | 3 | resample-and-repeat limit |
+| `WIDEN_INWARD_MAX_DEG` | 120.0 | an open corner (summed turn up to this) may cut inward |
+| `WIDEN_KEEP_FRACTION` | 0.9 | a zone below this fraction of the wanted radius goes back to the fit |
+| `MAX_CHAIN_SAMPLES` | 200 000 | a longer chain is neither fitted nor widened |
 
 ## How it is judged
 

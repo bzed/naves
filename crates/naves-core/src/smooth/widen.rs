@@ -24,6 +24,10 @@
 //!   it, the second difference `v = q_{i−1} − 2·q_i + q_{i+1}` is bounded by `WIDEN_DIRECTIONS` rows
 //!   `u_k · v ≤ h² / (1.08 · minimum) + s_i`, `u_k` evenly spaced unit vectors, `h` the mean of the two
 //!   segment lengths at the start of the pass.
+//! * **Open corners.** A zone around a tight run that turns by at most `WIDEN_INWARD_MAX_DEG` degrees in total may
+//!   also cut inward, up to `R · (sec(θ / 2) − 1)` (see [`inward_allowance`]); in the first pass such a zone moves
+//!   inward only (measured: when both directions are free the cheapest way to meet the chord-length bound of the
+//!   first pass is to push the legs 9 m outward), the later passes allow both.
 //! * **Objective.** The fit's `Σ c_i |v_i|²` over the whole chain, `W_STAY · Σ e_i²`, and
 //!   `WIDEN_SLACK_COST · Σ s_i`.
 //!
@@ -35,11 +39,13 @@
 //! The original line is the reference for "not inward": the outward distance of a sample is measured to the
 //! nearest point of it.
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use super::{
-    BRIDGE_STRAIGHT_WEIGHT, SAMPLE_M, SmoothError, W_STAY, WIDEN_DIRECTIONS, WIDEN_LEAD,
-    WIDEN_PASSES, WIDEN_REACH, WIDEN_SLACK_COST, normals, radius_at, resample, sample_minimum,
+    BRIDGE_STRAIGHT_WEIGHT, SAMPLE_M, SmoothError, W_STAY, WIDEN_DIRECTIONS, WIDEN_INWARD_MAX_DEG,
+    WIDEN_KEEP_FRACTION, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH, WIDEN_SLACK_COST, normals,
+    radius_at, resample, sample_minimum,
 };
 use crate::qp::{Problem, Row, solve};
 
@@ -80,6 +86,10 @@ pub(super) struct Outcome {
     pub mask: Vec<bool>,
     /// For every sample, its index in the fitted line, or `None` for a sample that was added.
     pub origin: Vec<Option<usize>>,
+    /// For every sample of a zone, how far outward of the original line it lies (negative: inward).
+    pub signed: Vec<f64>,
+    /// The zones, as they were judged; a zone that went back to the fit is among them.
+    pub zones: Vec<ZoneFigures>,
     /// Why the solver failed, if it did.
     pub error: Option<SmoothError>,
 }
@@ -96,6 +106,8 @@ struct State {
     mask: Vec<bool>,
     /// `-1` or `1`: the outward side in terms of the left normal.
     side: Vec<f64>,
+    /// How far inward of the original line a sample of a zone may go, in metres.
+    inward: Vec<f64>,
     movable: Vec<bool>,
     origin: Vec<Option<usize>>,
 }
@@ -155,7 +167,7 @@ fn mark_zones(st: &mut State, minimum: &[f64]) {
     }
     let at = |i: usize| arc.get(i).copied().unwrap_or(0.0);
     // for every sample of this pass: the distance to its nearest tight run and that run's side
-    let mut best: Vec<Option<(usize, f64)>> = vec![None; points.len()];
+    let mut best: Vec<Option<(usize, f64, f64)>> = vec![None; points.len()];
     for &(a, b) in &runs {
         let m = minimum
             .get(a..=b)
@@ -174,24 +186,44 @@ fn mark_zones(st: &mut State, minimum: &[f64]) {
         while hi + 1 < points.len() && at(hi + 1) - at(b) <= reach {
             hi += 1;
         }
+        let inward = inward_allowance(points, lo, hi, m);
         for i in lo..=hi {
             let d = if i < a { a - i } else { i.saturating_sub(b) };
             if let Some(slot) = best.get_mut(i)
-                && slot.is_none_or(|(old, _)| d < old)
+                && slot.is_none_or(|(old, _, _)| d < old)
             {
-                *slot = Some((d, sigma));
+                *slot = Some((d, sigma, inward));
             }
         }
     }
-    for ((m, s), b) in st.mask.iter_mut().zip(st.side.iter_mut()).zip(&best) {
+    for (((mask, side), inward), found) in st
+        .mask
+        .iter_mut()
+        .zip(st.side.iter_mut())
+        .zip(st.inward.iter_mut())
+        .zip(&best)
+    {
         // a sample that is in a zone already keeps its side: a reverse bend that an earlier pass made to
         // leave the zone must not turn the zone around
-        if let Some((_, sigma)) = b
-            && !*m
+        if let Some((_, sigma, allowance)) = found
+            && !*mask
         {
-            *m = true;
-            *s = *sigma;
+            *mask = true;
+            *side = *sigma;
+            *inward = *allowance;
         }
+    }
+}
+
+/// How far inward of the original line a zone may go: for a zone around a tight run that turns by `theta` in total (at most
+/// `WIDEN_INWARD_MAX_DEG` degrees), a fillet of the minimum radius `minimum` cuts
+/// `minimum * (sec(theta / 2) - 1)` into the corner; a bend that turns more is widened outward only.
+fn inward_allowance(points: &[P], first: usize, last: usize, minimum: f64) -> f64 {
+    let theta: f64 = (first..=last).map(|i| turn_at(points, i).abs()).sum();
+    if theta > 0.0 && theta.to_degrees() <= WIDEN_INWARD_MAX_DEG {
+        minimum * (1.0 / (theta / 2.0).cos() - 1.0)
+    } else {
+        0.0
     }
 }
 
@@ -214,12 +246,6 @@ fn nearest(line: &[P], point: P) -> P {
         }
     }
     best.1
-}
-
-/// The distance of `point` from `line`.
-pub(super) fn distance_to(line: &[P], point: P) -> f64 {
-    let foot = nearest(line, point);
-    (point.0 - foot.0).hypot(point.1 - foot.1)
 }
 
 fn angle_of(k: usize) -> f64 {
@@ -252,6 +278,9 @@ struct Pass<'a> {
     minimum: Vec<f64>,
     /// Whether a sample is free to move in this pass.
     active: Vec<bool>,
+    /// How far inward of the original line a sample may go.
+    inward: &'a [f64],
+    opening: bool,
     /// The samples that have a radius bound: a zone and one sample on each side of it.
     bounded: Vec<usize>,
 }
@@ -290,11 +319,13 @@ impl Pass<'_> {
         let dir = self.dir_at(index);
         // how far outward of the original line the sample already is
         let out = (point.0 - foot.0) * dir.0 + (point.1 - foot.1) * dir.1;
-        let lowest = -out;
-        (
-            lowest,
-            lowest.max(WIDEN_REACH * self.minimum_at(index) - out),
-        )
+        let lowest = -out - self.inward.get(index).copied().unwrap_or(0.0);
+        let reach = if self.opening && self.inward.get(index).copied().unwrap_or(0.0) > 0.0 {
+            0.0
+        } else {
+            WIDEN_REACH * self.minimum_at(index) - out
+        };
+        (lowest, lowest.max(reach))
     }
 
     /// The rows that bound the second difference at `index` by `WIDEN_DIRECTIONS` projections, with the
@@ -336,7 +367,7 @@ impl Pass<'_> {
 }
 
 /// One pass: the line after the zone samples have moved outward as far as the problem asks.
-fn solve_pass(chain: &ChainLine<'_>, st: &State) -> Result<Vec<P>, SmoothError> {
+fn solve_pass(chain: &ChainLine<'_>, st: &State, first_pass: bool) -> Result<Vec<P>, SmoothError> {
     let points = &st.line;
     let count = points.len();
     let dir: Vec<P> = normals(points)
@@ -362,6 +393,8 @@ fn solve_pass(chain: &ChainLine<'_>, st: &State) -> Result<Vec<P>, SmoothError> 
         dir,
         minimum,
         active,
+        inward: &st.inward,
+        opening: first_pass,
         bounded,
     };
     let stiffness = stiffness_of(count, &st.bounds, chain.link_bridge);
@@ -452,6 +485,7 @@ fn resampled(st: &State) -> State {
         bounds: Vec::new(),
         mask: Vec::with_capacity(n),
         side: Vec::with_capacity(n),
+        inward: Vec::with_capacity(n),
         movable: Vec::with_capacity(n),
         origin: Vec::with_capacity(n),
     };
@@ -463,6 +497,7 @@ fn resampled(st: &State) -> State {
         out.line.push(st.line.get(i).copied().unwrap_or_default());
         out.mask.push(mask_at(i));
         out.side.push(st.side.get(i).copied().unwrap_or(1.0));
+        out.inward.push(st.inward.get(i).copied().unwrap_or(0.0));
         out.movable
             .push(st.movable.get(i).copied().unwrap_or(false));
         out.origin.push(st.origin.get(i).copied().flatten());
@@ -478,11 +513,13 @@ fn resampled(st: &State) -> State {
             let segment = st.line.get(a..=b).unwrap_or_default();
             let rs = resample(segment, SAMPLE_M);
             let side = st.side.get(a).copied().unwrap_or(1.0);
+            let inward = st.inward.get(a).copied().unwrap_or(0.0);
             if let Some(inner) = rs.get(1..rs.len().saturating_sub(1)) {
                 for &p in inner {
                     out.line.push(p);
                     out.mask.push(true);
                     out.side.push(side);
+                    out.inward.push(inward);
                     out.movable.push(true);
                     out.origin.push(None);
                 }
@@ -507,6 +544,7 @@ pub(super) fn widen_chain(c: &ChainLine<'_>) -> Option<Outcome> {
         bounds: c.bounds.to_vec(),
         mask: vec![false; n],
         side: vec![1.0; n],
+        inward: vec![0.0; n],
         movable: c.movable.to_vec(),
         origin: (0..n).map(Some).collect(),
     };
@@ -523,39 +561,175 @@ pub(super) fn widen_chain(c: &ChainLine<'_>) -> Option<Outcome> {
         if first.is_none() {
             first = Some(st.mask.clone());
         }
-        match solve_pass(c, &st) {
+        match solve_pass(c, &st, pass == 0) {
             Ok(next) => st.line = next,
             Err(e) => {
-                return Some(Outcome {
+                // the chain keeps the fit; the zones are those of the first pass, judged on the fit
+                let failed = State {
                     line: c.fitted.to_vec(),
                     bounds: c.bounds.to_vec(),
                     mask: first.unwrap_or_else(|| vec![false; n]),
+                    side: vec![1.0; n],
+                    inward: vec![0.0; n],
+                    movable: c.movable.to_vec(),
                     origin: (0..n).map(Some).collect(),
-                    error: Some(e),
-                });
+                };
+                return Some(finish(c, failed, Some(e)));
             }
         }
     }
-    first.map(|_| Outcome {
+    first.map(|_| finish(c, st, None))
+}
+
+/// What the solver's answer comes to: a zone that stays far from its minimum goes back to the fit.
+fn finish(c: &ChainLine<'_>, st: State, error: Option<SmoothError>) -> Outcome {
+    let judged = error.is_none();
+    let mut zones = zone_figures(c, &st, judged);
+    let mut st = st;
+    let reverted: Vec<(usize, usize)> = zones
+        .iter()
+        .filter(|z| z.plate_candidate)
+        .map(|z| z.range)
+        .collect();
+    if !reverted.is_empty() {
+        st = revert(c, &st, &reverted);
+        for z in zones.iter_mut().filter(|z| z.plate_candidate) {
+            z.max_outward = 0.0;
+            z.max_inward = 0.0;
+        }
+    }
+    let signed = signed_outward(c, &st);
+    Outcome {
         line: st.line,
         bounds: st.bounds,
         mask: st.mask,
         origin: st.origin,
-        error: None,
-    })
+        signed,
+        zones,
+        error,
+    }
+}
+
+/// The state with the zones `ranges` (inclusive sample ranges) put back to the fitted samples they grew from:
+/// the samples on both sides of a zone are held, so they are the fit's and the result is seamless.
+fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
+    let n = st.line.len();
+    let mut out = State {
+        line: Vec::with_capacity(n),
+        bounds: Vec::new(),
+        mask: Vec::with_capacity(n),
+        side: Vec::with_capacity(n),
+        inward: Vec::with_capacity(n),
+        movable: Vec::with_capacity(n),
+        origin: Vec::with_capacity(n),
+    };
+    let origin_at = |i: usize| st.origin.get(i).copied().flatten();
+    let mut i = 0;
+    while i < n {
+        let span = ranges.iter().find(|r| r.0 == i).and_then(|&(lo, hi)| {
+            let start = match lo.checked_sub(1) {
+                Some(before) => origin_at(before)? + 1,
+                None => 0,
+            };
+            let end = if hi + 1 >= n {
+                c.fitted.len()
+            } else {
+                origin_at(hi + 1)?
+            };
+            Some((hi, start, end))
+        });
+        if let Some((hi, start, end)) = span {
+            for k in start..end {
+                out.line.push(c.fitted.get(k).copied().unwrap_or_default());
+                out.mask.push(false);
+                out.side.push(1.0);
+                out.inward.push(0.0);
+                out.movable.push(c.movable.get(k).copied().unwrap_or(false));
+                out.origin.push(Some(k));
+            }
+            i = hi + 1;
+        } else {
+            out.line.push(st.line.get(i).copied().unwrap_or_default());
+            out.mask.push(st.mask.get(i).copied().unwrap_or(false));
+            out.side.push(st.side.get(i).copied().unwrap_or(1.0));
+            out.inward.push(st.inward.get(i).copied().unwrap_or(0.0));
+            out.movable
+                .push(st.movable.get(i).copied().unwrap_or(false));
+            out.origin.push(st.origin.get(i).copied().flatten());
+            i += 1;
+        }
+    }
+    let position: BTreeMap<usize, usize> = out
+        .origin
+        .iter()
+        .enumerate()
+        .filter_map(|(at, o)| o.map(|fit| (fit, at)))
+        .collect();
+    out.bounds = c
+        .bounds
+        .iter()
+        .filter_map(|b| position.get(b).copied())
+        .collect();
+    out
+}
+
+/// How far outward of the original line every sample of a zone lies (negative: inward); 0 outside zones.
+fn signed_outward(c: &ChainLine<'_>, st: &State) -> Vec<f64> {
+    let normal = normals(&st.line);
+    st.line
+        .iter()
+        .enumerate()
+        .map(|(k, &p)| {
+            if !st.mask.get(k).copied().unwrap_or(false) {
+                return 0.0;
+            }
+            let foot = nearest(c.original, p);
+            let (nm, side) = (
+                normal.get(k).copied().unwrap_or_default(),
+                st.side.get(k).copied().unwrap_or(1.0),
+            );
+            (p.0 - foot.0) * nm.0 * side + (p.1 - foot.1) * nm.1 * side
+        })
+        .collect()
+}
+
+/// What to do with a zone after the last pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Verdict {
+    /// No sample is tighter than the minimum (within `REACHED_FRACTION`).
+    Reached,
+    /// Tighter than wanted, but not by much: the widened line is kept.
+    Kept,
+    /// Below `WIDEN_KEEP_FRACTION` of the minimum: it goes back to the fit.
+    Revert,
+}
+
+/// Judges a zone from its smallest radius and the one it wanted.
+pub(super) fn verdict(radius_after: f64, wanted: f64, reached: bool) -> Verdict {
+    if reached {
+        Verdict::Reached
+    } else if radius_after < wanted * WIDEN_KEEP_FRACTION {
+        Verdict::Revert
+    } else {
+        Verdict::Kept
+    }
 }
 
 /// One zone, as indices into the widened line.
 pub(super) struct ZoneFigures {
     /// The first and the last sample of the zone.
     pub range: (usize, usize),
+    /// The links the zone covers, as indices in chain order.
+    pub links: Vec<usize>,
     /// The tightest sample of the fitted line.
     pub at: P,
     pub radius_before: f64,
     pub radius_after: f64,
     pub wanted: f64,
     pub max_outward: f64,
+    pub max_inward: f64,
     pub reached: bool,
+    pub plate_candidate: bool,
 }
 
 fn radius_of(points: &[P], index: usize) -> f64 {
@@ -569,24 +743,45 @@ fn radius_of(points: &[P], index: usize) -> f64 {
     }
 }
 
-/// The figures of every maximal run of the mask of `w`.
-pub(super) fn zone_figures(chain: &ChainLine<'_>, widened: &Outcome) -> Vec<ZoneFigures> {
+/// The links of a chain whose samples overlap `range` (by at least a segment, if the range has one).
+fn links_of(bounds: &[usize], range: (usize, usize)) -> Vec<usize> {
+    let (lo, hi) = range;
+    let mut first = 0;
+    let mut out = Vec::new();
+    for (link, &last) in bounds.iter().enumerate() {
+        let overlap = if hi > lo {
+            hi.min(last) > lo.max(first)
+        } else {
+            lo >= first && lo <= last
+        };
+        if overlap {
+            out.push(link);
+        }
+        first = last;
+    }
+    out
+}
+
+/// The figures of every maximal run of the mask of `st`. `judge` sets `plate_candidate` for the zones that are
+/// to go back to the fit.
+fn zone_figures(chain: &ChainLine<'_>, st: &State, judge: bool) -> Vec<ZoneFigures> {
     let fit_minimum = sample_minimum(chain.fitted.len(), chain.bounds, chain.link_minimum);
-    let minimum = sample_minimum(widened.line.len(), &widened.bounds, chain.link_minimum);
+    let minimum = sample_minimum(st.line.len(), &st.bounds, chain.link_minimum);
+    let signed = signed_outward(chain, st);
     let mut out = Vec::new();
     let mut at = 0;
-    while at < widened.mask.len() {
-        if !widened.mask.get(at).copied().unwrap_or(false) {
+    while at < st.mask.len() {
+        if !st.mask.get(at).copied().unwrap_or(false) {
             at += 1;
             continue;
         }
         let lo = at;
-        while widened.mask.get(at).copied().unwrap_or(false) {
+        while st.mask.get(at).copied().unwrap_or(false) {
             at += 1;
         }
         let hi = at - 1;
         // the part of the fitted line this zone grew from
-        let from: Vec<usize> = widened
+        let from: Vec<usize> = st
             .origin
             .get(lo..=hi)
             .into_iter()
@@ -605,30 +800,50 @@ pub(super) fn zone_figures(chain: &ChainLine<'_>, widened: &Outcome) -> Vec<Zone
                 tightest = Some((k, r));
             }
         }
+        // the samples the radius rows bound: the zone and the held sample on each side of it
         let mut radius_after = f64::INFINITY;
         let mut reached = true;
-        let mut max_outward = 0.0_f64;
-        for k in lo..=hi {
+        for k in lo.saturating_sub(1)..=(hi + 1).min(st.line.len().saturating_sub(1)) {
             let m = minimum.get(k).copied().unwrap_or(f64::NAN);
-            let r = radius_of(&widened.line, k);
+            let r = radius_of(&st.line, k);
             radius_after = radius_after.min(r);
             if usable(m) && r < m * REACHED_FRACTION {
                 reached = false;
             }
-            if let Some(p) = widened.line.get(k) {
-                max_outward = max_outward.max(distance_to(chain.original, *p));
-            }
         }
+        let moves = signed.get(lo..=hi).unwrap_or_default();
         let (k, radius_before) = tightest.unwrap_or((first, f64::INFINITY));
+        let wanted = fit_minimum.get(k).copied().unwrap_or(f64::NAN);
         out.push(ZoneFigures {
             range: (lo, hi),
+            links: links_of(&st.bounds, (lo, hi)),
             at: chain.fitted.get(k).copied().unwrap_or_default(),
             radius_before,
             radius_after,
-            wanted: fit_minimum.get(k).copied().unwrap_or(f64::NAN),
-            max_outward,
+            wanted,
+            max_outward: moves.iter().copied().fold(0.0, f64::max),
+            max_inward: moves.iter().map(|m| -m).fold(0.0, f64::max),
             reached,
+            plate_candidate: judge && verdict(radius_after, wanted, reached) == Verdict::Revert,
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Verdict, verdict};
+
+    #[test]
+    fn a_zone_is_judged_by_its_radius() {
+        assert_eq!(verdict(10.0, 10.0, true), Verdict::Reached);
+        // between 0.9 and 0.99 of the wanted radius the widened line is kept
+        assert_eq!(verdict(9.5, 10.0, false), Verdict::Kept);
+        assert_eq!(verdict(9.0, 10.0, false), Verdict::Kept);
+        // below 0.9 it goes back to the fit
+        assert_eq!(verdict(8.99, 10.0, false), Verdict::Revert);
+        assert_eq!(verdict(1.0, 10.0, false), Verdict::Revert);
+        // a wanted radius that is not a number never reverts
+        assert_eq!(verdict(1.0, f64::NAN, false), Verdict::Kept);
+    }
 }

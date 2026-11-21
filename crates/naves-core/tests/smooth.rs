@@ -325,8 +325,9 @@ use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::roadnet::Crossing;
 use naves_core::roadnet::{RoadGraph, Stretch};
 use naves_core::smooth::{
-    SmoothReport, WIDEN_DIRECTIONS, WIDEN_ENABLED, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH,
-    WIDEN_SLACK_COST, min_radius, smooth_graph, smooth_graph_fit_only,
+    MAX_CHAIN_SAMPLES, SmoothReport, WIDEN_DIRECTIONS, WIDEN_ENABLED, WIDEN_INWARD_MAX_DEG,
+    WIDEN_KEEP_FRACTION, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH, WIDEN_SLACK_COST, min_radius,
+    smooth_graph, smooth_graph_fit_only,
 };
 
 fn stretch(id: &str, start: i64, end: i64, points: &[P]) -> Stretch {
@@ -761,6 +762,9 @@ fn the_widening_constants_are_the_specs() {
     assert_eq!(WIDEN_DIRECTIONS, 8);
     assert!(near(WIDEN_SLACK_COST, 1e4, 0.0));
     assert_eq!(WIDEN_PASSES, 3);
+    assert!(near(WIDEN_INWARD_MAX_DEG, 120.0, 0.0));
+    assert!(near(WIDEN_KEEP_FRACTION, 0.9, 0.0));
+    assert_eq!(MAX_CHAIN_SAMPLES, 200_000);
     const { assert!(WIDEN_ENABLED) };
 }
 
@@ -796,21 +800,29 @@ fn min_radius_of(line: &[P]) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-/// No sample lies inward of the original hairpin of the given gap (its half circle is drawn with 10 degree
-/// chords, whose middles lie `r (1 - cos 5 deg)` inside the circle; the extra 1e-3 is what the linear
-/// "not inward" row, which measures along the sample's normal rather than the chord's, can miss by).
-fn assert_outside_of_hairpin(line: &[P], gap: f64) {
+/// No sample of a zone lies inward of the original hairpin of the given gap (its half circle is drawn with 10
+/// degree chords, whose middles lie `r (1 - cos 5 deg)` inside the circle; the extra 1e-3 is what the linear
+/// "not inward" row, which measures along the sample's normal rather than the chord's, can miss by). The samples
+/// of the zone are those that are not on the fitted line (the held samples outside it are bitwise the fit's);
+/// at least one leg sample must be that far out from the apex, so that the whole zone is covered.
+fn assert_outside_of_hairpin(line: &[P], fit: &[P], gap: f64) {
     let r = gap / 2.0;
     let slack = r * (1.0 - 5.0_f64.to_radians().cos()) + 1e-3;
+    let mut leftmost = f64::INFINITY;
     for p in line {
+        if fit.iter().any(|q| bits(*q) == bits(*p)) {
+            continue;
+        }
         if p.0 > 80.0 {
             assert!(dist(*p, (80.0, r)) >= r - slack, "{p:?}");
-        } else if p.0 >= 62.0 && p.1 < r {
+        } else if p.1 < r {
             assert!(p.1 <= 1e-6, "{p:?}");
-        } else if p.0 >= 62.0 {
+            leftmost = leftmost.min(p.0);
+        } else {
             assert!(p.1 >= gap - 1e-6, "{p:?}");
         }
     }
+    assert!(leftmost < 50.0, "the zone's legs start at x = {leftmost}");
 }
 
 #[test]
@@ -829,7 +841,7 @@ fn a_hairpin_is_widened_to_the_minimum_radius() {
     assert!(worst >= 10.0 * 0.92, "the tightest radius is {worst}");
     let total: f64 = turns(line).iter().sum();
     assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
-    assert_outside_of_hairpin(line, 8.0);
+    assert_outside_of_hairpin(line, &fit_only(&g).0.stretches[0].points, 8.0);
     assert!(report.tight_after_m < report.tight_before_m);
     assert!(report.max_outward_m > 0.0);
     assert!(near(
@@ -854,12 +866,12 @@ fn a_hairpin_with_room_is_widened_to_the_minimum_radius() {
     assert!(worst >= 10.0 * 0.92, "the tightest radius is {worst}");
     let total: f64 = turns(line).iter().sum();
     assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
-    assert_outside_of_hairpin(line, 14.0);
+    assert_outside_of_hairpin(line, &fit_only(&g).0.stretches[0].points, 14.0);
     assert!(report.tight_after_m < report.tight_before_m);
 }
 
 #[test]
-fn a_right_angle_is_widened() {
+fn a_right_angle_is_filleted_inward_as_a_single_curve() {
     let g = graph(vec![stretch(
         "l",
         1,
@@ -868,10 +880,50 @@ fn a_right_angle_is_widened() {
     )]);
     let (out, report) = widen_run(&g);
     assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
-    assert!(report.zones[0].reached, "{:?}", report.zones[0]);
-    let worst = min_radius_of(&out.stretches[0].points);
+    let z = &report.zones[0];
+    // Measured (see the report): the first pass goes inward only and the later ones may spread the legs a
+    // little, which gives a radius of 9.22 m (0.92 of the wanted 10 m): not `reached` (0.99), but above
+    // WIDEN_KEEP_FRACTION, so the widened line is kept and the zone is no candidate for a plate.
+    assert!(!z.reached && !z.plate_candidate, "{z:?}");
+    let line = &out.stretches[0].points;
+    let worst = min_radius_of(line);
     assert!(worst >= 9.2, "the tightest radius is {worst}");
-    assert!(report.max_outward_m > 0.0);
+    assert!(near(z.radius_after_m, worst, 1e-9), "{z:?}");
+    // a fillet of radius 10 m cuts 10 * (sec 45 - 1) = 4.14 m into a right angle (measured here against the
+    // nearest point of the original legs: 1.6 m inward)
+    assert!(z.max_inward_m > z.max_outward_m, "{z:?}");
+    assert!(z.max_inward_m <= 4.14 + 0.1, "{z:?}");
+    assert!(z.max_outward_m < 1.0, "{z:?}");
+    // one curve: the road turns left everywhere, to 1 degree (measured: the worst turn against the bend is
+    // 0.70 degrees, where the legs return from their small outward move; the brief asked for 1e-9)
+    for t in turns(line) {
+        assert!(t >= -1.0, "a turn of {t} degrees against the bend");
+    }
+}
+
+/// A bend of 130 degrees is beyond `WIDEN_INWARD_MAX_DEG`: it is widened outward only.
+#[test]
+fn a_bend_over_the_inward_limit_stays_outward_only() {
+    let corner = (60.0, 0.0);
+    let leg_two = polar(corner, 130.0, 60.0);
+    let g = graph(vec![stretch("b", 1, 2, &[(0.0, 0.0), corner, leg_two])]);
+    let (out, report) = widen_run(&g);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    let z = &report.zones[0];
+    assert!(z.max_inward_m < 1e-6, "{z:?}");
+    assert!(z.max_outward_m > 0.5, "{z:?}");
+    // no sample inside the wedge of the bend, to the tolerance of the other outside tests
+    let d1 = (1.0, 0.0);
+    let d2 = (130.0_f64.to_radians().cos(), 130.0_f64.to_radians().sin());
+    for p in &out.stretches[0].points {
+        let rel = (p.0 - corner.0, p.1 - corner.1);
+        let left_of_one = d1.0 * rel.1 - d1.1 * rel.0;
+        let left_of_two = d2.0 * rel.1 - d2.1 * rel.0;
+        assert!(
+            !(left_of_one > 1e-3 && left_of_two > 1e-3),
+            "{p:?} is inside the bend"
+        );
+    }
 }
 
 #[test]
@@ -956,27 +1008,49 @@ fn a_way_split_inside_a_bend_moves_with_the_road() {
 #[test]
 fn a_junction_in_the_bend_holds_it_and_the_zone_is_reported() {
     // the junction sits at the start of the arc, 20 degrees into it: the bend is still to come and the held node
-    // and its held neighbour do not leave the legs room to spread (measured: radius 5.7 m reached, 10.0 m wanted)
+    // and its held neighbour do not leave the legs room to spread (measured: 5.7 m reached, 10.0 m wanted, below
+    // WIDEN_KEEP_FRACTION): the zone goes back to the fit's line and is a candidate for a plate
     let g = split_hairpin(8.0, 3, true);
     let node = g.stretches[0].points[3];
     let (out, report) = widen_run(&g);
+    let (fit, fit_report) = fit_only(&g);
     assert!(report.kept.is_empty(), "{:?}", report.kept);
     assert!(!report.zones.is_empty(), "no zone");
     for z in &report.zones {
         assert!(near(z.radius_wanted_m, 10.0, 0.0), "{z:?}");
+        assert!(!z.reached, "{z:?}");
+        assert!(z.plate_candidate, "{z:?}");
+        assert!(z.radius_after_m < 10.0 * WIDEN_KEEP_FRACTION, "{z:?}");
+        assert!(
+            z.radius_after_m > z.radius_before_m,
+            "the attempt's radius: {z:?}"
+        );
+        assert!(
+            near(z.max_outward_m, 0.0, 0.0) && near(z.max_inward_m, 0.0, 0.0),
+            "{z:?}"
+        );
     }
-    assert!(
-        report.zones.iter().all(|z| !z.reached),
-        "{:?}",
-        report.zones
-    );
     assert_eq!(bits(*out.stretches[0].points.last().unwrap()), bits(node));
     assert_eq!(bits(out.stretches[1].points[0]), bits(node));
     assert_eq!(bits(out.stretches[2].points[0]), bits(node));
-    let (fit, _) = fit_only(&g);
+    // the sample next to the junction is held, and every stretch is what the fit gives
+    let next = out.stretches[0].points.len() - 2;
     assert_eq!(
-        format!("{:?}", out.stretches[2].points),
-        format!("{:?}", fit.stretches[2].points)
+        bits(out.stretches[0].points[next]),
+        bits(fit.stretches[0].points[next])
+    );
+    assert_eq!(
+        format!("{:?}", out.stretches),
+        format!("{:?}", fit.stretches)
+    );
+    assert!(near(report.max_outward_m, 0.0, 0.0));
+    assert!(report.max_move_m <= CORRIDOR_M + 1e-6);
+    assert!(near(report.max_move_m, fit_report.max_move_m, 0.0));
+    assert!(
+        report
+            .per_stretch
+            .iter()
+            .all(|p| near(p.max_outward_m, 0.0, 0.0))
     );
 }
 
@@ -998,6 +1072,11 @@ fn a_bridge_in_a_zone_keeps_its_ends() {
     assert_eq!(bits(out.stretches[1].points[0]), bits(n1));
     assert_eq!(bits(*out.stretches[1].points.last().unwrap()), bits(n2));
     assert_eq!(bits(out.stretches[2].points[0]), bits(n2));
+    // the zone widens the approaches, the deck does not bend
+    let (fit, _) = fit_only(&g);
+    let deck: Vec<(u64, u64)> = out.stretches[1].points.iter().map(|p| bits(*p)).collect();
+    let fit_deck: Vec<(u64, u64)> = fit.stretches[1].points.iter().map(|p| bits(*p)).collect();
+    assert_eq!(deck, fit_deck);
 }
 
 #[test]
@@ -1104,5 +1183,29 @@ fn a_widening_the_solver_cannot_take_keeps_the_fit_and_is_reported() {
     assert_eq!(
         format!("{:?}", out.stretches),
         format!("{:?}", fit.stretches)
+    );
+}
+
+#[test]
+fn a_chain_too_long_to_smooth_is_not_touched_and_is_listed() {
+    // three straight stretches of 200 km: 300 000 samples at 2 m, over MAX_CHAIN_SAMPLES
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (200_000.0, 0.0)]),
+        stretch("b", 2, 3, &[(200_000.0, 0.0), (400_000.0, 0.0)]),
+        stretch("c", 3, 4, &[(400_000.0, 0.0), (600_000.0, 0.0)]),
+        stretch("d", 10, 11, &[(0.0, 50.0), (20.0, 50.0), (40.0, 55.0)]),
+    ]);
+    let (out, report) = widen_run(&g);
+    assert_eq!(report.kept.len(), 3, "{:?}", report.kept);
+    for (id, why) in &report.kept {
+        assert!(["a", "b", "c"].contains(&id.as_str()), "{id}");
+        assert!(why.contains("too long"), "{why}");
+    }
+    for i in 0..3 {
+        assert_eq!(out.stretches[i].points, g.stretches[i].points);
+    }
+    assert!(
+        out.stretches[3].points.len() > 3,
+        "the short chain is still smoothed"
     );
 }

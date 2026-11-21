@@ -29,7 +29,7 @@ use rayon::prelude::*;
 
 use crate::catalog::{Family, PieceCatalog};
 use crate::qp::{Problem, Row, solve};
-use crate::roadnet::{RoadGraph, Stretch, crossings_of};
+use crate::roadnet::{RoadGraph, Stretch, crossings_of, polyline_length};
 
 mod widen;
 
@@ -54,6 +54,16 @@ pub const WIDEN_SLACK_COST: f64 = 1e4;
 pub const WIDEN_PASSES: usize = 3;
 /// Switches the widening pass; off returns exactly what the fit alone gives.
 pub const WIDEN_ENABLED: bool = true;
+
+/// Down to this many degrees of summed turn a tight run is an open corner: its zone may cut inward as well
+/// (up to what a fillet of the minimum radius needs); a bend that turns more is widened outward only.
+pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
+/// A zone that still has a sample tighter than this fraction of the wanted radius after the last pass goes
+/// back to the fit.
+pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
+/// A chain with more samples than this (counted from the lengths of its stretches, before resampling) is
+/// neither fitted nor widened.
+pub const MAX_CHAIN_SAMPLES: usize = 200_000;
 
 /// The most segments [`resample`] makes of one line (a guard against absurd lengths).
 const MAX_SEGMENTS: f64 = 1.0e6;
@@ -102,6 +112,9 @@ pub enum SmoothError {
     /// The solver did not give a solution.
     #[error("the solver failed: {0}")]
     Solver(String),
+    /// The chain has more than [`MAX_CHAIN_SAMPLES`] samples.
+    #[error("too long to smooth: about {0} samples")]
+    TooLong(f64),
 }
 
 /// Points at equal steps of about `step` along `line`; first and last are kept exactly.
@@ -322,10 +335,19 @@ pub struct WidenedZone {
     pub radius_after_m: f64,
     /// The minimum radius the family asks for, in metres.
     pub radius_wanted_m: f64,
-    /// The furthest any sample of the zone is from its original position, in metres.
+    /// The furthest any sample of the zone lies outward of its original line, in metres.
     pub max_outward_m: f64,
-    /// No sample of the zone is tighter than wanted afterwards (within 1 %).
+    /// The furthest any sample of the zone lies inward of its original line, in metres (an open corner is
+    /// cut; see [`WIDEN_INWARD_MAX_DEG`]).
+    pub max_inward_m: f64,
+    /// No sample of the zone, nor the held sample on each side of it, is tighter than wanted afterwards
+    /// (within 1 %).
     pub reached: bool,
+    /// The bend cannot be built as a curve: after the last pass the zone was still tighter than
+    /// [`WIDEN_KEEP_FRACTION`] of the wanted radius, so it went back to the fit's line (and moved nothing).
+    /// `radius_after_m` is what the attempt got. The second allowed form is a concrete plate that joins the two
+    /// legs; it is a later task, designed from the zones with this flag.
+    pub plate_candidate: bool,
 }
 
 /// What smoothing did, for the build report and the measurement.
@@ -655,6 +677,18 @@ fn sample_minimum(count: usize, bounds: &[usize], minimum: &[f64]) -> Vec<f64> {
 /// merely continues (not at the ends of the chain and not next to a bridge).
 fn movable_samples(graph: &RoadGraph, plan: &ChainPlan, prepared: &Prepared) -> Vec<bool> {
     let mut movable: Vec<bool> = prepared.samples.iter().map(|s| !s.fixed).collect();
+    // the zone widens the approaches of a bridge, the deck does not bend
+    let mut first = 0;
+    for (link, &last) in plan.links.iter().zip(&prepared.bounds) {
+        if graph.stretches.get(link.stretch).is_none_or(|s| s.bridge) {
+            for k in first..=last {
+                if let Some(m) = movable.get_mut(k) {
+                    *m = false;
+                }
+            }
+        }
+        first = last;
+    }
     for (j, pair) in plan.links.windows(2).enumerate() {
         let bridge = pair
             .iter()
@@ -675,28 +709,26 @@ struct Solved {
     fitted: Result<Fitted, SmoothError>,
     /// The minimum radius of every link.
     link_minimum: Vec<f64>,
-    /// Whether every link is a bridge.
-    link_bridge: Vec<bool>,
-    movable: Vec<bool>,
     widened: Option<widen::Outcome>,
 }
 
 /// How far the samples `range` of a written-back chain moved: sideways for those outside a zone (against
-/// the sample they came from) and outward for those inside one (against the original line `raw`).
+/// the sample they came from) and outward for those inside one (`signed` is how far outward of the original
+/// line a sample lies, negative inward).
 fn link_moves(
     range: std::ops::RangeInclusive<usize>,
     after: &[(f64, f64)],
     mask: &[bool],
     origin: &[Option<usize>],
     before: &[(f64, f64)],
-    raw: &[(f64, f64)],
+    signed: &[f64],
 ) -> (f64, f64) {
     let mut moved = 0.0_f64;
     let mut outward = 0.0_f64;
     for k in range {
         let Some(now) = after.get(k) else { continue };
         if mask.get(k).copied().unwrap_or(false) {
-            outward = outward.max(widen::distance_to(raw, *now));
+            outward = outward.max(signed.get(k).copied().unwrap_or(0.0));
         } else if let Some(was) = origin.get(k).copied().flatten().and_then(|o| before.get(o)) {
             moved = moved.max((was.0 - now.0).hypot(was.1 - now.1));
         }
@@ -712,8 +744,31 @@ fn solve_chain(
     params: &SmoothParams,
     widen_on: bool,
 ) -> Solved {
-    let prepared = prepare(graph, plan);
-    let fitted = smooth_line(&prepared.samples, params).map(|after| Fitted { after });
+    let length: f64 = plan
+        .links
+        .iter()
+        .filter_map(|l| graph.stretches.get(l.stretch))
+        .map(|s| polyline_length(&s.points))
+        .filter(|l| l.is_finite())
+        .sum();
+    let samples = length / SAMPLE_M;
+    let limit = f64::from(u32::try_from(MAX_CHAIN_SAMPLES).unwrap_or(u32::MAX));
+    let too_long = samples > limit;
+    let prepared = if too_long {
+        // nothing is resampled: a chain this long is left alone
+        Prepared {
+            samples: Vec::new(),
+            bounds: vec![0; plan.links.len()],
+            raw: Vec::new(),
+        }
+    } else {
+        prepare(graph, plan)
+    };
+    let fitted = if too_long {
+        Err(SmoothError::TooLong(samples.round()))
+    } else {
+        smooth_line(&prepared.samples, params).map(|after| Fitted { after })
+    };
     let link_minimum: Vec<f64> = plan
         .links
         .iter()
@@ -740,56 +795,74 @@ fn solve_chain(
         prepared,
         fitted,
         link_minimum,
-        link_bridge,
-        movable,
         widened,
     }
 }
 
 /// The zones of a widened chain, for the report.
-fn chain_zones(
-    graph: &RoadGraph,
-    plan: &ChainPlan,
-    solved: &Solved,
-    fit_line: &[(f64, f64)],
-    widened: &widen::Outcome,
-) -> Vec<WidenedZone> {
-    let chain = widen::ChainLine {
-        original: &solved.prepared.raw,
-        fitted: fit_line,
-        bounds: &solved.prepared.bounds,
-        link_minimum: &solved.link_minimum,
-        link_bridge: &solved.link_bridge,
-        movable: &solved.movable,
-    };
-    widen::zone_figures(&chain, widened)
-        .into_iter()
-        .map(|z| {
-            let (lo, hi) = z.range;
-            let mut first = 0;
-            let mut stretches: Vec<StretchId> = Vec::new();
-            for (link, &last) in plan.links.iter().zip(&widened.bounds) {
-                let overlap = if hi > lo {
-                    hi.min(last) > lo.max(first)
-                } else {
-                    lo >= first && lo <= last
-                };
-                if overlap && let Some(s) = graph.stretches.get(link.stretch) {
-                    stretches.push(s.id.clone());
-                }
-                first = last;
-            }
-            WidenedZone {
-                at: z.at,
-                stretches,
-                radius_before_m: z.radius_before,
-                radius_after_m: z.radius_after,
-                radius_wanted_m: z.wanted,
-                max_outward_m: z.max_outward,
-                reached: z.reached,
-            }
+fn chain_zones(graph: &RoadGraph, plan: &ChainPlan, widened: &widen::Outcome) -> Vec<WidenedZone> {
+    widened
+        .zones
+        .iter()
+        .map(|z| WidenedZone {
+            at: z.at,
+            stretches: z
+                .links
+                .iter()
+                .filter_map(|&j| plan.links.get(j))
+                .filter_map(|l| graph.stretches.get(l.stretch))
+                .map(|s| s.id.clone())
+                .collect(),
+            radius_before_m: z.radius_before,
+            radius_after_m: z.radius_after,
+            radius_wanted_m: z.wanted,
+            max_outward_m: z.max_outward,
+            max_inward_m: z.max_inward,
+            reached: z.reached,
+            plate_candidate: z.plate_candidate,
         })
         .collect()
+}
+
+/// The line that is written back for a chain, where its links end, which samples lie in a zone, where each
+/// sample came from in the fitted line and how far outward of the original line the zone samples lie.
+struct Written<'a> {
+    after: Vec<(f64, f64)>,
+    bounds: Vec<usize>,
+    mask: Vec<bool>,
+    origin: Vec<Option<usize>>,
+    signed: Vec<f64>,
+    widen_error: Option<&'a SmoothError>,
+}
+
+fn written<'a>(
+    widened: Option<&'a widen::Outcome>,
+    fit_line: &[(f64, f64)],
+    fit_bounds: &[usize],
+) -> Written<'a> {
+    match widened {
+        Some(w) => Written {
+            after: w.line.clone(),
+            bounds: w.bounds.clone(),
+            // when the widening failed the chain is the fit: nothing is reported as an outward move
+            mask: if w.error.is_some() {
+                vec![false; w.line.len()]
+            } else {
+                w.mask.clone()
+            },
+            origin: w.origin.clone(),
+            signed: w.signed.clone(),
+            widen_error: w.error.as_ref(),
+        },
+        None => Written {
+            after: fit_line.to_vec(),
+            bounds: fit_bounds.to_vec(),
+            mask: vec![false; fit_line.len()],
+            origin: (0..fit_line.len()).map(Some).collect(),
+            signed: Vec::new(),
+            widen_error: None,
+        },
+    }
 }
 
 /// What the chains add up to.
@@ -910,26 +983,16 @@ fn smooth_graph_with(
         };
         // the line that is written back, where its links end, which samples lie in a zone and where each
         // sample came from in the fitted line
-        let (after, bounds, mask, origin, widen_error) = match widened {
-            Some(w) => (
-                w.line.clone(),
-                w.bounds.clone(),
-                w.mask.clone(),
-                w.origin.clone(),
-                w.error.as_ref(),
-            ),
-            None => (
-                fit_line.clone(),
-                prepared.bounds.clone(),
-                vec![false; before.len()],
-                (0..before.len()).map(Some).collect(),
-                None,
-            ),
-        };
+        let Written {
+            after,
+            bounds,
+            mask,
+            origin,
+            signed,
+            widen_error,
+        } = written(widened.as_ref(), &fit_line, &prepared.bounds);
         if let Some(w) = widened {
-            tally
-                .zones
-                .extend(chain_zones(graph, plan, solved, &fit_line, w));
+            tally.zones.extend(chain_zones(graph, plan, w));
         }
         let tight_after = tight_lengths(&after, &bounds, link_minimum);
         // A stretch that is not sound is never joined to a neighbour, so its chain has one link. The
@@ -968,7 +1031,7 @@ fn smooth_graph_with(
             }
             if let Some(entry) = tally.per_stretch.get_mut(link.stretch) {
                 let (moved, outward) =
-                    link_moves(first..=last, &after, &mask, &origin, &before, &prepared.raw);
+                    link_moves(first..=last, &after, &mask, &origin, &before, &signed);
                 entry.max_move_m = moved;
                 entry.max_outward_m = outward;
                 entry.tight_before_m = tight_before.get(j).copied().unwrap_or(0.0);
