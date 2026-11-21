@@ -141,12 +141,16 @@ A second pass does this after the fit, chain by chain:
   run. Its zone is the run plus `WIDEN_LEAD · min_radius` of road before and after it along the chain (the legs
   must be able to spread before the bend). Zones that touch are one zone. A zone's outside is the side away from
   the centre of its bend (the sign of the summed turn over the tight run).
-- **Open corners may cut inward** (maintainer ruling, 2026-11-21). Let θ be the summed absolute turn of the fitted line
-  over a tight run's zone. If θ ≤ `WIDEN_INWARD_MAX_DEG` (120°), the samples of that zone may also move inward of the
-  original line, up to `E = min_radius · (sec(θ/2) − 1)` (4.14 m for 90° at 10 m); above 120° the zone is outward
-  only. In the first pass such a zone moves inward only (with both directions free the cheapest way to meet the
-  chord-length bound is a 9 m outward detour); the later passes allow both. Measured: a right angle comes out at
-  9.22 m with the legs 1.6 m inward and 0.9 m outward of the original.
+- **Open corners may cut inward** (maintainer ruling, 2026-11-21). Let θ be the net turn of the fitted line over a
+  tight run's zone (the absolute value of the summed signed turns, so resampling kinks and the two bends of an
+  S-bend do not add up; for a zone found in a later pass the allowance of the zone it grows from is used). If
+  θ ≤ `WIDEN_INWARD_MAX_DEG` (120°), the samples of that zone may also move inward of the original line, up to
+  `E = min_radius · (1 − cos(θ/2))`: the deepest distance of a fillet of the minimum radius from the legs (2.93 m for
+  90° at 10 m, `R/2` at 120°; not the distance from the vertex, which is `R · (sec(θ/2) − 1)`); above 120° the zone
+  is outward only. In the first pass such a zone moves inward only (with both directions free the cheapest way to
+  meet the chord-length bound is a 9 m outward detour); the later passes allow both. Measured: a right angle comes
+  out at 9.22 m with the legs 1.6 m inward and 0.9 m outward of the original; a 110° corner is not filleted but
+  detoured outward (12.5 m, 9.1 m outward, 0.15 m inward).
 - **Corridor in a zone.** Unless the zone is an open corner, no sample of a zone may move inward of the *original* line (not of the fitted one: the fit
   pulls curves inward); a sample may retreat toward the original line once an earlier pass pushed it out. Outward it
   may move up to `WIDEN_REACH · min_radius` from the original line. Outside the zones the corridor stays `CORRIDOR_M` on both sides.

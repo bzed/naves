@@ -153,7 +153,8 @@ fn turn_at(points: &[P], index: usize) -> f64 {
 
 /// Adds the zones of the tight runs of the line to the mask and gives every sample of them the side that is
 /// outward (`-1` for a left-turning bend, `1` otherwise).
-fn mark_zones(st: &mut State, minimum: &[f64]) {
+fn mark_zones(st: &mut State, minimum: &[f64], fitted: bool) {
+    let old_mask = st.mask.clone();
     let points = &st.line;
     let runs = tight_runs(points, minimum);
     let mut arc = Vec::with_capacity(points.len());
@@ -186,7 +187,13 @@ fn mark_zones(st: &mut State, minimum: &[f64]) {
         while hi + 1 < points.len() && at(hi + 1) - at(b) <= reach {
             hi += 1;
         }
-        let inward = inward_allowance(points, lo, hi, m);
+        // only the fitted line tells what the bend is: a zone found later has seen part of it widened (its new
+        // samples take the allowance of the zone they grow from, below)
+        let inward = if fitted {
+            inward_allowance(points, lo, hi, m)
+        } else {
+            0.0
+        };
         for i in lo..=hi {
             let d = if i < a { a - i } else { i.saturating_sub(b) };
             if let Some(slot) = best.get_mut(i)
@@ -213,15 +220,42 @@ fn mark_zones(st: &mut State, minimum: &[f64]) {
             *inward = *allowance;
         }
     }
+    if !fitted {
+        // samples that joined a zone take the allowance of the nearest sample that was in one already
+        let mut carried = 0.0;
+        let mut from_left = vec![0.0; st.mask.len()];
+        for (k, slot) in from_left.iter_mut().enumerate() {
+            if old_mask.get(k).copied().unwrap_or(false) {
+                carried = st.inward.get(k).copied().unwrap_or(0.0);
+            }
+            *slot = carried;
+        }
+        carried = 0.0;
+        for k in (0..st.mask.len()).rev() {
+            if old_mask.get(k).copied().unwrap_or(false) {
+                carried = st.inward.get(k).copied().unwrap_or(0.0);
+            } else if st.mask.get(k).copied().unwrap_or(false)
+                && let Some(slot) = st.inward.get_mut(k)
+            {
+                *slot = carried.max(from_left.get(k).copied().unwrap_or(0.0));
+            }
+        }
+    }
 }
 
-/// How far inward of the original line a zone may go: for a zone around a tight run that turns by `theta` in total (at most
-/// `WIDEN_INWARD_MAX_DEG` degrees), a fillet of the minimum radius `minimum` cuts
-/// `minimum * (sec(theta / 2) - 1)` into the corner; a bend that turns more is widened outward only.
+/// How far inward of the original line a zone may go. Let `theta` be the net turn of the fitted line over the
+/// zone (`first..=last`: the absolute value of the summed signed turns, so the kinks of resampling and the two
+/// bends of an S-bend do not add up). If it is at most `WIDEN_INWARD_MAX_DEG` degrees the zone is an open corner,
+/// and a fillet of the minimum radius `minimum` comes as close as `minimum * (1 - cos(theta / 2))` to the legs
+/// (the distance from the legs, which is what the rows measure; not from the corner's vertex). A bend that turns
+/// more is widened outward only.
 fn inward_allowance(points: &[P], first: usize, last: usize, minimum: f64) -> f64 {
-    let theta: f64 = (first..=last).map(|i| turn_at(points, i).abs()).sum();
-    if theta > 0.0 && theta.to_degrees() <= WIDEN_INWARD_MAX_DEG {
-        minimum * (1.0 / (theta / 2.0).cos() - 1.0)
+    let theta: f64 = (first..=last)
+        .map(|i| turn_at(points, i))
+        .sum::<f64>()
+        .abs();
+    if theta.to_degrees() <= WIDEN_INWARD_MAX_DEG {
+        minimum * (1.0 - (theta / 2.0).cos())
     } else {
         0.0
     }
@@ -234,11 +268,9 @@ fn nearest(line: &[P], point: P) -> P {
         let [from, to] = w else { continue };
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
         let len2 = dx * dx + dy * dy;
-        let along = if len2 > 0.0 {
-            (((point.0 - from.0) * dx + (point.1 - from.1) * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let along = (((point.0 - from.0) * dx + (point.1 - from.1) * dy)
+            / len2.max(f64::MIN_POSITIVE))
+        .clamp(0.0, 1.0);
         let foot = (from.0 + dx * along, from.1 + dy * along);
         let gap = (point.0 - foot.0).hypot(point.1 - foot.1);
         if gap < best.0 {
@@ -557,7 +589,7 @@ pub(super) fn widen_chain(c: &ChainLine<'_>) -> Option<Outcome> {
             st = resampled(&st);
         }
         let minimum = st.minimum(c);
-        mark_zones(&mut st, &minimum);
+        mark_zones(&mut st, &minimum, pass == 0);
         if first.is_none() {
             first = Some(st.mask.clone());
         }
@@ -566,13 +598,8 @@ pub(super) fn widen_chain(c: &ChainLine<'_>) -> Option<Outcome> {
             Err(e) => {
                 // the chain keeps the fit; the zones are those of the first pass, judged on the fit
                 let failed = State {
-                    line: c.fitted.to_vec(),
-                    bounds: c.bounds.to_vec(),
                     mask: first.unwrap_or_else(|| vec![false; n]),
-                    side: vec![1.0; n],
-                    inward: vec![0.0; n],
-                    movable: c.movable.to_vec(),
-                    origin: (0..n).map(Some).collect(),
+                    ..whole_fit(c)
                 };
                 return Some(finish(c, failed, Some(e)));
             }
@@ -585,6 +612,13 @@ pub(super) fn widen_chain(c: &ChainLine<'_>) -> Option<Outcome> {
 fn finish(c: &ChainLine<'_>, st: State, error: Option<SmoothError>) -> Outcome {
     let judged = error.is_none();
     let mut zones = zone_figures(c, &st, judged);
+    if !judged {
+        // the chain is the fit: its zone samples are not a move of the widening (and their sides are not known)
+        for z in &mut zones {
+            z.max_outward = 0.0;
+            z.max_inward = 0.0;
+        }
+    }
     let mut st = st;
     let reverted: Vec<(usize, usize)> = zones
         .iter()
@@ -624,21 +658,29 @@ fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
         origin: Vec::with_capacity(n),
     };
     let origin_at = |i: usize| st.origin.get(i).copied().flatten();
+    // The samples on both sides of a zone lie outside every mask, and a sample without an origin only exists
+    // inside a mask (masks only grow), so both have an origin. Should that ever fail, the whole chain goes back
+    // to the fit rather than leaving a zone that is flagged as reverted half widened.
+    let Some(spans) = ranges
+        .iter()
+        .map(|&(lo, hi)| {
+            let start = lo
+                .checked_sub(1)
+                .map_or(Some(0), |b| origin_at(b).map(|o| o + 1))?;
+            let end = if hi + 1 >= n {
+                Some(c.fitted.len())
+            } else {
+                origin_at(hi + 1)
+            }?;
+            Some((lo, hi, start, end))
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return whole_fit(c);
+    };
     let mut i = 0;
     while i < n {
-        let span = ranges.iter().find(|r| r.0 == i).and_then(|&(lo, hi)| {
-            let start = match lo.checked_sub(1) {
-                Some(before) => origin_at(before)? + 1,
-                None => 0,
-            };
-            let end = if hi + 1 >= n {
-                c.fitted.len()
-            } else {
-                origin_at(hi + 1)?
-            };
-            Some((hi, start, end))
-        });
-        if let Some((hi, start, end)) = span {
+        if let Some(&(_, hi, start, end)) = spans.iter().find(|s| s.0 == i) {
             for k in start..end {
                 out.line.push(c.fitted.get(k).copied().unwrap_or_default());
                 out.mask.push(false);
@@ -671,6 +713,20 @@ fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
         .filter_map(|b| position.get(b).copied())
         .collect();
     out
+}
+
+/// The fitted line as a state without zones.
+fn whole_fit(c: &ChainLine<'_>) -> State {
+    let n = c.fitted.len();
+    State {
+        line: c.fitted.to_vec(),
+        bounds: c.bounds.to_vec(),
+        mask: vec![false; n],
+        side: vec![1.0; n],
+        inward: vec![0.0; n],
+        movable: c.movable.to_vec(),
+        origin: (0..n).map(Some).collect(),
+    }
 }
 
 /// How far outward of the original line every sample of a zone lies (negative: inward); 0 outside zones.
@@ -749,11 +805,7 @@ fn links_of(bounds: &[usize], range: (usize, usize)) -> Vec<usize> {
     let mut first = 0;
     let mut out = Vec::new();
     for (link, &last) in bounds.iter().enumerate() {
-        let overlap = if hi > lo {
-            hi.min(last) > lo.max(first)
-        } else {
-            lo >= first && lo <= last
-        };
+        let overlap = hi.min(last) > lo.max(first) || (hi == lo && lo >= first && lo <= last);
         if overlap {
             out.push(link);
         }

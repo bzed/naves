@@ -889,15 +889,63 @@ fn a_right_angle_is_filleted_inward_as_a_single_curve() {
     let worst = min_radius_of(line);
     assert!(worst >= 9.2, "the tightest radius is {worst}");
     assert!(near(z.radius_after_m, worst, 1e-9), "{z:?}");
-    // a fillet of radius 10 m cuts 10 * (sec 45 - 1) = 4.14 m into a right angle (measured here against the
-    // nearest point of the original legs: 1.6 m inward)
+    // a fillet of radius 10 m comes 10 * (1 - cos 45) = 2.93 m close to the legs of a right angle (4.14 m is the
+    // distance from the vertex; measured here against the nearest point of the legs: 1.6 m inward)
     assert!(z.max_inward_m > z.max_outward_m, "{z:?}");
-    assert!(z.max_inward_m <= 4.14 + 0.1, "{z:?}");
+    assert!(z.max_inward_m <= 2.93 + 0.1, "{z:?}");
     assert!(z.max_outward_m < 1.0, "{z:?}");
     // one curve: the road turns left everywhere, to 1 degree (measured: the worst turn against the bend is
     // 0.70 degrees, where the legs return from their small outward move; the brief asked for 1e-9)
     for t in turns(line) {
         assert!(t >= -1.0, "a turn of {t} degrees against the bend");
+    }
+}
+
+/// The mirror image of an open corner is the mirror image of the result (inward is the side of the bend, for a
+/// left and for a right turn).
+#[test]
+fn a_mirrored_open_corner_gives_the_mirror_image() {
+    let left = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
+    let right: Vec<P> = left.iter().map(|p| (p.0, -p.1)).collect();
+    let (a, _) = widen_run(&graph(vec![stretch("l", 1, 2, &left)]));
+    let (b, _) = widen_run(&graph(vec![stretch("l", 1, 2, &right)]));
+    let (pa, pb) = (&a.stretches[0].points, &b.stretches[0].points);
+    assert_eq!(pa.len(), pb.len());
+    for (p, q) in pa.iter().zip(pb) {
+        assert!(dist((p.0, -p.1), *q) < 1e-6, "{p:?} {q:?}");
+    }
+}
+
+/// The turn that counts for the inward allowance is the net turn of the zone: a corner of 110 degrees is an
+/// open corner, and may cut inward by what a fillet of 10 m needs (10 * (1 - cos 55) = 4.26 m from the legs).
+#[test]
+fn a_corner_of_110_degrees_is_an_open_corner() {
+    let corner = (60.0, 0.0);
+    let g = graph(vec![stretch(
+        "c",
+        1,
+        2,
+        &[(0.0, 0.0), corner, polar(corner, 110.0, 60.0)],
+    )]);
+    let (_, report) = widen_run(&g);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    let z = &report.zones[0];
+    assert!(z.max_inward_m > 0.1, "{z:?}");
+    assert!(z.max_inward_m <= 4.26 + 0.1, "{z:?}");
+}
+
+/// An S-bend turns left by 60 degrees and then right by 60: its net turn is zero, so no sample may move
+/// inward (of either bend) by more than the tolerance.
+#[test]
+fn an_s_bend_has_the_allowance_of_its_net_turn() {
+    let first = (50.0, 0.0);
+    let second = polar(first, 60.0, 25.0);
+    let end = polar(second, 0.0, 50.0);
+    let g = graph(vec![stretch("s", 1, 2, &[(0.0, 0.0), first, second, end])]);
+    let (_, report) = widen_run(&g);
+    assert!(!report.zones.is_empty(), "no zone");
+    for z in &report.zones {
+        assert!(z.max_inward_m <= 0.1, "{z:?}");
     }
 }
 
@@ -1180,6 +1228,9 @@ fn a_widening_the_solver_cannot_take_keeps_the_fit_and_is_reported() {
     assert!(report.kept.is_empty(), "{:?}", report.kept);
     assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
     assert!(!report.zones[0].reached);
+    // nothing was moved: no figure of the fit's own zone samples is reported as a move of the widening
+    assert!(near(report.zones[0].max_outward_m, 0.0, 0.0));
+    assert!(near(report.zones[0].max_inward_m, 0.0, 0.0));
     assert_eq!(
         format!("{:?}", out.stretches),
         format!("{:?}", fit.stretches)
