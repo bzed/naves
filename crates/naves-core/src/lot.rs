@@ -9,6 +9,30 @@
 //! rejected, and its area is the number of samples on a 1 m grid for which [`contains`] is true, counted
 //! on the part of the lot that lies on the map. The grid is fixed at 1 m.
 
+mod surface;
+
+pub use surface::{
+    Assessed, Form, LotSurface, NO_GROUP, Outcome, Polygon, Surface, assess, local_relief,
+};
+
+/// Digitising tolerance of "inside", and of "touching" for groups, in metres.
+pub const LOT_INSIDE_TOL_M: f64 = 1.0;
+/// A lot whose plane is within this of its ground (95th percentile) gets the plane, in metres.
+pub const LOT_PLANE_FIT_M: f64 = 0.5;
+/// The smallest radius of curvature of a lot's surface, in metres: the gentlest road's vertical radius
+/// (`limits::min_vertical_radius(Family::Asf1)`).
+pub const LOT_MIN_RADIUS_M: f64 = 600.0;
+/// The "short distance" of "no local height changes": six terrain cells, in metres.
+pub const LOT_RELIEF_LENGTH_M: f64 = 24.0;
+/// The largest move of a vertex; beyond it the change is scaled for the whole lot, in metres.
+pub const LOT_MAX_MOVE_M: f64 = 3.0;
+/// The slope (95th percentile) above which a lot is reported steep.
+pub const LOT_STEEP: f64 = crate::limits::CROSS_FALL_LIMIT;
+/// Fewer terrain vertices inside make a lot surface only.
+pub const LOT_MIN_VERTICES: usize = 3;
+/// The share of the ground in water above which a lot is excluded.
+pub const LOT_WATER_MAX: f64 = 0.5;
+
 use crate::heightmap::MapGeo;
 use crate::osm::{LotPolygon, OsmLand};
 
