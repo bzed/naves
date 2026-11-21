@@ -446,6 +446,35 @@ fn end_violation(line: &Polyline, end: Pose, edge: f64) -> f64 {
     (d - edge).max(MIN_UNDER_M - d).max(0.0)
 }
 
+/// How a part of a placement unit ended, for [`next_pose`].
+#[derive(Clone, Copy)]
+enum PartEnd {
+    /// The part between two forced elements was fitted: the pose its pieces end in, the pose it was meant to end in
+    /// (where the line is at the next junction) and how many pieces it got.
+    Fitted {
+        end: Pose,
+        goal: Pose,
+        pieces: usize,
+    },
+    /// The junction after the part could not be placed. `reached` is the goal the part before it was fitted to, if
+    /// there was one.
+    JunctionDropped { reached: Option<Pose> },
+}
+
+/// The pose the next part of a placement unit starts from. A part that missed its goal by more than
+/// [`JUNCTION_TOLERANCE_M`] or got no pieces does not carry its stale pose on: the next part starts where the line
+/// is (the goal), so a miss stays in the part where it happened. Where the junction after a part is dropped, the
+/// line goes on from the goal the part was fitted to; if there was none, the pose stays.
+fn next_pose(pose: Pose, outcome: PartEnd) -> Pose {
+    match outcome {
+        PartEnd::Fitted { end, goal, pieces } => {
+            let missed = (end.x - goal.x).hypot(end.y - goal.y) > JUNCTION_TOLERANCE_M;
+            if missed || pieces == 0 { goal } else { end }
+        }
+        PartEnd::JunctionDropped { reached } => reached.unwrap_or(pose),
+    }
+}
+
 /// A forced element of a run.
 enum Event {
     /// A junction piece, by index into the plans.
@@ -1277,12 +1306,14 @@ impl<'a> Placer<'a> {
                 }
                 // a part that missed its goal (or got no pieces) does not carry its stale pose on: the next part
                 // starts where the line is, and the failure stays in the part where it happened
-                let missed = (end.x - goal.x).hypot(end.y - goal.y) > JUNCTION_TOLERANCE_M;
-                pose = if missed || pieces.is_empty() {
-                    goal
-                } else {
-                    end
-                };
+                pose = next_pose(
+                    pose,
+                    PartEnd::Fitted {
+                        end,
+                        goal,
+                        pieces: pieces.len(),
+                    },
+                );
                 s_cur = s_goal;
             }
             // place the junction at the end of the fit
@@ -1325,9 +1356,7 @@ impl<'a> Placer<'a> {
                 s_cur = s_cross + half;
             } else {
                 dropped.push(plan_id);
-                if let Some(goal) = reached {
-                    pose = goal;
-                }
+                pose = next_pose(pose, PartEnd::JunctionDropped { reached });
             }
         }
         for plan_id in dropped {
@@ -2290,6 +2319,36 @@ mod tests {
 
     fn pose(x: f64, y: f64) -> Pose {
         Pose { x, y, heading: 0.0 }
+    }
+
+    #[test]
+    fn the_next_part_starts_where_the_line_is_unless_the_part_arrived() {
+        let start = pose(0.0, 0.0);
+        let goal = pose(0.0, 100.0);
+        // the part ended on its goal (within the tolerance) with pieces: the pose it ended in, as before
+        let end = pose(0.5, 99.0);
+        let part = |end, pieces| PartEnd::Fitted { end, goal, pieces };
+        assert_eq!(next_pose(start, part(end, 9)), end);
+        // it missed its goal by more than the tolerance: the stale pose is not carried on
+        let missed = pose(40.0, 60.0);
+        assert_eq!(next_pose(start, part(missed, 9)), goal);
+        // it got no pieces: its end is the start pose, which is where the line was before it
+        assert_eq!(next_pose(start, part(start, 0)), goal);
+        // the junction after it was not placed: the line goes on from the goal the part was fitted to ...
+        assert_eq!(
+            next_pose(
+                start,
+                PartEnd::JunctionDropped {
+                    reached: Some(goal)
+                }
+            ),
+            goal
+        );
+        // ... and where no part was fitted before it, the pose stays
+        assert_eq!(
+            next_pose(start, PartEnd::JunctionDropped { reached: None }),
+            start
+        );
     }
 
     /// A road going north for 10 m that ends at the crossing (0, 10).
