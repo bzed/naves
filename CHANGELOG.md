@@ -22,9 +22,17 @@ All notable changes to this project are documented here. The format follows
   be orphaned (`orphaned_edit`). With it on: new findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
   section in `build/report.json`, a line in the build summary and a progress line with the time of the stage; off,
   `roads.smoothing` is `{"enabled": false}`.
-  A curve that cannot be widened goes back to the line as drawn (blended over 6 m at its ends), a widened line does
-  not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and points within 0.20 m
-  of the line through their neighbours are dropped after the stage (the placement walks fewer points).
+  A curve that cannot be widened goes back to the line as drawn, keeping the vertices OpenStreetMap drew (not a
+  resampling at 2 m that could drop one and turn the first segment by several degrees; blended over 6 m at its ends),
+  a widened line does not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and
+  points within 0.20 m of the line through their neighbours are dropped after the stage (the placement walks fewer
+  points). The tight length of the report is measured the same way before and after: on samples of about 2 m, also
+  where a curve went back to the line as drawn with widely spaced vertices (a sharp corner no longer stops counting as
+  tight).
+- **Breaking:** the clean-up of the road graph removes and cuts road stretches (sidepaths, stubs, merged junctions,
+  collapsed small roundabouts, the cut-off end of a deck; cut pieces are `<id>/side<n>` and `<id>/approach<n>`), so an
+  edit on a stretch that went is orphaned, and an edit keyed by slot can lose its object where a stretch was cut or its
+  end moved. Both are reported as `orphaned_edit`.
 - A junction on the end of a bridge deck is moved off it (the clean-up of the graph, before bridges are fitted). Where
   the bridge's road goes on, the roads that met the deck end are joined to it 8 m further along (a new node; the
   first 8 m are the stretch `<id>/approach<n>`); where it ends in a T, the last 8 m of the bridge become an ordinary
@@ -66,11 +74,6 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- The tight length of the smoothing report is measured the same way before and after: on samples of about 2 m, also where a
-  curve went back to the line as drawn with widely spaced vertices (a sharp corner no longer stops counting as tight).
-- A curve that the smoothing leaves as drawn (it could not be widened, or the widened line would stand in water) keeps
-  the vertices OpenStreetMap drew, not a resampling at 2 m that could drop one and turn the first segment by several
-  degrees.
 - A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
   starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
   and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`
@@ -81,10 +84,7 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Road placement is faster at equal input: a block-wise nearest-point lookup gives bit for bit the same result
-  (1382 s to 817 s on the example at terrain size 2048, measured with the smoothing stage on, whose long lines made the
-  search the larger part of the placement). The smoothing stage, when on, drops collinear points at 0.20 m (31 961
-  points instead of 59 453 on the example at 0.05 m); against 0.05 m, road in water 8 to 3, earthworks capped 81 to 69
-  and terrain misses 3678 to 3627 were better, gaps 369 to 371 and kinks 18 to 21 slightly worse, conflicts 828 = 828.
+  (road placement on the Berchtesgaden example at terrain size 2048 went from about 729 s to about 550 s).
 - A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road
   pieces allow; before, only a ring tighter than the tightest arc of its surface was. Each collapsed roundabout is a
   new finding, `road_roundabout_collapsed`, at its centre.

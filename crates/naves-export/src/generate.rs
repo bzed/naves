@@ -206,7 +206,8 @@ pub fn place_once(
 /// The road graph of a project before the placement.
 pub struct FittedGraph {
     /// The graph of the features without the parts of roads that OpenStreetMap draws twice (see
-    /// [`drop_duplicates`]), cleaned (see [`netclean::clean`]) and smoothed (see [`smooth_graph_in_water`]): its bridges are those of OpenStreetMap.
+    /// [`drop_duplicates`]), cleaned (see [`netclean::clean`]) and smoothed when the stage is on (see
+    /// [`smooth_graph_in_water`] and [`SMOOTH_ENABLED`]): its bridges are those of OpenStreetMap.
     pub built: RoadGraph,
     /// The same with every OpenStreetMap bridge built from the part that fits it, grown along the straight road
     /// as far as the part needs (see [`fit_bridges`]).

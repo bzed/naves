@@ -65,7 +65,7 @@ pub const SMOOTH_ENABLED: bool = false;
 /// (up to what a fillet of the minimum radius needs); a bend that turns more is widened outward only.
 pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
 /// A zone that still has a sample tighter than this fraction of the wanted radius after the last pass goes
-/// back to the original line (the resampled vertices OpenStreetMap drew).
+/// back to the original line (the vertices OpenStreetMap drew, not a 2 m resample).
 pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
 /// The most distances [`simplify_line`] measures for one line. A line that needs more (the worst case of the
 /// algorithm is quadratic) keeps every point of the intervals it has no budget left for.
@@ -75,9 +75,10 @@ pub const SIMPLIFY_WORK_CAP: usize = 20_000_000;
 ///
 /// Measured on the Berchtesgaden example at terrain size 2048: the smoothed graph has 59 453 points at 0.05 m
 /// and 31 961 at 0.20 m (27 894 without the stage), and road placement takes 877 s at 0.05 m and 791 s at
-/// 0.20 m. The findings are not worse (road in water 8 to 3, earthworks capped 81 to 69, terrain misses 3678 to
-/// 3627, gaps 369 to 371, conflicts 828 = 828). Road pieces are placed with tolerances of tens of centimetres,
-/// so 0.20 m of line simplification does not change what can be built.
+/// 0.20 m. Against 0.05 m the findings are better for road in water (8 to 3), earthworks capped (81 to 69) and
+/// terrain misses (3678 to 3627), slightly worse for gaps (369 to 371) and kinks (18 to 21), and unchanged for
+/// conflicts (828 = 828). Road pieces are placed with tolerances of tens of centimetres, so 0.20 m of line
+/// simplification does not change what can be built.
 pub const SIMPLIFY_TOL_M: f64 = 0.20;
 /// A zone that goes back to the original line is blended into the fit over this length at each end, in metres
 /// (linear, from the fit's offset there to zero), so the line has no step.

@@ -123,7 +123,8 @@ One offset per sample keeps the problem small and stops samples from sliding alo
 convex quadratic and the constraints are bounds, so the result is unique and deterministic. Chains are independent;
 they are solved in a deterministic order (and may run in parallel with `rayon`, collected in order).
 
-The smoothed samples replace the stretch's line. Stretch ids, node ids and node positions are unchanged.
+The smoothed samples replace the stretch's line. Stretch ids, node ids and node positions are unchanged (outside
+widened zones; inside one, nodes where a road merely continues move with the line).
 
 ### Minimum radius
 
@@ -177,8 +178,9 @@ A second pass does this after the fit, chain by chain:
   keep their positions. A sample that is in a zone keeps its outward side in later passes, so the reverse bends
   of the spreading legs cannot turn the zone around.
 - **Where it cannot be done.** A zone whose smallest radius (its samples and the held sample on each side) is still
-  below `WIDEN_KEEP_FRACTION` (0.9) of the wanted radius after the last pass goes back to the original line (the resampled OpenStreetMap vertices, since the fit is tighter than the original; its
-  boundary samples are held, so this is seamless, and it moves no node). It stays in the report with its position,
+  below `WIDEN_KEEP_FRACTION` (0.9) of the wanted radius after the last pass goes back to the original line (the
+  OpenStreetMap vertices, since the fit is tighter than the original; its boundary samples are held, so this is
+  seamless, and it moves no node). It stays in the report with its position,
   the radius the attempt reached, the radius wanted and `plate_candidate: true`: the bend cannot be built as a curve,
   and these are the candidates for the second allowed form, a concrete plate joining the two legs (maintainer,
   2026-11-21); the plate is its own later task, designed from this list. Between 0.9 and 0.99 the widened line is
@@ -232,11 +234,11 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 Four rules, each from the first map run. (1) After the stage, a point whose removal moves the line by less than
 `SIMPLIFY_TOL_M` (0.20 m; 0.05 m until 2026-11-21) is dropped (Ramer-Douglas-Peucker; ends stay); the figures are
 those before the drop.
-(2) A zone below `WIDEN_KEEP_FRACTION` goes back to the resampled original line, not to the fit (the fit had pulled
-the bend tighter than drawn), with the fit's offset at the two held samples blended out over `WIDEN_REVERT_BLEND_M`
-(6 m) of the zone. (3) A zone whose widened line has a sample in water where the original line has none goes back the
-same way and is flagged `blocked_by_water` (the water is that of `road_in_water`). (4) Zone samples within
-`WIDEN_BRIDGE_HOLD_M` (25 m) of a bridge end are held in the widening.
+(2) A zone below `WIDEN_KEEP_FRACTION` goes back to the original line (OpenStreetMap's own vertices, not a 2 m
+resample), not to the fit (the fit had pulled the bend tighter than drawn), with the fit's offset at the two held
+samples blended out over `WIDEN_REVERT_BLEND_M` (6 m) of the zone. (3) A zone whose widened line has a sample in
+water where the original line has none goes back the same way and is flagged `blocked_by_water` (the water is that of
+`road_in_water`). (4) Zone samples within `WIDEN_BRIDGE_HOLD_M` (25 m) of a bridge end are held in the widening.
 
 ## How it is judged
 
