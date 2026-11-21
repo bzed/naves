@@ -195,3 +195,47 @@ fn smooth_line_seeds() {
         let _ = resample(&line, 2.0);
     }
 }
+
+#[test]
+fn reroute_raster_seeds() {
+    use naves_core::reroute::raster::{Clearance, Obstacles, chamfer, exempt_samples, samples};
+    for (name, data) in seeds("reroute_raster") {
+        let mut road = Vec::new();
+        let mut original = Vec::new();
+        let mut probes = Vec::new();
+        for c in data.as_chunks::<17>().0 {
+            let p = (
+                f64::from_le_bytes(c[0..8].try_into().unwrap()),
+                f64::from_le_bytes(c[8..16].try_into().unwrap()),
+            );
+            match c[16] {
+                0 => road.push(p),
+                1 => original.push(p),
+                3 => probes.push(p),
+                _ => {}
+            }
+        }
+        let mut o = Obstacles::new((-50.0, -50.0), (250.0, 250.0), 4.0, 200.0, 3.0, 20_000);
+        o.stamp_water(&|p| p.0 > 100.0 && p.0 < 120.0 && p.1 > 100.0 && p.1 < 120.0);
+        o.stamp_road(&road, 6.0, &|p| p.0 < 100.0);
+        o.set_original(&original);
+        o.finish();
+        let clear = Clearance {
+            water_m: 5.0,
+            road_m: 12.0,
+        };
+        for pair in probes.windows(2) {
+            let blocked = o.segment(pair[0], pair[1], clear);
+            if name == "scene" {
+                assert!(
+                    blocked.is_err(),
+                    "seed {name}: a probe through the lake is free"
+                );
+                break;
+            }
+        }
+        let _ = (samples(&road), exempt_samples(&road, &original, 20.0, 10.0));
+        let _ = o.water_cap_m(&original);
+        let _ = chamfer(&[true, false, true], 3, 1, 2.0);
+    }
+}
