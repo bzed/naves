@@ -48,7 +48,8 @@ const EDGE_M: f64 = 1e-6;
 /// How far either side of a crossing the line is probed for being inside, in metres.
 const PROBE_M: f64 = 1e-3;
 
-/// A group of lots that touch: its members and their outlines.
+/// A group of lots that touch: its members and their outlines. Groups must come from [`groups`], where lots that touch
+/// are one group; the lot step is only defined for groups that do not overlap (see [`drop_lot_roads`]).
 ///
 /// `members`, `polygons` and `areas_m2` are parallel lists, one entry per member in the same order: whoever builds a
 /// group by hand must keep them in step (a missing area counts as infinite). [`groups`] does.
@@ -627,35 +628,74 @@ pub struct LotStep {
     pub entries: BTreeSet<i64>,
 }
 
+/// What the plans together do, before the new nodes are numbered.
+struct Merged<'a> {
+    dropped: Vec<DroppedInLot>,
+    gone: BTreeSet<usize>,
+    /// The cuts, keyed by the stretch's id first, so that the new nodes follow the ids whatever the order of the graph.
+    cuts: BTreeMap<(&'a str, usize), (f64, Vec<&'a CutEnd>)>,
+    through: Vec<String>,
+    entries: BTreeSet<i64>,
+}
+
+/// Puts the plans together: what they remove, keep and cut. Groups that overlap (built by hand) may both cut an end:
+/// the first plan's cut is the one.
+fn merge_plans<'a>(graph: &'a RoadGraph, plans: &[&'a Plan]) -> Merged<'a> {
+    let mut merged = Merged {
+        dropped: Vec::new(),
+        gone: BTreeSet::new(),
+        cuts: BTreeMap::new(),
+        through: Vec::new(),
+        entries: BTreeSet::new(),
+    };
+    for plan in plans {
+        for (i, report) in &plan.removed {
+            merged.gone.insert(*i);
+            merged.dropped.push(report.clone());
+        }
+        for cut in &plan.cuts {
+            let id = graph.stretches.get(cut.index).map_or("", |s| s.id.as_str());
+            let entry = merged
+                .cuts
+                .entry((id, cut.index))
+                .or_insert((cut.before_m, Vec::new()));
+            for end in &cut.ends {
+                if !entry.1.iter().any(|e| e.at_end == end.at_end) {
+                    entry.1.push(end);
+                }
+            }
+        }
+        merged.through.extend(plan.through.iter().cloned());
+        merged.entries.extend(plan.ends.iter().copied());
+    }
+    merged
+}
+
 /// The graph after `plans`: their stretches removed, their access roads cut, the new nodes numbered from `first` in
 /// the order of the stretch ids (the start of a stretch before its end); the removed stretches, the cuts and the
 /// nodes the step leaves as the only end of a stretch.
 fn apply(graph: &RoadGraph, plans: &[&Plan], first: i64) -> LotStep {
-    let mut dropped: Vec<DroppedInLot> = Vec::new();
-    let mut gone: BTreeSet<usize> = BTreeSet::new();
-    let mut cuts: BTreeMap<usize, (f64, Vec<&CutEnd>)> = BTreeMap::new();
-    let mut through: Vec<String> = Vec::new();
-    let mut entries: BTreeSet<i64> = BTreeSet::new();
-    for plan in plans {
-        for (i, report) in &plan.removed {
-            gone.insert(*i);
-            dropped.push(report.clone());
-        }
-        for cut in &plan.cuts {
-            let entry = cuts.entry(cut.index).or_insert((cut.before_m, Vec::new()));
-            entry.1.extend(cut.ends.iter());
-        }
-        through.extend(plan.through.iter().cloned());
-        entries.extend(plan.ends.iter().copied());
-    }
+    let Merged {
+        mut dropped,
+        gone,
+        cuts,
+        mut through,
+        mut entries,
+    } = merge_plans(graph, plans);
     through.sort();
+    through.dedup();
     dropped.sort_by(|a, b| a.stretch.cmp(&b.stretch));
     // the cut stretches in the order of their ids (the graph's order), a stretch's start before its end
     let mut access: Vec<CutAccess> = Vec::new();
     let mut at: BTreeMap<usize, (NewNodes, f64)> = BTreeMap::new();
     let mut node = first;
-    for (index, (before_m, mut ends)) in cuts {
-        if gone.contains(&index) {
+    for ((_, index), (before_m, mut ends)) in cuts {
+        // a stretch that another group removes or keeps as a road through it is not cut
+        let kept = graph
+            .stretches
+            .get(index)
+            .is_some_and(|s| through.binary_search(&s.id).is_ok());
+        if gone.contains(&index) || kept {
             continue;
         }
         ends.sort_by_key(|e| e.at_end);
@@ -862,6 +902,11 @@ fn drop_lot_roads_with(
 /// numbers of the groups whose removal would have split a component (with every group counted as one node) and that
 /// were left as they are, the stretches that stay as roads through a lot, and the entry nodes. A stretch that two
 /// groups both claim goes to the first.
+///
+/// `groups` must come from [`groups`] (lots that touch are one group, so no two groups overlap). A hand-built list
+/// whose groups overlap still gives a consistent step: an end that two groups cut is cut once (by the first), and a
+/// stretch that one group removes or keeps as a road through is not cut by another. New node ids follow the stretch
+/// ids (an id above all others, sorted by stretch id, a start before an end), not the order of the graph.
 #[must_use]
 pub fn drop_lot_roads(graph: &RoadGraph, groups: &[LotGroup]) -> LotStep {
     drop_lot_roads_with(graph, groups, &splits)

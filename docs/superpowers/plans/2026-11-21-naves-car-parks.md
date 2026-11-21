@@ -290,8 +290,8 @@ change).
   `CleanReport::lot_through_kept` counts `through`.
 - `netclean::components_with(graph: &RoadGraph, groups: &[LotGroup]) -> usize`.
 - `netclean::clean_with(graph, widths, cell_m, groups: &[LotGroup]) -> (RoadGraph, CleanReport)`; `clean` calls it with
-  `&[]`, unchanged in behaviour. The lot step runs first; the stub step treats every `CutAccess::node` as not a free
-  end.
+  `&[]`, unchanged in behaviour. The lot step runs first; the stub step leaves every node in `LotStep::entries` alone (every node the
+  lot step leaves with one stretch: the new ends of the cut access roads and the nodes where a removed road met one road).
 - `CleanReport::lot_roads`, `lot_access`, `lots_split`, `junctions_in_lots: usize`; components counted with
   `components_with`; `components_by_step` gets the lot step first.
 

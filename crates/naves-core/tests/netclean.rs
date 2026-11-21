@@ -3785,3 +3785,37 @@ fn a_stretch_with_dead_ends_in_two_lots_is_cut_at_both_ends_each_by_its_own_grou
         road.points
     );
 }
+
+#[test]
+fn groups_built_by_hand_that_overlap_cut_an_end_once_and_report_only_nodes_that_exist() {
+    // a dead-end road into the lot, nothing else inside; two groups on the same square (`lot::groups` would make
+    // them one, so this is a hand-built list)
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-20.0, -30.0), (20.0, -30.0), (60.0, -30.0)],
+            Family::Asf3,
+        ),
+        plain(2, &[2, 5], &[(20.0, -30.0), (20.0, 20.0)], Family::Asf3),
+    ]);
+    let member = |id: &str| (id.to_string(), square(0.0, 0.0, 40.0, 40.0));
+    let make = |number: usize, id: &str| {
+        let (id, outer) = member(id);
+        group_of(number, &[(id.as_str(), outer, Vec::new())])
+    };
+    let twice = [make(0, "osm/way/1"), make(1, "osm/way/2")];
+    let step = drop_lot_roads(&g, &twice);
+    assert_eq!(step.access.len(), 1, "{:?}", step.access);
+    let access = step.access.first().expect("one cut");
+    assert_eq!((access.stretch.as_str(), access.node), ("2:2-5", 6));
+    let road = stretch(&step.graph, "2:2-5");
+    assert_eq!((road.start, road.end), (2, 6));
+    assert_eq!(road.points.len(), 2);
+    assert!(near(road.points[1], (20.0, 4.0)), "{:?}", road.points);
+    // the reported node is a node of the result and an entry
+    assert!(step.entries.contains(&access.node));
+    // the same result as for the one group
+    let once = drop_lot_roads(&g, &[make(0, "osm/way/1")]);
+    assert_eq!(step.graph, once.graph);
+}

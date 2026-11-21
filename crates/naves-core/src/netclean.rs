@@ -860,7 +860,8 @@ pub fn clean(
 }
 
 /// [`clean`] with lots: the roads inside the `groups` are taken out first and the access roads cut at the lot's edge
-/// (step 0, see [`drop_lot_roads`]); the stub step then leaves the new ends of the access roads alone. The
+/// (step 0, see [`drop_lot_roads`]); the stub step then leaves every node the lot step left with one stretch alone
+/// ([`LotStep::entries`]: the new ends of the cut access roads and the nodes where a removed road met one road). The
 /// connected components are counted with each group as one node ([`components_with`]), and
 /// [`CleanReport::components_by_step`] has the lot step as its first entry. Without groups this is [`clean`]
 /// exactly: the lot step is not run and the report has no lot entry.
