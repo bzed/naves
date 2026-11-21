@@ -185,6 +185,70 @@ in that order).
 - [ ] **Step 2:** RED. **Step 3:** implement. **Step 4:** GREEN.
 - [ ] **Step 5:** `make check`; commit `feat: the road graph can be smoothed chain by chain`.
 
+### Task 3b: Tight curves are widened outward (Sonnet; may use one Opus helper)
+
+Added 2026-11-21 (maintainer: tight curves from scaling are smoothed outwards; earthwork and the outward move are
+fine). Spec section "Tight curves are widened outward"; its constants are used verbatim.
+
+**Files:** Modify `crates/naves-core/src/smooth.rs` (split into `smooth.rs` and `smooth/widen.rs` if it helps),
+`crates/naves-core/tests/smooth.rs`; read `roadnet.rs` (`crossings_of`).
+
+**Interfaces — Consumes:** Tasks 2 and 3. **Produces:**
+
+```rust
+pub const WIDEN_LEAD: f64 = 2.0;
+pub const WIDEN_REACH: f64 = 2.0;
+pub const WIDEN_DIRECTIONS: usize = 8;
+pub const WIDEN_SLACK_COST: f64 = 1e4;
+pub const WIDEN_PASSES: usize = 3;
+/// Switches the widening pass; off returns exactly what the fit alone gives.
+pub const WIDEN_ENABLED: bool = true;
+
+/// One tight zone of a chain and what widening did to it.
+pub struct WidenedZone {
+    pub at: (f64, f64),            // the tightest sample before widening
+    pub stretches: Vec<StretchId>, // in chain order
+    pub radius_before_m: f64,
+    pub radius_after_m: f64,
+    pub radius_wanted_m: f64,
+    pub max_outward_m: f64,
+    pub reached: bool,             // no sample of the zone is tighter than wanted afterwards
+}
+// SmoothReport gains: `zones: Vec<WidenedZone>` (chain order, then along the chain), `max_outward_m: f64`;
+// StretchSmooth gains `max_outward_m: f64`.
+```
+
+`smooth_graph` keeps its signature. `max_move_m` keeps meaning the sideways move inside the normal corridor;
+outward moves in zones are reported in `max_outward_m` and are not bound by `CORRIDOR_M`.
+
+- [ ] **Step 1: Failing tests** (synthetic graphs, as in Task 3):
+  - `a_hairpin_is_widened_to_the_minimum_radius`: two parallel 80 m legs 8 m apart joined by a half circle of
+    radius 4 m, one stretch between two dead ends, family minimum 10 m → one zone, `reached`, every `radius_at`
+    along the output at least 10 m · 0.92, `radius_after_m > radius_before_m`, the summed signed turn within 5° of
+    180°, no sample moved inward of the original bend (each sample of the zone lies on the outside of the original
+    line or on it, to 1e-6), `tight_after_m < tight_before_m`.
+  - `a_right_angle_is_widened`: an L of two 60 m legs, minimum 10 m → `reached`, the radius at every sample at
+    least 9.2 m, `max_outward_m > 0`.
+  - `a_curve_that_is_wide_enough_is_left_to_the_fit`: a 90° arc of radius 30 m, minimum 10 m → no zone, the output
+    is bitwise what `WIDEN_ENABLED = false` gives (compare with a run through the fit alone).
+  - `a_way_split_inside_a_bend_moves_with_the_road`: the hairpin as two stretches meeting at its apex (a
+    two-stretch node) → `reached`; both stretches share the moved node's position bitwise; the graph's crossing
+    for that node id reports the moved position; node and stretch ids are unchanged.
+  - `a_junction_in_the_bend_holds_it_and_the_zone_is_reported`: the hairpin with a third stretch joining at its
+    apex → the node is unchanged bitwise, the zone is listed with `reached == false` and `radius_wanted_m == 10.0`,
+    nothing panics, the other stretches of the graph are as the fit alone leaves them.
+  - `a_bridge_in_a_zone_keeps_its_ends`: plain – bridge – plain with a tight bend on one approach 10 m from the
+    bridge end → both bridge end nodes unchanged bitwise.
+  - `the_outside_is_the_side_away_from_the_bend`: the hairpin mirrored (left-turning and right-turning) → the two
+    outputs are mirror images to 1e-6.
+  - `nothing_outside_a_zone_moves_further_than_the_corridor`: the random-walk graph of Task 3 →
+    `max_move_m <= CORRIDOR_M + 1e-6` still holds for samples outside zones.
+  - `widening_does_not_depend_on_the_thread_count` and `the_same_input_gives_the_same_bytes` extended to a graph
+    with a zone.
+  - `a_zone_with_a_nan_or_zero_minimum_is_skipped`: `min_radius` returning NaN, 0 or infinity → no zone, no panic.
+- [ ] **Step 2:** RED. **Step 3:** implement. **Step 4:** GREEN.
+- [ ] **Step 5:** `make check`; commit `feat: curves tighter than the road pieces are widened outward`.
+
 ### Task 4: Smoothing in the build (Sonnet)
 
 **Files:** Modify `crates/naves-core/src/generate.rs` (`fitted_graph`, `FittedGraph`, `Generated`),

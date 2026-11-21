@@ -127,6 +127,42 @@ it inside the corridor). Instead:
   is reported per stretch and in total (`SmoothReport`);
 - that figure, before and after, is how the fit is judged.
 
+### Tight curves are widened outward
+
+Added 2026-11-21. The fit above shrinks curves: it penalises the bend between neighbouring samples, the samples
+only move sideways, and pulling a curve inward shortens the spacing and so lowers the cost while the radius drops
+(measured: a 90° corner comes out at 3.75 m, a hairpin of radius 3.96 m at 2.53 m). On a scaled-down map many real
+curves are already tighter than the road pieces can build. The maintainer's decision: such curves are smoothed
+outwards to a larger radius; the earthwork this needs is fine, and how far a road moves outward is no concern.
+
+A second pass does this after the fit, chain by chain:
+
+- **Tight zones.** On the fitted line, every run of samples whose radius is below `min_radius(family)` is a tight
+  run. Its zone is the run plus `WIDEN_LEAD · min_radius` of road before and after it along the chain (the legs
+  must be able to spread before the bend). Zones that touch are one zone. A zone's outside is the side away from
+  the centre of its bend (the sign of the summed turn over the tight run).
+- **Corridor in a zone.** No sample of a zone may move inward. Outward it may move up to
+  `WIDEN_REACH · min_radius`. Outside the zones the corridor stays `CORRIDOR_M` on both sides.
+- **Radius bound.** For every sample of a zone the second difference is bounded:
+  `|q_{i-1} − 2·q_i + q_{i+1}| ≤ h² / min_radius + s_i`, with `h` the sample step and a slack `s_i ≥ 0` that costs
+  `WIDEN_SLACK_COST · s_i`. The solver wrapper has only linear rows, so the length is bounded by its projections on
+  `WIDEN_DIRECTIONS` (8) evenly spaced directions, which lets the length exceed the bound by at most 8 %; the bound is therefore taken as
+  `h² / (min_radius · 1.08)`.
+- **What is fixed.** Junction nodes (and the next sample), dead ends' positions and bridge end nodes, as in the
+  fit. Nodes where a road merely continues are free inside a zone and move with the line; the graph's crossing
+  list is rebuilt from the stretches afterwards, so that every reader of a node's position sees the new one.
+  Outside zones nothing changes.
+- **Passes.** Moving outward stretches the spacing, so the line is resampled and the pass repeated, at most
+  `WIDEN_PASSES` (3) times or until no sample of the chain is tighter than the minimum.
+- **Where it cannot be done.** A zone that still has a tight sample after the last pass (a junction or a bridge end
+  holds the bend, or the slack was used) keeps the widened line and is reported with its position, the radius
+  reached and the radius wanted. These are the candidates for the second allowed form, a concrete plate joining
+  the two legs (maintainer, 2026-11-21); the plate is its own later task, designed from this list.
+- **Report.** `SmoothReport` gains, per stretch and in total, the largest outward move and the list of zones with
+  radius before, after, and whether the minimum was reached.
+
+A bridge stretch inside a zone keeps its ends and its stiffness; the zone widens its approaches.
+
 ### What a failed fit does
 
 If the solver does not converge for a chain, or the input is degenerate (NaN, or a line that collapses to one point),
@@ -153,6 +189,11 @@ nothing to smooth: it keeps its line and is counted separately (`skipped_short`)
 | `BRIDGE_STRAIGHT_WEIGHT` | 10.0 | extra stiffness on bridge stretches |
 | `CHAIN_TURN_MAX_DEG` | 150.0 | above this a two-stretch node ends a chain |
 | `SIMPLIFY_TOL_M` | 0.05 | only if the run-time rule above triggers |
+| `WIDEN_LEAD` | 2.0 | zone length before and after a tight run, in minimum radii |
+| `WIDEN_REACH` | 2.0 | furthest outward move in a zone, in minimum radii |
+| `WIDEN_DIRECTIONS` | 8 | directions that bound the second difference |
+| `WIDEN_SLACK_COST` | 1e4 | cost of exceeding the radius bound |
+| `WIDEN_PASSES` | 3 | resample-and-repeat limit |
 
 ## How it is judged
 
