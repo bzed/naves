@@ -5,11 +5,12 @@
 
 #![expect(
     clippy::indexing_slicing,
+    clippy::unwrap_used,
     reason = "test code; failing loudly is the point"
 )]
 
 use naves_core::smooth::{
-    CORRIDOR_M, Sample, SmoothError, SmoothParams, radius_at, resample, smooth_line,
+    CORRIDOR_M, SAMPLE_M, Sample, SmoothError, SmoothParams, radius_at, resample, smooth_line,
 };
 
 type P = (f64, f64);
@@ -315,4 +316,351 @@ fn stiffness_belongs_to_the_centre_sample() {
     // an interior sample's does
     let corner = line.iter().position(|p| *p == (40.0, 0.0)).unwrap();
     assert_ne!(bits(&run(corner, 10.0)), plain);
+}
+
+// --- the whole graph -----------------------------------------------------------------------------------------
+
+use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
+use naves_core::catalog::{Family, PieceCatalog};
+use naves_core::roadnet::{RoadGraph, Stretch};
+use naves_core::smooth::{SmoothReport, min_radius, smooth_graph};
+
+fn stretch(id: &str, start: i64, end: i64, points: &[P]) -> Stretch {
+    Stretch {
+        id: id.to_string(),
+        family: Family::Asf3,
+        drivable: true,
+        bridge: false,
+        tunnel: false,
+        roundabout: false,
+        layer: 0,
+        points: points.to_vec(),
+        start,
+        end,
+        bridge_kind: None,
+        bridge_offset: 0.0,
+        use_sidepath: false,
+    }
+}
+
+fn graph(stretches: Vec<Stretch>) -> RoadGraph {
+    RoadGraph {
+        stretches,
+        crossings: Vec::new(),
+    }
+}
+
+fn near(a: f64, b: f64, tol: f64) -> bool {
+    (a - b).abs() <= tol
+}
+
+fn ten(_: &Stretch) -> f64 {
+    10.0
+}
+
+fn run(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
+    smooth_graph(g, &ten, &SmoothParams::default())
+}
+
+fn bits(p: P) -> (u64, u64) {
+    (p.0.to_bits(), p.1.to_bits())
+}
+
+/// The turn between the last segment of `a` and the first of `b`, in degrees.
+fn turn_between(a: &[P], b: &[P]) -> f64 {
+    let n = a.len();
+    let d1 = (a[n - 1].0 - a[n - 2].0, a[n - 1].1 - a[n - 2].1);
+    let d2 = (b[1].0 - b[0].0, b[1].1 - b[0].1);
+    (d1.0 * d2.1 - d1.1 * d2.0)
+        .atan2(d1.0 * d2.0 + d1.1 * d2.1)
+        .to_degrees()
+        .abs()
+}
+
+fn polar(from: P, deg: f64, len: f64) -> P {
+    let r = deg.to_radians();
+    (from.0 + len * r.cos(), from.1 + len * r.sin())
+}
+
+#[test]
+fn a_road_is_smooth_across_a_two_stretch_node() {
+    let node = (40.0, 0.0);
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), node]),
+        stretch("b", 2, 3, &[node, polar(node, 30.0, 40.0)]),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 1);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    let (a, b) = (&out.stretches[0].points, &out.stretches[1].points);
+    assert_eq!(bits(*a.last().unwrap()), bits(node));
+    assert_eq!(bits(b[0]), bits(node));
+    // The node is fixed and the corridor is 2 m, so the 30 degree bend is spread over a few samples and the
+    // turn at the node itself falls to 8.0 degrees (measured), not under 5.
+    let turn = turn_between(a, b);
+    assert!(turn < 10.0, "turn {turn}");
+}
+
+#[test]
+fn a_junction_keeps_its_node_and_its_directions() {
+    let node = (0.0, 0.0);
+    let g = graph(vec![
+        stretch("a", 1, 0, &[(-40.0, 0.0), node]),
+        stretch("b", 0, 2, &[node, polar(node, 40.0, 40.0)]),
+        stretch("c", 0, 3, &[node, (0.0, -40.0)]),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 3);
+
+    for (i, at_start) in [(0, false), (1, true), (2, true)] {
+        let original = resample(&g.stretches[i].points, SAMPLE_M);
+        let new = &out.stretches[i].points;
+        assert_eq!(new.len(), original.len());
+        let (end, next) = if at_start {
+            (0, 1)
+        } else {
+            (new.len() - 1, new.len() - 2)
+        };
+        assert_eq!(bits(new[end]), bits(node));
+        assert_eq!(bits(new[next]), bits(original[next]), "stretch {i}");
+    }
+}
+
+#[test]
+fn a_bridge_keeps_its_ends_and_gets_straighter() {
+    let n1 = (40.0, 0.0);
+    let mid = (50.0, 0.0);
+    let n2 = polar(mid, 20.0, 10.0);
+    let mut bridge = stretch("br", 2, 3, &[n1, mid, n2]);
+    bridge.bridge = true;
+    let g = graph(vec![
+        stretch("p1", 1, 2, &[(0.0, 0.0), n1]),
+        bridge,
+        stretch("p2", 3, 4, &[n2, polar(n2, 20.0, 40.0)]),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 1);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    let b = &out.stretches[1].points;
+    assert_eq!(bits(b[0]), bits(n1));
+    assert_eq!(bits(*b.last().unwrap()), bits(n2));
+    let sum = |l: &[P]| turns(l).iter().map(|t| t.abs()).sum::<f64>();
+    assert!(sum(b) < sum(&g.stretches[1].points), "{}", sum(b));
+    for i in [0, 2] {
+        let before = resample(&g.stretches[i].points, SAMPLE_M);
+        within_corridor(&before, &out.stretches[i].points);
+    }
+}
+
+#[test]
+fn a_ring_is_cut_and_smoothed() {
+    let corners = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)];
+    let g = graph(
+        (0..4_usize)
+            .map(|i| {
+                let from = corners[i];
+                let to = corners[(i + 1) % 4];
+                let first = i64::try_from(i).unwrap() + 1;
+                let second = i64::try_from((i + 1) % 4).unwrap() + 1;
+                stretch(&format!("r{i}"), first, second, &[from, to])
+            })
+            .collect(),
+    );
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 1);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    for (i, s) in out.stretches.iter().enumerate() {
+        assert_eq!(bits(s.points[0]), bits(corners[i]));
+        assert_eq!(bits(*s.points.last().unwrap()), bits(corners[(i + 1) % 4]));
+        assert!(s.points.len() > 2);
+    }
+}
+
+#[test]
+fn a_sharp_return_ends_the_chain() {
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (40.0, 0.0)]),
+        stretch("b", 2, 3, &[(40.0, 0.0), (0.0, 7.0)]),
+    ]);
+    let (_, report) = run(&g);
+    assert_eq!(report.chains, 2);
+}
+
+#[test]
+fn a_failed_chain_keeps_its_line_and_is_reported() {
+    let bad = [(40.0, 0.0), (60.0, f64::NAN), (80.0, 0.0)];
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 5.0)]),
+        stretch("b", 2, 3, &bad),
+    ]);
+    // the sound one must end at the node of the bad one
+    let g = RoadGraph {
+        stretches: vec![
+            stretch("a", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 0.0)]),
+            g.stretches[1].clone(),
+        ],
+        crossings: Vec::new(),
+    };
+    let (out, report) = run(&g);
+    assert_eq!(report.kept.len(), 1);
+    assert_eq!(report.kept[0].0, "b");
+    assert_eq!(format!("{:?}", out.stretches[1].points), format!("{bad:?}"));
+    assert!(out.stretches[0].points.len() > 3);
+}
+
+/// A small deterministic generator.
+fn lcg(state: &mut u64) -> f64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    f64::from(u32::try_from(*state >> 40).unwrap()) / f64::from(1_u32 << 24)
+}
+
+fn random_walk(seed: u64, count: usize) -> RoadGraph {
+    let mut state = seed;
+    let mut at = (0.0, 0.0);
+    let mut heading = 0.0_f64;
+    let mut stretches = Vec::new();
+    for i in 0..count {
+        let mut points = vec![at];
+        for _ in 0..3 {
+            heading += (lcg(&mut state) - 0.5) * 100.0;
+            at = polar(at, heading, 5.0 + lcg(&mut state) * 10.0);
+            points.push(at);
+        }
+        let n = i64::try_from(i).unwrap();
+        stretches.push(stretch(&format!("w{i:02}"), n, n + 1, &points));
+    }
+    graph(stretches)
+}
+
+#[test]
+fn nothing_moves_further_than_the_corridor() {
+    let g = random_walk(7, 20);
+    let (out, report) = run(&g);
+    assert!(
+        report.max_move_m <= CORRIDOR_M + 1e-6,
+        "{}",
+        report.max_move_m
+    );
+    let mut worst = 0.0_f64;
+    for (a, b) in g.stretches.iter().zip(&out.stretches) {
+        let before = resample(&a.points, SAMPLE_M);
+        assert_eq!(before.len(), b.points.len());
+        for (p, q) in before.iter().zip(&b.points) {
+            worst = worst.max(dist(*p, *q));
+        }
+    }
+    assert!((worst - report.max_move_m).abs() < 1e-9);
+    assert!(worst > 0.1, "the walk should have moved: {worst}");
+}
+
+#[test]
+fn tight_length_is_reported() {
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (40.0, 0.0)]),
+        stretch("b", 2, 3, &[(40.0, 0.0), (40.0, 40.0)]),
+    ]);
+    let (_, report) = run(&g);
+    // Before: the one corner sample, half a 2 m segment on each side. After (measured): the corner is rounded
+    // to a radius of about 3.75 m and the bend spreads over more samples, so more road is below 10 m than
+    // before (6.7 m): the fit makes a corner gentler per sample, not wider than the family's minimum.
+    assert!(
+        near(report.tight_before_m, 2.0, 1e-9),
+        "{}",
+        report.tight_before_m
+    );
+    assert!(report.tight_after_m > 0.0);
+    assert!(
+        near(report.tight_after_m, 6.712_395, 1e-5),
+        "{}",
+        report.tight_after_m
+    );
+    let per: f64 = report.per_stretch.iter().map(|p| p.tight_after_m).sum();
+    assert!(near(per, report.tight_after_m, 1e-9));
+}
+
+#[test]
+fn the_result_does_not_depend_on_the_thread_count() {
+    let g = random_walk(11, 20);
+    let with = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| run(&g))
+    };
+    let (g1, r1) = with(1);
+    let (g4, r4) = with(4);
+    assert_eq!(g1, g4);
+    assert_eq!(r1, r4);
+    assert_eq!(format!("{g1:?}"), format!("{g4:?}"));
+    assert_eq!(format!("{r1:?}"), format!("{r4:?}"));
+}
+
+#[test]
+fn min_radius_is_the_tightest_curve_piece() {
+    let c = synthetic_catalog();
+    assert_eq!(
+        min_radius(&c, Family::Asf3).map(|r| (r * 1e6).round()),
+        Some(10.0e6)
+    );
+    let mut models = synthetic_models();
+    models.retain(|path, _| !path.rsplit('\\').next().unwrap_or("").contains(' '));
+    let flat = PieceCatalog::from_models(&models).unwrap();
+    assert_eq!(min_radius(&flat, Family::Asf3), None);
+}
+
+#[test]
+fn a_stretch_met_at_its_end_keeps_its_direction() {
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (40.0, 0.0)]),
+        stretch("b", 3, 2, &[(80.0, 10.0), (40.0, 0.0)]),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 1);
+    let b = &out.stretches[1].points;
+    assert_eq!(bits(b[0]), bits((80.0, 10.0)));
+    assert_eq!(bits(*b.last().unwrap()), bits((40.0, 0.0)));
+}
+
+#[test]
+fn a_tunnel_end_ends_the_chain() {
+    let mut tunnel = stretch("t", 2, 3, &[(40.0, 0.0), (80.0, 0.0)]);
+    tunnel.tunnel = true;
+    let g = graph(vec![stretch("a", 1, 2, &[(0.0, 0.0), (40.0, 0.0)]), tunnel]);
+    assert_eq!(run(&g).1.chains, 2);
+}
+
+#[test]
+fn a_loop_of_one_stretch_is_smoothed_and_a_tiny_one_is_reported() {
+    let square = [
+        (0.0, 0.0),
+        (30.0, 0.0),
+        (30.0, 30.0),
+        (0.0, 30.0),
+        (0.0, 0.0),
+    ];
+    let tiny = [(100.0, 0.0), (101.0, 0.0)];
+    let g = graph(vec![
+        stretch("loop", 1, 1, &square),
+        stretch("tiny", 2, 3, &tiny),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 2);
+    assert_eq!(report.kept.len(), 1);
+    assert_eq!(report.kept[0].0, "tiny");
+    assert_eq!(out.stretches[1].points, tiny.to_vec());
+    assert!(out.stretches[0].points.len() > 5);
+}
+
+#[test]
+fn a_stretch_of_one_point_is_kept_and_does_not_hold_back_its_neighbour() {
+    let g = graph(vec![
+        stretch("a", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 0.0)]),
+        stretch("z", 2, 3, &[(40.0, 0.0), (40.0, 0.0)]),
+    ]);
+    let (_, report) = run(&g);
+    assert_eq!(report.kept.len(), 1);
+    assert_eq!(report.kept[0].0, "z");
 }

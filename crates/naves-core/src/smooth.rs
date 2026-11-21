@@ -13,8 +13,19 @@
 //! subject to `|d_i| ≤ corridor` and `d_i = 0` at fixed samples. The cost is a convex quadratic and the
 //! constraints are bounds, so the answer is unique; it is solved by [`crate::qp`], which is deterministic
 //! bit for bit.
+//!
+//! [`smooth_graph`] applies the fit to a whole [`RoadGraph`], chain by chain: a chain is a run of stretches
+//! that merely continue each other at nodes where exactly two stretches meet. Every node of a chain is a
+//! fixed sample, so node positions never change; at a junction the next sample is fixed as well, so the
+//! direction in which a road leaves it does not change either.
 
+use std::collections::BTreeMap;
+
+use rayon::prelude::*;
+
+use crate::catalog::{Family, PieceCatalog};
 use crate::qp::{Problem, Row, solve};
+use crate::roadnet::{RoadGraph, Stretch};
 
 /// The step of a resampled line, in metres.
 pub const SAMPLE_M: f64 = 2.0;
@@ -255,4 +266,386 @@ pub fn smooth_line(
             }
         })
         .collect())
+}
+
+/// A two-stretch node turns at most this many degrees for the road to go on through it; a sharper turn
+/// ends the chain (the limit the chain pairing of [`crate::roadnet::chains`] uses).
+pub const CHAIN_TURN_MAX_DEG: f64 = 150.0;
+
+/// The name of a stretch, as [`Stretch::id`].
+pub type StretchId = String;
+
+/// What smoothing did to one stretch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StretchSmooth {
+    /// The stretch.
+    pub id: StretchId,
+    /// The furthest any of its samples moved, in metres.
+    pub max_move_m: f64,
+    /// Its length tighter than its family's minimum radius, before.
+    pub tight_before_m: f64,
+    /// The same after.
+    pub tight_after_m: f64,
+}
+
+/// What smoothing did, for the build report and the measurement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmoothReport {
+    /// The number of chains.
+    pub chains: usize,
+    /// Stretches left as they were, with the reason, in stretch order.
+    pub kept: Vec<(StretchId, String)>,
+    /// The furthest any sample moved, in metres.
+    pub max_move_m: f64,
+    /// Road length tighter than its family's minimum radius, before.
+    pub tight_before_m: f64,
+    /// The same after.
+    pub tight_after_m: f64,
+    /// One entry per stretch, in stretch order.
+    pub per_stretch: Vec<StretchSmooth>,
+}
+
+/// The tightest curve piece's radius of a road family in the catalog (`None` if it has no curve piece).
+#[must_use]
+pub fn min_radius(catalog: &PieceCatalog, family: Family) -> Option<f64> {
+    catalog.tightest_arc(family)
+}
+
+/// An end of a stretch: the stretch's index and whether it is its start.
+type Arm = (usize, bool);
+
+/// The unit direction in which the stretch leaves the node at one of its ends, if it has one.
+fn leaving(s: &Stretch, at_start: bool) -> Option<(f64, f64)> {
+    let mut pts: Box<dyn Iterator<Item = &(f64, f64)>> = if at_start {
+        Box::new(s.points.iter())
+    } else {
+        Box::new(s.points.iter().rev())
+    };
+    let origin = *pts.next()?;
+    let to = pts.find(|p| **p != origin)?;
+    let (dx, dy) = (to.0 - origin.0, to.1 - origin.1);
+    let len = dx.hypot(dy);
+    (len > 0.0 && len.is_finite()).then(|| (dx / len, dy / len))
+}
+
+/// All coordinates finite and at least two distinct points.
+fn sound(s: &Stretch) -> bool {
+    s.points.iter().all(|p| p.0.is_finite() && p.1.is_finite())
+        && s.points.windows(2).any(|w| w.first() != w.get(1))
+}
+
+/// The end point of a stretch at `at_start`.
+fn end_point(s: &Stretch, at_start: bool) -> Option<(f64, f64)> {
+    if at_start {
+        s.points.first().copied()
+    } else {
+        s.points.last().copied()
+    }
+}
+
+/// One stretch of a chain, in the chain's direction.
+#[derive(Clone, Copy)]
+struct Link {
+    stretch: usize,
+    reversed: bool,
+}
+
+struct ChainPlan {
+    links: Vec<Link>,
+    /// A junction (three or more stretches) at the first and at the last node.
+    junction: (bool, bool),
+}
+
+/// The chains of the graph, in the order of their first stretch.
+fn plan_chains(graph: &RoadGraph) -> Vec<ChainPlan> {
+    let mut arms_at: BTreeMap<i64, Vec<Arm>> = BTreeMap::new();
+    for (i, s) in graph.stretches.iter().enumerate() {
+        arms_at.entry(s.start).or_default().push((i, true));
+        arms_at.entry(s.end).or_default().push((i, false));
+    }
+    // at a node where the road goes on, its two arms, both ways round
+    let mut partner: BTreeMap<Arm, Arm> = BTreeMap::new();
+    for arms in arms_at.values() {
+        let [a, b] = arms.as_slice() else { continue };
+        let (Some(sa), Some(sb)) = (graph.stretches.get(a.0), graph.stretches.get(b.0)) else {
+            continue;
+        };
+        if !sound(sa) || !sound(sb) || sa.tunnel != sb.tunnel {
+            continue;
+        }
+        let (Some(pa), Some(pb)) = (end_point(sa, a.1), end_point(sb, b.1)) else {
+            continue;
+        };
+        if pa != pb {
+            continue;
+        }
+        let (Some(da), Some(db)) = (leaving(sa, a.1), leaving(sb, b.1)) else {
+            continue;
+        };
+        let angle = (da.0 * db.1 - da.1 * db.0)
+            .atan2(da.0 * db.0 + da.1 * db.1)
+            .abs();
+        if 180.0 - angle.to_degrees() <= CHAIN_TURN_MAX_DEG {
+            partner.insert(*a, *b);
+            partner.insert(*b, *a);
+        }
+    }
+    let junction_at = |node: i64| arms_at.get(&node).is_some_and(|a| a.len() >= 3);
+    let mut visited = vec![false; graph.stretches.len()];
+    let mut plans = Vec::new();
+    for s in 0..graph.stretches.len() {
+        if visited.get(s).copied().unwrap_or(true) {
+            continue;
+        }
+        // back to the head of the chain: enter stretch `head.0` at its start (`head.1`) or at its end
+        let mut head: Arm = (s, true);
+        for _ in 0..=graph.stretches.len() {
+            let Some(&(t, t_arm)) = partner.get(&head) else {
+                break;
+            };
+            let before = (t, !t_arm);
+            if before == (s, true) {
+                break;
+            }
+            head = before;
+        }
+        let mut links = Vec::new();
+        let mut enter = head;
+        let mut ring = false;
+        loop {
+            if visited.get(enter.0).copied().unwrap_or(true) {
+                ring = !links.is_empty();
+                break;
+            }
+            if let Some(v) = visited.get_mut(enter.0) {
+                *v = true;
+            }
+            links.push(Link {
+                stretch: enter.0,
+                reversed: !enter.1,
+            });
+            match partner.get(&(enter.0, !enter.1)) {
+                Some(&next) => enter = next,
+                None => break,
+            }
+        }
+        let entry = |l: &Link| {
+            graph
+                .stretches
+                .get(l.stretch)
+                .map_or(0, |st| if l.reversed { st.end } else { st.start })
+        };
+        if ring {
+            // cut at the node with the lowest id
+            let cut = links
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, l)| entry(l))
+                .map_or(0, |(i, _)| i);
+            links.rotate_left(cut);
+        }
+        let exit = |l: &Link| {
+            graph
+                .stretches
+                .get(l.stretch)
+                .map_or(0, |st| if l.reversed { st.start } else { st.end })
+        };
+        let junction = (
+            !ring && links.first().is_some_and(|l| junction_at(entry(l))),
+            !ring && links.last().is_some_and(|l| junction_at(exit(l))),
+        );
+        plans.push(ChainPlan { links, junction });
+    }
+    plans
+}
+
+/// What the solve of one chain gives back.
+struct Fitted {
+    /// The smoothed samples.
+    after: Vec<(f64, f64)>,
+}
+
+/// A chain's samples, the index of the last sample of every link (the first link starts at 0), and the
+/// stiffness and fixed flags.
+struct Prepared {
+    samples: Vec<Sample>,
+    bounds: Vec<usize>,
+}
+
+fn prepare(graph: &RoadGraph, plan: &ChainPlan) -> Prepared {
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    let mut bounds: Vec<usize> = Vec::new();
+    for link in &plan.links {
+        let Some(s) = graph.stretches.get(link.stretch) else {
+            continue;
+        };
+        let mut line = s.points.clone();
+        if link.reversed {
+            line.reverse();
+        }
+        let rs = resample(&line, SAMPLE_M);
+        points.extend(rs.into_iter().skip(usize::from(!points.is_empty())));
+        bounds.push(points.len().saturating_sub(1));
+    }
+    let count = points.len();
+    let mut fixed = vec![false; count];
+    let mut stiffness = vec![1.0; count];
+    let mut first = 0;
+    for (link, &last) in plan.links.iter().zip(&bounds) {
+        let bridge = graph.stretches.get(link.stretch).is_some_and(|s| s.bridge);
+        if bridge {
+            for k in first + 1..last {
+                if let Some(c) = stiffness.get_mut(k) {
+                    *c = BRIDGE_STRAIGHT_WEIGHT;
+                }
+            }
+        }
+        for k in [first, last] {
+            if let Some(f) = fixed.get_mut(k) {
+                *f = true;
+            }
+        }
+        first = last;
+    }
+    if plan.junction.0
+        && let Some(f) = fixed.get_mut(1)
+    {
+        *f = true;
+    }
+    if plan.junction.1
+        && let Some(f) = fixed.get_mut(count.saturating_sub(2))
+    {
+        *f = true;
+    }
+    Prepared {
+        samples: points
+            .iter()
+            .zip(&fixed)
+            .zip(&stiffness)
+            .map(|((&at, &fixed), &stiffness)| Sample {
+                at,
+                fixed,
+                stiffness,
+            })
+            .collect(),
+        bounds,
+    }
+}
+
+/// The road length tighter than the family's minimum radius, per link: every sample with two neighbours
+/// counts half of each segment next to it towards the link the segment belongs to.
+fn tight_lengths(points: &[(f64, f64)], bounds: &[usize], minimum: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; bounds.len()];
+    let mut first = 0;
+    for ((&last, &min_r), total) in bounds.iter().zip(minimum).zip(out.iter_mut()) {
+        for k in first..last {
+            let (Some(&a), Some(&b)) = (points.get(k), points.get(k + 1)) else {
+                continue;
+            };
+            let half = (b.0 - a.0).hypot(b.1 - a.1) / 2.0;
+            for e in [k, k + 1] {
+                let tight = e
+                    .checked_sub(1)
+                    .and_then(|p| Some((points.get(p)?, points.get(e)?, points.get(e + 1)?)))
+                    .is_some_and(|(p, q, r)| radius_at(*p, *q, *r) < min_r);
+                if tight {
+                    *total += half;
+                }
+            }
+        }
+        first = last;
+    }
+    out
+}
+
+/// The graph with every stretch's line smoothed, chain by chain. Node positions, node ids and stretch ids
+/// are unchanged; no sample moves more than [`CORRIDOR_M`] sideways. A stretch whose chain cannot be fitted
+/// keeps its line and is listed in [`SmoothReport::kept`].
+///
+/// `min_radius` gives the tightest radius of a stretch's family (`NaN` or `0.0` for none); it only feeds
+/// the figures of the report.
+#[must_use]
+pub fn smooth_graph(
+    graph: &RoadGraph,
+    min_radius: &dyn Fn(&Stretch) -> f64,
+    params: &SmoothParams,
+) -> (RoadGraph, SmoothReport) {
+    let plans = plan_chains(graph);
+    let solved: Vec<(Prepared, Result<Fitted, SmoothError>)> = plans
+        .par_iter()
+        .map(|plan| {
+            let prepared = prepare(graph, plan);
+            let fitted = smooth_line(&prepared.samples, params).map(|after| Fitted { after });
+            (prepared, fitted)
+        })
+        .collect();
+    let mut result = graph.clone();
+    let mut kept: Vec<Option<String>> = vec![None; graph.stretches.len()];
+    let mut per_stretch: Vec<StretchSmooth> = graph
+        .stretches
+        .iter()
+        .map(|s| StretchSmooth {
+            id: s.id.clone(),
+            max_move_m: 0.0,
+            tight_before_m: 0.0,
+            tight_after_m: 0.0,
+        })
+        .collect();
+    for (plan, (prepared, fitted)) in plans.iter().zip(&solved) {
+        let before: Vec<(f64, f64)> = prepared.samples.iter().map(|s| s.at).collect();
+        let minimum: Vec<f64> = plan
+            .links
+            .iter()
+            .map(|l| graph.stretches.get(l.stretch).map_or(f64::NAN, min_radius))
+            .collect();
+        let tight_before = tight_lengths(&before, &prepared.bounds, &minimum);
+        let (after, reason) = match fitted {
+            Ok(f) => (f.after.clone(), None),
+            Err(e) => (before.clone(), Some(e.to_string())),
+        };
+        let tight_after = tight_lengths(&after, &prepared.bounds, &minimum);
+        let mut first = 0;
+        for (j, (link, &last)) in plan.links.iter().zip(&prepared.bounds).enumerate() {
+            if let Some(why) = &reason {
+                if let Some(k) = kept.get_mut(link.stretch) {
+                    *k = Some(why.clone());
+                }
+            } else if let Some(s) = result.stretches.get_mut(link.stretch) {
+                let mut line: Vec<(f64, f64)> = after
+                    .get(first..=last)
+                    .map(<[(f64, f64)]>::to_vec)
+                    .unwrap_or_default();
+                if link.reversed {
+                    line.reverse();
+                }
+                s.points = line;
+            }
+            if let Some(entry) = per_stretch.get_mut(link.stretch) {
+                entry.max_move_m = before
+                    .get(first..=last)
+                    .into_iter()
+                    .flatten()
+                    .zip(after.get(first..=last).into_iter().flatten())
+                    .map(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1))
+                    .fold(0.0, f64::max);
+                entry.tight_before_m = tight_before.get(j).copied().unwrap_or(0.0);
+                entry.tight_after_m = tight_after.get(j).copied().unwrap_or(0.0);
+            }
+            first = last;
+        }
+    }
+    let report = SmoothReport {
+        chains: plans.len(),
+        kept: graph
+            .stretches
+            .iter()
+            .zip(&kept)
+            .filter_map(|(s, k)| k.as_ref().map(|why| (s.id.clone(), why.clone())))
+            .collect(),
+        max_move_m: per_stretch.iter().map(|p| p.max_move_m).fold(0.0, f64::max),
+        tight_before_m: per_stretch.iter().map(|p| p.tight_before_m).sum(),
+        tight_after_m: per_stretch.iter().map(|p| p.tight_after_m).sum(),
+        per_stretch,
+    };
+    (result, report)
 }
