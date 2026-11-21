@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Land polygons from OpenStreetMap `.osm.pbf` extracts: water, rock and built-up areas.
+//! Land polygons from OpenStreetMap `.osm.pbf` extracts: water, rock and built-up areas, and the lots (car parks,
+//! camp sites and similar areas) that the `lot` module reads.
 //!
 //! Forest and grass tags are deliberately not read: ESA `WorldCover` draws those edges better (10 m, every
 //! pixel), and `landuse=forest` polygons are large and coarse.
@@ -60,11 +61,47 @@ pub struct LandPolygon {
     pub holes: Vec<Vec<(f64, f64)>>,
 }
 
+/// A lot area: a car park, camp site or similar place, before it is projected onto the map.
+///
+/// Not a [`LandPolygon`]: it paints nothing by itself; the `lot` module turns it into a `LotArea`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LotPolygon {
+    /// The OpenStreetMap id of the way or of the relation.
+    pub id: i64,
+    /// The area is a multipolygon relation (the id is a relation id), not a way.
+    pub relation: bool,
+    /// The index of the outer ring among the rings of the relation (0 for a way).
+    pub part: usize,
+    /// The tags that matter for a lot (see [`LOT_TAGS`]); of the relation for a relation.
+    pub tags: BTreeMap<String, String>,
+    /// The outer ring, closed, as (lat, lon).
+    pub outer: Vec<(f64, f64)>,
+    /// Holes in the area, closed rings.
+    pub holes: Vec<Vec<(f64, f64)>>,
+}
+
+/// The tags kept on a [`LotPolygon`].
+pub const LOT_TAGS: [&str; 10] = [
+    "amenity",
+    "tourism",
+    "highway",
+    "parking",
+    "surface",
+    "layer",
+    "building",
+    "location",
+    "access",
+    "caravan_site:type",
+];
+
 /// The areas of a window and the number of rings that could not be built.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OsmLand {
     /// The areas, ways first and relations after them, each in id order.
     pub polygons: Vec<LandPolygon>,
+    /// The lots (car parks, camp sites and similar areas), ways first and relations after them, each in id
+    /// order and the parts of a relation in ring order.
+    pub lots: Vec<LotPolygon>,
     /// Rings skipped because they are unclosed, miss nodes or ways, or have no outer ring (the usual
     /// result of an extract that cuts a polygon at its border).
     pub skipped_rings: usize,
@@ -112,6 +149,28 @@ fn classify<'a>(tags: impl Iterator<Item = (&'a str, &'a str)>) -> Option<(Surfa
         }
     }
     best
+}
+
+/// The kept tags of an area that is a lot: a way or relation tagged `amenity=parking`, `amenity=tourist_bus_parking`,
+/// `highway=rest_area`, `tourism=camp_site` or `tourism=caravan_site`. Single bays (`amenity=parking_space`) and
+/// pitches (`tourism=camp_pitch`) are not lots.
+fn lot_tags<'a>(
+    tags: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Option<BTreeMap<String, String>> {
+    let mut is_lot = false;
+    let mut kept = BTreeMap::new();
+    for (key, value) in tags {
+        is_lot |= matches!(
+            (key, value),
+            ("amenity", "parking" | "tourist_bus_parking")
+                | ("highway", "rest_area")
+                | ("tourism", "camp_site" | "caravan_site")
+        );
+        if LOT_TAGS.contains(&key) {
+            kept.insert(key.to_string(), value.to_string());
+        }
+    }
+    is_lot.then_some(kept)
 }
 
 /// Even-odd test of `point` against a closed ring.
@@ -235,8 +294,8 @@ pub fn assemble(ways: &[RawWay], nodes: &BTreeMap<i64, (f64, f64)>) -> Rings {
 /// A relation that describes an area.
 struct Relation {
     id: i64,
-    class: SurfaceClass,
-    priority: u8,
+    area: Option<(SurfaceClass, u8)>,
+    lot: Option<BTreeMap<String, String>>,
     /// (way id, role is `inner`)
     members: Vec<(i64, bool)>,
 }
@@ -245,6 +304,7 @@ struct Relation {
 struct WayRecord {
     id: i64,
     area: Option<(SurfaceClass, u8)>,
+    lot: Option<BTreeMap<String, String>>,
     nodes: Vec<i64>,
 }
 
@@ -255,18 +315,21 @@ fn relations_of<R: Read + Send>(reader: ElementReader<R>) -> Result<Vec<Relation
                 let is_area = relation
                     .tags()
                     .any(|(key, value)| key == "type" && value == "multipolygon");
-                match classify(relation.tags()) {
-                    Some((class, priority)) if is_area => vec![Relation {
+                let area = classify(relation.tags());
+                let lot = lot_tags(relation.tags());
+                if is_area && (area.is_some() || lot.is_some()) {
+                    vec![Relation {
                         id: relation.id(),
-                        class,
-                        priority,
+                        area,
+                        lot,
                         members: relation
                             .members()
                             .filter(|m| m.member_type == RelMemberType::Way)
                             .map(|m| (m.member_id, m.role().is_ok_and(|role| role == "inner")))
                             .collect(),
-                    }],
-                    _ => Vec::new(),
+                    }]
+                } else {
+                    Vec::new()
                 }
             }
             _ => Vec::new(),
@@ -288,10 +351,12 @@ fn ways_of<R: Read + Send>(
         |element| match element {
             Element::Way(way) => {
                 let area = classify(way.tags());
-                if area.is_some() || members.contains(&way.id()) {
+                let lot = lot_tags(way.tags());
+                if area.is_some() || lot.is_some() || members.contains(&way.id()) {
                     vec![WayRecord {
                         id: way.id(),
                         area,
+                        lot,
                         nodes: way.refs().collect(),
                     }]
                 } else {
@@ -346,8 +411,9 @@ fn touches(window: GeoWindow, ring: &[Point]) -> bool {
 
 /// A group of ways that make one area: a tagged way, or the members of a multipolygon relation.
 struct Group {
-    class: SurfaceClass,
-    priority: u8,
+    area: Option<(SurfaceClass, u8)>,
+    /// The id, whether it is a relation, and the kept tags, if the group is a lot.
+    lot: Option<(i64, bool, BTreeMap<String, String>)>,
     ways: Vec<RawWay>,
     /// Member ways that are in none of the sources.
     missing: usize,
@@ -377,6 +443,40 @@ fn extent(ways: &[RawWay], nodes: &BTreeMap<i64, Point>) -> Option<GeoWindow> {
 
 fn overlaps(a: GeoWindow, b: GeoWindow) -> bool {
     a.south <= b.north && a.north >= b.south && a.west <= b.east && a.east >= b.west
+}
+
+/// Assembles the rings of `group` and adds the ones that touch `window` to `land`, as an area and as a lot.
+fn add_group(land: &mut OsmLand, group: &Group, nodes: &BTreeMap<i64, Point>, window: GeoWindow) {
+    // Only what lies on the map counts, so that the extract's cut polygons far away neither cost time
+    // nor show up as skipped rings.
+    if !extent(&group.ways, nodes).is_some_and(|e| overlaps(e, window)) {
+        return;
+    }
+    let rings = assemble(&group.ways, nodes);
+    land.skipped_rings += rings.skipped + group.missing;
+    for (part, (outer, holes)) in rings.polygons.into_iter().enumerate() {
+        if !touches(window, &outer) {
+            continue;
+        }
+        if let Some((class, priority)) = group.area {
+            land.polygons.push(LandPolygon {
+                class,
+                priority,
+                outer: outer.clone(),
+                holes: holes.clone(),
+            });
+        }
+        if let Some((id, relation, tags)) = &group.lot {
+            land.lots.push(LotPolygon {
+                id: *id,
+                relation: *relation,
+                part,
+                tags: tags.clone(),
+                outer,
+                holes,
+            });
+        }
+    }
 }
 
 /// The three passes over every source (`count` of them); `open(i)` gives a fresh reader of source `i`, and
@@ -433,10 +533,10 @@ fn read_sources<R: Read + Send>(
 
     let mut groups: Vec<Group> = Vec::new();
     for way in &ways {
-        if let Some((class, priority)) = way.area {
+        if way.area.is_some() || way.lot.is_some() {
             groups.push(Group {
-                class,
-                priority,
+                area: way.area,
+                lot: way.lot.clone().map(|tags| (way.id, false, tags)),
                 ways: vec![RawWay {
                     nodes: way.nodes.clone(),
                     inner: false,
@@ -448,8 +548,8 @@ fn read_sources<R: Read + Send>(
     let by_id: BTreeMap<i64, &WayRecord> = ways.iter().map(|w| (w.id, w)).collect();
     for relation in &relations {
         let mut group = Group {
-            class: relation.class,
-            priority: relation.priority,
+            area: relation.area,
+            lot: relation.lot.clone().map(|tags| (relation.id, true, tags)),
             ways: Vec::new(),
             missing: 0,
         };
@@ -466,24 +566,8 @@ fn read_sources<R: Read + Send>(
     }
 
     let mut land = OsmLand::default();
-    for group in groups {
-        // Only what lies on the map counts, so that the extract's cut polygons far away neither cost time
-        // nor show up as skipped rings.
-        if !extent(&group.ways, &nodes).is_some_and(|e| overlaps(e, window)) {
-            continue;
-        }
-        let rings = assemble(&group.ways, &nodes);
-        land.skipped_rings += rings.skipped + group.missing;
-        for (outer, holes) in rings.polygons {
-            if touches(window, &outer) {
-                land.polygons.push(LandPolygon {
-                    class: group.class,
-                    priority: group.priority,
-                    outer,
-                    holes,
-                });
-            }
-        }
+    for group in &groups {
+        add_group(&mut land, group, &nodes, window);
     }
     Ok(land)
 }

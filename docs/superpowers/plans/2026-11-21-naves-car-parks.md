@@ -334,8 +334,8 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   `SurfaceClass::ALL: [SurfaceClass; 5]`. If Task 1 found no slot-4 colour: no new class, paved is `SurfaceClass::Soil`,
   and the tarmac steps of this task are skipped.
 - `SurfaceGrid::fill_polygon(&mut self, outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>], class: SurfaceClass)`.
-- `layers::SURFACES` gets the tarmac entry with the file names from Task 1 (`en_tarmac`); `mask_rgba(4)` is Task 1's
-  colour.
+- `layers::SURFACES` gets the tarmac entry with the file names from Task 1 (`en_tarmacold`, texture `en_tarmac_old`: the game's `en_tarmac` has no texture files);
+  `mask_rgba(4)` is (0, 0, 0, 128), Task 1's value, not yet seen in the game.
 - `rvmat::tile_material` writes slot 4's textures only for a tile whose mask uses slot 4 (an argument with the tile's
   used slots; documented).
 - `lot::surfaces(assessed: &[Assessed], graph: &RoadGraph, clean: &CleanReport, cell_m: f64)
@@ -361,7 +361,7 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   that the car park's cells have the car park's class; a `parking_aisle` path inside a lot is not painted, a footway
   through it is, on top of the lot.
 - [ ] **Step 4:** RED. **Step 5:** implement. **Step 6 (DeepSeek):** `docs/formats/terrain-layers.md`: the slot-4 row
-  (tarmac, its colour, its texture, `en_tarmacold` as the alternative) and the sentence that slot 4 is written only on
+  (tarmac, its mask value alpha 128, its texture `en_tarmac_old`) and the sentence that slot 4 is written only on
   tiles that use it. **Step 7:** GREEN, `make check`. The GUI's ground legend reads `SurfaceClass::ALL`
   (`crates/naves/src/gui/levels/ground.rs`): if the GUI shows anything new, invoke `/frontend-design:frontend-design`
   first; map items keep the DayZ look.
@@ -483,7 +483,7 @@ this task creates `Stages { pub smooth: bool, pub lots: bool }` with `Stages::DE
   Unreleased, Added: "Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or
   grass surface and smooth ground; the roads inside them are no longer built, and their access roads end just inside
   ... switched off in this release (`LOTS_ENABLED`) ... with it on, edits on removed or cut roads are orphaned
-  (`orphaned_edit`): on the example 85 roads are removed and 46 cut ... `roads.lots` in `build/report.json`, findings
+  (`orphaned_edit`): on the example 85 roads are removed and 21 cut ... `roads.lots` in `build/report.json`, findings
   `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited`, `road_in_lot_dropped`".
 - [ ] **Step 6:** GREEN, `make check` (with `make docs`).
 - [ ] **Step 7:** Commit `feat: lots in the build, switched off`.
@@ -498,7 +498,7 @@ this task creates `Stages { pub smooth: bool, pub lots: bool }` with `Stages::DE
   Logs `judge/<off|on>/ra-2048.log`, `RULES_OUT=judge/<off|on>/rules.tsv`.
 - [ ] **Step 3:** Write `judge/compare.md`, one table, two columns, beside Task 1's baseline:
   - lots by kind and outcome, plane and quadratic, paved and grass, steep (spec: 44), move limited (spec: 2);
-  - stretches and metres removed (spec: 85, 2064 m), access roads cut (46), junction nodes removed (47);
+  - stretches and metres removed (spec: 85, 2064 m), access roads (32 dead ends, 21 cut), junction nodes removed (47);
   - components with groups as nodes (must not grow); drivable length (must fall by no more than the removed and cut
     metres);
   - per lot kind, the local relief before and after (`LOT_RELIEF`; after at most 0.12 m outside the move-limited
@@ -524,19 +524,18 @@ No commit, unless Step 4's tuning changes a constant.
 
 - [ ] **Step 1:** Build the map twice: once from this branch as it is (stage off), once from a scratch worktree under
   `/var/tmp/naves-lots/game/` with `LOTS_ENABLED = true` (not committed; its own target dir under the same folder).
-  For the tarmac comparison, a third build with `en_tarmacold` in place of `en_tarmac` (same worktree, not committed).
   Log HEAD, the worktree's diff and the binary's mtime each time. Keep the `build/` folders under
   `/var/tmp/naves-lots/game/`.
 - [ ] **Step 2:** `tools/ingame-check/run.sh` on each build with the same `sites.json` (24G cap, server 8G, client
   14G, non-default ports, one game at a time, headless sway only). Do a control run against vanilla Livonia first if
   anything looks broken. Stop the game when done; remove the `@naves*` symlinks from the DayZ install.
 - [ ] **Step 3:** Send the contact sheets to the maintainer with one line per site: surface (tarmac shows, not dark red
-  or flat colour; tarmac or worn tarmac), the ground (smooth, no bumps, no hole or dam, the shoulder blended; whether a
+  or flat colour; that mask alpha 128 selects the fifth layer), the ground (smooth, no bumps, no hole or dam, the shoulder blended; whether a
   large lot looks artificially even), the access road and the through road (no step, drivable onto the lot), anything
   that looks wrong.
-- [ ] **Step 4:** The maintainer decides whether `LOTS_ENABLED` becomes `true` and which tarmac. If on: a commit
+- [ ] **Step 4:** The maintainer decides whether `LOTS_ENABLED` becomes `true` and that the fifth layer shows. If on: a commit
   `feat!: lots are switched on` that flips the constant, updates the manual ("off" becomes "on") and adds the
-  **Breaking** note for orphaned edits (85 roads removed and 46 cut on the example) to `CHANGELOG.md`; `make check`.
+  **Breaking** note for orphaned edits (85 roads removed and 21 cut on the example) to `CHANGELOG.md`; `make check`.
 
 ### Task 11: Final review (Opus)
 

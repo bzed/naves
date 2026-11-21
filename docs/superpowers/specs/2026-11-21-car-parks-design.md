@@ -234,25 +234,26 @@ stretch id stay as they are; a cut piece takes them in proportion to its length.
 On the example: Grafenlehen is **grass** (404 m of its roads are tagged unpaved, 34 m paved, 132 m untagged
 `City`); Camping Allweglehen (way 38834406) and Campingplatz Simonhof (way 174787106) are paved (asphalt roads, 287
 against 118 and 263 against 189 m); Camping Mühlleiten (way 174716692) is paved by family (its roads are untagged);
-the caravan site P2 is grass (155 m unpaved). Of the 252 car parks of at least 20 m², 14 are paved and 8 grass by their
+the caravan site P2 is grass (155 m unpaved); the car park P2 Hirschbichlstraße is grass (98 m of unpaved against 6 m of paved road once every way of a stretch is counted). Of the 252 car parks of at least 20 m², 12 are paved and 7 grass by their
 own roads; the other 230 are decided by the street beside them or are grass for want of any road.
 
 **Which ground layer.** Náves's four ground classes (grass, rock, forest, soil) come from `surfaces_bliss`
 (`en_grass1`, `en_stones`, `en_forest_con`, `en_soil`); road beds are painted soil. The same PBO has two paved
-surfaces, `en_tarmac` (`files = "en_tarmac_ca*"`) and `en_tarmacold` (worn tarmac, `files = "en_tarmac_old*"`),
+surfaces, `en_tarmac` (`files = "en_tarmac_ca*"`) and `en_tarmacold` (`files = "en_tarmac_old*"`),
 both with `vpSurface = "Asphalt"`, `soundEnviron = "road"`, `isDigable = 0`; Chernarus's `surfaces.pbo` has
 `cp_concrete1`, `cp_concrete2` and `cp_gravel`. "lots of areas around buildings are paved and not part of the
 building" **(maintainer)**: this is what the game uses for them.
 
-- A fifth class `SurfaceClass::Tarmac` with layer slot 4, using `en_tarmac`. `en_tarmacold` is the alternative of the
-  same family; which reads better on a car park is for the game check to show. `en_tarmac` is proposed because a car
-  park beside a road is usually the road's own surface, and worn tarmac across a whole camp site could read as
-  derelict.
+- A fifth class `SurfaceClass::Tarmac` with layer slot 4, using `en_tarmacold` (texture `en_tarmac_old`). It is
+  `en_tarmacold` and not `en_tarmac` because the game's `en_tarmac` class has no texture files anywhere in the install
+  and Livonia never uses it; the files that exist are `en_tarmac_old_nopx.paa`, `en_tarmac_old_ca.paa` and
+  `en_tarmac_old.rvmat` in the Livonia surface pack.
 - The texture file names follow the pattern of the four layers (`dz\surfaces_bliss\data\terrain\<name>_nopx.paa`,
   `_ca.paa`); the exact names are read from the install in the plan's Task 1, not assumed.
-- The mask colour of slot 4 is not known yet (`docs/formats/terrain-layers.md`: "5 or more: colours at alpha 128");
-  Task 1 reads it from a Livonia tile whose material uses five or more layers. If it cannot be established, paved
-  lots are painted soil and the maintainer is told.
+- The fifth layer is selected by mask alpha 128 (RGB free; the value to write is (0, 0, 0, 128)); slot 5 would be
+  alpha 0; slots 0 to 3 stay black, red, green, blue at alpha 255. Evidence: 71 Livonia masks fitted against their
+  material variants with no violation in 3840 cells; not yet seen in the game, the game check confirms it. If the game
+  check disproves it, paved lots are painted soil and the maintainer is told.
 - A tile material names the tarmac textures in slot 4 only if its mask uses slot 4, so a build without lots writes
   every file as today.
 
@@ -270,8 +271,8 @@ never up and down within a short distance. Every lot that is smoothed gets this,
 the group's members (the terrain is its vertices; the fit is what the shaping writes):
 
 1. **A plane** `z = h + gx·dx + gy·dy`, if the 95th percentile of `|ground − plane|` is at most `LOT_PLANE_FIT_M`
-   (0.5 m). A car park that is nearly a plane anyway reads best perfectly plane. On the example 139 of the 191
-   smoothed lots.
+   (0.5 m). A car park that is nearly a plane anyway reads best perfectly plane. On the example 138 of the 191
+   smoothed lots (the other 53 are quadratics).
 2. **Otherwise a quadratic** `z = h + gx·dx + gy·dy + a·dx² + b·dx·dy + c·dy²` whose curvature is capped: both
    eigenvalues of its Hessian are clipped to `±1 / LOT_MIN_RADIUS_M`, and the plane part re-fitted with the curvature
    fixed. `LOT_MIN_RADIUS_M` = 600 m = `limits::min_vertical_radius(Asf1)`, the largest vertical radius any road
@@ -294,13 +295,13 @@ a saddle or outside the lot.
   construction and a plane has none. A tent pitch and a parked car need no more than that.
 
 **How far the ground moves.** Measured with this form (`form.tsv`): over the 191 smoothed lots the 95th percentile of
-the move is 0.25 m at the median lot, 0.87 m at the 90th percentile, 2.32 m at the most. The largest move by lot:
+the move is 0.25 m at the median lot, 0.94 m at the 90th percentile, 2.37 m at the most (Task 1 fitted each lot on its own, while the design fits one surface per group of touching lots, 29 groups of two or three, so these numbers may move again when groups are built). The largest move by lot:
 
 | kind | under 1 m | 1 to 2 m | 2 to 3 m | 3 m or more |
 |---|---|---|---|---|
-| car parks (185) | 165 | 15 | 5 | 0 |
+| car parks (185) | 164 | 15 | 6 | 0 |
 | camp sites (4) | 0 | 1 (Mühlleiten 1.75) | 1 (Grafenlehen 2.49) | 2 (Allweglehen 3.42, Simonhof 4.47) |
-| caravan site (1) | 0 | 0 | 1 (2.94) | 0 |
+| caravan site (1) | 0 | 0 | 0 | 1 (3.29) |
 | tourist bus parking (1) | 1 | 0 | 0 | 0 |
 
 **A guard on the move.** `LOT_MAX_MOVE_M` = 3.0 m on the map (6 m real at height scale 0.5). A lot whose surface
@@ -381,22 +382,23 @@ the entry junctions and the through-road targets, and to the terrain shaping as 
 
 Lot areas read from the example's two extracts; ground from the base heightmap at 2048, at the terrain vertices;
 graph after `drop_duplicates` and `netclean::clean`. Map metres and map square metres (real area is four times as
-large). The 46 car parks under 20 m² were left out of the scan; they are surface only (about 19 of them street
-strips, the rest with fewer than three vertices inside), counted under "no vertex" below.
+large). The scan covers every area, the 46 car parks under 20 m² too (surface only: street strips, or fewer than
+three vertices inside; one way, 1548125225, is excluded). Task 1 fitted each lot on its own; the design fits one
+surface per group of touching lots (29 groups of two or three), so the rows may move again when groups are built.
 
 **Outcome by kind:**
 
 | kind | areas | smoothed: plane | smoothed: quadratic | surface only: street side | surface only: no vertex | excluded | steep | move limited |
 |---|---|---|---|---|---|---|---|---|
-| `amenity=parking` | 298 | 138 | 47 | 35 | 32 + 46 | 0 | 42 | 0 |
+| `amenity=parking` | 298 | 137 | 48 | 56 | 56 | 1 | 42 | 0 |
 | `tourism=camp_site` | 4 | 0 | 4 | 0 | 0 | 0 | 1 | 2 |
-| `tourism=caravan_site` | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 |
+| `tourism=caravan_site` | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 1 |
 | `amenity=tourist_bus_parking` | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `highway=rest_area` | 0 | | | | | | | |
 
-**Roads.** Removed in total: 85 stretches, 2064 m, with 47 junction nodes; 46 access roads cut; 15 stretches pass
-through a lot and stay. By kind: camp sites 69 stretches (1481 m, 32 junction nodes, 6 access roads), car parks 14
-(456 m, 13, 38), caravan site 2 (127 m, 2, 2). (The first version counted 16 stretches, 549 m, in car parks; this
+**Roads.** Removed in total: 85 stretches, 2064 m, with 47 junction nodes; 32 access roads (dead ends after the removal), of which 21 are cut; 15 stretches pass
+through a lot and stay. By kind: camp sites 69 stretches (1481 m, 32 junction nodes, 5 access roads), car parks 14
+(456 m, 13, 25), caravan site 2 (127 m, 2, 2). (The first version counted 16 stretches, 549 m, in car parks; this
 count drops bridge stretches and applies `LOT_INSIDE_SHARE`.)
 
 **Local relief before** (95th percentile per lot, then averaged): car parks 0.31 m (88 of the 115 car parks large
@@ -411,10 +413,10 @@ After: at most 0.12 m by construction, except in the two move-limited camp sites
 | Campingplatz Simonhof | 174787106 | (1330, 7247) | 9902 | quadratic | 2.32 / 4.47 | 0.12 | 18 (396 m) | paved | move limited, λ 0.67 |
 | Camping Allweglehen | 38834406 | (7684, 8194) | 15 962 | quadratic | 1.66 / 3.42 | 0.225 | 19 (405 m) | paved | at the map edge; steep; λ 0.88 |
 | Camping Mühlleiten | 174716692 | (5739, 5623) | 3503 | quadratic | 1.12 / 1.75 | 0.17 | 3 (144 m) | paved (family) | |
-| P2 Königssee (caravan site) | 374744306 | (5601, 5200) | 1615 | quadratic | 2.30 / 2.94 | 0.33 | 2 (127 m) | grass | steep |
+| P2 Königssee (caravan site) | 374744306 | (5601, 5200) | 1615 | quadratic | 2.37 / 3.29 | 0.33 | 2 (127 m) | grass | steep; move limited, λ 0.911 |
 | Königssee P1 | 23631323 | (5741, 5171) | 12 583 | quadratic | 0.61 / 2.09 | 0.070 | 0 (1 through road) | paved (street beside) | large, gentle |
 | Parkplatz Salzbergwerk | 23457631 | (6772, 7741) | 4244 | quadratic | 0.71 / 1.04 | 0.063 | 0 | paved | flat but bumpy |
-| P2 Hirschbichlstraße | 230425984 | (265, 5714) | 785 | plane | 0.44 / 0.56 | 0.148 | 2 (98 m) | paved | |
+| P2 Hirschbichlstraße | 230425984 | (265, 5714) | 785 | plane | 0.44 / 0.56 | 0.148 | 2 (98 m) | grass | 98 m unpaved against 6 m paved |
 | Hinterbrand | 236789710 | (6967, 5309) | 1976 | quadratic | 1.91 / 2.60 | 0.34 | 5 (154 m) | paved | steep |
 
 ## Constants
@@ -427,7 +429,7 @@ All in `naves-core/src/lot.rs`, `pub const`.
 | `LOT_INSIDE_TOL_M` | 1.0 m | digitising tolerance of "inside", and of "touching" for groups | controller ("a small tolerance") |
 | `LOT_INSIDE_SHARE` | 0.5 | share of a stretch's length that must be inside by more than the tolerance | assistant: keeps a road drawn on the outline |
 | `LOT_ENTRY_M` | 4.0 m | how far inside the edge a cut access road ends | `limits::RAMP_JOINT_MIN_M`, one cell at 2048 |
-| `LOT_PLANE_FIT_M` | 0.5 m | a lot whose plane is within this of its ground (95th percentile) gets the plane | assistant, from the table (139 of 191) **(judge)** |
+| `LOT_PLANE_FIT_M` | 0.5 m | a lot whose plane is within this of its ground (95th percentile) gets the plane | assistant, from the table (138 of 191) **(judge)** |
 | `LOT_MIN_RADIUS_M` | 600 m | smallest radius of curvature of the surface | `limits::min_vertical_radius(Family::Asf1)` |
 | `LOT_RELIEF_LENGTH_M` | 24 m | the "short distance" of "no local height changes" | six terrain cells, about five car lengths |
 | relief target | 0.12 m | largest local relief over 24 m | `L² / (8 · LOT_MIN_RADIUS_M)` |
@@ -447,7 +449,7 @@ Two runs of the `road-analysis` example on Berchtesgaden at 2048, the same binar
 
 - lots by kind and outcome (plane, quadratic, surface only with reason, excluded), paved against grass, steep and
   move-limited ones;
-- stretches and metres removed (85, 2064 m), access roads cut (46), junction nodes removed (47);
+- stretches and metres removed (85, 2064 m), access roads (32 dead ends, 21 cut), junction nodes removed (47);
 - connected components (each group one node: must not grow); drivable length (must fall by no more than the removed
   and cut metres);
 - per lot kind, the local relief before and after (95th percentile and largest; after must be at most 0.12 m outside
@@ -466,7 +468,7 @@ Then an in-game check with `tools/ingame-check`, off against on: Grafenlehen at 
 Königssee P1 (large, gentle, with its through road), Camping Allweglehen (steep camp site) or, if its part on the map
 is too small to photograph, Campingplatz Simonhof (move limited), the caravan site P2 Königssee (steep, grass), P2
 Hirschbichlstraße (roads removed, a plane on a slope) and Parkplatz Salzbergwerk (flat but bumpy). The tarmac is
-judged there against `en_tarmacold`.
+judged there.
 
 ## Effects on other stages
 
@@ -484,7 +486,7 @@ judged there against `en_tarmacold`.
 - **The ground layers.** A fifth layer (tarmac) on tiles that have a paved lot.
 - **User edits.** A removed stretch orphans its edits; a cut access road keeps its id but loses the slots of the cut
   part. Both are reported as today (`orphaned_edit`). Switching the stage on is a **breaking** change for such edits —
-  on the example 85 stretches go and 46 are cut — and the changelog says so in the release that switches it on.
+  on the example 85 stretches go and 21 are cut — and the changelog says so in the release that switches it on.
 
 ## Departures from the brief
 
@@ -520,9 +522,8 @@ judged there against `en_tarmacold`.
   through-road joints over a lot could replace it where the surface's slope is under the road's ceiling.
 - **The look of a large smoothed lot.** A 16 000 m² camp site on one gently curved surface may look artificially
   even in the game; the game check shows it. No terraces are added for it.
-- **The slot-4 mask colour.** If it cannot be read from Livonia's data, paved lots are painted soil until it is
-  known.
-- **`en_tarmac` or `en_tarmacold`.** Decided at the game check.
+- **The slot-4 mask value.** Alpha 128 is fitted to Livonia's masks but not yet seen in the game; if the game check
+  disproves it, paved lots are painted soil until it is known.
 - **Cell-size dependence.** `LOT_ENTRY_M`, `LOT_RELIEF_LENGTH_M` and `LOT_MIN_VERTICES` follow the 4 m cell at
   2048; at other terrain sizes they should follow the cell.
 - **Default of the switch.** The stage lands switched off and is switched on after the game check, on the

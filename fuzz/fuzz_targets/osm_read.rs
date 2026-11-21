@@ -18,8 +18,14 @@ fuzz_target!(|data: &[u8]| {
     let window = GeoWindow {
         south: 47.54,
         west: 12.96,
-        north: 47.56,
-        east: 12.99,
+        north: 47.61,
+        east: 13.0,
     };
-    let _ = read_land_from_bytes(data, window);
+    if let Ok(land) = read_land_from_bytes(data, window) {
+        if let Ok(frame) =
+            naves_core::heightmap::MapGeo::new(&naves_core::project::Project::new("Fuzz", 47.595, 12.985, 2000.0))
+        {
+            let _ = naves_core::lot::areas(&land, &frame);
+        }
+    }
 });

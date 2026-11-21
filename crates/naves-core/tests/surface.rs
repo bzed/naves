@@ -202,6 +202,7 @@ fn square_at(
 fn osm(polygons: Vec<LandPolygon>) -> OsmLand {
     OsmLand {
         polygons,
+        lots: Vec::new(),
         skipped_rings: 0,
     }
 }

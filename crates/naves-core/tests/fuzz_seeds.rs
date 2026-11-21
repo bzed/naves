@@ -84,12 +84,27 @@ fn osm_read_seeds() {
     let window = GeoWindow {
         south: 47.54,
         west: 12.96,
-        north: 47.56,
-        east: 12.99,
+        north: 47.61,
+        east: 13.0,
     };
+    let frame = naves_core::heightmap::MapGeo::new(&naves_core::project::Project::new(
+        "Seeds", 47.595, 12.985, 2000.0,
+    ))
+    .unwrap();
     for (name, data) in seeds("osm_read") {
         let result = naves_core::osm::read_land_from_bytes(&data, window);
-        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+        assert_eq!(
+            result.is_ok(),
+            name == "valid" || name == "valid_lots",
+            "seed {name}: {result:?}"
+        );
+        if let Ok(land) = result {
+            let (areas, skipped) = naves_core::lot::areas(&land, &frame);
+            assert_eq!(areas.len() + skipped, land.lots.len(), "seed {name}");
+            if name == "valid_lots" {
+                assert_eq!(areas.len(), 7, "five ways and two rings");
+            }
+        }
     }
 }
 

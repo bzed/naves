@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use naves_core::landcover::GeoWindow;
 use naves_core::osm::{LandPolygon, RawWay, assemble, read_land, read_land_from_bytes};
+
 use naves_core::surface::SurfaceClass;
 
 fn fixture() -> PathBuf {
@@ -464,4 +465,109 @@ fn streams_rivers_and_canals_are_read_with_the_roads() {
         culvert.tags.get("waterway").map(String::as_str),
         Some("stream")
     );
+}
+
+// --- lots ---------------------------------------------------------------------------------------------------------
+
+fn lots_fixture(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/osm")
+        .join(name)
+}
+
+fn lots_window() -> GeoWindow {
+    GeoWindow {
+        south: 47.59,
+        west: 12.97,
+        north: 47.61,
+        east: 13.0,
+    }
+}
+
+#[test]
+fn lots_are_read_with_their_tags() {
+    let land = read_land(&[lots_fixture("lots.osm.pbf")], lots_window()).unwrap();
+    let ways: Vec<_> = land.lots.iter().filter(|l| !l.relation).collect();
+    let ids: Vec<i64> = ways.iter().map(|l| l.id).collect();
+    // parking, camp site, caravan site, rest area, bus parking; not the bay and not the pitch
+    assert_eq!(ids, [101, 102, 103, 104, 105]);
+    let parking = ways[0];
+    assert_eq!(parking.part, 0);
+    assert_eq!(parking.outer.len(), 5);
+    assert_eq!(parking.outer.first(), parking.outer.last());
+    assert_eq!(
+        parking.tags,
+        std::collections::BTreeMap::from([
+            ("amenity".to_string(), "parking".to_string()),
+            ("parking".to_string(), "surface".to_string()),
+            ("surface".to_string(), "asphalt".to_string()),
+        ]),
+        "the name is not kept"
+    );
+    assert_eq!(
+        ways[1].tags.get("tourism").map(String::as_str),
+        Some("camp_site")
+    );
+    assert_eq!(
+        ways[2].tags.get("caravan_site:type").map(String::as_str),
+        Some("parking_lot")
+    );
+    assert_eq!(
+        ways[3].tags.get("highway").map(String::as_str),
+        Some("rest_area")
+    );
+    assert_eq!(
+        ways[4].tags.get("amenity").map(String::as_str),
+        Some("tourist_bus_parking")
+    );
+}
+
+#[test]
+fn a_multipolygon_lot_gives_one_polygon_per_outer_ring() {
+    let land = read_land(&[lots_fixture("lots.osm.pbf")], lots_window()).unwrap();
+    let parts: Vec<_> = land.lots.iter().filter(|l| l.relation).collect();
+    assert_eq!(parts.len(), 2);
+    assert!(parts.iter().all(|p| p.id == 900));
+    assert_eq!(parts.iter().map(|p| p.part).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(
+        parts[0].holes.len(),
+        1,
+        "the hole is on the ring that contains it"
+    );
+    assert_eq!(parts[1].holes.len(), 0);
+    assert_eq!(
+        parts[0].tags.get("access").map(String::as_str),
+        Some("customers")
+    );
+    assert!(!parts[0].tags.contains_key("ref"));
+    // ways first, relations after them
+    let relation_at = land.lots.iter().position(|l| l.relation).unwrap();
+    assert!(land.lots[relation_at..].iter().all(|l| l.relation));
+}
+
+#[test]
+fn lots_do_not_change_the_other_polygons_or_depend_on_the_file_order() {
+    let lots = lots_fixture("lots.osm.pbf");
+    let water = lots_fixture("water_only.osm.pbf");
+    let with = read_land(std::slice::from_ref(&lots), lots_window()).unwrap();
+    let without = read_land(std::slice::from_ref(&water), lots_window()).unwrap();
+    assert_eq!(with.polygons.len(), 1);
+    assert_eq!(with.polygons, without.polygons);
+    assert_eq!(without.lots, []);
+    let ab = read_land(&[lots.clone(), water.clone()], lots_window()).unwrap();
+    let ba = read_land(&[water, lots], lots_window()).unwrap();
+    assert_eq!(ab, ba);
+    assert_eq!(ab.lots, with.lots);
+}
+
+#[test]
+fn lots_outside_the_window_are_dropped() {
+    let far = GeoWindow {
+        south: 10.0,
+        west: 10.0,
+        north: 10.1,
+        east: 10.1,
+    };
+    let land = read_land(&[lots_fixture("lots.osm.pbf")], far).unwrap();
+    assert_eq!(land.lots, []);
 }

@@ -77,6 +77,13 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "© OpenStreetMap contributors"
 SPDX-License-Identifier = "ODbL-1.0"
 
+# osm_read/valid_lots is a copy of the synthetic lots.osm.pbf and stays the project's own.
+[[annotations]]
+path = "fuzz/corpus/osm_read/valid_lots"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
 [[annotations]]
 path = "tests/fixtures/dem/*.tif"
 precedence = "aggregate"
@@ -112,7 +119,7 @@ SPDX-License-Identifier = "ODbL-1.0"
 
 # Synthetic: written by the tests' own generator, not OpenStreetMap data.
 [[annotations]]
-path = "tests/fixtures/osm/waterways.osm.pbf"
+path = ["tests/fixtures/osm/waterways.osm.pbf", "tests/fixtures/osm/lots.osm.pbf", "tests/fixtures/osm/water_only.osm.pbf"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Bernd Zeimetz <bernd@bzed.de>"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
