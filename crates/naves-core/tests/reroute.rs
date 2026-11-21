@@ -16,11 +16,7 @@ use naves_core::reroute::{CHAMFER_ERROR, RerouteParams};
 use proptest::prelude::*;
 use proptest::test_runner::{FileFailurePersistence, RngSeed};
 
-const NONE: Clearance = Clearance {
-    water_m: 0.0,
-    water_cap_m: f64::INFINITY,
-    road_m: 0.0,
-};
+const NONE: Clearance = Clearance::NONE;
 
 /// The 200 m box of the examples: 4 m cells, so 2 m raster cells and 100 x 100 of them.
 fn world(margin: f64) -> Obstacles {
@@ -52,8 +48,10 @@ fn lake_blocks_and_has_distance() {
         o.segment((110.0, 0.0), (110.0, 200.0), NONE),
         Err(Blocked::Water)
     );
+    // an estimate from the probe's cell centre (131 m, 12 m from the lake cell centre 119, less half a cell);
+    // the true distance is 10 m
     let d = o.water_distance_m((130.0, 110.0));
-    assert!((9.0..=11.0).contains(&d), "{d}");
+    assert!((d - 11.0).abs() < 1e-9, "{d}");
 }
 
 #[test]
@@ -63,11 +61,7 @@ fn threshold_and_clearance() {
     assert!((o.threshold(5.0) - want).abs() < 1e-9);
     assert_eq!(o.threshold(0.0), 0.0);
     assert_eq!(o.threshold(-3.0), 0.0);
-    let clear5 = Clearance {
-        water_m: 5.0,
-        water_cap_m: f64::INFINITY,
-        road_m: 0.0,
-    };
+    let clear5 = Clearance::new(5.0, 0.0).unwrap();
     assert_eq!(
         o.segment((130.0, 0.0), (130.0, 200.0), clear5),
         Err(Blocked::Water)
@@ -75,51 +69,81 @@ fn threshold_and_clearance() {
     assert_eq!(o.segment((140.0, 0.0), (140.0, 200.0), clear5), Ok(()));
 }
 
+/// The lake with an original line set, so that the raster keeps the water cap.
+fn lake_with_original(original: &[(f64, f64)]) -> Obstacles {
+    let mut o = world(0.0);
+    o.stamp_water(&lake);
+    o.set_original(original);
+    o.finish();
+    o
+}
+
 #[test]
 fn one_threshold_for_test_and_water_cap() {
-    let o = with_lake();
     let original = [(135.0, 0.0), (135.0, 200.0)];
-    let cap = o.water_cap_m(&original);
+    let o = lake_with_original(&original);
     // the stored chamfer distance of the original's cell (centre 135 to the lake cell centre 119)
+    let cap = o.water_cap_m().unwrap();
     assert!((cap - 16.0).abs() < 1e-9, "{cap}");
-    // with the reach as the clearance and the cap, the original line passes its own test exactly
-    let clear = Clearance {
-        water_m: 15.0,
-        water_cap_m: cap,
-        road_m: 0.0,
-    };
+    // the reach alone (threshold 18.4) would block the original line; with the cap it passes its own test
+    let clear = Clearance::new(15.0, 0.0).unwrap();
+    assert!(o.threshold(15.0) > cap);
     assert_eq!(o.segment(original[0], original[1], clear), Ok(()));
-    // a cap a little higher and the original line itself would fail
-    let more = Clearance {
-        water_cap_m: cap + 0.5,
-        ..clear
-    };
+    // nearer than the original was: blocked (cells at 14 m)
     assert_eq!(
-        o.segment(original[0], original[1], more),
+        o.segment((134.0, 0.0), (134.0, 200.0), clear),
         Err(Blocked::Water)
     );
-    // a line in the water has no clearance at all
-    assert_eq!(o.water_cap_m(&[(110.0, 0.0), (110.0, 200.0)]), 0.0);
+}
+
+#[test]
+fn without_an_original_there_is_no_cap() {
+    let o = with_lake();
+    assert_eq!(o.water_cap_m(), None);
+    let clear = Clearance::new(15.0, 0.0).unwrap();
+    assert_eq!(
+        o.segment((135.0, 0.0), (135.0, 200.0), clear),
+        Err(Blocked::Water)
+    );
+}
+
+#[test]
+fn an_original_in_the_water_gives_cap_zero() {
+    let o = lake_with_original(&[(110.0, 0.0), (110.0, 200.0)]);
+    assert_eq!(o.water_cap_m(), Some(0.0));
+    // only water cells block now
+    let clear = Clearance::new(15.0, 0.0).unwrap();
+    assert_eq!(o.segment((121.0, 0.0), (121.0, 200.0), clear), Ok(()));
+    assert_eq!(
+        o.segment((110.0, 0.0), (110.0, 200.0), clear),
+        Err(Blocked::Water)
+    );
 }
 
 #[test]
 fn a_riverside_road_may_stay_as_near_as_it_was() {
-    let o = with_lake();
     // the original runs 4 m from the lake (cells 61 and 62: centres 123 and 125, 4 and 6 m from 119)
     let original = [(124.0, 0.0), (124.0, 200.0)];
-    let cap = o.water_cap_m(&original);
+    let o = lake_with_original(&original);
+    let cap = o.water_cap_m().unwrap();
     assert!((cap - 4.0).abs() < 1e-9, "{cap}");
-    let clear = Clearance {
-        water_m: 15.0,
-        water_cap_m: cap,
-        road_m: 0.0,
-    };
+    let clear = Clearance::new(15.0, 0.0).unwrap();
     assert_eq!(o.segment(original[0], original[1], clear), Ok(()));
     assert_eq!(o.segment((125.0, 0.0), (125.0, 200.0), clear), Ok(()));
     assert_eq!(
         o.segment((122.0, 0.0), (122.0, 200.0), clear),
         Err(Blocked::Water)
     );
+}
+
+#[test]
+fn a_clearance_must_be_a_number_and_not_negative() {
+    assert!(Clearance::new(f64::NAN, 0.0).is_none());
+    assert!(Clearance::new(0.0, f64::NAN).is_none());
+    assert!(Clearance::new(f64::INFINITY, 0.0).is_none());
+    assert!(Clearance::new(-1.0, 0.0).is_none());
+    let c = Clearance::new(5.0, 7.0).unwrap();
+    assert!((c.water_m() - 5.0).abs() < 1e-12 && (c.road_m() - 7.0).abs() < 1e-12);
 }
 
 fn road_world() -> Obstacles {
@@ -137,11 +161,7 @@ fn road_blocks_by_cells_and_clearance() {
         o.segment((10.0, 55.0), (190.0, 55.0), NONE),
         Err(Blocked::Road)
     );
-    let wide = Clearance {
-        water_m: 0.0,
-        water_cap_m: f64::INFINITY,
-        road_m: 15.0,
-    };
+    let wide = Clearance::new(0.0, 15.0).unwrap();
     assert_eq!(
         o.segment((10.0, 60.0), (190.0, 60.0), wide),
         Err(Blocked::Road)
@@ -231,11 +251,7 @@ fn map_edge_rule() {
         o.segment((50.0, 50.0), (250.0, 50.0), NONE),
         Err(Blocked::Outside)
     );
-    let wide = Clearance {
-        water_m: 0.0,
-        water_cap_m: f64::INFINITY,
-        road_m: 15.0,
-    };
+    let wide = Clearance::new(0.0, 15.0).unwrap();
     assert_eq!(o.segment((7.0, 20.0), (7.0, 180.0), wide), Ok(()));
     // a road that runs to the edge: no margin, only the outside of the map
     let o = world(0.0);
@@ -282,6 +298,7 @@ fn a_crossing_at_an_anchor_neither_counts_nor_blocks() {
     let anchors = [(95.0, 50.0), (0.0, 0.0)];
     assert_eq!(crossings_away(&route, &line, anchors, 10.0), 1);
     let wall = stream(0, anchors);
+    assert_eq!(wall.crossings(&route), 1);
     assert!(!wall.blocks((90.0, 50.0), (110.0, 50.0)));
     assert!(wall.blocks((110.0, 150.0), (90.0, 150.0)));
     // 15 m from both anchors: counted and blocked
@@ -389,7 +406,7 @@ fn degenerate_inputs_do_not_panic() {
     o.finish();
     assert!(o.cells() >= 1);
     let _ = o.segment((0.0, 0.0), (0.5, 0.5), NONE);
-    let _ = o.water_cap_m(&[]);
+    let _ = o.water_cap_m();
     let _ = o.stray_m((0.0, 0.0));
 }
 
@@ -926,4 +943,26 @@ fn degenerate_bands_do_not_panic() {
     )
     .unwrap();
     assert!(close(step.reach.lo(), step.reach.hi(), 1e-9));
+}
+
+#[test]
+fn stray_is_the_stored_distance() {
+    let mut o = world(0.0);
+    o.set_original(&[(0.0, 100.0), (200.0, 100.0)]);
+    o.finish();
+    assert!((o.stray_m((50.0, 107.0)) - 6.0).abs() < 1e-9);
+    assert!(o.stray_m((50.0, 100.0)).abs() < 1e-9);
+}
+
+#[test]
+fn a_corner_tip_is_stamped_by_distance_to_the_segments() {
+    // the vertex (51, 101) is not a sample; the cell centred (47, 105) is 5.66 m from it but 6.4 m from the
+    // nearest samples, so only a stamp by segment distance marks it
+    let mut o = world(0.0);
+    o.stamp_road(&[(51.0, 10.0), (51.0, 101.0), (151.0, 101.0)], 6.0, &[]);
+    o.finish();
+    assert_eq!(
+        o.segment((46.5, 104.5), (47.5, 105.5), NONE),
+        Err(Blocked::Road)
+    );
 }

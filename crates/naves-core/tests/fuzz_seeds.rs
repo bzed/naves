@@ -221,11 +221,7 @@ fn reroute_raster_seeds() {
         o.stamp_road(&road, 6.0, &flags);
         o.set_original(&original);
         o.finish();
-        let clear = Clearance {
-            water_m: 5.0,
-            water_cap_m: o.water_cap_m(&original),
-            road_m: 12.0,
-        };
+        let clear = Clearance::new(5.0, 12.0).unwrap();
         for pair in probes.windows(2) {
             let blocked = o.segment(pair[0], pair[1], clear);
             if name == "scene" {
@@ -237,7 +233,7 @@ fn reroute_raster_seeds() {
             }
         }
         let _ = (samples(&road), exempt_samples(&road, &original, 20.0, 10.0));
-        let _ = o.water_cap_m(&original);
+        let _ = o.water_cap_m();
         let _ = chamfer(&[true, false, true], 3, 1, 2.0);
     }
 }

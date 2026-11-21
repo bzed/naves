@@ -49,11 +49,7 @@ fuzz_target!(|data: &[u8]| {
     o.stamp_road(&road, 6.0, &flags);
     o.set_original(&original);
     o.finish();
-    let clear = Clearance {
-        water_m: 5.0,
-        water_cap_m: o.water_cap_m(&original),
-        road_m: 12.0,
-    };
+    let clear = Clearance::new(5.0, 12.0).unwrap_or(Clearance::NONE);
     for pair in probes.windows(2) {
         if let [a, b] = *pair {
             let _ = o.segment(a, b, clear);
@@ -70,7 +66,7 @@ fuzz_target!(|data: &[u8]| {
             let _ = o.road_distance_m(b);
         }
     }
-    let _ = o.water_cap_m(&original);
+    let _ = o.water_cap_m();
     let _ = crossings_away(&road, &wall, [(0.0, 0.0), (1.0, 1.0)], 10.0);
     let _ = exempt_samples(&road, &original, 20.0, 10.0);
     let _ = samples(&wall);

@@ -290,7 +290,9 @@ cells.
     stored value), not by inverting `thr`: the inverse `(d_orig − res · √2) / CHAMFER_ERROR − res` is not positive for
     an original line nearer than about 5 m to the water, and the cap then collapsed to "no clearance", letting a route
     go nearer to the water than the original was. With the cap in the stored measure the original line passes its
-    own test exactly, and a riverside road may stay as near the water as it already was, however near that is.
+    own test exactly, and a riverside road may stay as near the water as it already was, however near that is. The raster keeps the cap itself (computed when the original line is set and the maps
+    are finished), so a caller can neither forget it nor pass a wrong one; an original that touches water has
+    stored distance 0, so the leg gets cap 0 and only water cells block there.
 - **Crossings near the anchors.** Wall crossings (exempt roads, streams) are counted, and block a segment of the
   route when the wall allows none, only farther than `PLAN_CROSSING_END_M` (10 m) from either anchor. Reason: an exempt road that shares geometry with the original line
   near its node made the counts unstable; 7 good routes failed their check, 1 with the rule.
@@ -563,7 +565,7 @@ re-check with the grade rule (plan Task 7b) must confirm before they are frozen.
 | `CHAMFER_ERROR` | 1.0824 | chamfer and octile excess | notes 3.2, 3.4 | |
 | test threshold `thr(c)` | `(c + res) · CHAMFER_ERROR + res · √2` | one threshold for test, exemption, water cap | notes 3.2; spike 8.1 | yes: against `c + res/2` |
 | road clearance | `core_reach_m(own half) + cell` | earthworks touch, with the other road stamped at its reach | `netclean`, `conform::core_reach_m` | |
-| water threshold | `min(thr(core_reach_m(own half)), d_orig)`, `d_orig` the stored chamfer distance of the original line | the cap is in the map's measure, not an inverted `thr` | spike 8.1; review of Task 2 | |
+| water threshold | `min(thr(core_reach_m(own half)), d_orig)`, `d_orig` the stored chamfer distance of the original line | the cap is in the map's measure, not an inverted `thr`; kept by the raster, not passed by the caller. An original that touches water (stored distance 0) gives cap 0 for that leg: only water cells block there | spike 8.1; review of Task 2 | |
 
 ## How it is judged
 

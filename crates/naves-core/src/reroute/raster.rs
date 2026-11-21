@@ -53,17 +53,40 @@ pub enum Blocked {
     Outside,
 }
 
-/// The clearances of a segment test, in metres. Zero means only obstacle cells block.
+/// The clearances of a segment test, in metres. Zero means only obstacle cells block. Built by
+/// [`Clearance::new`], which refuses a value that is not a number or is negative.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Clearance {
-    /// Clearance to water, as [`Obstacles::threshold`] turns it into a chamfer distance.
-    pub water_m: f64,
-    /// Upper limit of that water threshold, in metres of the map's own (stored chamfer) measure: what
-    /// [`Obstacles::water_cap_m`] returns for the original line, so that a road beside water may stay as near
-    /// as the original was. `f64::INFINITY` for no limit.
-    pub water_cap_m: f64,
-    /// Clearance to other roads.
-    pub road_m: f64,
+    water_m: f64,
+    road_m: f64,
+}
+
+impl Clearance {
+    /// No clearance: only obstacle cells block.
+    pub const NONE: Clearance = Clearance {
+        water_m: 0.0,
+        road_m: 0.0,
+    };
+
+    /// The clearance to water and to other roads; `None` if either is not finite or is negative. The water test
+    /// is also limited by the original line's own distance, see [`Obstacles::water_cap_m`].
+    #[must_use]
+    pub fn new(water_m: f64, road_m: f64) -> Option<Clearance> {
+        let ok = |v: f64| v.is_finite() && v >= 0.0;
+        (ok(water_m) && ok(road_m)).then_some(Clearance { water_m, road_m })
+    }
+
+    /// The clearance to water, in metres.
+    #[must_use]
+    pub fn water_m(&self) -> f64 {
+        self.water_m
+    }
+
+    /// The clearance to other roads, in metres.
+    #[must_use]
+    pub fn road_m(&self) -> f64 {
+        self.road_m
+    }
 }
 
 /// The obstacle raster of a leg with its distance maps.
@@ -79,6 +102,7 @@ pub struct Obstacles {
     water: Vec<u16>,
     road: Vec<u16>,
     orig: Vec<u16>,
+    water_cap: Option<f64>,
 }
 
 /// A cell count as `f64` (exact: a raster has far fewer than 2^32 cells per side).
@@ -182,6 +206,7 @@ impl Obstacles {
             water: vec![FAR; n],
             road: vec![FAR; n],
             orig: vec![FAR; n],
+            water_cap: None,
         }
     }
 
@@ -465,7 +490,8 @@ impl Obstacles {
         }
     }
 
-    /// Computes the three distance maps from what was stamped. Call it after the last stamp.
+    /// Computes the three distance maps and the water cap from what was stamped. Call it after the last stamp
+    /// and after [`Obstacles::set_original`].
     pub fn finish(&mut self) {
         let (cols, rows, res) = (self.cols, self.rows, self.res);
         let mask = |bit: u8| -> Vec<bool> { self.flags.iter().map(|&f| f & bit != 0).collect() };
@@ -474,6 +500,15 @@ impl Obstacles {
             chamfer(&mask(F_ROAD), cols, rows, res),
             chamfer(&mask(F_ORIG), cols, rows, res),
         );
+        // the cap: the smallest stored distance to water of the cells the original line touches
+        self.water_cap = self
+            .flags
+            .iter()
+            .zip(&water)
+            .filter(|&(&f, _)| f & F_ORIG != 0)
+            .map(|(_, &d)| d)
+            .min()
+            .map(|d| f64::from(d) / 10.0);
         self.water = water;
         self.road = road;
         self.orig = orig;
@@ -494,7 +529,7 @@ impl Obstacles {
 
     /// Whether a planned segment from `a` to `b` is free: `Err` names the first thing in its way. An end outside
     /// the raster or not a number is `Outside`; `Edge` is only for cells outside the map or in its margin. The
-    /// water test uses the threshold of `clear.water_m`, but no more than `clear.water_cap_m`.
+    /// water test uses the threshold of the water clearance, but no more than [`Obstacles::water_cap_m`].
     ///
     /// # Errors
     ///
@@ -505,7 +540,7 @@ impl Obstacles {
         }
         let water_thr = self
             .threshold(clear.water_m)
-            .min(clear.water_cap_m.max(0.0));
+            .min(self.water_cap.unwrap_or(f64::INFINITY));
         let (road_dm, water_dm) = (self.threshold(clear.road_m) * 10.0, water_thr * 10.0);
         let mut result = Ok(());
         self.touches(a, b, &mut |i| {
@@ -578,33 +613,14 @@ impl Obstacles {
         self.distance_at(&self.road, p, -self.res / 2.0)
     }
 
-    /// The water cap for [`Clearance::water_cap_m`]: the smallest stored chamfer distance to water, in metres, of
-    /// the cells the original line touches. A route is tested against `min(threshold(reach), cap)` in this same
-    /// stored measure, so the original line passes its own test exactly and a road beside water may stay as near
-    /// as it was, however near that is. Zero when the line is in water; `INFINITY` when no cell of it is in
-    /// the raster.
+    /// The water cap: the smallest stored chamfer distance to water, in metres, of the cells the original line
+    /// touches, kept by [`Obstacles::finish`]. `segment` tests water against `min(threshold(water clearance),
+    /// cap)` in this same stored measure, so the original line passes its own test exactly and a road beside
+    /// water may stay as near as it was, however near that is. An original that touches water gives 0 (only
+    /// water cells block then). `None` when no original was set, or none of it is in the raster: no cap.
     #[must_use]
-    pub fn water_cap_m(&self, original: &[(f64, f64)]) -> f64 {
-        let mut least: Option<u16> = None;
-        let mut see = |i: usize| {
-            if let Some(&d) = self.water.get(i) {
-                least = Some(least.map_or(d, |l| l.min(d)));
-            }
-            true
-        };
-        if let [only] = original
-            && let Some(i) = self.index_of(*only)
-        {
-            see(i);
-        }
-        for pair in original.windows(2) {
-            if let [a, b] = *pair
-                && let Some((a, b)) = self.clip(a, b)
-            {
-                self.touches(a, b, &mut see);
-            }
-        }
-        least.map_or(f64::INFINITY, |d| f64::from(d) / 10.0)
+    pub fn water_cap_m(&self) -> Option<f64> {
+        self.water_cap
     }
 }
 
@@ -876,6 +892,16 @@ impl Wall {
     }
 }
 
+impl Wall {
+    /// How often `route` crosses the wall's line farther than `end_m` from both of the wall's anchors: the count
+    /// the leg's original line is held to. The route check must count with the same `Wall` that the search
+    /// blocked with, so that the two cannot use different anchors.
+    #[must_use]
+    pub fn crossings(&self, route: &[(f64, f64)]) -> usize {
+        crossings_away(route, &self.line, self.anchors, self.end_m)
+    }
+}
+
 /// The point is farther than `end_m` from both anchors.
 fn away_from(x: (f64, f64), anchors: [(f64, f64); 2], end_m: f64) -> bool {
     anchors
@@ -904,4 +930,47 @@ pub fn crossings_away(
         }
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Obstacles;
+
+    /// A fixed-seed generator, so that the test is the same on every run.
+    fn next(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        // 53 bits to a number in 0..1
+        f64::from(u32::try_from(*state >> 32).unwrap()) / 4_294_967_296.0
+    }
+
+    #[test]
+    fn a_clipped_segment_lies_inside_the_raster() {
+        let o = Obstacles::new((0.0, 0.0), (200.0, 200.0), 4.0, 200.0, 0.0, 4_000_000);
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut clipped = 0;
+        for _ in 0..20_000 {
+            // awkward coordinates: scattered round the box, some on its boundary
+            let mut point = || {
+                let v = |s: &mut u64| {
+                    let r = next(s);
+                    if r < 0.2 {
+                        200.0
+                    } else if r < 0.3 {
+                        0.0
+                    } else {
+                        -100.0 + 400.0 * next(s) + 1e-13
+                    }
+                };
+                (v(&mut state), v(&mut state))
+            };
+            let (a, b) = (point(), point());
+            if let Some((c, d)) = o.clip(a, b) {
+                clipped += 1;
+                assert!(o.covers(c) && o.covers(d), "{a:?} {b:?} -> {c:?} {d:?}");
+            }
+        }
+        assert!(clipped > 1000);
+    }
 }
