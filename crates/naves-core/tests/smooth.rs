@@ -756,7 +756,7 @@ fn a_short_stretch_is_counted_apart_from_a_failed_one() {
 
 #[test]
 fn the_widening_constants_are_the_specs() {
-    assert!(near(WIDEN_LEAD, 2.0, 0.0));
+    assert!(near(WIDEN_LEAD, 4.0, 0.0));
     assert!(near(WIDEN_REACH, 2.0, 0.0));
     assert_eq!(WIDEN_DIRECTIONS, 8);
     assert!(near(WIDEN_SLACK_COST, 1e4, 0.0));
@@ -813,23 +813,20 @@ fn assert_outside_of_hairpin(line: &[P], gap: f64) {
     }
 }
 
-/// Measured (see the task report): a hairpin of radius 4 m whose legs are 8 m apart cannot be opened to a
-/// radius of 10 m within the zone `WIDEN_LEAD` gives it: the legs would have to spread by 6 m each, which
-/// takes about 60 m of road, and the zone has about 50. Three passes get the radius from 2.5 m to 5.7 m; the
-/// zone is reported as not reached, which is what the plate that joins the two legs is for.
 #[test]
-fn a_hairpin_is_widened_as_far_as_its_zone_allows() {
+fn a_hairpin_is_widened_to_the_minimum_radius() {
     let g = graph(vec![stretch("h", 1, 2, &hairpin_points())]);
     let (out, report) = widen_run(&g);
     assert!(report.kept.is_empty(), "{:?}", report.kept);
     assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
     let z = &report.zones[0];
+    assert!(z.reached, "{z:?}");
     assert_eq!(z.stretches, vec!["h".to_string()]);
     assert!(near(z.radius_wanted_m, 10.0, 0.0));
-    assert!(!z.reached, "{z:?}");
-    assert!(z.radius_before_m < 3.0, "{z:?}");
-    assert!(z.radius_after_m > 5.0 && z.radius_after_m < 10.0, "{z:?}");
+    assert!(z.radius_after_m > z.radius_before_m, "{z:?}");
     let line = &out.stretches[0].points;
+    let worst = min_radius_of(line);
+    assert!(worst >= 10.0 * 0.92, "the tightest radius is {worst}");
     let total: f64 = turns(line).iter().sum();
     assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
     assert_outside_of_hairpin(line, 8.0);
@@ -958,9 +955,10 @@ fn a_way_split_inside_a_bend_moves_with_the_road() {
 
 #[test]
 fn a_junction_in_the_bend_holds_it_and_the_zone_is_reported() {
-    // the junction sits on the arc, 40 degrees before the apex
-    let g = split_hairpin(8.0, 6, true);
-    let node = g.stretches[0].points[6];
+    // the junction sits at the start of the arc, 20 degrees into it: the bend is still to come and the held node
+    // and its held neighbour do not leave the legs room to spread (measured: radius 5.7 m reached, 10.0 m wanted)
+    let g = split_hairpin(8.0, 3, true);
+    let node = g.stretches[0].points[3];
     let (out, report) = widen_run(&g);
     assert!(report.kept.is_empty(), "{:?}", report.kept);
     assert!(!report.zones.is_empty(), "no zone");
@@ -968,7 +966,7 @@ fn a_junction_in_the_bend_holds_it_and_the_zone_is_reported() {
         assert!(near(z.radius_wanted_m, 10.0, 0.0), "{z:?}");
     }
     assert!(
-        report.zones.iter().any(|z| !z.reached),
+        report.zones.iter().all(|z| !z.reached),
         "{:?}",
         report.zones
     );
@@ -1084,4 +1082,27 @@ fn a_zone_with_a_nan_or_zero_minimum_is_skipped() {
         let (fit, _) = smooth_graph_fit_only(&g, &wanted, &SmoothParams::default());
         assert_eq!(format!("{out:?}"), format!("{fit:?}"), "{value}");
     }
+}
+
+#[test]
+fn a_widening_the_solver_cannot_take_keeps_the_fit_and_is_reported() {
+    // a minimum radius so large that the bounds of the problem are beyond what the solver accepts
+    let g = graph(vec![stretch(
+        "l",
+        1,
+        2,
+        &[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)],
+    )]);
+    let huge = |_: &Stretch| 1e16;
+    let (out, report) = smooth_graph(&g, &huge, &SmoothParams::default());
+    let (fit, _) = smooth_graph_fit_only(&g, &huge, &SmoothParams::default());
+    assert_eq!(report.widen_failed.len(), 1, "{:?}", report.widen_failed);
+    assert_eq!(report.widen_failed[0].0, "l");
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    assert!(!report.zones[0].reached);
+    assert_eq!(
+        format!("{:?}", out.stretches),
+        format!("{:?}", fit.stretches)
+    );
 }

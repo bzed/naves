@@ -43,7 +43,7 @@ pub const W_STAY: f64 = 0.02;
 pub const BRIDGE_STRAIGHT_WEIGHT: f64 = 10.0;
 
 /// How much road before and after a tight run belongs to its zone, in minimum radii.
-pub const WIDEN_LEAD: f64 = 2.0;
+pub const WIDEN_LEAD: f64 = 4.0;
 /// How far a sample of a zone may move outward from its original position, in minimum radii.
 pub const WIDEN_REACH: f64 = 2.0;
 /// The number of directions in which the second difference of a zone sample is bounded.

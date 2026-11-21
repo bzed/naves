@@ -196,7 +196,7 @@ fine). Spec section "Tight curves are widened outward"; its constants are used v
 **Interfaces — Consumes:** Tasks 2 and 3. **Produces:**
 
 ```rust
-pub const WIDEN_LEAD: f64 = 2.0;
+pub const WIDEN_LEAD: f64 = 4.0;
 pub const WIDEN_REACH: f64 = 2.0;
 pub const WIDEN_DIRECTIONS: usize = 8;
 pub const WIDEN_SLACK_COST: f64 = 1e4;
