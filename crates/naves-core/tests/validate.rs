@@ -22,7 +22,7 @@ use naves_core::project::Project;
 use naves_core::roadfit::Pose;
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, RoadGap, RoadKink, Slot};
 use naves_core::surface::SurfaceClass;
-use naves_core::validate::{Rule, Violation, check_roads};
+use naves_core::validate::{Rule, Violation, check_roads, water_test};
 
 fn road(index: u32, kind: PlacedKind, at: (f64, f64)) -> PlacedRoad {
     PlacedRoad {
@@ -1611,4 +1611,33 @@ fn a_grade_break_in_a_ramp_zone_is_worded_as_a_change_of_grade() {
         found[0].message,
         "The grade changes by 14 % at one point, the most a vehicle takes there is 10 %"
     );
+}
+
+#[test]
+fn the_water_test_follows_the_rule_of_road_in_water() {
+    let mut holed = lake();
+    // a hole around the centre of the lake (about 110 m across)
+    holed.holes = vec![vec![
+        (47.5495, 12.9735),
+        (47.5495, 12.9765),
+        (47.5505, 12.9765),
+        (47.5505, 12.9735),
+        (47.5495, 12.9735),
+    ]];
+    let mut town = lake();
+    town.priority = 1;
+    // a ring that cannot be projected is left out, not a reason to lose the others
+    let mut broken = lake();
+    broken.outer = vec![(f64::NAN, 12.97), (47.55, 12.98), (47.56, 12.97)];
+    let frame = frame();
+    let in_lake = water_test(&[lake(), town.clone(), broken], &frame);
+    assert!(in_lake((250.0, 250.0)), "the middle of the lake");
+    assert!(!in_lake((50.0, 50.0)), "dry land");
+    // built-up ground (priority 1) is no water
+    assert!(!water_test(&[town], &frame)((250.0, 250.0)));
+    // holes are no water
+    let with_hole = water_test(&[holed], &frame);
+    assert!(!with_hole((250.0, 250.0)), "inside the hole");
+    // the map is half the size of the real ground: 80 map metres from the centre is within the lake
+    assert!(with_hole((250.0 + 80.0, 250.0)), "between hole and shore");
 }
