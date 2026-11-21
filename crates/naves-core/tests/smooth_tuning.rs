@@ -157,7 +157,8 @@ fn a_curve_keeps_the_points_that_hold_its_shape() {
 
 #[test]
 fn a_kink_is_not_dropped() {
-    let line = [(0.0, 0.0), (50.0, 0.0), (50.0, 0.2), (100.0, 0.2)];
+    // the kink is taller than SIMPLIFY_TOL_M (0.20 m), so it stays
+    let line = [(0.0, 0.0), (50.0, 0.0), (50.0, 0.5), (100.0, 0.5)];
     let out = simplify_line(&line, SIMPLIFY_TOL_M);
     assert_eq!(out.len(), 4);
     let flat = simplify_line(&[(0.0, 0.0), (50.0, 0.01), (100.0, 0.0)], SIMPLIFY_TOL_M);

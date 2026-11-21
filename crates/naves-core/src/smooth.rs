@@ -65,7 +65,13 @@ pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
 pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
 /// After the stage, a point of a stretch is dropped when taking it out moves the line by less than this, in
 /// metres (a straight 100 m road is two points). Ends of stretches are never dropped.
-pub const SIMPLIFY_TOL_M: f64 = 0.05;
+///
+/// Measured on the Berchtesgaden example at terrain size 2048: the smoothed graph has 59 453 points at 0.05 m
+/// and 31 961 at 0.20 m (27 894 without the stage), and road placement takes 877 s at 0.05 m and 791 s at
+/// 0.20 m. The findings are not worse (road in water 8 to 3, earthworks capped 81 to 69, terrain misses 3678 to
+/// 3627, gaps 369 to 371, conflicts 828 = 828). Road pieces are placed with tolerances of tens of centimetres,
+/// so 0.20 m of line simplification does not change what can be built.
+pub const SIMPLIFY_TOL_M: f64 = 0.20;
 /// A zone that goes back to the original line is blended into the fit over this length at each end, in metres
 /// (linear, from the fit's offset there to zero), so the line has no step.
 pub const WIDEN_REVERT_BLEND_M: f64 = 6.0;

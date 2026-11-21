@@ -198,7 +198,7 @@ stretch whose line is not finite or collapses to one point is a failure even whe
   whose line moved can become orphaned. This is reported as it is today (`orphaned_edit`) and noted in the changelog.
 - **Run time.** The line has about four times as many points (2 m against a median of 7.2 m). If the placement
   becomes more than 20 % slower, collinear samples are dropped after the fit (points whose removal moves the line
-  by less than `SIMPLIFY_TOL_M`, 0.05 m).
+  by less than `SIMPLIFY_TOL_M`, 0.20 m; 0.05 m until 2026-11-21).
 
 ### Constants (all in one place, `smooth.rs`)
 
@@ -209,7 +209,7 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 | `W_STAY` | 0.02 | pull towards the original line |
 | `BRIDGE_STRAIGHT_WEIGHT` | 10.0 | extra stiffness on bridge stretches |
 | `CHAIN_TURN_MAX_DEG` | 150.0 | above this a two-stretch node ends a chain |
-| `SIMPLIFY_TOL_M` | 0.05 | only if the run-time rule above triggers |
+| `SIMPLIFY_TOL_M` | 0.20 | only if the run-time rule above triggers (0.05 until 2026-11-21) |
 | `WIDEN_LEAD` | 4.0 | zone length before and after a tight run, in minimum radii (2.0 was measured too short: the legs of a hairpin 8 m apart need about 60 m to spread to a 10 m radius) |
 | `WIDEN_REACH` | 2.0 | furthest outward move in a zone, in minimum radii |
 | `WIDEN_DIRECTIONS` | 8 | directions that bound the second difference |
@@ -222,7 +222,8 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 ## Tuning round 1
 
 Four rules, each from the first map run. (1) After the stage, a point whose removal moves the line by less than
-`SIMPLIFY_TOL_M` (0.05 m) is dropped (Ramer-Douglas-Peucker; ends stay); the figures are those before the drop.
+`SIMPLIFY_TOL_M` (0.20 m; 0.05 m until 2026-11-21) is dropped (Ramer-Douglas-Peucker; ends stay); the figures are
+those before the drop.
 (2) A zone below `WIDEN_KEEP_FRACTION` goes back to the resampled original line, not to the fit (the fit had pulled
 the bend tighter than drawn), with the fit's offset at the two held samples blended out over `WIDEN_REVERT_BLEND_M`
 (6 m) of the zone. (3) A zone whose widened line has a sample in water where the original line has none goes back the

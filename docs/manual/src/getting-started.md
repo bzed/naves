@@ -328,7 +328,7 @@ Four rules keep the widening from doing harm:
 - A widened line that would stand in water where the OpenStreetMap line does not (the water of the `road_in_water`
   rule) goes back the same way; the zone is flagged `blocked_by_water` in the report and the curve stays as drawn.
 - The approach of a bridge is not widened: samples within 25 m of a bridge end are held where the fit has put them.
-- After all this, points of a line that lie within 0.05 m of the line through their neighbours are dropped (a straight
+- After all this, points of a line that lie within 0.20 m of the line through their neighbours are dropped (a straight
   100 m road is two points), so the placement has less to walk over. The tight-length figures and the zone report are
   those of the line before the drop.
 

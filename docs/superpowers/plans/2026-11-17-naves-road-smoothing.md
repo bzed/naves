@@ -34,7 +34,7 @@ needed, AGENTS.md's crate review applies and the commit message carries it.
   DayZ profile folder. Remove `@naves*` symlinks from the DayZ install afterwards.
 - Figures are quoted for Berchtesgaden at terrain size 2048.
 - Constants, verbatim from the spec: `SAMPLE_M = 2.0`, `CORRIDOR_M = 2.0`, `W_STAY = 0.02`,
-  `BRIDGE_STRAIGHT_WEIGHT = 10.0`, `CHAIN_TURN_MAX_DEG = 150.0`, `SIMPLIFY_TOL_M = 0.05`.
+  `BRIDGE_STRAIGHT_WEIGHT = 10.0`, `CHAIN_TURN_MAX_DEG = 150.0`, `SIMPLIFY_TOL_M = 0.20` (0.05 until 2026-11-21).
 - Junction nodes, bridge end nodes, stretch ids and node ids do not change. No road moves more than `CORRIDOR_M`
   sideways.
 - Geometry first: the pieces contribute only `min_radius(family)`.
