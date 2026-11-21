@@ -11,19 +11,21 @@
 
 mod surface;
 
+pub(crate) use surface::touches;
 pub use surface::{
     Assessed, Form, LotSurface, NO_GROUP, Outcome, Polygon, Surface, assess, local_relief,
 };
-#[expect(
-    unused_imports,
-    reason = "the clean-up of the road graph uses it from the next commit on"
-)]
-pub(crate) use surface::touches;
 
 /// Digitising tolerance of "inside", and of "touching" for groups, in metres.
 pub const LOT_INSIDE_TOL_M: f64 = 1.0;
 /// A lot whose plane is within this of its ground (95th percentile) gets the plane, in metres.
 pub const LOT_PLANE_FIT_M: f64 = 0.5;
+/// The share of a stretch's length that must lie inside a lot by more than [`LOT_INSIDE_TOL_M`] for the stretch to
+/// count as inside it (a road drawn on the outline lies within the tolerance everywhere and is not inside).
+pub const LOT_INSIDE_SHARE: f64 = 0.5;
+/// How far inside the edge of a lot a cut access road ends, in metres (`limits::RAMP_JOINT_MIN_M`: one terrain cell
+/// at 2048).
+pub const LOT_ENTRY_M: f64 = crate::limits::RAMP_JOINT_MIN_M;
 /// The smallest radius of curvature of a lot's surface, in metres: the gentlest road's vertical radius
 /// (`limits::min_vertical_radius(Family::Asf1)`).
 pub const LOT_MIN_RADIUS_M: f64 = 600.0;
@@ -302,7 +304,7 @@ pub fn areas(land: &OsmLand, frame: &MapGeo) -> (Vec<LotArea>, usize) {
     (found, skipped)
 }
 
-fn ring_contains(ring: &[(f64, f64)], (px, py): (f64, f64)) -> bool {
+pub(crate) fn ring_contains(ring: &[(f64, f64)], (px, py): (f64, f64)) -> bool {
     let mut inside = false;
     for pair in ring.windows(2) {
         let [(xa, ya), (xb, yb)] = pair else { continue };
@@ -319,7 +321,7 @@ pub fn contains(area: &LotArea, p: (f64, f64)) -> bool {
     ring_contains(&area.outer, p) && !area.holes.iter().any(|hole| ring_contains(hole, p))
 }
 
-fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+pub(crate) fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
     let t = if len2 > 0.0 {

@@ -1458,7 +1458,7 @@ fn node_components(graph: &RoadGraph) -> BTreeMap<i64, i64> {
 /// Whether `after` splits a component of `before`: the nodes of one component of `before` that are still nodes
 /// of `after` do not all lie in one component of `after`. A component that goes whole does not count, and
 /// does not make up for another that is split.
-fn splits(before: &RoadGraph, after: &RoadGraph) -> bool {
+pub(super) fn splits(before: &RoadGraph, after: &RoadGraph) -> bool {
     let (was, is) = (node_components(before), node_components(after));
     let mut found: BTreeMap<i64, i64> = BTreeMap::new();
     was.iter().any(|(node, component)| {
