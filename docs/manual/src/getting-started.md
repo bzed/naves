@@ -309,7 +309,10 @@ not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
 fix, "warning" means a place worth a look.
 
-**Road lines are smoothed.** After the clean-up and before bridges are fitted, the build smooths the lines of the
+**Road lines can be smoothed (switched off in this release).** The stage exists but is off: the road planning is being
+built first, and it will then be decided whether the stage is still needed; with it on, road placement was about
+44 % slower on the example. Nothing below happens in a build of this release; `roads.smoothing` in `build/report.json`
+says `{"enabled": false}`. With the stage on, after the clean-up and before bridges are fitted, the build smooths the lines of the
 roads. A chain is a run of stretches that merely continue each other (nodes where exactly two stretches meet). Junctions,
 dead ends and bridge ends stay where they are, and the direction a road leaves a junction does not change. Between
 them each line is fitted by a smooth curve that stays within 2 m of its OpenStreetMap line; a bridge deck is only held
@@ -331,7 +334,7 @@ Four rules keep the widening from doing harm:
   100 m road is two points), so the placement has less to walk over. The tight-length figures and the zone report are
   those of the line before the drop.
 
-The stage can move roads, so edits to the road objects that are keyed by slot may no longer find their object
+With the stage on it can move roads, so edits to the road objects that are keyed by slot may no longer find their object
 (`orphaned_edit`). The findings are `road_curve_widened` and `road_curve_too_tight`; `build/report.json` has
 `roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`, `tight_before_m`, `tight_after_m`, `skipped_short`, the
 point counts `points_before`, `points_fitted` and `points_after`, `kept` and `widen_failed` as lists of

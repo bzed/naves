@@ -13,12 +13,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Road lines are smoothed before bridges are fitted (`feat!`): each chain of stretches that merely continue each
+- A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
+  (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
+  moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each
   other is fitted by a smooth curve within 2 m of its OpenStreetMap line, with junctions, dead ends and bridge ends
   fixed, and a curve tighter than the tightest curve piece of its road type is widened outward to that radius
-  (an open corner may be cut inward). Breaking: roads move by up to 2 m, and inside a widened curve by up to two minimum radii (about 20 m), so edits that are keyed by slot can
-  be orphaned (`orphaned_edit`). New findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
-  section in `build/report.json`, a line in the build summary and a progress line with the time of the stage.
+  (an open corner may be cut inward). Roads then move by up to 2 m, and inside a widened curve by up to two minimum radii (about 20 m), so edits that are keyed by slot can
+  be orphaned (`orphaned_edit`). With it on: new findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
+  section in `build/report.json`, a line in the build summary and a progress line with the time of the stage; off,
+  `roads.smoothing` is `{"enabled": false}`.
   A curve that cannot be widened goes back to the line as drawn (blended over 6 m at its ends), a widened line does
   not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and points within 0.20 m
   of the line through their neighbours are dropped after the stage (the placement walks fewer points).
@@ -77,11 +80,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Road placement is about 40 % faster at equal input (a block-wise nearest-point lookup, bit for bit the same
-  result: 1382 s to 817 s on the example at terrain size 2048), and the smoothed lines drop collinear points at 0.20 m,
-  which shortens it further (31 961 points instead of 59 453 on the example, placement 877 s to 791 s). The 0.20 m
-  line was compared with 0.05 m on the example: road in water 8 to 3, earthworks capped 81 to 69 and terrain misses
-  3678 to 3627 are better, gaps 369 to 371 and kinks 18 to 21 are slightly worse, conflicts 828 = 828.
+- Road placement is faster at equal input: a block-wise nearest-point lookup gives bit for bit the same result
+  (1382 s to 817 s on the example at terrain size 2048, measured with the smoothing stage on, whose long lines made the
+  search the larger part of the placement). The smoothing stage, when on, drops collinear points at 0.20 m (31 961
+  points instead of 59 453 on the example at 0.05 m); against 0.05 m, road in water 8 to 3, earthworks capped 81 to 69
+  and terrain misses 3678 to 3627 were better, gaps 369 to 371 and kinks 18 to 21 slightly worse, conflicts 828 = 828.
 - A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road
   pieces allow; before, only a ring tighter than the tightest arc of its surface was. Each collapsed roundabout is a
   new finding, `road_roundabout_collapsed`, at its centre.

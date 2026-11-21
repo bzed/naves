@@ -127,4 +127,8 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     // and `fitted_graph` follows the constant
     let default = fitted_graph(&features, &catalog, &base, &|_| false);
     assert_eq!(default.smooth.is_some(), SMOOTH_ENABLED);
+    if !SMOOTH_ENABLED {
+        // the build's graph is bitwise the cleaned graph
+        assert_eq!(default.built, cleaned);
+    }
 }

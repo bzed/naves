@@ -235,7 +235,7 @@ closer than 6 m). The points of a line that were merged because they lay closer 
 `road-analysis` example lists each (`CLEAN speck`).
 
 **`road_curve_widened` (information), `road_curve_too_tight` (warning)**
-The smoothing of the road lines found a curve tighter than the tightest curve piece of its road type. For
+The smoothing of the road lines (switched off in this release, so these two findings do not appear) found a curve tighter than the tightest curve piece of its road type. For
 `road_curve_widened` it was widened outward (an open corner, a turn of up to 120 degrees, may be cut inward instead)
 to the radius of the piece; the message names the stretches, the radius before and after and the furthest move, which
 can be several metres, and the position is the tightest point of the curve. A widened curve may end a little under

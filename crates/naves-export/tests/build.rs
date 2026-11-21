@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use naves_core::features::FeatureKind;
 use naves_core::project::Project;
+use naves_core::smooth::SMOOTH_ENABLED;
 use naves_core::surface::SurfaceClass;
 use naves_export::build::{BuildError, build};
 use naves_export::testing::FakeEnv;
@@ -1114,33 +1115,38 @@ fn the_report_has_the_violations() {
     // the progress stream is sentences: the time of the smoothing is one, not a `TIMING` measurement line
     let lines = lines.into_inner();
     assert!(lines.iter().all(|l| !l.starts_with("TIMING")), "{lines:#?}");
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with("Smoothing the road lines (") && l.ends_with(" s)")),
-        "{lines:#?}"
-    );
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
             .unwrap();
     assert!(report["roads"]["pieces"].as_u64().unwrap() > 20);
     let smoothing = &report["roads"]["smoothing"];
-    for key in [
-        "chains",
-        "max_move_m",
-        "max_outward_m",
-        "tight_before_m",
-        "tight_after_m",
-        "skipped_short",
-    ] {
-        assert!(smoothing[key].is_number(), "{key}: {smoothing}");
+    let progress_line = lines
+        .iter()
+        .any(|l| l.starts_with("Smoothing the road lines (") && l.ends_with(" s)"));
+    if SMOOTH_ENABLED {
+        assert!(progress_line, "{lines:#?}");
+        for key in [
+            "chains",
+            "max_move_m",
+            "max_outward_m",
+            "tight_before_m",
+            "tight_after_m",
+            "skipped_short",
+        ] {
+            assert!(smoothing[key].is_number(), "{key}: {smoothing}");
+        }
+        for key in ["kept", "widen_failed", "zones"] {
+            assert!(smoothing[key].is_array(), "{key}: {smoothing}");
+        }
+        assert!(smoothing["chains"].as_u64().unwrap() > 0, "{smoothing}");
+        let line = out.smoothing.as_deref().expect("a summary line");
+        assert!(line.contains("chains"), "{line}");
+    } else {
+        // the stage is off: no progress line, no summary line, and the report says so
+        assert!(!progress_line, "{lines:#?}");
+        assert_eq!(*smoothing, serde_json::json!({ "enabled": false }));
+        assert!(out.smoothing.is_none());
     }
-    for key in ["kept", "widen_failed", "zones"] {
-        assert!(smoothing[key].is_array(), "{key}: {smoothing}");
-    }
-    assert!(smoothing["chains"].as_u64().unwrap() > 0, "{smoothing}");
-    let line = out.smoothing.as_deref().expect("a summary line");
-    assert!(line.contains("chains"), "{line}");
     let violations = report["violations"].as_array().unwrap();
     for v in violations {
         assert!(v["rule"].is_string() && v["message"].is_string() && v["x"].is_number());

@@ -5,6 +5,12 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Smoothing the road lines
 
+**Status, 2026-11-21: implemented and switched off** (`SMOOTH_ENABLED = false`) on the maintainer's decision: the new
+road planning is built first, and it is then decided whether this stage is still needed. With the stage on, road
+placement was about 44 % slower on the example. To be settled before it is switched on: the road guard for widened
+curves (open points), the time cost, the game check that was never run (the plan's checkpoint), `W_STAY` and the
+geometric fillet for open corners (task 3d).
+
 Status: design, 2026-11-17. Written by the assistant on the maintainer's instruction ("start the smoothing design
 now in parallel; create a plan, let sonnet implement it"); no approval gate. Decisions the maintainer made are marked
 **(maintainer)**; everything else is the assistant's call and easy to change.
@@ -276,6 +282,11 @@ were not recorded.
 
 ## Open points
 
+- A widened curve is only checked against water, not against other roads. Before the stage is switched on again it
+  needs a guard that reverts a zone (like a water-blocked one, flagged `blocked_by_road` and reported as
+  `road_curve_too_tight`) whose widened line crosses, or comes within the two roads' earthworks (`core_reach_m` of
+  each, plus a cell, the clean-up's measure) of, a stretch that the original line did not (final review finding I-2:
+  a zone may move a road up to `WIDEN_REACH` times the minimum radius, about 20 m, into a neighbour).
 - `W_STAY` stays 0.02: the spec sentence that the corridor limits the fit was wrong, 0.002 is the untried candidate,
   and sharp corners stay tighter and nodes between two stretches keep a kink of about 8 degrees (fixed nodes) until it is
   tuned.

@@ -56,7 +56,10 @@ pub const WIDEN_PASSES: usize = 3;
 /// Switches the widening pass; off returns exactly what the fit alone gives.
 pub const WIDEN_ENABLED: bool = true;
 /// Switches the smoothing stage of the build; off, the road graph is what it was before the stage existed.
-pub const SMOOTH_ENABLED: bool = true;
+///
+/// Off since 2026-11-21 on the maintainer's decision: road planning is built first, then it is decided whether the
+/// stage is still needed; with it on, road placement was about 44 % slower on the example.
+pub const SMOOTH_ENABLED: bool = false;
 
 /// Down to this many degrees of summed turn a tight run is an open corner: its zone may cut inward as well
 /// (up to what a fillet of the minimum radius needs); a bend that turns more is widened outward only.
