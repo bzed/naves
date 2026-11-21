@@ -327,7 +327,8 @@ pub type StretchId = String;
 pub struct StretchSmooth {
     /// The stretch.
     pub id: StretchId,
-    /// The furthest any of its samples moved, in metres.
+    /// The furthest any of its samples moved, in metres. It counts samples only: the vertices of a curve that
+    /// went back to the line as drawn carry no origin sample and are not counted.
     pub max_move_m: f64,
     /// Its length tighter than its family's minimum radius, before.
     pub tight_before_m: f64,
@@ -766,6 +767,48 @@ fn tight_lengths(points: &[(f64, f64)], bounds: &[usize], minimum: &[f64]) -> Ve
         first = last;
     }
     out
+}
+
+/// The line with every segment longer than 1.5 [`SAMPLE_M`] divided into equal parts of about that length (the
+/// vertices stay, and a line that is sampled already is unchanged), and where its links end: the line the tight
+/// length is measured on, so that a stretch of widely spaced original vertices is measured as the samples it is
+/// made of, as before the stage.
+fn resampled_by_link(points: &[(f64, f64)], bounds: &[usize]) -> (Vec<(f64, f64)>, Vec<usize>) {
+    let mut line: Vec<(f64, f64)> = Vec::new();
+    let mut out_bounds = Vec::with_capacity(bounds.len());
+    let mut first = 0;
+    for &last in bounds {
+        let span = points.get(first..=last).unwrap_or_default();
+        if line.is_empty()
+            && let Some(&p) = span.first()
+        {
+            line.push(p);
+        }
+        for w in span.windows(2) {
+            let [a, b] = w else { continue };
+            let length = (b.0 - a.0).hypot(b.1 - a.1);
+            let parts = if length > 1.5 * SAMPLE_M && length.is_finite() {
+                // at most MAX_SEGMENTS parts, rounded from a positive length
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a rounded positive length over the step, clamped"
+                )]
+                let n = (length / SAMPLE_M).round().clamp(1.0, 100_000.0) as u32;
+                n
+            } else {
+                1
+            };
+            for k in 1..parts {
+                let t = f64::from(k) / f64::from(parts);
+                line.push((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+            line.push(*b);
+        }
+        out_bounds.push(line.len().saturating_sub(1));
+        first = last;
+    }
+    (line, out_bounds)
 }
 
 /// The minimum radius at every sample of a chain: that of the link the sample belongs to (a node belongs to
@@ -1230,7 +1273,8 @@ fn smooth_graph_with(
         if let Some(w) = widened {
             tally.zones.extend(chain_zones(graph, plan, w));
         }
-        let tight_after = tight_lengths(&after, &bounds, link_minimum);
+        let (measured, measured_bounds) = resampled_by_link(&after, &bounds);
+        let tight_after = tight_lengths(&measured, &measured_bounds, link_minimum);
         // A stretch that is not sound is never joined to a neighbour, so its chain has one link. The
         // condition still covers every link, so a chain of sound stretches is counted as short as a whole.
         let all_sound = plan

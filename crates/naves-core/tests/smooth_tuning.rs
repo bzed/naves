@@ -391,3 +391,33 @@ fn the_approach_of_a_bridge_is_held() {
     // the zone itself did widen further out
     assert!(out.stretches[0].points.iter().any(|a| a.1 < -0.5));
 }
+
+#[test]
+fn the_tight_length_after_is_measured_on_samples_like_the_one_before() {
+    // a right angle drawn with vertices 30 m apart; the widened line would enter water, so it goes back to the line
+    // as drawn. Three vertices 30 m apart read a radius of 21 m, but the corner is as tight as it was: the figure
+    // after is measured on the 2 m samples of the written line, as the figure before is
+    let g = graph(vec![stretch(
+        "c",
+        1,
+        2,
+        &[
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (60.0, 0.0),
+            (60.0, 30.0),
+            (60.0, 60.0),
+        ],
+    )]);
+    let water = |p: P| p.0 > 60.5 || p.1 < -0.5;
+    let (_, report) = smooth_graph_in_water(&g, &ten, &water, &keep_all());
+    assert!(
+        report.zones.iter().any(|z| z.blocked_by_water),
+        "{:?}",
+        report.zones
+    );
+    let s = &report.per_stretch[0];
+    assert!(s.tight_before_m > 0.0, "{s:?}");
+    assert!(s.tight_after_m >= s.tight_before_m - 1e-9, "{s:?}");
+    assert!(report.tight_after_m >= report.tight_before_m - 1e-9);
+}

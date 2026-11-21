@@ -64,6 +64,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The tight length of the smoothing report is measured the same way before and after: on samples of about 2 m, also where a
+  curve went back to the line as drawn with widely spaced vertices (a sharp corner no longer stops counting as tight).
 - A curve that the smoothing leaves as drawn (it could not be widened, or the widened line would stand in water) keeps
   the vertices OpenStreetMap drew, not a resampling at 2 m that could drop one and turn the first segment by several
   degrees.
