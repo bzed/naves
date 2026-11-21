@@ -2857,7 +2857,8 @@ fn the_roads_of_a_t_inside_a_lot_go_and_the_access_road_is_cut_four_metres_insid
         ["1:1-2", "1:2-3", "2:2-5", "3:4-5", "3:5-6"]
     );
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "2:2-5"]);
     assert_eq!(split.len(), 0);
     let ids: Vec<(&str, &str)> = dropped
@@ -2902,7 +2903,8 @@ fn a_surface_only_lot_has_no_streets_inside_either() {
     )];
     let found = groups(&lots);
     assert_eq!(found.len(), 1);
-    let (out, dropped, cut, _) = drop_lot_roads(&lot_with_a_t(), &found);
+    let step = drop_lot_roads(&lot_with_a_t(), &found);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((dropped.len(), cut.len()), (2, 1));
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "2:2-5"]);
 }
@@ -2957,7 +2959,8 @@ fn a_short_access_piece_is_not_a_stub_but_would_be_one_without_the_lots() {
         (20.0, 4.0)
     ));
     // control: the same graph after the cut, cleaned without groups, loses the 5.5 m piece as a stub
-    let (cut, _, access, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (cut, _, access, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(access.len(), 1);
     let (plain_out, plain_report) = clean(&cut, &wide, 8.0);
     assert_eq!(
@@ -2980,7 +2983,8 @@ fn a_road_along_the_outline_stays() {
         plain(3, &[3, 4], &[(40.0, 0.0), (70.0, 0.0)], Family::Asf3),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(out, g);
     assert!(dropped.is_empty() && cut.is_empty() && split.is_empty());
 }
@@ -2996,7 +3000,8 @@ fn a_road_across_the_lot_stays_whole_and_an_aisle_off_it_goes() {
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
     let alone = build_graph(std::slice::from_ref(&across));
     assert_eq!(stretch_ids(&alone), ["1:1-3"]);
-    let (out, dropped, cut, _) = drop_lot_roads(&alone, &lot);
+    let step = drop_lot_roads(&alone, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len()), (&alone, 0, 0));
     // an aisle off it, wholly inside: the aisle goes, the two stretches of the road and their node stay
     let with_aisle = build_graph(&[
@@ -3004,7 +3009,8 @@ fn a_road_across_the_lot_stays_whole_and_an_aisle_off_it_goes() {
         plain(2, &[2, 4], &[(20.0, 20.0), (20.0, 8.0)], Family::Grav),
     ]);
     assert_eq!(stretch_ids(&with_aisle), ["1:1-2", "1:2-3", "2:2-4"]);
-    let (out, dropped, cut, _) = drop_lot_roads(&with_aisle, &lot);
+    let step = drop_lot_roads(&with_aisle, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3"]);
     assert_eq!(dropped.len(), 1);
     assert_eq!(cut.len(), 0);
@@ -3036,7 +3042,8 @@ fn a_dead_end_that_enters_three_times_is_cut_after_its_last_entry_only() {
         plain(2, &[2, 20, 21, 22, 23, 24, 25, 99], &points, Family::Asf3),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(dropped.len(), 0);
     assert_eq!(cut.len(), 1, "{cut:?}");
     let access = cut.first().expect("one cut");
@@ -3062,7 +3069,8 @@ fn a_dead_end_with_less_than_four_metres_inside_is_not_cut() {
         plain(2, &[2, 5], &[(20.0, -10.0), (20.0, 3.0)], Family::Asf3),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len()), (&g, 0, 0));
 }
 
@@ -3079,7 +3087,8 @@ fn a_road_that_ends_inside_a_lot_at_the_map_edge_is_not_cut() {
         plain(2, &[2, -1], &[(20.0, -30.0), (20.0, 20.0)], Family::Asf3),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len()), (&g, 0, 0));
 }
 
@@ -3109,7 +3118,8 @@ fn lots_that_share_an_edge_have_one_union_and_a_lot_reached_through_another_stay
             ("osm/way/2", square(40.0, 0.0, 80.0, 40.0), Vec::new()),
         ],
     )];
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &both);
+    let step = drop_lot_roads(&g, &both);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(split.len(), 0);
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "2:2-5"]);
     // the road across the shared edge is in the union, whole; it is reported once, with the first of equal lots
@@ -3131,7 +3141,8 @@ fn lots_that_share_an_edge_have_one_union_and_a_lot_reached_through_another_stay
             &[("osm/way/2", square(40.0, 0.0, 80.0, 40.0), Vec::new())],
         ),
     ];
-    let (out, dropped, _, _) = drop_lot_roads(&g, &apart);
+    let step = drop_lot_roads(&g, &apart);
+    let (out, dropped, _, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(dropped.len(), 1);
     assert!(out.stretches.iter().any(|s| s.id == "3:5-6"));
 }
@@ -3150,7 +3161,8 @@ fn a_car_park_in_a_camp_site_is_reported_once_per_road_with_the_smallest_lot() {
             ("osm/way/1", square(0.0, 0.0, 100.0, 100.0), Vec::new()),
         ],
     )];
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &nested);
+    let step = drop_lot_roads(&g, &nested);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert!(out.stretches.is_empty() && cut.is_empty() && split.is_empty());
     let ids: Vec<(&str, &str)> = dropped
         .iter()
@@ -3182,7 +3194,8 @@ fn a_road_in_a_hole_of_a_lot_stays() {
             vec![square(10.0, 10.0, 30.0, 30.0)],
         )],
     )];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &holed);
+    let step = drop_lot_roads(&g, &holed);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len()), (&g, 0, 0));
 }
 
@@ -3207,7 +3220,8 @@ fn a_bridge_inside_a_lot_stays_and_so_does_a_stretch_with_a_point_that_is_not_a_
         plain(3, &[5, 6], &[(25.0, 30.0), (35.0, 30.0)], Family::Grav),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(stretch_ids(&out), ["1:1-2", "2:3-4"]);
     assert_eq!(
         dropped
@@ -3230,7 +3244,8 @@ fn without_groups_nothing_changes_and_the_report_has_no_lot_entries() {
     assert_eq!(report.junctions_in_lots, 0);
     assert_eq!(report.components_by_step.len(), 4);
     assert_eq!(components_with(&g, &[]), components(&g));
-    let (same, dropped, cut, split) = drop_lot_roads(&g, &[]);
+    let step = drop_lot_roads(&g, &[]);
+    let (same, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(
         (&same, dropped.len(), cut.len(), split.len()),
         (&g, 0, 0, 0)
@@ -3306,13 +3321,14 @@ fn the_same_area_as_a_way_and_as_a_relation_removes_each_road_once() {
     ];
     let found = groups(&lots);
     assert_eq!(found.len(), 1);
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &found);
+    let step = drop_lot_roads(&g, &found);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "2:2-5"]);
     assert_eq!((dropped.len(), cut.len()), (2, 1));
     assert!(dropped.iter().all(|d| d.lot == "osm/relation/7/0"));
     let mut reversed = lots.to_vec();
     reversed.reverse();
-    assert_eq!(drop_lot_roads(&g, &groups(&reversed)).0, out);
+    assert_eq!(drop_lot_roads(&g, &groups(&reversed)).graph, out);
 }
 
 #[test]
@@ -3337,7 +3353,8 @@ fn two_streets_that_meet_only_inside_a_lot_stay_joined_by_the_road_between_them(
     assert_eq!(components(&g), 1);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
     // the road between the two accesses is a road through the lot: it stays, and neither access is cut
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len(), split.len()), (&g, 0, 0, 0));
     assert_eq!(components_with(&out, &lot), 1);
 }
@@ -3365,7 +3382,8 @@ fn a_road_through_the_lot_stays_whole_when_aisles_split_it_inside() {
         ["1:1-2", "1:2-3", "1:3-4", "2:2-5", "3:3-6"]
     );
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, split) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, split) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "1:3-4"]);
     assert_eq!(ids_of(&dropped), ["2:2-5", "3:3-6"]);
     assert_eq!((cut.len(), split.len()), (0, 0));
@@ -3432,7 +3450,8 @@ fn the_shortest_chain_between_two_accesses_stays_and_the_aisles_and_loops_go() {
         smoothed,
     )];
     let found = groups(&lots);
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &found);
+    let step = drop_lot_roads(&g, &found);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(
         stretch_ids(&out),
         [
@@ -3486,7 +3505,8 @@ fn a_dead_end_that_the_lot_step_leaves_is_not_a_stub_even_when_it_is_not_cut() {
     assert_eq!(report.stubs.len(), 0);
     assert_eq!(stretch(&out, "2:2-5").points.len(), 2);
     // control: without the protection the 5 m access road is a stub
-    let (cut, _, _, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (cut, _, _, _) = (step.graph, step.dropped, step.access, step.unchanged);
     let (_, plain_report) = clean(&cut, &wide, 8.0);
     assert_eq!(
         plain_report
@@ -3535,7 +3555,8 @@ fn a_nan_point_in_an_access_road_leaves_it_alone() {
         ),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(ids_of(&dropped), ["3:4-5", "3:5-6"]);
     assert_eq!(cut.len(), 0, "{cut:?}");
     assert_eq!(stretch_ids(&out), ["1:1-2", "1:2-3", "2:2-5"]);
@@ -3555,7 +3576,8 @@ fn a_stretch_with_dead_ends_inside_at_both_ends_is_cut_at_both() {
     assert_eq!(stretch_ids(&g), ["1:1-5"]);
     let lot = [lot_group(square(0.0, 0.0, 80.0, 40.0))];
     // (inside 80 x 40: the U's legs at x = 20 and x = 60 enter from the south edge)
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(dropped.len(), 0);
     assert_eq!(cut.len(), 2, "{cut:?}");
     let road = stretch(&out, "1:1-5");
@@ -3591,7 +3613,8 @@ fn the_entry_is_four_metres_beyond_the_last_entry_whichever_edge_the_road_runs_a
             ),
         ]);
         let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-        let (_, _, cut, _) = drop_lot_roads(&g, &lot);
+        let step = drop_lot_roads(&g, &lot);
+        let (_, _, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
         assert_eq!(cut.len(), 1, "{edge}: {cut:?}");
         let sign = if edge < 1.0 { 1.0 } else { -1.0 };
         assert!(
@@ -3622,7 +3645,8 @@ fn the_smallest_lot_is_decided_by_the_sampled_area_not_the_shoelace_value() {
         ],
     );
     nested.areas_m2 = vec![800.0, 100.0];
-    let (_, dropped, _, _) = drop_lot_roads(&g, &[nested]);
+    let step = drop_lot_roads(&g, &[nested]);
+    let (_, dropped, _, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(dropped.len(), 1);
     assert_eq!(dropped[0].lot, "osm/way/2");
 }
@@ -3647,7 +3671,8 @@ fn access_roads_from_both_sides_are_cut_in_the_order_of_their_ids_and_keep_start
         ),
     ]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!(dropped.len(), 0);
     assert_eq!(
         cut.iter()
@@ -3673,6 +3698,90 @@ fn a_stretch_of_no_length_inside_a_lot_is_left_alone() {
         Family::Grav,
     )]);
     let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
-    let (out, dropped, cut, _) = drop_lot_roads(&g, &lot);
+    let step = drop_lot_roads(&g, &lot);
+    let (out, dropped, cut, _) = (step.graph, step.dropped, step.access, step.unchanged);
     assert_eq!((&out, dropped.len(), cut.len()), (&g, 0, 0));
+}
+
+// ---- fix round 2 ----
+
+#[test]
+fn a_bridge_inside_a_lot_does_not_make_an_exit() {
+    // an access road to a T whose arm ends at a footbridge wholly inside the lot
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-20.0, -30.0), (20.0, -30.0), (60.0, -30.0)],
+            Family::Asf3,
+        ),
+        plain(2, &[2, 5], &[(20.0, -30.0), (20.0, 20.0)], Family::Asf3),
+        plain(3, &[5, 6], &[(20.0, 20.0), (34.0, 20.0)], Family::Grav),
+        plain(4, &[5, 8], &[(20.0, 20.0), (6.0, 20.0)], Family::Grav),
+        way(
+            5,
+            &[6, 7],
+            &[(34.0, 20.0), (37.0, 20.0)],
+            Family::Asf3,
+            true,
+            true,
+            false,
+        ),
+    ]);
+    assert_eq!(
+        stretch_ids(&g),
+        ["1:1-2", "1:2-3", "2:2-5", "3:5-6", "4:5-8", "5:6-7"]
+    );
+    let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
+    let step = drop_lot_roads(&g, &lot);
+    assert_eq!(ids_of(&step.dropped), ["3:5-6", "4:5-8"]);
+    assert_eq!(step.through.len(), 0);
+    assert!(step.graph.stretches.iter().any(|s| s.id == "5:6-7"));
+    let access = step.access.first().expect("the access road is cut");
+    assert_eq!(step.access.len(), 1);
+    assert_eq!(access.stretch, "2:2-5");
+    assert!((access.cut_m - 16.0).abs() < 1e-6);
+    assert_eq!(
+        components_with(&g, &lot),
+        components_with(&step.graph, &lot)
+    );
+    let (_, report) = clean_with(&g, &widths, 8.0, &lot);
+    assert_eq!(report.lot_through_kept, 0);
+}
+
+#[test]
+fn a_stretch_with_dead_ends_in_two_lots_is_cut_at_both_ends_each_by_its_own_group() {
+    let g = build_graph(&[plain(
+        1,
+        &[1, 2],
+        &[(20.0, 20.0), (160.0, 20.0)],
+        Family::Asf3,
+    )]);
+    let lots = [
+        group_of(
+            0,
+            &[("osm/way/1", square(0.0, 0.0, 40.0, 40.0), Vec::new())],
+        ),
+        group_of(
+            1,
+            &[("osm/way/2", square(140.0, 0.0, 180.0, 40.0), Vec::new())],
+        ),
+    ];
+    let step = drop_lot_roads(&g, &lots);
+    assert_eq!(step.dropped.len(), 0);
+    assert_eq!(
+        step.access
+            .iter()
+            .map(|c| (c.lot.as_str(), c.node))
+            .collect::<Vec<_>>(),
+        [("osm/way/1", 3), ("osm/way/2", 4)]
+    );
+    let road = stretch(&step.graph, "1:1-2");
+    assert_eq!((road.start, road.end), (3, 4));
+    assert!(near(road.points[0], (36.0, 20.0)), "{:?}", road.points);
+    assert!(
+        near(*road.points.last().unwrap(), (144.0, 20.0)),
+        "{:?}",
+        road.points
+    );
 }

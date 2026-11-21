@@ -188,7 +188,9 @@ ones:
   not a street; it stays painted, on top of the lot's surface **(controller)**.
 - **Roads through the lot stay whole (ruling).** "Every inside stretch is removed" is read together with "a road
   through a lot stays": after the inside stretches are chosen, an *exit* is a node that an inside stretch ends at and
-  that still has a stretch which is not removed (a road leaving the lot). For every pair of exits the shortest chain of
+  that has a stretch which is not inside and reaches beyond the lot (some sample of it lies farther than
+  `LOT_INSIDE_TOL_M` outside every member). A bridge, a tunnel or a stretch with a point that is not a number that lies
+  wholly in the lot stays as it is but does not make its end nodes exits. For every pair of exits the shortest chain of
   inside stretches between them (by length, ties by the order of the stretch ids) is kept; everything else inside
   (aisles, dead ends, loops, longer chains) is removed. So a road with aisles off it keeps all its stretches, and two
   access roads joined by an inside driveway keep the driveway. A kept stretch is not reported as removed (it is counted
@@ -200,7 +202,8 @@ ones:
   a stretch before its end), and the cut piece keeps the stretch's id. "Enters" means the line passes from not well
   inside a member (outside, or on its outline) to well inside it, so a road that runs along an edge enters where it
   turns away from the edge, whichever edge it is. A stretch whose inside part is shorter than `LOT_ENTRY_M` is not cut.
-  A stretch with a dead end inside at both ends is cut at both. The end is the lot's **entry** for that road. Four
+  A stretch with a dead end inside at both ends is cut at both, also when the two ends lie in different groups (each
+  end by its own group). The end is the lot's **entry** for that road. Four
   metres inside, so that the road's last joint and its core lie on the smoothed ground, not on the shoulder, and the
   road bed overlaps the paint.
 - **A road that enters, leaves and re-enters** is cut only at its last entry before its dead end. A stretch with both

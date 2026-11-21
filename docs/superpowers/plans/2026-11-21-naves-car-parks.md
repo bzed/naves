@@ -283,8 +283,11 @@ change).
   Vec<Vec<(f64, f64)>>)> }` (built by `lot::groups(&[Assessed]) -> Vec<LotGroup>` in `lot.rs`).
 - `netclean::DroppedInLot { pub stretch: String, pub lot: String, pub length_m: f64, pub at: (f64, f64) }`.
 - `netclean::CutAccess { pub stretch: String, pub lot: String, pub cut_m: f64, pub entry: (f64, f64), pub node: i64 }`.
-- `netclean::drop_lot_roads(graph: &RoadGraph, groups: &[LotGroup]) -> (RoadGraph, Vec<DroppedInLot>,
-  Vec<CutAccess>, Vec<usize>)` (the last: groups left unchanged, `would_split`).
+- `netclean::drop_lot_roads(graph: &RoadGraph, groups: &[LotGroup]) -> LotStep` with `LotStep { graph, dropped:
+  Vec<DroppedInLot>, access: Vec<CutAccess>, unchanged: Vec<usize> (groups left unchanged, `would_split`), through:
+  Vec<String> (inside stretches kept as roads through a lot), entries: BTreeSet<i64> (every node the step leaves with
+  one stretch: the stub step leaves them alone) }`. `LotGroup` also has `areas_m2: Vec<f64>` (parallel to `members`).
+  `CleanReport::lot_through_kept` counts `through`.
 - `netclean::components_with(graph: &RoadGraph, groups: &[LotGroup]) -> usize`.
 - `netclean::clean_with(graph, widths, cell_m, groups: &[LotGroup]) -> (RoadGraph, CleanReport)`; `clean` calls it with
   `&[]`, unchanged in behaviour. The lot step runs first; the stub step treats every `CutAccess::node` as not a free

@@ -15,10 +15,7 @@ pub mod lot;
 mod sidepath;
 
 use lot::components_each;
-pub use lot::{
-    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads,
-    drop_lot_roads_full,
-};
+pub use lot::{CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads};
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -884,7 +881,7 @@ pub fn clean_with(
             entries: BTreeSet::new(),
         }
     } else {
-        drop_lot_roads_full(graph, groups)
+        drop_lot_roads(graph, groups)
     };
     let graph0 = &step.graph;
     let protected = &step.entries;
