@@ -245,6 +245,16 @@ road in water (`blocked_by_water` in the report), so the road keeps the line Ope
 as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of a bridge end are not widened at all.
 Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
 
+**`road_gap` (warning)**
+A road misses what it has to meet: the pieces end more than 0.5 m from a junction's port, a bridge's end or the road
+it has to close on (the message gives the distance). A road on which **nothing could be placed** is reported too, also
+when its end is free (a dead end or an end under another road): the message says "has no pieces", the distance is the
+length of the part that has none, and the position is where the part starts. Typically the road turns away sharply
+right behind a junction, so that no piece gets forward. A part shorter than the shortest piece is not reported. A part
+that cannot be fitted no longer takes the rest of its road with it: the next part starts where the line is, so only the
+part itself is reported. Look at the place; change the data (OpenStreetMap) so that the road does not turn away
+within a few metres of a junction.
+
 **`bridge_end_at_junction` (warning)**
 A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road
 passes below the part that would be cut off, or there is no room). The bridge is left as it is. Move the junction

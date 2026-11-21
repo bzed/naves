@@ -267,6 +267,7 @@ fn the_other_rules_each_give_a_violation() {
         at: (10.0, 20.0),
         gap_m: 1.5,
         heading_error_deg: 3.0,
+        nothing_placed: false,
     });
     n.kinks.push(RoadKink {
         stretch: "7:1-2".to_string(),
@@ -305,6 +306,32 @@ fn the_other_rules_each_give_a_violation() {
     // the capped places are reported once per region of 50 m
     assert_eq!(only(Rule::EarthworksCapped, &v).len(), 2);
     assert!(only(Rule::RoadGap, &v)[0].message.contains("7:1-2"));
+    // a road with nothing placed on it says so
+    let mut unplaced = net(vec![]);
+    unplaced.gaps.push(RoadGap {
+        stretch: "8:3-4".to_string(),
+        at: (1.0, 2.0),
+        gap_m: 40.0,
+        heading_error_deg: 0.0,
+        nothing_placed: true,
+    });
+    let v2 = run(
+        &unplaced,
+        &Profiles::default(),
+        &conformed(),
+        &[],
+        &[],
+        &[],
+        &[],
+    );
+    let gap = only(Rule::RoadGap, &v2)[0];
+    assert!(
+        gap.message.contains("8:3-4")
+            && gap.message.contains("no pieces")
+            && gap.message.contains("40.0"),
+        "{}",
+        gap.message
+    );
     // a kink is its own finding, with the angle and the site, and no gap
     let kink = only(Rule::RoadKink, &v)[0];
     assert!(

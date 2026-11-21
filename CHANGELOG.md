@@ -64,6 +64,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
+  starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
+  and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`
+  finding too (it was silent), unless it is shorter than the shortest piece.
 - The ground under a bridge reads the stretches' ends from the road graph, not from the node numbers in their ids
   (the numbers are stale once a clean-up moved an end), and leaves map-edge nodes out as its comment says.
 

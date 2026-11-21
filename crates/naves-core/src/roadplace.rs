@@ -195,6 +195,9 @@ pub struct RoadGap {
     pub gap_m: f64,
     /// The heading difference there.
     pub heading_error_deg: f64,
+    /// Nothing could be placed on the stretch (its end is free, so it has nothing to miss): `gap_m` is the
+    /// length of the part and `at` its start.
+    pub nothing_placed: bool,
 }
 
 /// A place where roads meet without a junction piece and the higher road runs on over the lower one: the
@@ -1012,6 +1015,36 @@ impl<'a> Placer<'a> {
                 at: (goal.x, goal.y),
                 gap_m: gap,
                 heading_error_deg: wrap(end.heading - goal.heading).abs().to_degrees(),
+                nothing_placed: false,
+            });
+        }
+    }
+
+    /// Reports a part with a free end that got no pieces although it is at least as long as the shortest piece
+    /// of its family: a gap as long as the part, at its start.
+    fn report_unplaced(&mut self, stretch: &str, family: Family, path: &[(f64, f64)]) {
+        let length: f64 = path
+            .windows(2)
+            .filter_map(|w| match w {
+                [a, b] => Some((b.0 - a.0).hypot(b.1 - a.1)),
+                _ => None,
+            })
+            .sum();
+        let shortest = self
+            .pieces(family)
+            .iter()
+            .filter(|p| p.kind != PieceKind::EndCap)
+            .map(|p| (p.end.x - p.start.x).hypot(p.end.z - p.start.z))
+            .fold(f64::INFINITY, f64::min);
+        if let Some(&(x, y)) = path.first()
+            && length >= shortest
+        {
+            self.out.gaps.push(RoadGap {
+                stretch: stretch.to_string(),
+                at: (x, y),
+                gap_m: length,
+                heading_error_deg: 0.0,
+                nothing_placed: true,
             });
         }
     }
@@ -1223,9 +1256,11 @@ impl<'a> Placer<'a> {
                 .and_then(|l| self.graph.stretches.get(l.stretch))
                 .map(|s| s.id.clone())
                 .unwrap_or_default();
+            let mut reached: Option<Pose> = None;
             if s_goal - s_cur > 1.0 {
                 let path = line.slice(s_cur, s_goal);
                 let goal = line.pose_at(s_goal);
+                reached = Some(goal);
                 let (pieces, end) =
                     self.fit_part(&path, pose, EndGoal::Fixed(goal), family, &stretch_id)?;
                 if let Some(plan) = self.plans.get(plan_id) {
@@ -1240,7 +1275,14 @@ impl<'a> Placer<'a> {
                     ));
                     items.push(make(p, PlacedKind::Piece, s, None));
                 }
-                pose = end;
+                // a part that missed its goal (or got no pieces) does not carry its stale pose on: the next part
+                // starts where the line is, and the failure stays in the part where it happened
+                let missed = (end.x - goal.x).hypot(end.y - goal.y) > JUNCTION_TOLERANCE_M;
+                pose = if missed || pieces.is_empty() {
+                    goal
+                } else {
+                    end
+                };
                 s_cur = s_goal;
             }
             // place the junction at the end of the fit
@@ -1259,31 +1301,33 @@ impl<'a> Placer<'a> {
                 (moved.x, moved.y)
             };
             let placed = Self::place_junction(plan, at, pose, line.pose_at(s_cross).heading);
-            match placed {
-                Some((frame, flipped, exit)) => {
-                    let (entry_port, exit_port) = if flipped {
-                        (flip(&junction.end), flip(&junction.start))
-                    } else {
-                        (pose_of(&junction.start), pose_of(&junction.end))
-                    };
-                    let piece = FitPiece {
-                        model: junction.model.clone(),
-                        origin: frame.origin,
-                        start: frame.pose(&entry_port),
-                        end: frame.pose(&exit_port),
-                    };
-                    items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
-                    // the side ports become the fixed starts of the side roads
-                    let ports = self.side_poses(plan_id, &frame);
-                    let key = (plan.chain, plan.link);
-                    for (arm, port) in ports {
-                        self.fixed.insert(arm, port);
-                        self.fixed_from.insert(arm, key);
-                    }
-                    pose = exit;
-                    s_cur = s_cross + half;
+            if let Some((frame, flipped, exit)) = placed {
+                let (entry_port, exit_port) = if flipped {
+                    (flip(&junction.end), flip(&junction.start))
+                } else {
+                    (pose_of(&junction.start), pose_of(&junction.end))
+                };
+                let piece = FitPiece {
+                    model: junction.model.clone(),
+                    origin: frame.origin,
+                    start: frame.pose(&entry_port),
+                    end: frame.pose(&exit_port),
+                };
+                items.push(make(&piece, PlacedKind::Junction, s_cross, Some(k - first)));
+                // the side ports become the fixed starts of the side roads
+                let ports = self.side_poses(plan_id, &frame);
+                let key = (plan.chain, plan.link);
+                for (arm, port) in ports {
+                    self.fixed.insert(arm, port);
+                    self.fixed_from.insert(arm, key);
                 }
-                None => dropped.push(plan_id),
+                pose = exit;
+                s_cur = s_cross + half;
+            } else {
+                dropped.push(plan_id);
+                if let Some(goal) = reached {
+                    pose = goal;
+                }
             }
         }
         for plan_id in dropped {
@@ -1328,6 +1372,7 @@ impl<'a> Placer<'a> {
         {
             // the road arrives under another one: the pieces cannot be steered to a metre, so the cut is
             // moved until the last piece ends under the edge of the road above, short of its centre line
+            let whole = path.clone();
             let mut best: Option<(f64, Vec<FitPiece>, Pose)> = None;
             let depths =
                 std::iter::once(Self::cut_depth(edge)).chain(CUT_TRIES.iter().map(|f| edge * f));
@@ -1350,6 +1395,9 @@ impl<'a> Placer<'a> {
                 }
             }
             if let Some((_, pieces, end)) = best {
+                if pieces.is_empty() {
+                    self.report_unplaced(&stretch_id, family, &whole);
+                }
                 for p in &pieces {
                     let s = line.project((
                         f64::midpoint(p.start.x, p.end.x),
@@ -1365,6 +1413,9 @@ impl<'a> Placer<'a> {
             path.dedup();
             let before = pose;
             let (pieces, end) = self.fit_part(&path, pose, goal, family, &stretch_id)?;
+            if pieces.is_empty() && matches!(goal, EndGoal::Free) {
+                self.report_unplaced(&stretch_id, family, &path);
+            }
             if let EndGoal::Fixed(arrive) = goal
                 && fixed_end.is_some()
                 && !ring
@@ -2303,6 +2354,7 @@ mod tests {
                 at: (0.0, 0.0),
                 gap_m: 1.0,
                 heading_error_deg: 0.0,
+                nothing_placed: false,
             });
         }
         for _ in 0..junctions {

@@ -210,10 +210,17 @@ fn meeting_violations(net: &PlacedNetwork) -> Vec<Violation> {
         violation(
             Rule::RoadGap,
             g.at,
-            format!(
-                "Road {} misses what it has to meet by {:.1} m",
-                g.stretch, g.gap_m
-            ),
+            if g.nothing_placed {
+                format!(
+                    "Road {} has no pieces: nothing could be placed on its {:.1} m",
+                    g.stretch, g.gap_m
+                )
+            } else {
+                format!(
+                    "Road {} misses what it has to meet by {:.1} m",
+                    g.stretch, g.gap_m
+                )
+            },
         )
     }));
     out.extend(net.kinks.iter().map(|k| {
