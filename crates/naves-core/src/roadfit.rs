@@ -14,6 +14,7 @@
 //!
 //! Coordinates are map metres, headings radians clockwise from north.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
@@ -187,7 +188,17 @@ impl Variant {
 struct Line {
     points: Vec<(f64, f64)>,
     along: Vec<f64>,
+    /// The bounding box `[min x, min y, max x, max y]` of each block of [`BLOCK`] segments.
+    boxes: Vec<[f64; 4]>,
 }
+
+/// Segments per bounding box of [`Line`].
+const BLOCK: usize = 16;
+/// A block is passed over when its box is this much farther than a distance already found: far more than the
+/// rounding of a distance of map coordinates, so that a passed-over block can never hold the nearest point.
+const PRUNE_MARGIN_M: f64 = 1e-6;
+/// A search over at least this many blocks first looks at the block whose box is nearest to the point.
+const SEED_BLOCKS: usize = 8;
 
 /// Where a point is on the line.
 struct Near {
@@ -206,9 +217,32 @@ impl Line {
             }
             along.push(total);
         }
+        let segments = points.len().saturating_sub(1);
+        let boxes = (0..segments.div_ceil(BLOCK))
+            .map(|b| {
+                let first = b * BLOCK;
+                let last = (first + BLOCK).min(segments);
+                let mut bounds = [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ];
+                for p in points.get(first..=last).unwrap_or_default() {
+                    bounds = [
+                        bounds[0].min(p.0),
+                        bounds[1].min(p.1),
+                        bounds[2].max(p.0),
+                        bounds[3].max(p.1),
+                    ];
+                }
+                bounds
+            })
+            .collect();
         Line {
             points: points.to_vec(),
             along,
+            boxes,
         }
     }
 
@@ -216,40 +250,111 @@ impl Line {
         self.along.last().copied().unwrap_or(0.0)
     }
 
-    /// The nearest point of the line among those whose arc length lies in `[lo, hi]`.
+    /// The distance from `point` to the box of block `block`: a lower bound of the distance to its segments.
+    fn box_distance(&self, block: usize, point: (f64, f64)) -> f64 {
+        let Some(b) = self.boxes.get(block) else {
+            return f64::INFINITY;
+        };
+        let dx = (b[0] - point.0).max(point.0 - b[2]).max(0.0);
+        let dy = (b[1] - point.1).max(point.1 - b[3]).max(0.0);
+        dx.hypot(dy)
+    }
+
+    /// The distance and arc length of the nearest point of segment `i`, if the segment lies in the window
+    /// `[lo, hi]` of arc length and the point is not clearly farther than `cutoff` (then `None` as well: it
+    /// cannot beat it).
+    fn probe(
+        &self,
+        i: usize,
+        point: (f64, f64),
+        lo: f64,
+        hi: f64,
+        cutoff: f64,
+    ) -> Option<(f64, f64)> {
+        let (&s0, &s1) = (self.along.get(i)?, self.along.get(i + 1)?);
+        if s1 < lo || s0 > hi {
+            return None;
+        }
+        let (from, to) = (self.points.get(i)?, self.points.get(i + 1)?);
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let len2 = dx * dx + dy * dy;
+        let along = if len2 > 0.0 {
+            (((point.0 - from.0) * dx + (point.1 - from.1) * dy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        // keep to the window
+        let s = (s0 + along * (s1 - s0)).clamp(lo, hi);
+        let along = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
+        let q = (from.0 + along * dx, from.1 + along * dy);
+        let (ex, ey) = (point.0 - q.0, point.1 - q.1);
+        // the square root is the costly part: leave it out when the point is clearly no nearer
+        if ex * ex + ey * ey > cutoff * cutoff * (1.0 + 1e-9) {
+            return None;
+        }
+        Some((ex.hypot(ey), s))
+    }
+
+    /// The direction of segment `i`, as a heading.
+    fn tangent(&self, i: usize) -> f64 {
+        match (self.points.get(i), self.points.get(i + 1)) {
+            (Some(from), Some(to)) => (to.0 - from.0).atan2(to.1 - from.1),
+            _ => 0.0,
+        }
+    }
+
+    /// The nearest point of the line among those whose arc length lies in `[lo, hi]`; of equal ones, the first.
+    ///
+    /// Looks only at the segments of the window (the arc lengths never decrease along the line) and passes
+    /// over blocks of segments whose box is farther than a distance already found.
     fn nearest(&self, point: (f64, f64), lo: f64, hi: f64) -> Near {
         let mut best = Near {
             distance: f64::INFINITY,
             s: lo,
             tangent: 0.0,
         };
-        for (i, pair) in self.points.windows(2).enumerate() {
-            let (Some(&s0), Some(&s1)) = (self.along.get(i), self.along.get(i + 1)) else {
-                continue;
-            };
-            if s1 < lo || s0 > hi {
+        let segments = self.points.len().saturating_sub(1);
+        let first = self
+            .along
+            .get(1..)
+            .map_or(0, |ends| ends.partition_point(|&s1| s1 < lo));
+        let last = self.along.get(..segments).map_or(0, |starts| {
+            starts.partition_point(|&s0| s0.partial_cmp(&hi) != Some(Ordering::Greater))
+        });
+        // a distance that some segment of the window has: blocks farther than it cannot hold the nearest point
+        let mut seed = f64::INFINITY;
+        if last.saturating_sub(first) >= SEED_BLOCKS * BLOCK {
+            let nearest_block = (first / BLOCK..last.div_ceil(BLOCK))
+                .map(|b| (self.box_distance(b, point), b))
+                .min_by(|x, y| x.0.total_cmp(&y.0));
+            if let Some((_, b)) = nearest_block {
+                for i in (b * BLOCK).max(first)..((b + 1) * BLOCK).min(last) {
+                    if let Some((d, _)) = self.probe(i, point, lo, hi, seed) {
+                        seed = seed.min(d);
+                    }
+                }
+            }
+        }
+        let mut i = first;
+        while i < last {
+            let block = i / BLOCK;
+            let end = ((block + 1) * BLOCK).min(last);
+            if self.box_distance(block, point) - PRUNE_MARGIN_M > best.distance.min(seed) {
+                i = end;
                 continue;
             }
-            let [from, to] = pair else { continue };
-            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-            let len2 = dx * dx + dy * dy;
-            let along = if len2 > 0.0 {
-                (((point.0 - from.0) * dx + (point.1 - from.1) * dy) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            // keep to the window
-            let s = (s0 + along * (s1 - s0)).clamp(lo, hi);
-            let along = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
-            let q = (from.0 + along * dx, from.1 + along * dy);
-            let distance = (point.0 - q.0).hypot(point.1 - q.1);
-            if distance < best.distance {
-                best = Near {
-                    distance,
-                    s,
-                    tangent: dx.atan2(dy),
-                };
+            for j in i..end {
+                if let Some((distance, s)) = self.probe(j, point, lo, hi, best.distance)
+                    && distance < best.distance
+                {
+                    best = Near {
+                        distance,
+                        s,
+                        tangent: self.tangent(j),
+                    };
+                }
             }
+            i = end;
         }
         best
     }
@@ -775,4 +880,163 @@ pub fn fit_line(
         median_deviation_m,
         max_deviation_m,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A small deterministic generator, so that the tests need no input and no dependency.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 11
+        }
+
+        /// A number in `[0, 1)`.
+        fn unit(&mut self) -> f64 {
+            #[expect(clippy::cast_precision_loss, reason = "53 bits of a generator")]
+            let v = self.next() as f64 / (1u64 << 53) as f64;
+            v
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            usize::try_from(self.next()).unwrap_or(0) % n.max(1)
+        }
+    }
+
+    /// The scan over every segment that [`Line::nearest`] replaces.
+    fn scan(line: &Line, point: (f64, f64), lo: f64, hi: f64) -> Near {
+        let mut best = Near {
+            distance: f64::INFINITY,
+            s: lo,
+            tangent: 0.0,
+        };
+        for (i, pair) in line.points.windows(2).enumerate() {
+            let (Some(&s0), Some(&s1)) = (line.along.get(i), line.along.get(i + 1)) else {
+                continue;
+            };
+            if s1 < lo || s0 > hi {
+                continue;
+            }
+            let [from, to] = pair else { continue };
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let len2 = dx * dx + dy * dy;
+            let along = if len2 > 0.0 {
+                (((point.0 - from.0) * dx + (point.1 - from.1) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let s = (s0 + along * (s1 - s0)).clamp(lo, hi);
+            let along = if s1 > s0 { (s - s0) / (s1 - s0) } else { 0.0 };
+            let q = (from.0 + along * dx, from.1 + along * dy);
+            let distance = (point.0 - q.0).hypot(point.1 - q.1);
+            if distance < best.distance {
+                best = Near {
+                    distance,
+                    s,
+                    tangent: dx.atan2(dy),
+                };
+            }
+        }
+        best
+    }
+
+    fn same(a: &Near, b: &Near) -> bool {
+        a.distance.to_bits() == b.distance.to_bits()
+            && a.s.to_bits() == b.s.to_bits()
+            && a.tangent.to_bits() == b.tangent.to_bits()
+    }
+
+    /// A random walk on a coarse grid (so that points repeat and distances tie) or on a fine one.
+    fn walk_line(rng: &mut Lcg, points: usize, coarse: bool) -> Vec<(f64, f64)> {
+        let (mut x, mut y) = (0.0_f64, 0.0_f64);
+        let mut out = Vec::with_capacity(points);
+        for _ in 0..points {
+            if coarse {
+                x += (f64::from(u8::try_from(rng.below(5)).unwrap_or(0)) - 2.0) * 2.0;
+                y += (f64::from(u8::try_from(rng.below(5)).unwrap_or(0)) - 2.0) * 2.0;
+            } else {
+                x += rng.unit() * 8.0 - 3.0;
+                y += rng.unit() * 8.0 - 3.0;
+            }
+            out.push((x, y));
+        }
+        out
+    }
+
+    #[test]
+    fn nearest_is_bitwise_the_scan() {
+        let mut rng = Lcg(20_261_121);
+        for round in 0..400 {
+            let count = [0, 1, 2, 3, 17, 33, 100, 300, 700][round % 9];
+            let points = walk_line(&mut rng, count, round % 2 == 0);
+            let line = Line::new(&points);
+            let total = line.length();
+            for _ in 0..40 {
+                let point = if rng.below(3) == 0 {
+                    // exactly on a vertex, or on the grid
+                    points
+                        .get(rng.below(points.len()))
+                        .copied()
+                        .unwrap_or((1.0, 1.0))
+                } else {
+                    (rng.unit() * 200.0 - 50.0, rng.unit() * 200.0 - 50.0)
+                };
+                let vertex = line
+                    .along
+                    .get(rng.below(line.along.len()))
+                    .copied()
+                    .unwrap_or(0.0);
+                let windows = [
+                    (0.0, total),
+                    (0.0, WINDOW_M),
+                    (rng.unit() * total, rng.unit() * total),
+                    (rng.unit() * total, total + 10.0),
+                    (-5.0, rng.unit() * total),
+                    (vertex, vertex),
+                    (vertex, vertex + 30.0),
+                    (vertex - 30.0, vertex),
+                    (total + 1.0, total + 5.0),
+                    (-9.0, -1.0),
+                    (total, total),
+                    (0.0, 0.0),
+                ];
+                for (lo, hi) in windows {
+                    // `clamp` (also in the scan) panics for `lo > hi`; no caller passes one
+                    let (lo, hi) = if lo > hi { (hi, lo) } else { (lo, hi) };
+                    let (new, old) = (line.nearest(point, lo, hi), scan(&line, point, lo, hi));
+                    assert!(same(&new, &old), "round {round} window {lo} {hi}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nearest_keeps_the_first_of_equal_segments() {
+        // the same square traced twice: a point at its centre is equally far from all eight sides
+        let square = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ];
+        let mut points: Vec<(f64, f64)> = Vec::new();
+        for _ in 0..40 {
+            points.extend_from_slice(&square);
+        }
+        let line = Line::new(&points);
+        let (new, old) = (
+            line.nearest((5.0, 5.0), 0.0, line.length()),
+            scan(&line, (5.0, 5.0), 0.0, line.length()),
+        );
+        assert!(same(&new, &old));
+        assert!((new.s - 5.0).abs() < 1e-12);
+    }
 }
