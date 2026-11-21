@@ -64,6 +64,9 @@ pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
 /// A zone that still has a sample tighter than this fraction of the wanted radius after the last pass goes
 /// back to the original line (the resampled vertices OpenStreetMap drew).
 pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
+/// The most distances [`simplify_line`] measures for one line. A line that needs more (the worst case of the
+/// algorithm is quadratic) keeps every point of the intervals it has no budget left for.
+pub const SIMPLIFY_WORK_CAP: usize = 20_000_000;
 /// After the stage, a point of a stretch is dropped when taking it out moves the line by less than this, in
 /// metres (a straight 100 m road is two points). Ends of stretches are never dropped.
 ///
@@ -453,7 +456,8 @@ fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 /// The line without the points that do not matter: every dropped point lies within `tolerance` metres of the
 /// result (Ramer, Douglas and Peucker; the first and the last point stay). A line that is not finite, with
 /// fewer than three points, or a tolerance that is not positive give the line back unchanged. Deterministic;
-/// iterative, so a long line cannot overflow the stack.
+/// iterative, so a long line cannot overflow the stack, and it measures at most [`SIMPLIFY_WORK_CAP`] distances:
+/// the points of an interval that the budget does not reach all stay.
 ///
 /// The crates considered for this, none of them a dependency of `naves-core`:
 ///
@@ -469,6 +473,11 @@ fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 ///   (raw pointers, `unsafe`), so it would bring `geo` as well; about a hundred recent downloads.
 #[must_use]
 pub fn simplify_line(line: &[(f64, f64)], tolerance: f64) -> Vec<(f64, f64)> {
+    simplify_within(line, tolerance, SIMPLIFY_WORK_CAP)
+}
+
+/// [`simplify_line`] with a budget of `work` distance evaluations.
+fn simplify_within(line: &[(f64, f64)], tolerance: f64, work: usize) -> Vec<(f64, f64)> {
     let n = line.len();
     if n < 3
         || tolerance.is_nan()
@@ -484,7 +493,17 @@ pub fn simplify_line(line: &[(f64, f64)], tolerance: f64) -> Vec<(f64, f64)> {
         }
     }
     let mut stack = vec![(0, n - 1)];
+    let mut left = work;
     while let Some((a, b)) = stack.pop() {
+        // one distance for every point inside; with no budget for the scan the interval is kept as it is
+        let cost = b.saturating_sub(a).saturating_sub(1);
+        if cost > left {
+            for slot in keep.iter_mut().take(b).skip(a + 1) {
+                *slot = true;
+            }
+            continue;
+        }
+        left -= cost;
         let (Some(&from), Some(&to)) = (line.get(a), line.get(b)) else {
             continue;
         };
@@ -1350,4 +1369,36 @@ fn smooth_graph_with(
     report.points_fitted = fitted_points.iter().sum();
     report.points_after = point_count(&result);
     (result, report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A line whose farthest point from every chord is the one next to the end, so that every split peels one
+    /// point off: the quadratic worst case.
+    fn peeling(n: usize) -> Vec<(f64, f64)> {
+        (0..n)
+            .map(|i| {
+                let x = f64::from(u32::try_from(i).unwrap_or(0));
+                (x, 100.0 * (1.0 - 0.5_f64.powf(x)))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_line_that_needs_more_work_than_the_budget_keeps_the_points_it_could_not_judge() {
+        let line = peeling(60);
+        // enough budget: the answer is the algorithm's, which drops the collinear tail
+        let full = simplify_within(&line, 1e-9, usize::MAX);
+        assert!(full.len() < line.len());
+        // too little: the points of the intervals that got no budget stay, so every dropped point was checked
+        let capped = simplify_within(&line, 1e-9, 100);
+        assert_eq!(capped, line);
+        // a straight line costs one scan and is two points whatever the budget is
+        let straight: Vec<(f64, f64)> = (0..500).map(|i| (f64::from(i), 0.0)).collect();
+        assert_eq!(simplify_within(&straight, 0.2, 600).len(), 2);
+        // no budget left for even the first scan: nothing is dropped
+        assert_eq!(simplify_within(&straight, 0.2, 10).len(), 500);
+    }
 }

@@ -321,6 +321,10 @@ impl Line {
             s: lo,
             tangent: 0.0,
         };
+        // a window that is empty or has a NaN end holds nothing (and `clamp` below panics on it)
+        if lo.is_nan() || hi.is_nan() || lo > hi {
+            return best;
+        }
         let segments = self.points.len().saturating_sub(1);
         let first = self
             .along
@@ -1023,6 +1027,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_window_that_is_not_one_finds_nothing_instead_of_panicking() {
+        let line = Line::new(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]);
+        // `lo > hi` over a segment, and windows with a NaN end
+        for (lo, hi) in [
+            (8.0, 6.0),
+            (f64::NAN, 10.0),
+            (0.0, f64::NAN),
+            (f64::NAN, f64::NAN),
+        ] {
+            let near = line.nearest((5.0, 3.0), lo, hi);
+            assert!(near.distance.is_infinite(), "window {lo} {hi}");
+        }
+        // a proper window still finds the point
+        assert!((line.nearest((5.0, 3.0), 0.0, 20.0).distance - 3.0).abs() < 1e-12);
     }
 
     #[test]

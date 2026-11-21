@@ -164,8 +164,12 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
 
 /// The line of a bridge stretch with one cell more at each end, along its first and last segment.
 fn extended(points: &[Point], cell: f64) -> Vec<Point> {
-    // a cell that is not a number (or not positive) adds nothing
-    let cell = cell.max(0.0).min(f64::from(u16::MAX));
+    // a cell that is not a number, infinite or not positive adds nothing
+    let cell = if cell.is_finite() {
+        cell.clamp(0.0, f64::from(u16::MAX))
+    } else {
+        0.0
+    };
     let mut line = points.to_vec();
     let push = |from: Point, to: Point| -> Option<Point> {
         let len = (to.0 - from.0).hypot(to.1 - from.1);
@@ -1557,6 +1561,19 @@ pub(super) fn drop_sidepaths(
 mod tests {
     //! The membership check is private; its fallback is not reached by the fixtures of the public tests.
     use super::*;
+
+    #[test]
+    fn a_cell_that_is_not_finite_extends_a_bridge_by_nothing() {
+        let line = [(0.0, 0.0), (20.0, 0.0)];
+        let none = extended(&line, 0.0);
+        for cell in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -4.0] {
+            assert_eq!(extended(&line, cell), none, "cell {cell}");
+        }
+        assert_eq!(
+            extended(&line, 4.0),
+            vec![(-4.0, 0.0), (0.0, 0.0), (20.0, 0.0), (24.0, 0.0)]
+        );
+    }
 
     fn graph(links: &[(i64, i64)]) -> RoadGraph {
         let stretches = links
