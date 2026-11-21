@@ -574,7 +574,7 @@ fn narrow(v: f64) -> f32 {
 /// Paints the paths on the ground, along their OpenStreetMap lines.
 fn paint_paths(surfaces: &mut SurfaceGrid, features: &[Feature]) {
     for feature in features {
-        if let FeatureKind::Path { width_m } = feature.kind {
+        if let FeatureKind::Path { width_m, .. } = feature.kind {
             surfaces.stroke(&feature.points, width_m, SurfaceClass::Soil);
         }
     }

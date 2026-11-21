@@ -43,10 +43,9 @@ pub enum Placement {
     NotAtGround,
 }
 
-/// Whether a `surface` tag names a paved or an unpaved surface.
-///
-/// A stand-in for the road feature's paving type; the stage that reads the surface of roads replaces it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Whether a `surface` tag names a paved or an unpaved surface; the type of
+/// [`FeatureKind::Road::paving`](crate::features::FeatureKind::Road).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Paving {
     /// Asphalt, concrete, paving stones and the like.
     Paved,
@@ -58,16 +57,22 @@ impl Paving {
     /// The paving of a `surface` tag value; `None` for a value that is on neither list.
     #[must_use]
     pub fn from_surface(value: &str) -> Option<Paving> {
-        match value {
-            "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes"
-            | "paving_stones" | "sett" | "cobblestone" | "unhewn_cobblestone" | "chipseal"
-            | "bricks" | "metal" | "wood" => Some(Paving::Paved),
-            "unpaved" | "gravel" | "fine_gravel" | "compacted" | "dirt" | "earth" | "ground"
-            | "grass" | "grass_paver" | "mud" | "sand" | "pebblestone" | "rock" | "woodchips" => {
-                Some(Paving::Unpaved)
-            }
-            _ => None,
+        paving(value)
+    }
+}
+
+/// The paving of a `surface` tag value (the spec's two lists); `None` for a value that is on neither list.
+#[must_use]
+pub fn paving(value: &str) -> Option<Paving> {
+    match value {
+        "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes"
+        | "paving_stones" | "sett" | "cobblestone" | "unhewn_cobblestone" | "chipseal"
+        | "bricks" | "metal" | "wood" => Some(Paving::Paved),
+        "unpaved" | "gravel" | "fine_gravel" | "compacted" | "dirt" | "earth" | "ground"
+        | "grass" | "grass_paver" | "mud" | "sand" | "pebblestone" | "rock" | "woodchips" => {
+            Some(Paving::Unpaved)
         }
+        _ => None,
     }
 }
 

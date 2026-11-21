@@ -25,6 +25,7 @@ fn road(way: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -115,6 +116,7 @@ fn way(
             roundabout,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         ..road(id, nodes, points)
     }
@@ -2677,4 +2679,69 @@ fn clean_makes_the_approaches_last_and_reports_them() {
     let g = t_at_the_end(20.0);
     let (_, report) = clean(&g, &widths, 8.0);
     assert_eq!(report.no_approach.len(), 1);
+}
+
+// ---- the paved and unpaved metres of a stretch stay right through the clean-up ----
+
+/// Every stretch of `g` with all of its metres paved.
+fn paved(mut g: RoadGraph) -> RoadGraph {
+    for s in &mut g.stretches {
+        s.paved_m = length(&s.points);
+        s.unpaved_m = 0.0;
+    }
+    g
+}
+
+/// Every stretch of `g` has paved metres equal to its length, and no unpaved ones.
+fn assert_all_paved(g: &RoadGraph) {
+    assert_ne!(g.stretches.len(), 0);
+    for s in &g.stretches {
+        let l = length(&s.points);
+        assert!(
+            (s.paved_m - l).abs() < 1e-6,
+            "{}: {} of {l}",
+            s.id,
+            s.paved_m
+        );
+        assert!(s.unpaved_m.abs() < 1e-9, "{}: {}", s.id, s.unpaved_m);
+    }
+}
+
+#[test]
+fn removing_specks_keeps_the_metres_of_the_stretch() {
+    let g = paved(build_graph(&[plain(
+        1,
+        &[1, 11, 12, 2],
+        &[(0.0, 0.0), (10.0, 0.0), (10.2, 0.0), (50.0, 0.0)],
+        Family::Asf3,
+    )]));
+    let (out, report) = clean(&g, &widths, 8.0);
+    assert_eq!(report.specks.len(), 1);
+    assert_all_paved(&out);
+}
+
+#[test]
+fn merging_junctions_keeps_the_metres_of_the_roads_it_moves() {
+    let g = paved(two_ts(4.0));
+    let (out, merged, _) = merge_junctions(&g);
+    assert_eq!(merged.len(), 1);
+    assert_all_paved(&out);
+}
+
+#[test]
+fn dropping_a_sidepath_keeps_the_metres_of_the_roads_that_stay() {
+    let g = paved(build_graph(&track_with_a_side_road()));
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_ne!(dropped.len(), 0);
+    assert_all_paved(&out);
+}
+
+#[test]
+fn a_bridge_approach_keeps_the_metres_of_what_it_cuts() {
+    for g in [continuing(40.0, 100.0), t_at_the_end(40.0)] {
+        let g = paved(g);
+        let (out, approaches, _) = make_approaches(&g);
+        assert_ne!(approaches.len(), 0);
+        assert_all_paved(&out);
+    }
 }

@@ -426,10 +426,13 @@ fn stubs_and_specks_if(
             stretch: s.id.clone(),
             at,
         }));
-        stretches.push(Stretch {
-            points,
-            ..s.clone()
-        });
+        stretches.push(
+            Stretch {
+                points,
+                ..s.clone()
+            }
+            .rescaled(polyline_length(&s.points)),
+        );
     }
     if stubs.is_empty() && specks.is_empty() {
         return (graph.clone(), stubs, specks);
@@ -656,6 +659,7 @@ fn mean_of(places: &[(f64, f64)]) -> (f64, f64) {
 /// stretch as it is after: its ends at the kept nodes, the last [`JUNCTION_MERGE_M`] at each straight, in the order of
 /// its node ids.
 fn moved_stretch(s: &Stretch, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> Stretch {
+    let before = polyline_length(&s.points);
     let mut s = s.clone();
     if let Some(&(node, at)) = moved.get(&s.start) {
         s.start = node;
@@ -672,7 +676,7 @@ fn moved_stretch(s: &Stretch, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> Stret
         std::mem::swap(&mut s.start, &mut s.end);
         s.points.reverse();
     }
-    s
+    s.rescaled(before)
 }
 
 /// Whether straightening the ends of the stretches that meet the nodes in `moved` makes one of them cross a road it
@@ -878,6 +882,8 @@ mod tests {
                 bridge_kind: None,
                 bridge_offset: 0.0,
                 use_sidepath: false,
+                paved_m: 0.0,
+                unpaved_m: 0.0,
             }],
             crossings: Vec::new(),
         }

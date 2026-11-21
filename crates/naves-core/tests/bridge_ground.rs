@@ -1212,6 +1212,8 @@ fn stretch_of(id: &str, start: i64, end: i64, bridge: bool) -> Stretch {
         bridge_kind: None,
         bridge_offset: 0.0,
         use_sidepath: false,
+        paved_m: 0.0,
+        unpaved_m: 0.0,
     }
 }
 

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::Family;
 use crate::heightmap::MapGeo;
+use crate::lot::{Paving, paving};
 use crate::osm::{OsmWay, OsmWays};
 
 /// How far inside the map's edge ways are cut, in metres: half the longest straight piece (12.5 m)
@@ -57,11 +58,18 @@ pub enum FeatureKind {
         /// Tagged `foot=use_sidepath`: a road that says its pedestrians use a path beside it.
         #[serde(default)]
         use_sidepath: bool,
+        /// Whether the way's `surface` tag names a paved or an unpaved surface; `None` when it has none or an
+        /// unknown one. It never changes the family.
+        #[serde(default)]
+        paving: Option<Paving>,
     },
     /// A footpath, painted on the ground and never given road pieces.
     Path {
         /// Width of the painted trace in metres.
         width_m: f64,
+        /// A street of a lot: `service=driveway` or `service=parking_aisle`.
+        #[serde(default)]
+        street: bool,
     },
 }
 
@@ -118,11 +126,13 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
         Some("hiking" | "mountain_hiking") => {
             return Some(FeatureKind::Path {
                 width_m: FOOTPATH_M,
+                street: false,
             });
         }
         Some("demanding_mountain_hiking") => {
             return Some(FeatureKind::Path {
                 width_m: MOUNTAIN_TRAIL_M,
+                street: false,
             });
         }
         _ => {}
@@ -138,6 +148,7 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
                 .and_then(|v| v.trim().parse::<i8>().ok())
                 .map_or(0, |v| v.clamp(-5, 5)),
             use_sidepath: get("foot") == Some("use_sidepath"),
+            paving: get("surface").and_then(paving),
         })
     };
     match highway {
@@ -150,6 +161,7 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
         "service" => match get("service") {
             Some("driveway" | "parking_aisle") => Some(FeatureKind::Path {
                 width_m: DRIVEWAY_M,
+                street: true,
             }),
             _ => road(Family::City, true),
         },
@@ -157,6 +169,7 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
         "path" | "footway" | "cycleway" | "bridleway" | "steps" | "pedestrian" => {
             Some(FeatureKind::Path {
                 width_m: FOOTPATH_M,
+                street: false,
             })
         }
         _ => None,

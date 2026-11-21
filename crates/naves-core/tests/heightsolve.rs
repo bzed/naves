@@ -136,6 +136,7 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

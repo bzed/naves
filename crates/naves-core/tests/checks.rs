@@ -451,7 +451,10 @@ fn path(id: &str, points: &[(f64, f64)]) -> Feature {
         id: id.to_string(),
         way_id: 1,
         source: Source::Osm,
-        kind: FeatureKind::Path { width_m: 1.6 },
+        kind: FeatureKind::Path {
+            width_m: 1.6,
+            street: false,
+        },
         points: points.to_vec(),
         nodes: (1..=i64::try_from(points.len()).unwrap_or(0)).collect(),
     }
@@ -525,6 +528,7 @@ fn a_track_that_is_not_drivable_is_checked_like_a_path() {
         roundabout: false,
         layer: 0,
         use_sidepath: false,
+        paving: None,
     };
     assert_ne!(check_walkable(&[track.clone()], &ramp(steep)).len(), 0);
     // a drivable road is not a path

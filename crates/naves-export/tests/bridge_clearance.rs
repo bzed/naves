@@ -24,6 +24,7 @@ fn way(id: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool) -> Feature {
             roundabout: false,
             layer: i8::from(bridge),
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

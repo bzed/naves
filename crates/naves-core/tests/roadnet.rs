@@ -12,6 +12,7 @@
 
 use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::lot::Paving;
 use naves_core::roadnet::{
     BridgeSpan, DUPLICATE_MAX_HEADING_DEG, DUPLICATE_MIN_M, RoadGraph, Stretch, build_graph,
     chains, drop_duplicates, over_crossings, overlay_rank, rings, with_bridge_spans,
@@ -37,6 +38,7 @@ fn feature(
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -172,7 +174,10 @@ fn a_tunnel_splits() {
 #[test]
 fn paths_are_not_in_the_graph() {
     let mut p = road(1, &[1, 2], &[(0.0, 0.0), (50.0, 0.0)]);
-    p.kind = FeatureKind::Path { width_m: 1.6 };
+    p.kind = FeatureKind::Path {
+        width_m: 1.6,
+        street: false,
+    };
     assert_eq!(build_graph(&[p]).stretches.len(), 0);
 }
 
@@ -1132,4 +1137,140 @@ fn a_cut_piece_keeps_the_use_sidepath_tag_of_its_stretch() {
         .collect();
     assert_ne!(rest.len(), 0);
     assert!(rest.iter().all(|s| s.use_sidepath), "{rest:?}");
+}
+
+// ---- the metres of a stretch whose way is tagged paved or unpaved ----
+
+fn with_paving(mut f: Feature, paving: Paving) -> Feature {
+    if let FeatureKind::Road { paving: p, .. } = &mut f.kind {
+        *p = Some(paving);
+    }
+    f
+}
+
+/// The graph with the two surface fields cleared, to compare it with one built without the tags.
+fn without_metres(g: &RoadGraph) -> RoadGraph {
+    let mut g = g.clone();
+    for s in &mut g.stretches {
+        s.paved_m = 0.0;
+        s.unpaved_m = 0.0;
+    }
+    g
+}
+
+#[test]
+fn ways_of_one_stretch_count_their_own_metres() {
+    let plain = [
+        road(1, &[1, 2], &[(0.0, 0.0), (30.0, 0.0)]),
+        road(2, &[2, 3], &[(30.0, 0.0), (50.0, 0.0)]),
+    ];
+    let tagged = [
+        with_paving(plain[0].clone(), Paving::Paved),
+        with_paving(plain[1].clone(), Paving::Unpaved),
+    ];
+    let g = build_graph(&tagged);
+    assert_eq!(ids(&g), vec!["1:1-3"]);
+    assert!(
+        (g.stretches[0].paved_m - 30.0).abs() < 1e-6,
+        "{:?}",
+        g.stretches[0]
+    );
+    assert!(
+        (g.stretches[0].unpaved_m - 20.0).abs() < 1e-6,
+        "{:?}",
+        g.stretches[0]
+    );
+    // the tags cut nothing and change nothing else
+    assert_eq!(without_metres(&g), build_graph(&plain));
+}
+
+#[test]
+fn a_way_without_the_tag_counts_for_neither() {
+    let g = build_graph(&[
+        with_paving(road(1, &[1, 2], &[(0.0, 0.0), (30.0, 0.0)]), Paving::Paved),
+        road(2, &[2, 3], &[(30.0, 0.0), (50.0, 0.0)]),
+    ]);
+    assert_eq!(g.stretches.len(), 1);
+    assert!((g.stretches[0].paved_m - 30.0).abs() < 1e-6);
+    assert!(g.stretches[0].unpaved_m.abs() < 1e-6);
+}
+
+/// Every stretch of an all-asphalt graph has all of its metres paved, whatever was done to its line.
+fn all_paved(g: &RoadGraph) {
+    assert_ne!(g.stretches.len(), 0);
+    for s in &g.stretches {
+        let l = len(s);
+        assert!(
+            (s.paved_m - l).abs() < 1e-6,
+            "{}: {} of {l}",
+            s.id,
+            s.paved_m
+        );
+        assert!(s.unpaved_m.abs() < 1e-9, "{}: {}", s.id, s.unpaved_m);
+    }
+}
+
+#[test]
+fn a_cut_stretch_shares_its_metres_in_proportion() {
+    // 100 m paved, then 100 m unpaved, one stretch of 200 m
+    let g = build_graph(&[
+        with_paving(road(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]), Paving::Paved),
+        with_paving(
+            road(2, &[2, 3], &[(100.0, 0.0), (200.0, 0.0)]),
+            Paving::Unpaved,
+        ),
+    ]);
+    assert_eq!(g.stretches.len(), 1);
+    let span = |from_m, to_m| BridgeSpan {
+        stretch: 0,
+        from_m,
+        to_m,
+    };
+    let out = with_bridge_spans(&g, &[span(50.0, 150.0)]);
+    assert_eq!(out.stretches.len(), 3);
+    let (p, u): (f64, f64) = out
+        .stretches
+        .iter()
+        .fold((0.0, 0.0), |a, s| (a.0 + s.paved_m, a.1 + s.unpaved_m));
+    assert!(
+        (p - 100.0).abs() < 1e-9 && (u - 100.0).abs() < 1e-9,
+        "{p} {u}"
+    );
+    for s in &out.stretches {
+        let share = len(s) / 200.0;
+        assert!((s.paved_m - 100.0 * share).abs() < 1e-9, "{s:?}");
+        assert!((s.unpaved_m - 100.0 * share).abs() < 1e-9, "{s:?}");
+    }
+}
+
+#[test]
+fn a_dropped_duplicate_leaves_the_metres_of_what_is_kept() {
+    let paved = |f: Feature| with_paving(f, Paving::Paved);
+    let g = build_graph(&[
+        paved(way(1, Family::Grav, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)])),
+        paved(way(2, Family::Asf3, &[3, 4], &[(0.0, 1.0), (100.0, 1.0)])),
+    ]);
+    let (out, dropped) = drop_duplicates(&g);
+    assert_eq!(dropped.len(), 1);
+    assert!(out.stretches.len() >= 2);
+    all_paved(&out);
+}
+
+#[test]
+fn an_unpaved_stretch_stays_unpaved_when_cut() {
+    let g = build_graph(&[with_paving(
+        road(1, &[1, 2], &[(0.0, 0.0), (200.0, 0.0)]),
+        Paving::Unpaved,
+    )]);
+    let out = with_bridge_spans(
+        &g,
+        &[BridgeSpan {
+            stretch: 0,
+            from_m: 80.0,
+            to_m: 110.0,
+        }],
+    );
+    for s in &out.stretches {
+        assert!((s.unpaved_m - len(s)).abs() < 1e-9 && s.paved_m.abs() < 1e-9);
+    }
 }

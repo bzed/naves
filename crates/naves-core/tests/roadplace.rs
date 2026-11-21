@@ -33,6 +33,7 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1209,6 +1210,30 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     assert_eq!(none.len(), 0);
     assert!(big.stretches.iter().any(|s| s.roundabout));
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
+}
+
+#[test]
+fn a_collapsed_ring_leaves_the_spokes_their_paved_metres() {
+    let c = catalog();
+    let mut features = roundabout(6.0, Family::City, &[0, 8, 16]);
+    for f in &mut features {
+        if let FeatureKind::Road { paving, .. } = &mut f.kind {
+            *paving = Some(naves_core::lot::Paving::Paved);
+        }
+    }
+    let (graph, collapsed) = collapse_small_rings(&build_graph(&features), &|f| c.tightest_arc(f));
+    assert_eq!(collapsed.len(), 1);
+    assert_eq!(graph.stretches.len(), 3);
+    for s in &graph.stretches {
+        let line: f64 = s.points.windows(2).map(|w| dist(w[0], w[1])).sum();
+        assert!(
+            (s.paved_m - line).abs() < 1e-6,
+            "{}: {} of {line}",
+            s.id,
+            s.paved_m
+        );
+        assert!(s.unpaved_m.abs() < 1e-9);
+    }
 }
 
 /// Two parallel through roads `dy` m apart with a side road between their junctions; the second junction
