@@ -7,11 +7,47 @@
 //! The design is in `docs/superpowers/specs/2026-11-21-road-planning-design.md`. This module holds the named
 //! constants of its constants table and [`RerouteParams`], which collects them so that tests can change them.
 //! The parts are sub-modules: [`raster`] is the obstacle raster with its distance maps and wall lines, [`band`] the
-//! feasibility band, the profile and the grade limit of a leg, [`field`] the cost-to-go field of a leg.
+//! feasibility band, the profile and the grade limit of a leg, [`field`] the cost-to-go field of a leg, [`dubins`]
+//! the Dubins paths the search arrives with and [`search`] the arc search of one leg.
 
 pub mod band;
+pub mod dubins;
 pub mod field;
 pub mod raster;
+pub mod search;
+
+/// A position and the direction a road runs in there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    /// The position, in map metres.
+    pub at: (f64, f64),
+    /// The heading, in radians, counter-clockwise from +x.
+    pub heading: f64,
+}
+
+/// One end of a leg: where the planned road starts or ends, and how.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    /// The position, in map metres. It never moves.
+    pub at: (f64, f64),
+    /// The heading of the road through the anchor, in radians, counter-clockwise from +x; the direction the road
+    /// travels in, at the start and at the end of the leg alike. `None` at a dead end: the direction is free.
+    pub heading: Option<f64>,
+    /// A straight of this length along the heading, at the start after the anchor, at the end before it (a
+    /// junction's arm; 0 elsewhere). Ignored without a heading.
+    pub straight_m: f64,
+}
+
+/// Why a leg is not searched at all: the input is wrong, which is a bug of the caller and not a leg without a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RerouteError {
+    /// An input that has to be a finite number is not (an anchor, the radius, a weight, a cap, a band value).
+    #[error("an input of the leg is not a finite number")]
+    NotFinite,
+    /// The two anchors are the same point, or a radius, a step, a weight or a budget makes no search.
+    #[error("the leg is degenerate")]
+    Degenerate,
+}
 
 /// The switch: road planning runs only when this is on. Off until the result is judged.
 pub const REROUTE_ENABLED: bool = false;

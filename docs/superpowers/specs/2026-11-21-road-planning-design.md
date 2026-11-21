@@ -345,7 +345,7 @@ the spec changes, not just the code:
    5.1 (forward and backward passes over the whole candidate route from anchor to anchor, then the profile closest to
    the terrain) is computed once, and its earthwork `Σ|h − z| · ds` replaces the lower bound in the route's cost. Its
    deepest cut and highest fill are reported. Because the lower bound never exceeds the real earthwork, the
-   correction only raises the cost of an arrived state, and the search stays exact at weight 1. `arrive` is the only
+   correction only raises the cost of an arrived state: its earthwork cost is `W_EARTH · max(sum of the steps' lower bounds, real earthwork)`, because the steps are sampled each by itself and the profile samples the whole route. The search is not claimed to be exact at weight 1 either: the field is not strictly admissible (see its section). `arrive` is the only
    way to accept a route (it pins both ends at the terrain of the route's own ends, and a `Profile` can only come from
    it; its fields are read through accessors); `band_step` and `arrives` only prune.
 
@@ -447,6 +447,31 @@ route and ends the try. The spike: four times the largest count to the first arr
 map, the same 2046 legs are planned with these budgets, with twice them and with one try of 400 000; 9 legs needed
 weight 1.5; the largest count to a first arrival anywhere was 27 315, median 155. Budgets are counts of states, never
 wall time.
+
+**As built** (`reroute/search.rs`, `reroute/dubins.rs`, plan Task 5):
+
+- The Dubins paths are the classical closed forms written in `dubins.rs` (the crate `dubins_paths` was reviewed and
+  not used; the commit says why). A path is returned only if its closed form ends at the target within 10⁻⁹ m and
+  radians; two equal poses have one path of length 0.
+- A step and an arrival candidate pass, in this order: the stray cap at every point of the polyline (the raster's
+  stored measure, as the field), the walls (a wall that allows no crossing blocks; the crossings of the others are
+  summed over the route and may not exceed what the walls allow in all), the band (`band_step`, which also tests every
+  segment against the obstacles), the self-clearance (samples every `SAMPLE_M` of the step against the earlier samples of
+  the route more than `PLAN_SELF_ALONG` back along it, and against each other). An arrival candidate then needs
+  `arrives` and `arrive` over the whole route from the start anchor, at the same grade limit; an `Err` drops the
+  candidate and the next Dubins path is tried.
+- A popped arrived state is checked once more before it is accepted: the points, the start and the end, the radius on
+  a 2 m resample, every segment, the stray cap, the walls (the crossings equal what the original line made), the
+  self-clearance over all pairs of the route's samples, and `arrive` at the limit the route was found at. A route that
+  fails is dropped and the search goes on; nothing is reported for it. The reported cut, fill and earthwork are the
+  profile's, the planned grade is the net rise over the length, the stray is the largest stored distance.
+- `search_leg_relaxed` runs `search_leg` at each limit in turn on the same raster, walls and field; the states of the
+  limits that failed count in `Route::states`.
+- The end heading of a route is exact in the closed form (and tested in the Dubins paths); the polyline of an arc is
+  sampled every 2°, so its last chord differs from the heading by up to 1°. A junction end's straight is exact.
+- Crossings of a wall exactly at a vertex of the route are counted by neither the search nor the check (`cross_point`
+  wants both crossings inside their segments); that needs coordinates that agree to 10⁻⁹ and does not happen on
+  measured data.
 
 **Tie-breaking:** the open set is ordered by priority, then cost, then the state key, then the order of insertion, all
 floats compared with `total_cmp`. States live in an arena indexed by insertion order. The key table is a sorted map,

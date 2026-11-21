@@ -307,7 +307,7 @@ fn clamp_in(v: f64, lo: f64, hi: f64) -> f64 {
 /// removed), and a cut, fill and anchor tolerance that are finite and not negative. NaN would be dropped silently by
 /// `f64::max` and `f64::min`; an infinite tolerance would float the anchors, an infinite cut or fill would remove
 /// the band, and the field removes only the grade.
-fn check_band(band: &Band) -> Result<(), BandFail> {
+pub(crate) fn check_band(band: &Band) -> Result<(), BandFail> {
     let finite = |v: f64| v.is_finite() && v >= 0.0;
     if band.grade >= 0.0 && finite(band.cut_m) && finite(band.fill_m) && finite(band.anchor_tol_m) {
         Ok(())

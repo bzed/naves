@@ -24,7 +24,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::band::{Band, line_samples};
+use super::band::{Band, check_band, line_samples};
 use super::raster::{Clearance, Obstacles, Wall};
 use super::{CHAMFER_ERROR, PLAN_STEP_M};
 
@@ -219,11 +219,7 @@ impl Field {
         };
         // The band's own validity rules (a grade that is NaN or negative, a cut, fill or tolerance that is not a
         // finite, non-negative number) refuse every edge there, so the field is the target cell alone.
-        let finite = |v: f64| v.is_finite() && v >= 0.0;
-        let usable = band.grade >= 0.0
-            && finite(band.cut_m)
-            && finite(band.fill_m)
-            && finite(band.anchor_tol_m);
+        let usable = check_band(band).is_ok();
         if usable {
             field.dijkstra(
                 grid.target,

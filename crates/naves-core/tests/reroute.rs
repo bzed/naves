@@ -1,7 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Tests of the road-planning obstacle raster, its distance maps and its wall lines.
+//! Tests of road planning: the obstacle raster, its distance maps and its wall lines, the feasibility band, the
+//! cost-to-go field, the Dubins paths and the arc search of a leg.
+
+#![expect(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test helper code; failing loudly is the point"
+)]
 
 use naves_core::catalog::Family;
 use naves_core::heightmap::Heightmap;
@@ -1642,4 +1650,1154 @@ fn more_samples_than_the_band_takes_are_clamped_like_the_band() {
     // the left column (x = 0) is behind the strip, 12 m from the target: 5.09 when reached, 0 when not
     assert!(field.estimate((0.0, 12.0)).abs() < 1e-9);
     assert!(field.estimate((24.0, 12.0)) > 5.0);
+}
+
+// ---- Dubins paths ----
+
+use naves_core::reroute::dubins::{DubinsPath, Turn, dubins_paths};
+use naves_core::reroute::search::{
+    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed,
+};
+use naves_core::reroute::{Anchor, PLAN_BUDGETS, Pose, RerouteError};
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+const RHO: f64 = 10.5;
+
+fn pose(x: f64, y: f64, heading: f64) -> Pose {
+    Pose {
+        at: (x, y),
+        heading,
+    }
+}
+
+/// A fixed-seed generator (xorshift64*), a number in 0..1.
+fn unit(state: &mut u64) -> f64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    let v = state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11;
+    f64::from(u32::try_from(v >> 21).unwrap()) / 4_294_967_296.0
+}
+
+fn shortest(from: Pose, to: Pose) -> DubinsPath {
+    dubins_paths(from, to, RHO)[0]
+}
+
+#[test]
+fn dubins_known_lengths() {
+    // a U-turn to the left: half a circle
+    let u = shortest(pose(0.0, 0.0, 0.0), pose(0.0, 21.0, PI));
+    assert!(close(u.length(), PI * RHO, 1e-9), "{}", u.length());
+    assert_eq!(u.word(), [Turn::Left, Turn::Straight, Turn::Left]);
+    // a straight
+    let s = shortest(pose(0.0, 0.0, 0.0), pose(50.0, 0.0, 0.0));
+    assert!(close(s.length(), 50.0, 1e-9), "{}", s.length());
+    // a quarter circle
+    let q = shortest(pose(0.0, 0.0, 0.0), pose(RHO, RHO, FRAC_PI_2));
+    assert!(close(q.length(), FRAC_PI_2 * RHO, 1e-9), "{}", q.length());
+    assert!(close(q.turning(RHO), FRAC_PI_2, 1e-9));
+}
+
+#[test]
+fn equal_poses_have_one_path_of_no_length() {
+    for heading in [0.0, 1.0, -2.5, 7.0] {
+        let paths = dubins_paths(pose(3.0, 4.0, heading), pose(3.0, 4.0, heading), RHO);
+        assert_eq!(paths.len(), 1, "{heading}");
+        assert!(paths[0].length().abs() < 1e-12);
+    }
+}
+
+#[test]
+fn dubins_refuses_what_is_not_a_number() {
+    let ok = pose(0.0, 0.0, 0.0);
+    for bad in [
+        pose(f64::NAN, 0.0, 0.0),
+        pose(0.0, f64::INFINITY, 0.0),
+        pose(0.0, 0.0, f64::NAN),
+    ] {
+        assert_eq!(dubins_paths(bad, ok, RHO).len(), 0);
+        assert_eq!(dubins_paths(ok, bad, RHO).len(), 0);
+    }
+    for radius in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(dubins_paths(ok, pose(30.0, 10.0, 1.0), radius).len(), 0);
+    }
+}
+
+/// The angle between two headings, in `0..=PI`.
+fn heading_gap(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(TAU);
+    d.min(TAU - d)
+}
+
+#[test]
+fn ten_thousand_random_pairs_end_at_the_target() {
+    let mut state = 0x6e61_7665_735f_3035_u64;
+    let (mut paths_seen, mut worst) = (0_usize, 0.0_f64);
+    for _ in 0..10_000 {
+        let mut v = |scale: f64| (unit(&mut state) * 2.0 - 1.0) * scale;
+        let from = pose(v(200.0), v(200.0), v(PI * 2.0));
+        let to = pose(v(200.0), v(200.0), v(PI * 2.0));
+        let paths = dubins_paths(from, to, RHO);
+        assert!(!paths.is_empty(), "{from:?} {to:?}");
+        assert!(
+            paths
+                .windows(2)
+                .all(|w| w[0].length() <= w[1].length() + 1e-12),
+            "sorted by length"
+        );
+        for p in &paths {
+            paths_seen += 1;
+            let end = p.end_pose(from, RHO);
+            let err = (end.at.0 - to.at.0)
+                .hypot(end.at.1 - to.at.1)
+                .max(heading_gap(end.heading, to.heading));
+            worst = worst.max(err);
+            assert!(err <= 1e-9, "{from:?} {to:?} {:?} err {err}", p.word());
+            assert!(p.lengths().iter().all(|l| l.is_finite() && *l >= 0.0));
+        }
+    }
+    assert!(paths_seen > 40_000, "{paths_seen}");
+    assert!(worst < 1e-9, "{worst}");
+}
+
+#[test]
+fn dubins_points_follow_the_path_and_end_at_the_target() {
+    let (from, to) = (pose(0.0, 0.0, 0.3), pose(60.0, -25.0, 2.0));
+    for p in dubins_paths(from, to, RHO) {
+        let pts = p.points(from, RHO, 2.0);
+        assert_eq!(pts[0], from.at);
+        let last = *pts.last().unwrap();
+        assert!((last.0 - to.at.0).hypot(last.1 - to.at.1) < 1e-9);
+        assert!(
+            pts.windows(2)
+                .all(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1) <= 2.0 + 1e-9)
+        );
+        let len: f64 = pts
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+            .sum();
+        assert!(len <= p.length() + 1e-9 && len >= p.length() - 0.5, "{len}");
+    }
+}
+
+// ---- the direction of a segment test ----
+
+#[test]
+fn a_segment_is_as_free_one_way_as_the_other() {
+    let mut o = Obstacles::new((0.0, 0.0), (200.0, 200.0), 4.0, 200.0, 6.0, 4_000_000);
+    o.stamp_water(&|p| {
+        (60.0..80.0).contains(&p.0) && (20.0..140.0).contains(&p.1)
+            || (110.0..150.0).contains(&p.0) && (100.0..112.0).contains(&p.1)
+    });
+    o.stamp_road(&[(10.0, 150.0), (190.0, 170.0), (190.0, 120.0)], 6.0, &[]);
+    o.finish();
+    let clear = Clearance::new(5.0, 8.0).unwrap();
+    let mut state = 0x6e61_7665_735f_3036_u64;
+    let (mut blocked, mut free) = (0_usize, 0_usize);
+    for case in 0..40_000 {
+        let mut p = || {
+            let (x, y) = (unit(&mut state) * 200.0, unit(&mut state) * 200.0);
+            match case % 3 {
+                // on the corners of the cells, where a walk has to decide
+                0 => ((x / 2.0).round() * 2.0, (y / 2.0).round() * 2.0),
+                // on the lines of the grid
+                1 => ((x / 2.0).round() * 2.0, y),
+                _ => (x, y),
+            }
+        };
+        let a = p();
+        // the other end within 30 m, so that many segments are free
+        let b = {
+            let q = p();
+            (a.0 + (q.0 - a.0) * 0.15, a.1 + (q.1 - a.1) * 0.15)
+        };
+        let (ab, ba) = (o.segment(a, b, clear), o.segment(b, a, clear));
+        assert_eq!(ab.is_ok(), ba.is_ok(), "{a:?} {b:?}: {ab:?} {ba:?}");
+        if ab.is_ok() {
+            free += 1;
+        } else {
+            blocked += 1;
+        }
+    }
+    assert!(blocked > 4_000 && free > 4_000, "{blocked} {free}");
+}
+
+// ---- the search of one leg ----
+
+/// Everything a leg needs, built from the parts a test wants to change. The geometry is given in local metres and
+/// shifted by `SHIFT` so that it lies inside the 400 m box.
+struct Setup {
+    start: Anchor,
+    end: Anchor,
+    original: Vec<(f64, f64)>,
+    ground: Ground,
+    water: fn((f64, f64)) -> bool,
+    walls: Vec<Wall>,
+    grade: f64,
+    clear: Clearance,
+    cap: f64,
+    budgets: Vec<(f64, usize)>,
+    self_along: f64,
+    band_override: Option<Band>,
+}
+
+type Ground = Box<dyn Fn((f64, f64)) -> Option<f64> + Send + Sync>;
+
+const SHIFT: (f64, f64) = (100.0, 100.0);
+
+/// A local point on the map.
+fn at(x: f64, y: f64) -> (f64, f64) {
+    (x + SHIFT.0, y + SHIFT.1)
+}
+
+fn anchor(x: f64, y: f64, heading: f64) -> Anchor {
+    Anchor {
+        at: at(x, y),
+        heading: Some(heading),
+        straight_m: 0.0,
+    }
+}
+
+fn line_at(points: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    points.iter().map(|p| at(p.0, p.1)).collect()
+}
+
+/// A ground function of local coordinates.
+fn local(f: impl Fn(f64, f64) -> f64 + Send + Sync + 'static) -> Ground {
+    Box::new(move |p| Some(f(p.0 - SHIFT.0, p.1 - SHIFT.1)))
+}
+
+fn dry(_: (f64, f64)) -> bool {
+    false
+}
+
+impl Setup {
+    fn new(start: Anchor, end: Anchor, original: &[(f64, f64)]) -> Setup {
+        Setup {
+            start,
+            end,
+            original: line_at(original),
+            ground: local(|_, _| 100.0),
+            water: dry,
+            walls: Vec::new(),
+            grade: 0.5,
+            clear: NONE,
+            cap: 3.0 * 10.5,
+            budgets: PLAN_BUDGETS.to_vec(),
+            self_along: PI * RHO + 25.0,
+            band_override: None,
+        }
+    }
+
+    fn band(&self) -> Band {
+        self.band_override
+            .unwrap_or_else(|| Band::from_params(&RerouteParams::default(), self.grade, 4.0))
+    }
+
+    fn obstacles(&self) -> Obstacles {
+        let mut o = Obstacles::new((0.0, 0.0), (400.0, 400.0), 4.0, 400.0, 0.0, 4_000_000);
+        o.stamp_water(&self.water);
+        o.set_original(&self.original);
+        o.finish();
+        o
+    }
+
+    fn run(&self) -> Result<LegOutcome, RerouteError> {
+        self.run_with(None)
+    }
+
+    fn run_with(&self, limits: Option<&[f64]>) -> Result<LegOutcome, RerouteError> {
+        self.run_edited(limits, |_| {})
+    }
+
+    /// Runs the leg with the input changed by `edit` after it was built.
+    fn run_edited(
+        &self,
+        limits: Option<&[f64]>,
+        edit: impl FnOnce(&mut LegInput<'_>),
+    ) -> Result<LegOutcome, RerouteError> {
+        let o = self.obstacles();
+        let band = self.band();
+        let field = Field::build(
+            (0.0, 0.0),
+            (400.0, 400.0),
+            self.end.at,
+            6.0,
+            4.0,
+            &band,
+            &*self.ground,
+            &o,
+            &self.walls,
+            self.clear,
+            self.cap,
+            1_000_000,
+        );
+        let mut input = LegInput {
+            start: self.start,
+            end: self.end,
+            radius: RHO,
+            step_m: 6.0,
+            band: &band,
+            ground: &*self.ground,
+            obstacles: &o,
+            walls: &self.walls,
+            clear: self.clear,
+            field: &field,
+            weights: Weights::from_params(&RerouteParams::default()),
+            stray_cap_m: self.cap,
+            arrive_reach_m: (3.0_f64 * 6.0).max(4.0 * RHO),
+            self_along_m: self.self_along,
+            budgets: &self.budgets,
+        };
+        edit(&mut input);
+        match limits {
+            None => search_leg(&input),
+            Some(l) => search_leg_relaxed(&input, l),
+        }
+    }
+
+    fn route(&self) -> Route {
+        match self.run().unwrap() {
+            LegOutcome::Found(r) => r,
+            other @ LegOutcome::NoRoute { .. } => panic!("no route: {other:?}"),
+        }
+    }
+}
+
+fn length_of(points: &[(f64, f64)]) -> f64 {
+    points
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum()
+}
+
+/// The smallest three-point radius of a route.
+fn tightest(points: &[(f64, f64)]) -> f64 {
+    points
+        .windows(3)
+        .map(|w| naves_core::smooth::radius_at(w[0], w[1], w[2]))
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn is_close(p: (f64, f64), q: (f64, f64), tol: f64) -> bool {
+    (p.0 - q.0).hypot(p.1 - q.1) <= tol
+}
+
+#[test]
+fn a_straight_leg_is_a_straight_route() {
+    let s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(100.0, 0.0, 0.0),
+        &[(0.0, 0.0), (100.0, 0.0)],
+    );
+    let r = s.route();
+    assert!(close(r.length_m, 100.0, 1e-6), "{}", r.length_m);
+    assert!(close(length_of(&r.points), r.length_m, 1e-9));
+    assert!(r.max_stray_m <= 0.01, "{}", r.max_stray_m);
+    assert!(r.states <= 500, "{}", r.states);
+    assert!(is_close(r.points[0], at(0.0, 0.0), 1e-9));
+    assert!(is_close(*r.points.last().unwrap(), at(100.0, 0.0), 1e-9));
+    assert_eq!(r.relax_steps, 0);
+    assert!((r.grade_limit - 0.5).abs() < 1e-12);
+    assert!(r.weight >= 1.0 && r.cost >= r.length_m - 1e-6);
+}
+
+#[test]
+fn a_right_angle_is_rounded_at_the_radius() {
+    let corner = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
+    let s = Setup::new(
+        anchor(18.0, 0.0, 0.0),
+        anchor(60.0, 42.0, FRAC_PI_2),
+        &corner,
+    );
+    let r = s.route();
+    assert!(tightest(&r.points) >= 9.9, "{}", tightest(&r.points));
+    assert!(is_close(*r.points.last().unwrap(), at(60.0, 42.0), 1e-6));
+    // the last chord runs along the arc's end: within one chord's half angle of the heading
+    let n = r.points.len();
+    let (prev, last) = (r.points[n - 2], r.points[n - 1]);
+    assert!(heading_gap((last.1 - prev.1).atan2(last.0 - prev.0), FRAC_PI_2) < 0.02);
+    assert!(r.max_stray_m <= 6.0, "{}", r.max_stray_m);
+    // No route is shorter than the shortest Dubins path between the poses (61.1 m); the cost keeps it near the
+    // corner: the rounded corner itself is 79.5 m, and a route whose last leg lies a little inside the original
+    // leg is 78.1 m (the brief's 79.0 was the corner-tangent path only).
+    let shortest = shortest(pose(18.0, 0.0, 0.0), pose(60.0, 42.0, FRAC_PI_2)).length();
+    assert!(r.length_m >= shortest - 0.05, "{} {shortest}", r.length_m);
+    assert!((77.0..=84.0).contains(&r.length_m), "length {}", r.length_m);
+}
+
+/// The hairpin of the examples: legs x = 0 and x = 8 from y = 0 to 60, an apex of radius 4 above, anchors at
+/// y = 20 on both legs.
+fn hairpin_line() -> Vec<(f64, f64)> {
+    let mut line = vec![(0.0, 0.0), (0.0, 60.0)];
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        line.push((4.0 + 4.0 * a.cos(), 60.0 + 4.0 * a.sin()));
+    }
+    line.extend([(8.0, 60.0), (8.0, 0.0)]);
+    line
+}
+
+fn hairpin() -> Setup {
+    Setup::new(
+        anchor(0.0, 20.0, FRAC_PI_2),
+        anchor(8.0, 20.0, -FRAC_PI_2),
+        &hairpin_line(),
+    )
+}
+
+#[test]
+fn a_hairpin_gets_a_loop_of_the_radius() {
+    let r = hairpin().route();
+    assert!(tightest(&r.points) >= 9.9, "{}", tightest(&r.points));
+    assert!(r.max_stray_m <= 31.5, "{}", r.max_stray_m);
+    // Not the brief's 92.6 m: on flat ground the cheapest loop is the compact one next to the anchors (66.9 m,
+    // 25.7 m deep, the widest stray 6 m); the longer loop out at the drawn apex costs the same stray and 40 m
+    // more road. No route is shorter than the shortest Dubins path.
+    let shortest = shortest(pose(0.0, 20.0, FRAC_PI_2), pose(8.0, 20.0, -FRAC_PI_2)).length();
+    assert!(r.length_m >= shortest - 0.05, "{} {shortest}", r.length_m);
+    assert!(
+        r.length_m > 2.0 * PI * RHO / 2.0,
+        "a loop of the radius: {}",
+        r.length_m
+    );
+    assert!(is_close(r.points[0], at(0.0, 20.0), 1e-9));
+    assert!(is_close(*r.points.last().unwrap(), at(8.0, 20.0), 1e-9));
+}
+
+fn water_above_30(p: (f64, f64)) -> bool {
+    p.1 >= 130.0
+}
+
+#[test]
+fn water_over_the_apex_leaves_no_loop() {
+    let mut s = hairpin();
+    s.water = water_above_30;
+    match s.run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted,
+            states,
+            ..
+        } => {
+            assert!(!budget_exhausted, "proven, not out of budget");
+            assert!(states > 0);
+        }
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_budget_that_runs_out_is_reported() {
+    let mut s = hairpin();
+    s.budgets = vec![(1.0, 10)];
+    match s.run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted,
+            states,
+            ..
+        } => {
+            assert!(budget_exhausted);
+            assert_eq!(states, 10);
+        }
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+}
+
+/// A switchback on a hillside that falls across it: the drawn road is a "V" of two legs of 66.6 m that meet in an
+/// apex of radius 4, the anchors 40 m apart at the bottom of both legs, `rise` metres apart in height. The drawn
+/// length is 145.7 m. The terrain is one slope, `rise / 40` per metre east.
+struct Switchback {
+    setup: Setup,
+    drawn: Vec<(f64, f64)>,
+    rise: f64,
+}
+
+const APEX_Y: f64 = 64.6;
+
+fn switchback_at(rise: f64) -> Switchback {
+    let mut drawn = vec![(0.0, 0.0), (16.0, APEX_Y)];
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        drawn.push((20.0 + 4.0 * a.cos(), APEX_Y + 4.0 * a.sin()));
+    }
+    drawn.extend([(24.0, APEX_Y), (40.0, 0.0)]);
+    let heading = APEX_Y.atan2(16.0);
+    let mut setup = Setup::new(
+        anchor(0.0, 0.0, heading),
+        anchor(40.0, 0.0, -heading),
+        &drawn,
+    );
+    let slope = rise / 40.0;
+    setup.ground = local(move |x, _| 100.0 + slope * x);
+    let g = drawn_grade(&line_at(&drawn), &*setup.ground, 20.0).unwrap();
+    let (limit, _) = leg_limit(&[Family::Grav], &g).unwrap();
+    setup.grade = limit;
+    Switchback {
+        setup,
+        drawn: line_at(&drawn),
+        rise,
+    }
+}
+
+#[test]
+fn a_switchback_within_the_grade_keeps_its_length() {
+    let sb = switchback_at(21.9);
+    let drawn = drawn_grade(&sb.drawn, &*sb.setup.ground, 20.0).unwrap();
+    assert!(
+        close(length_of(&sb.drawn), 145.7, 0.2),
+        "{}",
+        length_of(&sb.drawn)
+    );
+    assert!(close(drawn.mean, 0.150, 0.001), "{}", drawn.mean);
+    assert!(close(sb.setup.grade, 0.18, 1e-12), "{}", sb.setup.grade);
+    let r = sb.setup.route();
+    assert!(r.length_m >= (sb.rise - 1.0) / 0.18, "{}", r.length_m);
+    let profile = arrive(&r.points, &*sb.setup.ground, &sb.setup.band()).unwrap();
+    assert!(
+        profile.max_grade() <= 0.18 + 1e-9,
+        "{}",
+        profile.max_grade()
+    );
+    assert!(r.planned_grade <= 0.189, "{}", r.planned_grade);
+    assert!(tightest(&r.points) >= 9.9);
+    // The brief wanted the route's top at or above the drawn apex. It is not: a loop of radius 10.5 fits where the
+    // drawn V is wide, so the planned loop lies inside the drawn one (top at y = 54.8 against 68.6 for the drawn
+    // apex). It is not shorter than the climb needs, which is what the grade rule is for.
+    let top = |pts: &[(f64, f64)]| pts.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+    assert!(
+        top(&r.points) > SHIFT.1 + 40.0,
+        "a loop, not a shortcut: {}",
+        top(&r.points)
+    );
+    assert_eq!(r.relax_steps, 0);
+    assert!(close(r.earthwork_m2, profile.earthwork_m2(), 1e-9));
+    assert!(close(r.cut_max_m, profile.cut_max_m(), 1e-9));
+    assert!(close(r.fill_max_m, profile.fill_max_m(), 1e-9));
+}
+
+#[test]
+fn a_steeper_switchback_keeps_its_steeper_length() {
+    let sb = switchback_at(36.4);
+    assert!(close(sb.setup.grade, 0.25, 0.001), "{}", sb.setup.grade);
+    let r = sb.setup.route();
+    assert!(close(r.grade_limit, sb.setup.grade, 1e-12));
+    assert!(r.length_m >= (36.4 - 1.0) / r.grade_limit, "{}", r.length_m);
+    assert!(r.planned_grade <= r.grade_limit + 1.0 / r.length_m);
+}
+
+#[test]
+fn a_wall_of_water_relaxes_the_grade() {
+    // Water from y = 44 on, and the route held within 10 m of the drawn line: only about a 100 m route fits.
+    let mut sb = switchback_at(21.9);
+    sb.setup.water = water_over_switchback;
+    sb.setup.cap = 10.0;
+    let limits = relaxed_limits(0.18, 0.36, 3).unwrap();
+    assert!(close(limits[1], 0.24, 1e-12));
+    // at 0.18 alone there is none, and the open set is empty
+    match sb.setup.run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted, ..
+        } => assert!(!budget_exhausted),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+    let LegOutcome::Found(r) = sb.setup.run_with(Some(&limits)).unwrap() else {
+        panic!("no route even relaxed");
+    };
+    assert_eq!(r.relax_steps, 1);
+    assert!(close(r.grade_limit, 0.24, 1e-12));
+    assert!(
+        r.planned_grade <= 0.24 + 1.0 / r.length_m,
+        "{} {}",
+        r.planned_grade,
+        r.length_m
+    );
+    assert!(
+        (87.0..116.1).contains(&r.length_m),
+        "about 100 m: {}",
+        r.length_m
+    );
+    // the states of the limit that failed count too
+    assert!(r.states > 861);
+}
+
+fn water_over_switchback(p: (f64, f64)) -> bool {
+    p.1 >= SHIFT.1 + 44.0
+}
+
+fn pinned(rise: f64, cap: f64) -> Setup {
+    let mut s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(40.0, 0.0, 0.0),
+        &[(0.0, 0.0), (40.0, 0.0)],
+    );
+    s.ground = local(move |x, _| 100.0 + rise / 40.0 * x);
+    s.grade = 0.27;
+    s.cap = cap;
+    s
+}
+
+#[test]
+fn pinned_anchors_cannot_shorten_a_climb() {
+    // 12 m in 40 m at 0.27: every route is at least (12 - 1) / 0.27 = 40.7 m
+    if let LegOutcome::Found(r) = pinned(12.0, 31.5).run().unwrap() {
+        assert!(r.length_m >= (12.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    }
+    // With a cap of 0.5 m the route can only wiggle inside the raster's 4 m strip of cells that the line touches
+    // (stored distance 0), and it lengthens by 0.9 m that way: 40.9 m is a route. So the brief's "NoRoute" is not
+    // true at 12 m; a route is at least 40.7 m long, or there is none.
+    if let LegOutcome::Found(r) = pinned(12.0, 0.5).run().unwrap() {
+        assert!(r.length_m >= (12.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    }
+    // At 15 m (37.5 %) the 52 m that the climb needs cannot be wiggled in, and the spike's anchors, free by 6 m,
+    // would have passed.
+    match pinned(15.0, 0.5).run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted, ..
+        } => assert!(!budget_exhausted),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_leg_that_is_too_steep_is_relaxed_to_the_limit_that_fits() {
+    let limits = relaxed_limits(0.27, 0.36, 3).unwrap();
+    // 12.5 m: 0.27 needs 42.6 m, which a held route cannot make, 0.30 needs 38.3 m
+    let LegOutcome::Found(r) = pinned(12.5, 0.5).run_with(Some(&limits)).unwrap() else {
+        panic!("no route");
+    };
+    assert_eq!(r.relax_steps, 1);
+    assert!(close(r.grade_limit, 0.30, 1e-12), "{}", r.grade_limit);
+    assert!(r.planned_grade <= 0.30 + 1.0 / r.length_m);
+}
+
+#[test]
+fn a_steep_slope_gives_a_long_route_or_none() {
+    let mut s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(40.0, 0.0, 0.0),
+        &[(0.0, 0.0), (40.0, 0.0)],
+    );
+    s.ground = local(|x, _| 100.0 + 0.75 * x);
+    s.grade = 0.27;
+    if let LegOutcome::Found(r) = s.run().unwrap() {
+        assert!(r.length_m >= (30.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    }
+    s.cap = 0.5;
+    match s.run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted, ..
+        } => assert!(!budget_exhausted),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+}
+
+/// The pairs of samples of a route, 1 m apart, that are more than `along` apart along it, with their distance.
+fn self_gaps(points: &[(f64, f64)], along: f64) -> f64 {
+    let mut samples: Vec<(f64, f64, f64)> = Vec::new();
+    let mut s = 0.0;
+    for w in points.windows(2) {
+        let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        let n = l.ceil().max(1.0);
+        for k in 0..naves_core::reroute::dubins::segments(0.0, l, 1.0) {
+            let t = f64::from(u32::try_from(k).unwrap()) / n;
+            samples.push((
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+                s + l * t,
+            ));
+        }
+        s += l;
+    }
+    let mut least = f64::INFINITY;
+    for (i, a) in samples.iter().enumerate() {
+        for b in &samples[i + 1..] {
+            if b.2 - a.2 > along {
+                least = least.min((a.0 - b.0).hypot(a.1 - b.1));
+            }
+        }
+    }
+    least
+}
+
+#[test]
+fn a_route_does_not_loop_back_across_itself() {
+    // a turn of 300 degrees between anchors 12 m apart
+    let heading_end = -PI / 3.0;
+    let mut s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(12.0, 0.0, heading_end),
+        &[(0.0, 0.0), (12.0, 0.0)],
+    );
+    s.clear = Clearance::new(0.0, 12.5).unwrap();
+    let outcome = s.run().unwrap();
+    if let LegOutcome::Found(r) = &outcome {
+        let least = self_gaps(&r.points, s.self_along);
+        assert!(
+            least >= 12.5 - 1.5,
+            "samples {least} m apart along a route of {} m",
+            r.length_m
+        );
+    }
+    // without the rule the cheapest route is a loop across its own start, so the rule is what holds it back
+    let mut free = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(12.0, 0.0, heading_end),
+        &[(0.0, 0.0), (12.0, 0.0)],
+    );
+    free.self_along = 1.0e9;
+    let LegOutcome::Found(loose) = free.run().unwrap() else {
+        panic!("the loop is a route without the rule");
+    };
+    assert!(
+        self_gaps(&loose.points, PI * RHO + 25.0) < 11.0,
+        "{}",
+        self_gaps(&loose.points, PI * RHO + 25.0)
+    );
+}
+
+#[test]
+fn a_dead_end_is_reached_exactly() {
+    let end = Anchor {
+        at: at(50.0, 10.0),
+        heading: None,
+        straight_m: 0.0,
+    };
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), end, &[(0.0, 0.0), (50.0, 10.0)]);
+    let r = s.route();
+    assert!(is_close(*r.points.last().unwrap(), at(50.0, 10.0), 1e-9));
+    assert!(tightest(&r.points) >= 9.9);
+}
+
+#[test]
+fn a_dead_end_start_picks_its_heading() {
+    let start = Anchor {
+        at: at(0.0, 0.0),
+        heading: None,
+        straight_m: 0.0,
+    };
+    let s = Setup::new(start, anchor(60.0, 30.0, 0.0), &[(0.0, 0.0), (60.0, 30.0)]);
+    let r = s.route();
+    assert!(is_close(r.points[0], at(0.0, 0.0), 1e-9));
+    assert!(is_close(*r.points.last().unwrap(), at(60.0, 30.0), 1e-9));
+}
+
+#[test]
+fn a_junction_starts_with_its_straight() {
+    let mut start = anchor(0.0, 0.0, 0.0);
+    start.straight_m = 6.25;
+    let mut end = anchor(60.0, 40.0, FRAC_PI_2);
+    end.straight_m = 6.25;
+    let s = Setup::new(start, end, &[(0.0, 0.0), (60.0, 0.0), (60.0, 40.0)]);
+    let r = s.route();
+    assert!(is_close(r.points[0], at(0.0, 0.0), 1e-9));
+    // the first 6.25 m run along the heading
+    let first = r.points[1..]
+        .iter()
+        .take_while(|p| (p.0 - r.points[0].0).hypot(p.1 - r.points[0].1) <= 6.25 + 1e-9)
+        .count();
+    assert!(first >= 1);
+    for p in &r.points[..=first] {
+        assert!((p.1 - r.points[0].1).abs() < 1e-6, "{p:?}");
+    }
+    assert!(r.points.iter().any(|p| is_close(*p, at(6.25, 0.0), 1e-6)));
+    // and the last 6.25 m run along the end heading, exactly
+    let n = r.points.len();
+    assert!(is_close(r.points[n - 1], at(60.0, 40.0), 1e-9));
+    assert!(
+        is_close(r.points[n - 2], at(60.0, 33.75), 1e-6),
+        "{:?}",
+        r.points[n - 2]
+    );
+    assert!(tightest(&r.points) >= 9.9);
+}
+
+#[test]
+fn close_anchors_and_bad_anchors() {
+    let line = [(0.0, 0.0), (5.0, 0.0)];
+    let r = Setup::new(anchor(0.0, 0.0, 0.0), anchor(5.0, 0.0, 0.0), &line).route();
+    assert!(close(r.length_m, 5.0, 1e-6), "{}", r.length_m);
+    let same = Setup::new(anchor(0.0, 0.0, 0.0), anchor(0.0, 0.0, 1.0), &line);
+    assert_eq!(same.run().unwrap_err(), RerouteError::Degenerate);
+    for bad in [f64::NAN, f64::INFINITY] {
+        let mut a = anchor(0.0, 0.0, 0.0);
+        a.at.0 = bad;
+        let s = Setup::new(a, anchor(5.0, 0.0, 0.0), &line);
+        assert_eq!(s.run().unwrap_err(), RerouteError::NotFinite);
+        let mut e = Setup::new(anchor(0.0, 0.0, 0.0), anchor(5.0, 0.0, 0.0), &line);
+        e.end.heading = Some(bad);
+        assert_eq!(e.run().unwrap_err(), RerouteError::NotFinite);
+    }
+}
+
+#[test]
+fn the_switchback_terrain_needs_the_ceiling_and_real_earthwork() {
+    // the straight 90.8 m of switchback-1 on its own terrain, held to the line by a cap of 0.5 m
+    let mut s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(90.8, 0.0, 0.0),
+        &[(0.0, 0.0), (90.8, 0.0)],
+    );
+    let steep = 0.549;
+    let rest = (21.4 - 20.0 * steep) / 70.8;
+    s.ground = local(move |x, _| {
+        let a = x.clamp(0.0, 35.0);
+        let b = (x - 35.0).clamp(0.0, 20.0);
+        let c = (x - 55.0).max(0.0);
+        100.0 + a * rest + b * steep + c * rest
+    });
+    s.cap = 0.5;
+    s.grade = 0.18;
+    match s.run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted, ..
+        } => assert!(!budget_exhausted),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+    s.grade = 0.36;
+    let r = s.route();
+    let p = arrive(&r.points, &*s.ground, &s.band()).unwrap();
+    // The measured earthwork of the straight line is 67.6 m2 (cut 3.62 m); the route may wiggle by 1.7 m inside the
+    // strip of cells the line touches and does so to save earthwork (63.8 m2).
+    assert!(r.earthwork_m2 > 10.0, "{}", r.earthwork_m2);
+    assert!(close(r.earthwork_m2, p.earthwork_m2(), 1e-9));
+    assert!(close(r.cut_max_m, p.cut_max_m(), 1e-9) && r.cut_max_m > 1.0);
+    assert!(close(r.climb_m, 21.4, 0.5), "{}", r.climb_m);
+    assert!(r.planned_grade <= 0.36 && r.planned_grade > 0.2);
+    // the cost counts the real earthwork
+    assert!(
+        r.cost >= r.length_m + 0.99 * r.earthwork_m2,
+        "{} {}",
+        r.cost,
+        r.earthwork_m2
+    );
+}
+
+#[test]
+fn the_same_leg_gives_the_same_route_every_time() {
+    let corner = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
+    let s = Setup::new(
+        anchor(18.0, 0.0, 0.0),
+        anchor(60.0, 42.0, FRAC_PI_2),
+        &corner,
+    );
+    let first = s.route();
+    assert_eq!(first, s.route());
+    for threads in [1, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        let routes: Vec<Route> = pool.install(|| {
+            use rayon::prelude::*;
+            (0..4).into_par_iter().map(|_| s.route()).collect()
+        });
+        for r in routes {
+            assert_eq!(r, first, "{threads} threads");
+        }
+    }
+}
+
+fn is_none(outcome: &LegOutcome) -> Option<(bool, usize)> {
+    match outcome {
+        LegOutcome::NoRoute {
+            budget_exhausted,
+            states,
+            ..
+        } => Some((*budget_exhausted, *states)),
+        LegOutcome::Found(_) => None,
+    }
+}
+
+/// A wall at x = 30.37 (local) between two y values. Not at 30: a crossing exactly at a vertex of a route is not
+/// counted by `cross_point` (it wants both crossings inside their segments), and a route of 2 m samples along the
+/// line has a vertex at every even metre.
+fn stream_between(y0: f64, y1: f64, allowed: usize, anchors: [(f64, f64); 2]) -> Wall {
+    Wall {
+        line: line_at(&[(30.37, y0), (30.37, y1)]),
+        allowed,
+        kind: WallKind::Stream,
+        anchors,
+        end_m: 10.0,
+    }
+}
+
+#[test]
+fn a_stream_the_line_crosses_is_crossed_once() {
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    s.walls = vec![stream_between(
+        -40.0,
+        40.0,
+        1,
+        [at(0.0, 0.0), at(60.0, 0.0)],
+    )];
+    let r = s.route();
+    assert_eq!(s.walls[0].crossings(&r.points), 1);
+}
+
+#[test]
+fn a_stream_the_line_does_not_cross_is_not_crossed() {
+    // the stream ends at y = 3, just beside the line, and the route may not go round the wrong side of its end
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    s.walls = vec![stream_between(3.0, 40.0, 0, [at(0.0, 0.0), at(60.0, 0.0)])];
+    let r = s.route();
+    assert_eq!(s.walls[0].crossings(&r.points), 0);
+    // a stream across the whole box cannot be crossed at all: the open set runs empty
+    s.walls = vec![stream_between(
+        -200.0,
+        200.0,
+        0,
+        [at(0.0, 0.0), at(60.0, 0.0)],
+    )];
+    assert_eq!(is_none(&s.run().unwrap()).map(|n| n.0), Some(false));
+}
+
+#[test]
+fn a_blocked_junction_straight_or_missing_ground_is_no_route_at_once() {
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    s.start.straight_m = 6.25;
+    s.water = water_right_of_3;
+    assert_eq!(is_none(&s.run().unwrap()), Some((false, 0)));
+    // no terrain at the end anchor, and at the start anchor
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    s.ground = Box::new(|p| (p.0 < 150.0).then_some(100.0));
+    assert_eq!(is_none(&s.run().unwrap()), Some((false, 0)));
+    s.ground = Box::new(|p| (p.0 > 120.0).then_some(100.0));
+    assert_eq!(is_none(&s.run().unwrap()), Some((false, 0)));
+}
+
+fn water_right_of_3(p: (f64, f64)) -> bool {
+    p.0 >= SHIFT.0 + 3.0
+}
+
+#[test]
+fn the_limits_of_a_relaxed_search_are_checked() {
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    assert_eq!(s.run_with(Some(&[])).unwrap_err(), RerouteError::Degenerate);
+    assert_eq!(
+        s.run_with(Some(&[0.2, -0.1])).unwrap_err(),
+        RerouteError::Degenerate
+    );
+    assert_eq!(
+        s.run_with(Some(&[f64::NAN])).unwrap_err(),
+        RerouteError::NotFinite
+    );
+    let LegOutcome::Found(r) = s.run_with(Some(&[0.2, 0.3])).unwrap() else {
+        panic!("no route");
+    };
+    assert_eq!(r.relax_steps, 0);
+    // an infinite limit takes the grade off
+    assert!(matches!(
+        s.run_with(Some(&[f64::INFINITY])).unwrap(),
+        LegOutcome::Found(_)
+    ));
+}
+
+type Edit = fn(&mut LegInput<'_>);
+
+#[test]
+fn the_inputs_of_a_leg_are_checked() {
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    let nan = f64::NAN;
+    let not_finite: [Edit; 8] = [
+        |i| i.radius = f64::NAN,
+        |i| i.step_m = f64::INFINITY,
+        |i| i.stray_cap_m = f64::NAN,
+        |i| i.arrive_reach_m = f64::NAN,
+        |i| i.self_along_m = f64::INFINITY,
+        |i| i.weights.stray = f64::NAN,
+        |i| i.start.straight_m = f64::NAN,
+        |i| i.budgets = &[(f64::NAN, 10)],
+    ];
+    for (k, edit) in not_finite.into_iter().enumerate() {
+        assert_eq!(
+            s.run_edited(None, edit).unwrap_err(),
+            RerouteError::NotFinite,
+            "{k}"
+        );
+    }
+    let degenerate: [Edit; 8] = [
+        |i| i.radius = 0.0,
+        |i| i.step_m = -1.0,
+        |i| i.weights.earth = -1.0,
+        |i| i.stray_cap_m = -1.0,
+        |i| i.end.straight_m = -2.0,
+        |i| i.budgets = &[],
+        |i| i.budgets = &[(-1.0, 10)],
+        |i| i.end.at = i.start.at,
+    ];
+    for (k, edit) in degenerate.into_iter().enumerate() {
+        assert_eq!(
+            s.run_edited(None, edit).unwrap_err(),
+            RerouteError::Degenerate,
+            "{k}"
+        );
+    }
+    // a band that is not a band
+    let mut bad = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    bad.band_override = Some(Band {
+        grade: nan,
+        ..s.band()
+    });
+    assert_eq!(bad.run().unwrap_err(), RerouteError::NotFinite);
+    bad.band_override = Some(Band {
+        cut_m: -1.0,
+        ..s.band()
+    });
+    assert_eq!(bad.run().unwrap_err(), RerouteError::Degenerate);
+}
+
+#[test]
+fn a_later_budget_runs_when_the_first_runs_out() {
+    let mut s = hairpin();
+    s.budgets = vec![(1.0, 10), (1.5, 100_000)];
+    let r = s.route();
+    assert!((r.weight - 1.5).abs() < 1e-12);
+    assert!(r.states > 10, "{}", r.states);
+    // an empty open set ends it without trying the next
+    let mut s = hairpin();
+    s.water = water_above_30;
+    s.budgets = vec![(1.0, 100_000), (1.5, 100_000)];
+    let (exhausted, states) = is_none(&s.run().unwrap()).unwrap();
+    assert!(!exhausted);
+    let mut one = hairpin();
+    one.water = water_above_30;
+    one.budgets = vec![(1.0, 100_000)];
+    assert_eq!(is_none(&one.run().unwrap()), Some((false, states)));
+}
+
+#[test]
+fn a_dead_end_behind_the_start_is_reached_by_a_loop_or_not_at_all() {
+    let line = [(0.0, 0.0), (-30.0, 10.0)];
+    let end = Anchor {
+        at: at(-30.0, 10.0),
+        heading: None,
+        straight_m: 0.0,
+    };
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), end, &line);
+    if let LegOutcome::Found(r) = s.run().unwrap() {
+        assert!(tightest(&r.points) >= 9.9);
+        assert!(is_close(*r.points.last().unwrap(), at(-30.0, 10.0), 1e-9));
+    }
+    // straight ahead: the arc through the point is a straight
+    let end = Anchor {
+        at: at(50.0, 0.0),
+        heading: None,
+        straight_m: 0.0,
+    };
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), end, &[(0.0, 0.0), (50.0, 0.0)]);
+    let r = s.route();
+    assert!(close(r.length_m, 50.0, 1e-6), "{}", r.length_m);
+}
+
+#[test]
+fn the_weights_are_the_constants() {
+    let w = Weights::from_params(&RerouteParams::default());
+    assert!(close(w.slope, 4.0, 0.0) && close(w.curve, 0.1, 0.0));
+    assert!(close(w.earth, 1.0, 0.0) && close(w.stray, 0.25, 0.0));
+}
+
+// ---- what every route must satisfy ----
+
+/// A random leg on a random slope with a random lake. Positions are local, in `0..200`.
+fn random_leg(seed: u64) -> Setup {
+    let mut state = seed | 1;
+    let mut pick = |lo: f64, hi: f64| lo + (hi - lo) * unit(&mut state);
+    let start = anchor(pick(10.0, 60.0), pick(10.0, 60.0), pick(0.0, TAU));
+    let mut end = anchor(pick(90.0, 190.0), pick(60.0, 190.0), pick(0.0, TAU));
+    if pick(0.0, 1.0) < 0.25 {
+        end.heading = None;
+    }
+    if pick(0.0, 1.0) < 0.25 {
+        end.straight_m = 0.0;
+    }
+    let (sx, sy) = (pick(-0.3, 0.3), pick(-0.3, 0.3));
+    let line = [
+        (start.at.0 - SHIFT.0, start.at.1 - SHIFT.1),
+        (end.at.0 - SHIFT.0, end.at.1 - SHIFT.1),
+    ];
+    let mut s = Setup::new(start, end, &line);
+    s.ground = local(move |x, y| 100.0 + sx * x + sy * y);
+    s.grade = pick(0.15, 0.4);
+    s.clear = Clearance::new(0.0, 12.5).unwrap();
+    s.budgets = vec![(1.0, 4_000), (2.0, 4_000)];
+    let lake_at = (pick(60.0, 140.0) + SHIFT.0, pick(30.0, 140.0) + SHIFT.1);
+    let size = pick(0.0, 18.0);
+    LAKE.with(|l| l.set((lake_at.0, lake_at.1, size)));
+    s.water = lake_of_the_thread;
+    s
+}
+
+thread_local! {
+    static LAKE: std::cell::Cell<(f64, f64, f64)> = const { std::cell::Cell::new((0.0, 0.0, 0.0)) };
+}
+
+fn lake_of_the_thread(p: (f64, f64)) -> bool {
+    let (x, y, size) = LAKE.with(std::cell::Cell::get);
+    (p.0 - x).abs() <= size && (p.1 - y).abs() <= size
+}
+
+/// Whether a found route holds every promise; `Ok(true)` when there was a route.
+fn check_leg(seed: u64) -> Result<bool, TestCaseError> {
+    let s = random_leg(seed);
+    let LegOutcome::Found(r) = s.run().map_err(|e| TestCaseError::fail(format!("{e}")))? else {
+        return Ok(false);
+    };
+    let o = s.obstacles();
+    prop_assert!(is_close(r.points[0], s.start.at, 1e-9));
+    prop_assert!(is_close(*r.points.last().unwrap(), s.end.at, 1e-9));
+    prop_assert!(tightest(&r.points) >= 9.9, "radius {}", tightest(&r.points));
+    for w in r.points.windows(2) {
+        prop_assert!(o.segment(w[0], w[1], s.clear).is_ok(), "{w:?}");
+    }
+    prop_assert!(r.points.iter().all(|p| o.stray_m(*p) <= s.cap));
+    let profile = arrive(&r.points, &*s.ground, &s.band())
+        .map_err(|e| TestCaseError::fail(format!("profile: {e}")))?;
+    prop_assert!(profile.max_grade() <= s.grade + 1e-9);
+    prop_assert!((r.earthwork_m2 - profile.earthwork_m2()).abs() < 1e-9);
+    prop_assert!(r.planned_grade <= s.grade + 1.0 / r.length_m + 1e-9);
+    prop_assert!(close(length_of(&r.points), r.length_m, 1e-6));
+    let gap = self_gaps(&r.points, s.self_along);
+    prop_assert!(gap >= 12.5 - 1.5, "self gap {gap}");
+    if let (Some(h0), Some(h1), true) = (
+        s.start.heading,
+        s.end.heading,
+        s.start.straight_m == 0.0 && s.end.straight_m == 0.0,
+    ) {
+        let direct = shortest(
+            pose(s.start.at.0, s.start.at.1, h0),
+            pose(s.end.at.0, s.end.at.1, h1),
+        )
+        .length();
+        prop_assert!(r.length_m >= direct - 0.1, "{} {direct}", r.length_m);
+    }
+    Ok(true)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 40,
+        rng_seed: RngSeed::Fixed(0x6e61_7665_735f_3037),
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "tests/proptest-regressions/reroute.txt",
+        ))),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn every_route_found_holds_its_promises(seed in any::<u64>()) {
+        check_leg(seed)?;
+    }
+}
+
+#[test]
+fn the_route_property_is_not_vacuous() {
+    let found = (1..=24_u64)
+        .filter(|&k| check_leg(k.wrapping_mul(0x9e37_79b9_7f4a_7c15)).unwrap())
+        .count();
+    assert!(found >= 8, "{found} of 24");
 }

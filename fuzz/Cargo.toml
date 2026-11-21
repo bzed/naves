@@ -131,3 +131,10 @@ path = "fuzz_targets/reroute_raster.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "reroute_search"
+path = "fuzz_targets/reroute_search.rs"
+test = false
+doc = false
+bench = false

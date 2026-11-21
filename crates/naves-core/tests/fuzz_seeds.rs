@@ -17,6 +17,8 @@ use naves_core::landcover::{GeoWindow, LandCover};
 use naves_core::prefs::Preferences;
 use naves_core::project::Project;
 
+include!("../../../fuzz/case/reroute_search.rs");
+
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fuzz/corpus")
@@ -235,5 +237,21 @@ fn reroute_raster_seeds() {
         let _ = (samples(&road), exempt_samples(&road, &original, 20.0, 10.0));
         let _ = o.water_cap_m();
         let _ = chamfer(&[true, false, true], 3, 1, 2.0);
+    }
+}
+
+#[test]
+fn reroute_search_seeds() {
+    let mut found = std::collections::BTreeMap::new();
+    for (name, data) in seeds("reroute_search") {
+        found.insert(name, reroute_search_case::run(&data));
+    }
+    // the plain legs have a route (twice: the search and the relaxed search, within the tiny budgets of the
+    // target); the bad ones none and no panic
+    for name in ["straight", "dead_ends"] {
+        assert_eq!(found.get(name), Some(&2), "{name}: {found:?}");
+    }
+    for name in ["nan", "huge", "radius_zero", "same_anchor", "short"] {
+        assert_eq!(found.get(name), Some(&0), "{name}: {found:?}");
     }
 }
