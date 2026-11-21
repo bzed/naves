@@ -1760,6 +1760,179 @@ fn a_removal_that_would_cut_a_piece_off_is_refused_as_a_split() {
     assert_eq!(kept_reasons(&kept), ["would_split"], "{kept:?}");
 }
 
+// ---- fix task 6: a joint does not loop back onto its own road, and a dead-end spur goes whole ----
+
+/// A lower road that leaves the node at x = 0, runs away, turns back and runs west 10 m beside the road from x = 45 to
+/// x = -20 (over the node it started from), then leaves to the south.
+fn switchback() -> RoadGraph {
+    build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-50.0, 0.0), (0.0, 0.0), (100.0, 0.0)],
+            Family::Asf3,
+        ),
+        plain(
+            2,
+            &[2, 5, 6, 7, 8],
+            &[
+                (0.0, 0.0),
+                (40.0, -50.0),
+                (45.0, -10.0),
+                (-20.0, -10.0),
+                (-20.0, -60.0),
+            ],
+            Family::Grav,
+        ),
+    ])
+}
+
+#[test]
+fn a_joint_that_would_land_on_the_start_of_its_own_stretch_leaves_the_run_in_place_as_loops_back() {
+    let g = switchback();
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0), "{dropped:?}");
+    assert_eq!(kept_reasons(&kept), ["loops_back"], "{kept:?}");
+    assert_eq!(components(&out), components(&g));
+}
+
+/// A main road along y = 0, a City road along y = 23 with a node at x = 0, and a dead-end side street that leaves that
+/// node, turns after 15 m and runs 100 m beside the main road at 8 m. Its far end joins `joined` if given.
+fn side_street(joined: Option<Feature>) -> RoadGraph {
+    let mut features = vec![
+        plain(1, &[1, 2], &[(-50.0, 0.0), (150.0, 0.0)], Family::Asf1),
+        plain(
+            3,
+            &[10, 11, 12],
+            &[(-60.0, 23.0), (0.0, 23.0), (60.0, 23.0)],
+            Family::City,
+        ),
+        plain(
+            2,
+            &[11, 20, 21],
+            &[(0.0, 23.0), (0.0, 8.0), (100.0, 8.0)],
+            Family::City,
+        ),
+    ];
+    features.extend(joined);
+    build_graph(&features)
+}
+
+fn end_nodes(g: &RoadGraph) -> std::collections::BTreeSet<i64> {
+    g.stretches.iter().flat_map(|s| [s.start, s.end]).collect()
+}
+
+#[test]
+fn a_dead_end_side_street_beside_the_road_goes_whole_without_a_joint() {
+    let g = side_street(None);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(kept.len(), 0, "{kept:?}");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    let d = &dropped[0];
+    assert!(d.from_m.abs() < 1e-9, "{d:?}");
+    assert!((d.to_m - 115.0).abs() < 1e-6, "{d:?}");
+    assert_eq!(d.connectors.len(), 0);
+    let expected: Vec<_> = g
+        .stretches
+        .iter()
+        .filter(|s| !s.id.starts_with("2:"))
+        .collect();
+    assert_eq!(
+        out.stretches.len(),
+        expected.len(),
+        "{:?}",
+        stretch_ids(&out)
+    );
+    for (a, b) in out.stretches.iter().zip(expected) {
+        assert_eq!((&a.id, &a.points), (&b.id, &b.points));
+    }
+    // the junction on the road is not made: the nodes are those of the graph without the spur's own end
+    assert_eq!(end_nodes(&out).len(), end_nodes(&g).len() - 1);
+}
+
+#[test]
+fn a_dead_end_side_street_that_ends_a_few_metres_beyond_the_road_goes_whole_too() {
+    // the road ends at x = 100 and the street runs on to x = 110, past the end of the road
+    let g = build_graph(&[
+        plain(1, &[1, 2], &[(-50.0, 0.0), (100.0, 0.0)], Family::Asf1),
+        plain(
+            3,
+            &[10, 11, 12],
+            &[(-60.0, 23.0), (0.0, 23.0), (60.0, 23.0)],
+            Family::City,
+        ),
+        plain(
+            2,
+            &[11, 20, 21],
+            &[(0.0, 23.0), (0.0, 8.0), (110.0, 8.0)],
+            Family::City,
+        ),
+    ]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((dropped.len(), kept.len()), (1, 0), "{dropped:?} {kept:?}");
+    assert!(dropped[0].from_m.abs() < 1e-9, "{dropped:?}");
+    assert!(
+        out.stretches.iter().all(|s| !s.id.starts_with("2:")),
+        "{:?}",
+        stretch_ids(&out)
+    );
+    assert_eq!(end_nodes(&out).len(), end_nodes(&g).len() - 1);
+}
+
+#[test]
+fn a_side_street_whose_far_end_joins_another_road_keeps_its_rest_and_is_joined_to_the_road() {
+    let g = side_street(Some(plain(
+        4,
+        &[21, 30],
+        &[(100.0, 8.0), (100.0, 60.0)],
+        Family::City,
+    )));
+    let (out, dropped, _) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    // the 9 m rest at the junction stays and the new junction on the road is a node more than before
+    assert!(
+        out.stretches.iter().any(|s| s.id.starts_with("2:")),
+        "{:?}",
+        stretch_ids(&out)
+    );
+    assert!(
+        end_nodes(&out).len() >= end_nodes(&g).len(),
+        "{:?}",
+        end_nodes(&out)
+    );
+}
+
+#[test]
+fn a_joint_that_lands_on_a_node_of_the_road_is_still_made() {
+    // the road has a junction at x = 0, where the rest of the track meets it
+    let road = plain(
+        1,
+        &[1, 2, 3],
+        &[(-50.0, 0.0), (0.0, 0.0), (150.0, 0.0)],
+        Family::Asf3,
+    );
+    let side = plain(
+        2,
+        &[5, 7, 6],
+        &[(0.0, 30.0), (0.0, 5.0), (150.0, 5.0)],
+        Family::Grav,
+    );
+    let junction = plain(8, &[2, 9], &[(0.0, 0.0), (0.0, -30.0)], Family::Asf3);
+    let g = build_graph(&[road, side, junction]);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((dropped.len(), kept.len()), (1, 0), "{dropped:?} {kept:?}");
+    let head = out
+        .stretches
+        .iter()
+        .find(|s| s.id == "2:5-6")
+        .expect("head");
+    assert!(
+        head.points.first() == Some(&(0.0, 0.0)) || head.points.last() == Some(&(0.0, 0.0)),
+        "{:?}",
+        head.points
+    );
+}
+
 // ---- fix round 3: the spacing of junctions on the road ----
 
 /// A main road of 200 m with a joining road coming down to a track at `x`.

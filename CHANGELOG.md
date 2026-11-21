@@ -34,7 +34,9 @@ All notable changes to this project are documented here. The format follows
   road within 12.5 m (a junction piece), keep new nodes 12.5 m apart and keep 12.5 m off the end of a bridge (a road piece shorter than 25 m between two
   bridges or tunnels is not joined). A road that merely ends at a removed track is joined to the
   road, a junction approach with a short parallel tail is not a sidepath (the 30 m must be met along the road), and a
-  refused split is reported as `would_split`.
+  refused split is reported as `would_split`. A joint is never made onto the end node of the run's own stretch that the
+  run does not reach (the lower leg of a switchback stays, reported as `loops_back`), and a dead-end side street goes
+  whole instead of leaving a short rest joined to the road.
 - The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four
   steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
   roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
