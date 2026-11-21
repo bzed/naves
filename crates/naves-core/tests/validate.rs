@@ -552,6 +552,7 @@ fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place(
         max_inward_m: 0.0,
         reached: !plate,
         plate_candidate: plate,
+        blocked_by_water: false,
     };
     let mut n = net(vec![]);
     n.smooth = Some(SmoothReport {
@@ -567,9 +568,18 @@ fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place(
             zone((3.0, 4.0), 12.0, 0.0, true),
             // a zone that did not move is no finding
             zone((5.0, 6.0), 25.0, 0.0, false),
+            // a zone that widening would have put in water stays as drawn: it is too tight too
+            {
+                let mut z = zone((7.0, 8.0), 25.0, 0.0, false);
+                z.blocked_by_water = true;
+                z
+            },
         ],
         max_outward_m: 3.5,
         widen_failed: Vec::new(),
+        points_before: 0,
+        points_fitted: 0,
+        points_after: 0,
     });
     let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     let widened = only(Rule::RoadCurveWidened, &v);
@@ -581,7 +591,9 @@ fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place(
         widened[0].message
     );
     let tight = only(Rule::RoadCurveTooTight, &v);
-    assert_eq!(tight.len(), 1);
+    assert_eq!(tight.len(), 2);
+    assert_eq!(tight[1].at, (7.0, 8.0));
+    assert!(tight[1].message.contains("water"), "{}", tight[1].message);
     assert_eq!(tight[0].at, (3.0, 4.0));
     assert!(
         tight[0].message.contains("12.0") && tight[0].message.contains("25.0"),

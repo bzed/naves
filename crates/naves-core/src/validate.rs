@@ -320,15 +320,57 @@ pub(crate) fn outer_bounds(polygon: &LandPolygon) -> Bounds {
 /// Whether a position lies in one of the lakes, each given with the box around its outer ring: a position
 /// outside the box is not in the lake, which spares the walk over the ring.
 pub(crate) fn in_water(water: &[(Bounds, &LandPolygon)], lat: f64, lon: f64) -> bool {
-    water.iter().any(|((lat0, lat1, lon0, lon1), polygon)| {
-        (*lat0..=*lat1).contains(&lat)
-            && (*lon0..=*lon1).contains(&lon)
-            && ring_contains(&polygon.outer, (lat, lon))
-            && !polygon
-                .holes
-                .iter()
-                .any(|hole| ring_contains(hole, (lat, lon)))
-    })
+    water
+        .iter()
+        .any(|(bounds, polygon)| in_area(bounds, polygon, lat, lon))
+}
+
+/// Whether a position lies in one area, given the box around its outer ring.
+fn in_area(bounds: &Bounds, polygon: &LandPolygon, lat: f64, lon: f64) -> bool {
+    let (lat0, lat1, lon0, lon1) = *bounds;
+    (lat0..=lat1).contains(&lat)
+        && (lon0..=lon1).contains(&lon)
+        && ring_contains(&polygon.outer, (lat, lon))
+        && !polygon
+            .holes
+            .iter()
+            .any(|hole| ring_contains(hole, (lat, lon)))
+}
+
+/// A test "is this point of the map in water" with the rule of `road_in_water` (the areas of
+/// `WATER_PRIORITY` (3), their holes left out), for the smoothing of the road lines. The areas are turned into map
+/// metres once, so the test can be shared between threads, which a [`MapGeo`] cannot. A ring that cannot be
+/// projected is left out.
+pub fn water_test(
+    water: &[LandPolygon],
+    frame: &MapGeo,
+) -> impl Fn((f64, f64)) -> bool + Sync + use<> {
+    let to_map = |ring: &[(f64, f64)]| -> Option<Vec<(f64, f64)>> {
+        ring.iter()
+            .map(|&(lat, lon)| frame.to_map(lat, lon).ok())
+            .collect()
+    };
+    // the "lat" of a position is its x and the "lon" its y: the ring walk does not care
+    let areas: Vec<(Bounds, LandPolygon)> = water
+        .iter()
+        .filter(|p| p.priority == WATER_PRIORITY)
+        .filter_map(|p| {
+            let outer = to_map(&p.outer)?;
+            let holes = p.holes.iter().filter_map(|h| to_map(h)).collect();
+            let area = LandPolygon {
+                class: p.class,
+                priority: p.priority,
+                outer,
+                holes,
+            };
+            Some((outer_bounds(&area), area))
+        })
+        .collect();
+    move |(x, y)| {
+        areas
+            .iter()
+            .any(|(bounds, polygon)| in_area(bounds, polygon, x, y))
+    }
 }
 
 /// The road pieces that stand in water (bridges may).
@@ -457,7 +499,16 @@ fn smooth_violations(smooth: Option<&SmoothReport>) -> Vec<Violation> {
     let mut out = Vec::new();
     for z in &smooth.zones {
         let road = z.stretches.join(", ");
-        if z.plate_candidate {
+        if z.blocked_by_water {
+            out.push(violation(
+                Rule::RoadCurveTooTight,
+                z.at,
+                format!(
+                    "The curve of {road} was left as drawn: widening it would put the road in water (radius {:.1} m, {:.1} m wanted)",
+                    z.radius_before_m, z.radius_wanted_m
+                ),
+            ));
+        } else if z.plate_candidate {
             out.push(violation(
                 Rule::RoadCurveTooTight,
                 z.at,

@@ -15,6 +15,15 @@ use naves_core::smooth::{
 
 type P = (f64, f64);
 
+/// The settings of the build, but with every sample kept: these tests look at single samples (the drop of
+/// collinear samples has its own tests in `smooth_tuning.rs`).
+fn no_drop() -> SmoothParams {
+    SmoothParams {
+        simplify: 0.0,
+        ..SmoothParams::default()
+    }
+}
+
 fn samples(points: &[P], fixed: &[usize]) -> Vec<Sample> {
     points
         .iter()
@@ -62,7 +71,7 @@ fn within_corridor(input: &[P], output: &[P]) {
 #[test]
 fn a_straight_line_stays_where_it_is() {
     let line: Vec<P> = (0..50).map(|i| (f64::from(i) * 2.0, 3.0)).collect();
-    let out = smooth_line(&samples(&line, &[]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[]), &no_drop()).unwrap();
     for (a, b) in line.iter().zip(&out) {
         assert!(dist(*a, *b) < 1e-6, "{a:?} -> {b:?}");
     }
@@ -72,7 +81,7 @@ fn a_straight_line_stays_where_it_is() {
 fn a_corner_is_rounded_inside_the_corridor() {
     let line = an_l();
     let last = line.len() - 1;
-    let out = smooth_line(&samples(&line, &[0, last]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[0, last]), &no_drop()).unwrap();
     within_corridor(&line, &out);
     // These thresholds are what the spec's model gives with W_STAY = 0.02 (measured: 25.3 degrees, 3.75 m); the
     // corner sample moves about 0.9 m, so the corridor is not reached.
@@ -87,7 +96,7 @@ fn a_corner_is_rounded_inside_the_corridor() {
 fn fixed_samples_do_not_move() {
     let line = an_l();
     let last = line.len() - 1;
-    let out = smooth_line(&samples(&line, &[0, 1, last]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[0, 1, last]), &no_drop()).unwrap();
     for i in [0, 1, last] {
         assert_eq!(out[i].0.to_bits(), line[i].0.to_bits());
         assert_eq!(out[i].1.to_bits(), line[i].1.to_bits());
@@ -116,7 +125,7 @@ fn a_curve_drawn_as_short_segments_becomes_even() {
     points.push(at(total));
     let line = resample(&points, 2.0);
     let last = line.len() - 1;
-    let out = smooth_line(&samples(&line, &[0, last]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[0, last]), &no_drop()).unwrap();
     let unevenness = |l: &[P]| {
         let t = turns(l);
         t.windows(2)
@@ -139,7 +148,7 @@ fn a_switchback_stays_a_switchback() {
     points.push((0.0, 8.0));
     let line = resample(&points, 2.0);
     let last = line.len() - 1;
-    let out = smooth_line(&samples(&line, &[0, last]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[0, last]), &no_drop()).unwrap();
     within_corridor(&line, &out);
     let total: f64 = turns(&out).iter().sum();
     assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
@@ -195,7 +204,7 @@ fn stiff_samples_stay_straighter() {
         for sample in &mut s[from..to] {
             sample.stiffness = stiffness;
         }
-        let out = smooth_line(&s, &SmoothParams::default()).unwrap();
+        let out = smooth_line(&s, &no_drop()).unwrap();
         // turns() entry k belongs to point k + 1
         turns(&out)[from - 1..to - 1]
             .iter()
@@ -233,6 +242,7 @@ fn degenerate_input_is_an_error_not_a_panic() {
     let bad = SmoothParams {
         corridor: -1.0,
         stay: 0.02,
+        simplify: 0.0,
     };
     let result = smooth_line(&samples(&line, &[]), &bad);
     assert!(matches!(result, Err(SmoothError::NotFinite)), "{result:?}");
@@ -275,8 +285,8 @@ fn the_same_input_gives_the_same_bytes() {
     let line = an_l();
     let last = line.len() - 1;
     let s = samples(&line, &[0, last]);
-    let a = smooth_line(&s, &SmoothParams::default()).unwrap();
-    let b = smooth_line(&s, &SmoothParams::default()).unwrap();
+    let a = smooth_line(&s, &no_drop()).unwrap();
+    let b = smooth_line(&s, &no_drop()).unwrap();
     for (x, y) in a.iter().zip(&b) {
         assert_eq!(x.0.to_bits(), y.0.to_bits());
         assert_eq!(x.1.to_bits(), y.1.to_bits());
@@ -292,7 +302,7 @@ fn a_length_that_overflows_comes_back_unchanged() {
 #[test]
 fn a_sample_between_two_equal_neighbours_stays_where_it_is() {
     let line = [(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)];
-    let out = smooth_line(&samples(&line, &[]), &SmoothParams::default()).unwrap();
+    let out = smooth_line(&samples(&line, &[]), &no_drop()).unwrap();
     assert_eq!(out.len(), 3);
     assert_eq!(out[1].0.to_bits(), 1.0_f64.to_bits());
     assert_eq!(out[1].1.to_bits(), 0.0_f64.to_bits());
@@ -305,7 +315,7 @@ fn stiffness_belongs_to_the_centre_sample() {
     let run = |at: usize, stiffness: f64| {
         let mut s = samples(&line, &[0, last]);
         s[at].stiffness = stiffness;
-        smooth_line(&s, &SmoothParams::default()).unwrap()
+        smooth_line(&s, &no_drop()).unwrap()
     };
     let bits =
         |l: &[P]| -> Vec<(u64, u64)> { l.iter().map(|p| (p.0.to_bits(), p.1.to_bits())).collect() };
@@ -365,7 +375,7 @@ fn ten(_: &Stretch) -> f64 {
 
 /// The fit alone (the widening has its own tests below).
 fn run(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
-    smooth_graph_fit_only(g, &ten, &SmoothParams::default())
+    smooth_graph_fit_only(g, &ten, &no_drop())
 }
 
 fn bits(p: P) -> (u64, u64) {
@@ -769,11 +779,11 @@ fn the_widening_constants_are_the_specs() {
 }
 
 fn widen_run(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
-    smooth_graph(g, &ten, &SmoothParams::default())
+    smooth_graph(g, &ten, &no_drop())
 }
 
 fn fit_only(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
-    smooth_graph_fit_only(g, &ten, &SmoothParams::default())
+    smooth_graph_fit_only(g, &ten, &no_drop())
 }
 
 /// Two legs `gap` m apart, 80 m long, joined by a half circle of radius `gap / 2` (left turning); for a gap of
@@ -1081,19 +1091,20 @@ fn a_junction_in_the_bend_holds_it_and_the_zone_is_reported() {
     assert_eq!(bits(*out.stretches[0].points.last().unwrap()), bits(node));
     assert_eq!(bits(out.stretches[1].points[0]), bits(node));
     assert_eq!(bits(out.stretches[2].points[0]), bits(node));
-    // the sample next to the junction is held, and every stretch is what the fit gives
+    // the sample next to the junction is held: it is the fit's. The zone itself goes back to the original line, not
+    // to the fit (see `smooth_tuning.rs`), so the stretches are no longer what the fit gives
     let next = out.stretches[0].points.len() - 2;
     assert_eq!(
         bits(out.stretches[0].points[next]),
         bits(fit.stretches[0].points[next])
     );
-    assert_eq!(
+    assert_ne!(
         format!("{:?}", out.stretches),
         format!("{:?}", fit.stretches)
     );
     assert!(near(report.max_outward_m, 0.0, 0.0));
     assert!(report.max_move_m <= CORRIDOR_M + 1e-6);
-    assert!(near(report.max_move_m, fit_report.max_move_m, 0.0));
+    assert!(report.max_move_m <= fit_report.max_move_m + 1e-9);
     assert!(
         report
             .per_stretch
@@ -1120,11 +1131,20 @@ fn a_bridge_in_a_zone_keeps_its_ends() {
     assert_eq!(bits(out.stretches[1].points[0]), bits(n1));
     assert_eq!(bits(*out.stretches[1].points.last().unwrap()), bits(n2));
     assert_eq!(bits(out.stretches[2].points[0]), bits(n2));
-    // the zone widens the approaches, the deck does not bend
-    let (fit, _) = fit_only(&g);
-    let deck: Vec<(u64, u64)> = out.stretches[1].points.iter().map(|p| bits(*p)).collect();
-    let fit_deck: Vec<(u64, u64)> = fit.stretches[1].points.iter().map(|p| bits(*p)).collect();
-    assert_eq!(deck, fit_deck);
+    // the zone widens the approaches, the deck does not bend: the zone could not be widened (the corner is held
+    // by the bridge), so it went back to the original line, and the deck is the straight line it was drawn as, up
+    // to the fit's offset where the zone ends, which is blended in
+    assert!(
+        report.zones.iter().all(|z| z.plate_candidate),
+        "{:?}",
+        report.zones
+    );
+    assert!(
+        out.stretches[1]
+            .points
+            .iter()
+            .all(|p| near(p.0, 60.0, 0.05))
+    );
 }
 
 #[test]
@@ -1204,9 +1224,9 @@ fn a_zone_with_a_nan_or_zero_minimum_is_skipped() {
     let g = graph(vec![stretch("h", 1, 2, &hairpin_points())]);
     for value in [f64::NAN, 0.0, f64::INFINITY, -3.0] {
         let wanted = move |_: &Stretch| value;
-        let (out, report) = smooth_graph(&g, &wanted, &SmoothParams::default());
+        let (out, report) = smooth_graph(&g, &wanted, &no_drop());
         assert!(report.zones.is_empty(), "{value}: {:?}", report.zones);
-        let (fit, _) = smooth_graph_fit_only(&g, &wanted, &SmoothParams::default());
+        let (fit, _) = smooth_graph_fit_only(&g, &wanted, &no_drop());
         assert_eq!(format!("{out:?}"), format!("{fit:?}"), "{value}");
     }
 }
@@ -1221,8 +1241,8 @@ fn a_widening_the_solver_cannot_take_keeps_the_fit_and_is_reported() {
         &[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)],
     )]);
     let huge = |_: &Stretch| 1e16;
-    let (out, report) = smooth_graph(&g, &huge, &SmoothParams::default());
-    let (fit, _) = smooth_graph_fit_only(&g, &huge, &SmoothParams::default());
+    let (out, report) = smooth_graph(&g, &huge, &no_drop());
+    let (fit, _) = smooth_graph_fit_only(&g, &huge, &no_drop());
     assert_eq!(report.widen_failed.len(), 1, "{:?}", report.widen_failed);
     assert_eq!(report.widen_failed[0].0, "l");
     assert!(report.kept.is_empty(), "{:?}", report.kept);

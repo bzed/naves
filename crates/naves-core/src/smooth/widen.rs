@@ -44,8 +44,8 @@ use std::f64::consts::TAU;
 
 use super::{
     BRIDGE_STRAIGHT_WEIGHT, SAMPLE_M, SmoothError, W_STAY, WIDEN_DIRECTIONS, WIDEN_INWARD_MAX_DEG,
-    WIDEN_KEEP_FRACTION, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH, WIDEN_SLACK_COST, normals,
-    radius_at, resample, sample_minimum,
+    WIDEN_KEEP_FRACTION, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH, WIDEN_REVERT_BLEND_M,
+    WIDEN_SLACK_COST, normals, radius_at, resample, sample_minimum,
 };
 use crate::qp::{Problem, Row, solve};
 
@@ -74,6 +74,10 @@ pub(super) struct ChainLine<'a> {
     pub link_bridge: &'a [bool],
     /// Whether a sample of the fitted line may move when it lies in a zone.
     pub movable: &'a [bool],
+    /// The original line resampled: the samples the fit started from, index for index with `fitted`.
+    pub resampled: &'a [P],
+    /// Whether a point lies in water.
+    pub in_water: super::WaterTest<'a>,
 }
 
 /// What widening a chain gives.
@@ -620,14 +624,24 @@ fn finish(c: &ChainLine<'_>, st: State, error: Option<SmoothError>) -> Outcome {
         }
     }
     let mut st = st;
+    if judged {
+        // a widened line that is in water where the original line is not goes back, like a plate candidate
+        for z in &mut zones {
+            z.blocked_by_water = !z.plate_candidate && enters_water(c, &st, z.range);
+            if z.blocked_by_water {
+                z.reached = false;
+            }
+        }
+    }
+    let goes_back = |z: &ZoneFigures| z.plate_candidate || z.blocked_by_water;
     let reverted: Vec<(usize, usize)> = zones
         .iter()
-        .filter(|z| z.plate_candidate)
+        .filter(|z| goes_back(z))
         .map(|z| z.range)
         .collect();
     if !reverted.is_empty() {
         st = revert(c, &st, &reverted);
-        for z in zones.iter_mut().filter(|z| z.plate_candidate) {
+        for z in zones.iter_mut().filter(|z| goes_back(z)) {
             z.max_outward = 0.0;
             z.max_inward = 0.0;
         }
@@ -644,8 +658,86 @@ fn finish(c: &ChainLine<'_>, st: State, error: Option<SmoothError>) -> Outcome {
     }
 }
 
-/// The state with the zones `ranges` (inclusive sample ranges) put back to the fitted samples they grew from:
-/// the samples on both sides of a zone are held, so they are the fit's and the result is seamless.
+/// Whether a sample of the zone `range` of the widened line lies in water where the nearest point of the
+/// original line does not.
+fn enters_water(c: &ChainLine<'_>, st: &State, range: (usize, usize)) -> bool {
+    st.line
+        .get(range.0..=range.1)
+        .into_iter()
+        .flatten()
+        .any(|&p| (c.in_water)(p) && !(c.in_water)(nearest(c.original, p)))
+}
+
+/// The cumulative length of `line` at every sample.
+fn arc_lengths(line: &[P]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(line.len());
+    let mut total = 0.0;
+    let mut previous: Option<P> = None;
+    for p in line {
+        if let Some(q) = previous {
+            total += (p.0 - q.0).hypot(p.1 - q.1);
+        }
+        out.push(total);
+        previous = Some(*p);
+    }
+    out
+}
+
+/// The samples `start..end` of a zone that goes back: the original resampled line, with the fit's offset from it
+/// at the held sample before and the one after taken up linearly over [`WIDEN_REVERT_BLEND_M`] of the zone at
+/// each end (a zone shorter than twice that blends over half its length), so that the line has no step. The
+/// fitted samples are the fallback where the original is not there.
+fn reverted_samples(c: &ChainLine<'_>, start: usize, end: usize) -> Vec<P> {
+    let offset = |k: Option<usize>| -> P {
+        match k.and_then(|k| Some((c.fitted.get(k)?, c.resampled.get(k)?))) {
+            Some((fit, original)) => (fit.0 - original.0, fit.1 - original.1),
+            None => (0.0, 0.0),
+        }
+    };
+    let before = start.checked_sub(1);
+    let after = (end < c.fitted.len()).then_some(end);
+    let (a_off, b_off) = (offset(before), offset(after));
+    let arc = arc_lengths(c.resampled);
+    let at = |k: usize| arc.get(k).copied().unwrap_or(0.0);
+    let from = before.map_or(at(start), at);
+    let to = if after.is_some() {
+        at(end)
+    } else {
+        at(end.saturating_sub(1))
+    };
+    let blend = WIDEN_REVERT_BLEND_M.min((to - from) / 2.0);
+    (start..end)
+        .map(|k| {
+            let Some(original) = c.resampled.get(k).copied() else {
+                return c.fitted.get(k).copied().unwrap_or_default();
+            };
+            let weight = |distance: f64| {
+                if blend > 0.0 {
+                    (1.0 - distance / blend).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            let wa = if before.is_some() {
+                weight(at(k) - from)
+            } else {
+                0.0
+            };
+            let wb = if after.is_some() {
+                weight(to - at(k))
+            } else {
+                0.0
+            };
+            (
+                original.0 + a_off.0 * wa + b_off.0 * wb,
+                original.1 + a_off.1 * wa + b_off.1 * wb,
+            )
+        })
+        .collect()
+}
+
+/// The state with the zones `ranges` (inclusive sample ranges) put back to the original line they grew from,
+/// blended into the held samples on both sides of the zone, which are the fit's (see [`reverted_samples`]).
 fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
     let n = st.line.len();
     let mut out = State {
@@ -681,8 +773,8 @@ fn revert(c: &ChainLine<'_>, st: &State, ranges: &[(usize, usize)]) -> State {
     let mut i = 0;
     while i < n {
         if let Some(&(_, hi, start, end)) = spans.iter().find(|s| s.0 == i) {
-            for k in start..end {
-                out.line.push(c.fitted.get(k).copied().unwrap_or_default());
+            for (k, p) in (start..end).zip(reverted_samples(c, start, end)) {
+                out.line.push(p);
                 out.mask.push(false);
                 out.side.push(1.0);
                 out.inward.push(0.0);
@@ -786,6 +878,8 @@ pub(super) struct ZoneFigures {
     pub max_inward: f64,
     pub reached: bool,
     pub plate_candidate: bool,
+    /// The widened line enters water: the zone goes back like a plate candidate.
+    pub blocked_by_water: bool,
 }
 
 fn radius_of(points: &[P], index: usize) -> f64 {
@@ -877,6 +971,7 @@ fn zone_figures(chain: &ChainLine<'_>, st: &State, judge: bool) -> Vec<ZoneFigur
             max_inward: moves.iter().map(|m| -m).fold(0.0, f64::max),
             reached,
             plate_candidate: judge && verdict(radius_after, wanted, reached) == Verdict::Revert,
+            blocked_by_water: false,
         });
     }
     out

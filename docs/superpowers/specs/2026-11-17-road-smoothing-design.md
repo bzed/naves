@@ -219,6 +219,16 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 | `WIDEN_KEEP_FRACTION` | 0.9 | a zone below this fraction of the wanted radius goes back to the fit |
 | `MAX_CHAIN_SAMPLES` | 200 000 | a longer chain is neither fitted nor widened |
 
+## Tuning round 1
+
+Four rules, each from the first map run. (1) After the stage, a point whose removal moves the line by less than
+`SIMPLIFY_TOL_M` (0.05 m) is dropped (Ramer-Douglas-Peucker; ends stay); the figures are those before the drop.
+(2) A zone below `WIDEN_KEEP_FRACTION` goes back to the resampled original line, not to the fit (the fit had pulled
+the bend tighter than drawn), with the fit's offset at the two held samples blended out over `WIDEN_REVERT_BLEND_M`
+(6 m) of the zone. (3) A zone whose widened line has a sample in water where the original line has none goes back the
+same way and is flagged `blocked_by_water` (the water is that of `road_in_water`). (4) Zone samples within
+`WIDEN_BRIDGE_HOLD_M` (25 m) of a bridge end are held in the widening.
+
 ## How it is judged
 
 Berchtesgaden at terrain size 2048, before against after, one run each:

@@ -685,6 +685,7 @@ fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
                 "max_inward_m": z.max_inward_m,
                 "reached": z.reached,
                 "plate_candidate": z.plate_candidate,
+                "blocked_by_water": z.blocked_by_water,
             })
         })
         .collect();
@@ -693,7 +694,11 @@ fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
         .iter()
         .map(|(stretch, reason)| serde_json::json!({ "stretch": stretch, "reason": reason }))
         .collect();
-    let widen_failed: Vec<&String> = s.widen_failed.iter().map(|(stretch, _)| stretch).collect();
+    let widen_failed: Vec<serde_json::Value> = s
+        .widen_failed
+        .iter()
+        .map(|(stretch, reason)| serde_json::json!({ "stretch": stretch, "reason": reason }))
+        .collect();
     serde_json::json!({
         "enabled": true,
         "chains": s.chains,
@@ -702,6 +707,9 @@ fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
         "tight_before_m": s.tight_before_m,
         "tight_after_m": s.tight_after_m,
         "skipped_short": s.skipped_short,
+        "points_before": s.points_before,
+        "points_fitted": s.points_fitted,
+        "points_after": s.points_after,
         "kept": kept,
         "widen_failed": widen_failed,
         "zones": zones,
@@ -985,4 +993,47 @@ pub fn build(
         bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
         smoothing: generated.smooth.as_ref().map(SmoothReport::summary),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use naves_core::smooth::WidenedZone;
+
+    #[test]
+    fn a_failed_widening_keeps_its_reason_in_the_report() {
+        let report = SmoothReport {
+            chains: 1,
+            kept: vec![("k".to_string(), "too long".to_string())],
+            skipped_short: 0,
+            max_move_m: 0.0,
+            tight_before_m: 0.0,
+            tight_after_m: 0.0,
+            per_stretch: Vec::new(),
+            zones: vec![WidenedZone {
+                at: (1.0, 2.0),
+                stretches: vec!["s".to_string()],
+                radius_before_m: 1.0,
+                radius_after_m: 1.0,
+                radius_wanted_m: 10.0,
+                max_outward_m: 0.0,
+                max_inward_m: 0.0,
+                reached: false,
+                plate_candidate: false,
+                blocked_by_water: true,
+            }],
+            max_outward_m: 0.0,
+            widen_failed: vec![("s".to_string(), "the solver gave up".to_string())],
+            points_before: 10,
+            points_fitted: 8,
+            points_after: 4,
+        };
+        let json = smoothing_json(Some(&report));
+        assert_eq!(json["widen_failed"][0]["stretch"], "s");
+        assert_eq!(json["widen_failed"][0]["reason"], "the solver gave up");
+        assert_eq!(json["kept"][0]["reason"], "too long");
+        assert_eq!(json["zones"][0]["blocked_by_water"], true);
+        assert_eq!(json["points_after"], 4);
+        assert_eq!(smoothing_json(None)["enabled"], false);
+    }
 }

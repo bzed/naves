@@ -37,9 +37,11 @@ use naves_core::roadnet::{
 };
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, longest_bridge, place_network};
 use naves_core::sideslope::side_slopes;
-use naves_core::smooth::{SMOOTH_ENABLED, SmoothParams, SmoothReport, min_radius, smooth_graph};
+use naves_core::smooth::{
+    SMOOTH_ENABLED, SmoothParams, SmoothReport, WaterTest, min_radius, smooth_graph_in_water,
+};
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
-use naves_core::validate::{Violation, check_roads};
+use naves_core::validate::{Violation, check_roads, water_test};
 use serde::Serialize;
 
 use crate::build::BuildError;
@@ -216,15 +218,25 @@ pub struct FittedGraph {
     pub clean: CleanReport,
     /// What the smoothing of the graph did; `None` when the stage is off ([`SMOOTH_ENABLED`]).
     pub smooth: Option<SmoothReport>,
+    /// How long the smoothing took (zero when the stage is off); a measurement, not part of any output.
+    pub smooth_time: std::time::Duration,
     /// What every OpenStreetMap bridge was built from, and why.
     pub bridges: Vec<BridgeFit>,
 }
 
 /// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, the graph
-/// cleaned ([`netclean::clean`]), smoothed ([`smooth_graph`], unless [`SMOOTH_ENABLED`] is off) and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
+/// cleaned ([`netclean::clean`]), smoothed ([`smooth_graph_in_water`], unless [`SMOOTH_ENABLED`] is off) and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
 #[must_use]
-pub fn fitted_graph(features: &[Feature], catalog: &PieceCatalog, base: &Heightmap) -> FittedGraph {
-    fitted_graph_with(features, catalog, base, SMOOTH_ENABLED)
+///
+/// `in_water` tells whether a point of the map is in water: the smoothing does not widen a curve into it (see
+/// [`naves_core::validate::water_test`]).
+pub fn fitted_graph(
+    features: &[Feature],
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+    in_water: WaterTest<'_>,
+) -> FittedGraph {
+    fitted_graph_with(features, catalog, base, SMOOTH_ENABLED, in_water)
 }
 
 /// [`fitted_graph`] with the smoothing stage switched on or off: off, the graph is the cleaned graph with the
@@ -235,6 +247,7 @@ pub fn fitted_graph_with(
     catalog: &PieceCatalog,
     base: &Heightmap,
     smooth: bool,
+    in_water: WaterTest<'_>,
 ) -> FittedGraph {
     // a roundabout smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of its surface is a plain crossing
     let (flat, roundabouts) =
@@ -244,15 +257,18 @@ pub fn fitted_graph_with(
         netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
     clean.roundabouts = roundabouts;
     // a family without a curve piece has nothing that counts as tight
+    let started = std::time::Instant::now();
     let (built, smooth) = if smooth {
         let radius = |s: &naves_core::roadnet::Stretch| {
             min_radius(catalog, s.family).unwrap_or(f64::INFINITY)
         };
-        let (smoothed, report) = smooth_graph(&built, &radius, &SmoothParams::default());
+        let (smoothed, report) =
+            smooth_graph_in_water(&built, &radius, in_water, &SmoothParams::default());
         (smoothed, Some(report))
     } else {
         (built, None)
     };
+    let smooth_time = started.elapsed();
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
     let (graph, bridges) = fit_bridges(&built, &|site| choose(catalog, site), &ground);
     FittedGraph {
@@ -261,6 +277,7 @@ pub fn fitted_graph_with(
         duplicates,
         clean,
         smooth,
+        smooth_time,
         bridges,
     }
 }
@@ -308,9 +325,13 @@ pub fn plan_roads(
         duplicates,
         clean,
         smooth,
+        smooth_time,
         bridges,
         ..
-    } = fitted_graph(features, catalog, base);
+    } = fitted_graph(features, catalog, base, &water_test(lakes, frame));
+    if smooth.is_some() {
+        progress(&format!("TIMING smooth {:.1} s", smooth_time.as_secs_f64()));
+    }
     let first = place_once(&widened, catalog, base)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
         find_dips(

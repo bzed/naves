@@ -8,7 +8,6 @@ use naves_core::catalog::Family;
 use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
-use naves_core::roadnet::build_graph;
 use naves_core::smooth::SMOOTH_ENABLED;
 use naves_export::generate::{fitted_graph, fitted_graph_with};
 
@@ -66,21 +65,40 @@ fn lead_is_laid(fits: &[naves_core::bridgekind::BridgeFit]) -> bool {
 #[test]
 fn smoothing_runs_before_the_bridges_are_fitted() {
     let catalog = synthetic_catalog();
-    let features = corner_at(10.0);
+    // a corner 40 m before the bridge: outside the 25 m of the bridge approach that the widening holds
+    let features = corner_at(40.0);
     let base = flat();
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
-    // the same graph without smoothing needs a lead at the bridge
-    let (_, plain) = fit_bridges(&build_graph(&features), &|s| choose(&catalog, s), &ground);
-    assert!(lead_is_laid(&plain), "{plain:?}");
-
-    let fitted = fitted_graph_with(&features, &catalog, &base, true);
+    let off = fitted_graph_with(&features, &catalog, &base, false, &|_| false);
+    let fitted = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
     let report = fitted.smooth.as_ref().expect("smoothing ran");
     assert!(
         report.max_move_m > 0.0 || report.max_outward_m > 0.0,
         "{report:?}"
     );
+    assert_ne!(fitted.built, off.built, "the corner was not smoothed");
+    // the bridges are fitted on the smoothed graph
+    let (graph, bridges) = fit_bridges(&fitted.built, &|s| choose(&catalog, s), &ground);
+    assert_eq!(fitted.graph, graph);
+    assert_eq!(fitted.bridges, bridges);
     assert_eq!(fitted.bridges.len(), 1);
-    assert!(!lead_is_laid(&fitted.bridges), "{:?}", fitted.bridges);
+}
+
+#[test]
+fn a_corner_in_the_approach_of_a_bridge_is_held_and_needs_its_lead() {
+    // 10 m before the bridge the widening is held (WIDEN_BRIDGE_HOLD_M), the bend cannot be widened and goes back
+    // to the line as drawn, so the road beyond still leaves 60 degrees off the deck's heading and gets a lead
+    let catalog = synthetic_catalog();
+    let features = corner_at(10.0);
+    let base = flat();
+    let fitted = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
+    assert!(lead_is_laid(&fitted.bridges), "{:?}", fitted.bridges);
+    let report = fitted.smooth.as_ref().expect("smoothing ran");
+    assert!(
+        report.zones.iter().any(|z| z.plate_candidate),
+        "{:?}",
+        report.zones
+    );
 }
 
 #[test]
@@ -88,7 +106,7 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     let catalog = synthetic_catalog();
     let features = corner_at(10.0);
     let base = flat();
-    let off = fitted_graph_with(&features, &catalog, &base, false);
+    let off = fitted_graph_with(&features, &catalog, &base, false, &|_| false);
     assert!(off.smooth.is_none());
     // the graph is what fit_bridges makes of the cleaned graph
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
@@ -96,6 +114,6 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     assert_eq!(off.graph, graph);
     assert_eq!(off.bridges, bridges);
     // and `fitted_graph` follows the constant
-    let default = fitted_graph(&features, &catalog, &base);
+    let default = fitted_graph(&features, &catalog, &base, &|_| false);
     assert_eq!(default.smooth.is_some(), SMOOTH_ENABLED);
 }

@@ -19,6 +19,9 @@ All notable changes to this project are documented here. The format follows
   (an open corner may be cut inward). Breaking: roads move by up to a few metres, so edits that are keyed by slot can
   be orphaned (`orphaned_edit`). New findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
   section in `build/report.json` and a line in the build summary.
+  A curve that cannot be widened goes back to the line as drawn (blended over 6 m at its ends), a widened line does
+  not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and points within 0.05 m
+  of the line through their neighbours are dropped after the stage (the placement walks fewer points).
 - A junction on the end of a bridge deck is moved off it (the clean-up of the graph, before bridges are fitted). Where
   the bridge's road goes on, the roads that met the deck end are joined to it 8 m further along (a new node; the
   first 8 m are the stretch `<id>/approach<n>`); where it ends in a T, the last 8 m of the bridge become an ordinary

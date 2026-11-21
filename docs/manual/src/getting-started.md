@@ -311,17 +311,31 @@ OpenStreetMap for the sidepath step. The program does not print a severity: "inf
 fix, "warning" means a place worth a look.
 
 **Road lines are smoothed.** After the clean-up and before bridges are fitted, the build smooths the lines of the
-roads. A chain is a run of stretches that merely continue each other (nodes where exactly two stretches meet); every
-node of a chain, every junction and every bridge end stays where it is, and the direction a road leaves a junction
-does not change. Between them each line is fitted by a smooth curve that stays within 2 m of its OpenStreetMap line
-(a bridge deck is kept straight). Where a curve is tighter than the tightest curve piece of its road type, it is
-widened outward to the piece's radius; this may move the line by more than 2 m, and an open corner (a turn of up to
-120 degrees) may be cut inward as well. A curve that cannot be widened to 90 % of the wanted radius keeps the fitted
-line and is reported as one that cannot be built as a curve. The stage can move roads, so edits to the road objects
-that are keyed by slot may no longer find their object (`orphaned_edit`). The findings are `road_curve_widened` and
-`road_curve_too_tight`; `build/report.json` has `roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`,
-`tight_before_m`, `tight_after_m`, `skipped_short`, `kept`, `widen_failed` and `zones`), and the build prints one
-line with the chains, the largest move, the tight length before and after and the zones reached.
+roads. A chain is a run of stretches that merely continue each other (nodes where exactly two stretches meet). Junctions,
+dead ends and bridge ends stay where they are, and the direction a road leaves a junction does not change. Between
+them each line is fitted by a smooth curve that stays within 2 m of its OpenStreetMap line; a bridge deck is only held
+stiffer in the fit, so its inside can still bend a little there, and the widening below leaves it where it is. Where a curve is
+tighter than the tightest curve piece of its road type, it is widened outward to the piece's radius; this may move the
+line by more than 2 m, and an open corner (a turn of up to 120 degrees) may be cut inward as well. Inside such a curve
+zone a node where a road merely continues moves with the line (the map moved 56 of 368 such nodes, up to 6.4 m).
+Four rules keep the widening from doing harm:
+
+- A curve that cannot be widened to 90 % of the wanted radius (for instance because a junction holds the bend) goes back
+  to the line as OpenStreetMap draws it, not to the fitted one, which had made the bend tighter. The two ends of the
+  zone are blended over 6 m, so the line has no step. It is reported as one that cannot be built as a curve.
+- A widened line that would stand in water where the OpenStreetMap line does not (the water of the `road_in_water`
+  rule) goes back the same way; the zone is flagged `blocked_by_water` in the report and the curve stays as drawn.
+- The approach of a bridge is not widened: samples within 25 m of a bridge end are held where the fit has put them.
+- After all this, points of a line that lie within 0.05 m of the line through their neighbours are dropped (a straight
+  100 m road is two points), so the placement has less to walk over. The tight-length figures and the zone report are
+  those of the line before the drop.
+
+The stage can move roads, so edits to the road objects that are keyed by slot may no longer find their object
+(`orphaned_edit`). The findings are `road_curve_widened` and `road_curve_too_tight`; `build/report.json` has
+`roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`, `tight_before_m`, `tight_after_m`, `skipped_short`, the
+point counts `points_before`, `points_fitted` and `points_after`, `kept` and `widen_failed` as lists of
+`{stretch, reason}`, and `zones`), and the build prints one line with the chains, the largest move, the tight length
+before and after and the zones reached, and the time of the stage.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its

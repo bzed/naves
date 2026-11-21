@@ -23,7 +23,7 @@
 //! `widen`) that widens curves tighter than the road pieces can build, outward, to the family's minimum
 //! radius; see [`WidenedZone`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rayon::prelude::*;
 
@@ -63,6 +63,15 @@ pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
 /// A zone that still has a sample tighter than this fraction of the wanted radius after the last pass goes
 /// back to the fit.
 pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
+/// After the stage, a point of a stretch is dropped when taking it out moves the line by less than this, in
+/// metres (a straight 100 m road is two points). Ends of stretches are never dropped.
+pub const SIMPLIFY_TOL_M: f64 = 0.05;
+/// A zone that goes back to the original line is blended into the fit over this length at each end, in metres
+/// (linear, from the fit's offset there to zero), so the line has no step.
+pub const WIDEN_REVERT_BLEND_M: f64 = 6.0;
+/// Samples of a zone within this distance, along the chain, of a bridge end are held in the widening pass, in
+/// metres: the approach of a bridge is not widened.
+pub const WIDEN_BRIDGE_HOLD_M: f64 = 25.0;
 /// A chain with more samples than this (counted from the lengths of its stretches, before resampling) is
 /// neither fitted nor widened.
 pub const MAX_CHAIN_SAMPLES: usize = 200_000;
@@ -88,6 +97,9 @@ pub struct SmoothParams {
     pub corridor: f64,
     /// The weight of the pull towards the original position.
     pub stay: f64,
+    /// The tolerance of the drop of collinear points after the stage ([`SIMPLIFY_TOL_M`]); `0.0` keeps every
+    /// sample.
+    pub simplify: f64,
 }
 
 impl Default for SmoothParams {
@@ -95,6 +107,7 @@ impl Default for SmoothParams {
         SmoothParams {
             corridor: CORRIDOR_M,
             stay: W_STAY,
+            simplify: SIMPLIFY_TOL_M,
         }
     }
 }
@@ -350,6 +363,9 @@ pub struct WidenedZone {
     /// `radius_after_m` is what the attempt got. The second allowed form is a concrete plate that joins the two
     /// legs; it is a later task, designed from the zones with this flag.
     pub plate_candidate: bool,
+    /// The widened line had a sample in water that the original line did not have, so the zone went back to
+    /// the original line like a plate candidate (and is not one unless [`Self::plate_candidate`] says so).
+    pub blocked_by_water: bool,
 }
 
 /// What smoothing did, for the build report and the measurement.
@@ -384,6 +400,12 @@ pub struct SmoothReport {
     /// Stretches whose chain was fitted but whose widening failed in the solver (the chain keeps the fit),
     /// with the reason, in stretch order.
     pub widen_failed: Vec<(StretchId, String)>,
+    /// The points of all stretches before the stage.
+    pub points_before: usize,
+    /// The points of all stretches after the fit and the widening, before the collinear ones are dropped.
+    pub points_fitted: usize,
+    /// The points of all stretches after the drop ([`SIMPLIFY_TOL_M`]).
+    pub points_after: usize,
 }
 
 impl SmoothReport {
@@ -393,9 +415,10 @@ impl SmoothReport {
     pub fn summary(&self) -> String {
         let reached = self.zones.iter().filter(|z| z.reached).count();
         let plates = self.zones.iter().filter(|z| z.plate_candidate).count();
+        let blocked = self.zones.iter().filter(|z| z.blocked_by_water).count();
         format!(
             "Road smoothing: {} chains, largest move {:.1} m (outward {:.1} m), tight length {:.0} m -> {:.0} m, \
-             curve zones {reached} reached / {} not reached, {plates} plate candidate(s)",
+             curve zones {reached} reached / {} not reached, {plates} plate candidate(s), {blocked} blocked by water",
             self.chains,
             self.max_move_m,
             self.max_outward_m,
@@ -404,6 +427,72 @@ impl SmoothReport {
             self.zones.len() - reached,
         )
     }
+}
+
+/// The distance of `p` from the segment `a`-`b`.
+fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len2 = dx * dx + dy * dy;
+    let along = if len2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - a.0 - along * dx).hypot(p.1 - a.1 - along * dy)
+}
+
+/// The line without the points that do not matter: every dropped point lies within `tolerance` metres of the
+/// result (Ramer, Douglas and Peucker; the first and the last point stay). A line that is not finite, with
+/// fewer than three points, or a tolerance that is not positive give the line back unchanged. Deterministic;
+/// iterative, so a long line cannot overflow the stack.
+///
+/// The crates considered for this were `geo` (its `Simplify` is this algorithm, but it brings `geo-types`,
+/// `robust`, `spade`, `rstar` and more for thirty lines) and `kurbo` (simplifies Bézier paths, not polylines);
+/// neither is a dependency of `naves-core`.
+#[must_use]
+pub fn simplify_line(line: &[(f64, f64)], tolerance: f64) -> Vec<(f64, f64)> {
+    let n = line.len();
+    if n < 3
+        || tolerance.is_nan()
+        || tolerance <= 0.0
+        || line.iter().any(|p| !p.0.is_finite() || !p.1.is_finite())
+    {
+        return line.to_vec();
+    }
+    let mut keep = vec![false; n];
+    for index in [0, n - 1] {
+        if let Some(k) = keep.get_mut(index) {
+            *k = true;
+        }
+    }
+    let mut stack = vec![(0, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        let (Some(&from), Some(&to)) = (line.get(a), line.get(b)) else {
+            continue;
+        };
+        let mut far = (0.0_f64, None);
+        for k in a + 1..b {
+            if let Some(&p) = line.get(k) {
+                let d = segment_distance(p, from, to);
+                if d > far.0 {
+                    far = (d, Some(k));
+                }
+            }
+        }
+        if let (d, Some(k)) = far
+            && d > tolerance
+        {
+            if let Some(slot) = keep.get_mut(k) {
+                *slot = true;
+            }
+            stack.push((a, k));
+            stack.push((k, b));
+        }
+    }
+    line.iter()
+        .zip(&keep)
+        .filter_map(|(p, &k)| k.then_some(*p))
+        .collect()
 }
 
 /// The tightest curve piece's radius of a road family in the catalog (`None` if it has no curve piece).
@@ -697,7 +786,12 @@ fn sample_minimum(count: usize, bounds: &[usize], minimum: &[f64]) -> Vec<f64> {
 
 /// Which samples of a chain may move inside a zone: those the fit may move, and the nodes where the road
 /// merely continues (not at the ends of the chain and not next to a bridge).
-fn movable_samples(graph: &RoadGraph, plan: &ChainPlan, prepared: &Prepared) -> Vec<bool> {
+fn movable_samples(
+    graph: &RoadGraph,
+    plan: &ChainPlan,
+    prepared: &Prepared,
+    bridge_nodes: &BTreeSet<i64>,
+) -> Vec<bool> {
     let mut movable: Vec<bool> = prepared.samples.iter().map(|s| !s.fixed).collect();
     // the zone widens the approaches of a bridge, the deck does not bend
     let mut first = 0;
@@ -722,7 +816,69 @@ fn movable_samples(graph: &RoadGraph, plan: &ChainPlan, prepared: &Prepared) -> 
             *m = true;
         }
     }
+    hold_bridge_approaches(graph, plan, prepared, bridge_nodes, &mut movable);
     movable
+}
+
+/// Holds the samples within [`WIDEN_BRIDGE_HOLD_M`] along the chain of the end of a bridge: the bridge links of
+/// the chain, and the ends of the chain that lie at the end node of a bridge stretch.
+fn hold_bridge_approaches(
+    graph: &RoadGraph,
+    plan: &ChainPlan,
+    prepared: &Prepared,
+    bridge_nodes: &BTreeSet<i64>,
+    movable: &mut [bool],
+) {
+    let count = prepared.samples.len();
+    let mut arc = Vec::with_capacity(count);
+    let mut total = 0.0;
+    let mut previous: Option<(f64, f64)> = None;
+    for s in &prepared.samples {
+        if let Some(p) = previous {
+            total += (s.at.0 - p.0).hypot(s.at.1 - p.1);
+        }
+        arc.push(total);
+        previous = Some(s.at);
+    }
+    let at = |k: usize| arc.get(k).copied().unwrap_or(0.0);
+    // the stretches of arc length that count as a bridge end: from the first to the last sample of a bridge link,
+    // and the two ends of the chain where a bridge stretch ends
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let mut first = 0;
+    for (link, &last) in plan.links.iter().zip(&prepared.bounds) {
+        if graph.stretches.get(link.stretch).is_some_and(|s| s.bridge) {
+            spans.push((at(first), at(last)));
+        }
+        first = last;
+    }
+    let node_of = |link: Option<&Link>, entering: bool| {
+        link.and_then(|l| graph.stretches.get(l.stretch).map(|s| (s, l.reversed)))
+            .map(|(s, reversed)| if entering == reversed { s.end } else { s.start })
+    };
+    if node_of(plan.links.first(), true).is_some_and(|n| bridge_nodes.contains(&n)) {
+        spans.push((0.0, 0.0));
+    }
+    if node_of(plan.links.last(), false).is_some_and(|n| bridge_nodes.contains(&n)) {
+        spans.push((total, total));
+    }
+    for (k, m) in movable.iter_mut().enumerate() {
+        let here = at(k);
+        if spans.iter().any(|&(from, to)| {
+            here >= from - WIDEN_BRIDGE_HOLD_M && here <= to + WIDEN_BRIDGE_HOLD_M
+        }) {
+            *m = false;
+        }
+    }
+}
+
+/// Whether a point (map metres) lies in water.
+pub type WaterTest<'a> = &'a (dyn Fn((f64, f64)) -> bool + Sync);
+
+/// What every chain is solved against.
+struct Context<'a> {
+    /// The nodes at an end of a bridge stretch.
+    bridge_nodes: &'a BTreeSet<i64>,
+    in_water: WaterTest<'a>,
 }
 
 /// What is solved for one chain.
@@ -765,6 +921,7 @@ fn solve_chain(
     family_minimum: &[f64],
     params: &SmoothParams,
     widen_on: bool,
+    context: &Context<'_>,
 ) -> Solved {
     let length: f64 = plan
         .links
@@ -801,7 +958,8 @@ fn solve_chain(
         .iter()
         .map(|l| graph.stretches.get(l.stretch).is_some_and(|s| s.bridge))
         .collect();
-    let movable = movable_samples(graph, plan, &prepared);
+    let movable = movable_samples(graph, plan, &prepared, context.bridge_nodes);
+    let resampled: Vec<(f64, f64)> = prepared.samples.iter().map(|s| s.at).collect();
     let widened = match (&fitted, widen_on) {
         (Ok(f), true) => widen::widen_chain(&widen::ChainLine {
             original: &prepared.raw,
@@ -810,6 +968,8 @@ fn solve_chain(
             link_minimum: &link_minimum,
             link_bridge: &link_bridge,
             movable: &movable,
+            resampled: &resampled,
+            in_water: context.in_water,
         }),
         _ => None,
     };
@@ -842,6 +1002,7 @@ fn chain_zones(graph: &RoadGraph, plan: &ChainPlan, widened: &widen::Outcome) ->
             max_inward_m: z.max_inward,
             reached: z.reached,
             plate_candidate: z.plate_candidate,
+            blocked_by_water: z.blocked_by_water,
         })
         .collect()
 }
@@ -940,6 +1101,9 @@ impl Tally {
             widen_failed: Tally::reasons(graph, &self.widen_failed),
             zones: self.zones,
             per_stretch: self.per_stretch,
+            points_before: 0,
+            points_fitted: 0,
+            points_after: 0,
         }
     }
 }
@@ -961,7 +1125,20 @@ pub fn smooth_graph(
     min_radius: &dyn Fn(&Stretch) -> f64,
     params: &SmoothParams,
 ) -> (RoadGraph, SmoothReport) {
-    smooth_graph_with(graph, min_radius, params, WIDEN_ENABLED)
+    smooth_graph_with(graph, min_radius, &|_| false, params, WIDEN_ENABLED)
+}
+
+/// [`smooth_graph`] that knows where the water is: a zone whose widened line has a sample in water that the
+/// original line did not have goes back to the original line and is flagged
+/// [`WidenedZone::blocked_by_water`].
+#[must_use]
+pub fn smooth_graph_in_water(
+    graph: &RoadGraph,
+    min_radius: &dyn Fn(&Stretch) -> f64,
+    in_water: WaterTest<'_>,
+    params: &SmoothParams,
+) -> (RoadGraph, SmoothReport) {
+    smooth_graph_with(graph, min_radius, in_water, params, WIDEN_ENABLED)
 }
 
 /// [`smooth_graph`] without the widening pass: what the fit alone gives.
@@ -971,23 +1148,60 @@ pub fn smooth_graph_fit_only(
     min_radius: &dyn Fn(&Stretch) -> f64,
     params: &SmoothParams,
 ) -> (RoadGraph, SmoothReport) {
-    smooth_graph_with(graph, min_radius, params, false)
+    smooth_graph_with(graph, min_radius, &|_| false, params, false)
+}
+
+/// Whether a node inside the chain (between two links) lies elsewhere in the written line than in the original one.
+fn inner_node_moved(
+    plan: &ChainPlan,
+    old_bounds: &[usize],
+    new_bounds: &[usize],
+    before: &[(f64, f64)],
+    after: &[(f64, f64)],
+) -> bool {
+    old_bounds
+        .iter()
+        .zip(new_bounds)
+        .take(plan.links.len().saturating_sub(1))
+        .any(|(&k, &m)| before.get(k) != after.get(m))
+}
+
+/// The points of all stretches.
+fn point_count(graph: &RoadGraph) -> usize {
+    graph.stretches.iter().map(|s| s.points.len()).sum()
+}
+
+/// The nodes at an end of a bridge stretch.
+fn bridge_end_nodes(graph: &RoadGraph) -> BTreeSet<i64> {
+    graph
+        .stretches
+        .iter()
+        .filter(|s| s.bridge)
+        .flat_map(|s| [s.start, s.end])
+        .collect()
 }
 
 fn smooth_graph_with(
     graph: &RoadGraph,
     min_radius: &dyn Fn(&Stretch) -> f64,
+    in_water: WaterTest<'_>,
     params: &SmoothParams,
     widen_on: bool,
 ) -> (RoadGraph, SmoothReport) {
     let plans = plan_chains(graph);
     let family_minimum: Vec<f64> = graph.stretches.iter().map(min_radius).collect();
+    let bridge_nodes = bridge_end_nodes(graph);
+    let context = Context {
+        bridge_nodes: &bridge_nodes,
+        in_water,
+    };
     let solved: Vec<Solved> = plans
         .par_iter()
-        .map(|plan| solve_chain(graph, plan, &family_minimum, params, widen_on))
+        .map(|plan| solve_chain(graph, plan, &family_minimum, params, widen_on, &context))
         .collect();
     let mut result = graph.clone();
     let mut tally = Tally::new(graph);
+    let mut fitted_points: Vec<usize> = graph.stretches.iter().map(|s| s.points.len()).collect();
     let mut node_moved = false;
     for (plan, solved) in plans.iter().zip(&solved) {
         let Solved {
@@ -1044,7 +1258,10 @@ fn smooth_graph_with(
                 if link.reversed {
                     line.reverse();
                 }
-                s.points = line;
+                if let Some(n) = fitted_points.get_mut(link.stretch) {
+                    *n = line.len();
+                }
+                s.points = simplify_line(&line, params.simplify);
             }
             if let Some(e) = widen_error
                 && let Some(w) = tally.widen_failed.get_mut(link.stretch)
@@ -1062,16 +1279,14 @@ fn smooth_graph_with(
             first = last;
         }
         // a node inside the chain that moved: the crossings must follow
-        node_moved |= prepared
-            .bounds
-            .iter()
-            .zip(&bounds)
-            .take(plan.links.len().saturating_sub(1))
-            .any(|(&k, &m)| before.get(k) != after.get(m));
+        node_moved |= inner_node_moved(plan, &prepared.bounds, &bounds, &before, &after);
     }
     if node_moved {
         result.crossings = crossings_of(&result.stretches);
     }
-    let report = tally.report(graph, plans.len());
+    let mut report = tally.report(graph, plans.len());
+    report.points_before = point_count(graph);
+    report.points_fitted = fitted_points.iter().sum();
+    report.points_after = point_count(&result);
     (result, report)
 }

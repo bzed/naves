@@ -240,9 +240,10 @@ The smoothing of the road lines found a curve tighter than the tightest curve pi
 to the radius of the piece; the message names the stretches, the radius before and after and the furthest move, which
 can be several metres, and the position is the tightest point of the curve. A widened curve may end a little under
 the wanted radius; the zone is then in `roads.smoothing.zones` of `build/report.json` with `reached: false`. For
-`road_curve_too_tight` the curve could not be widened to 90 % of the wanted radius, so the road keeps the fitted line
-and **cannot be built as a curve**: the pieces will leave a kink or a gap there. Look at the place; change the data
-(OpenStreetMap) so that the curve is wider or has a junction.
+`road_curve_too_tight` the curve could not be widened to 90 % of the wanted radius, or widening it would have put the
+road in water (`blocked_by_water` in the report), so the road keeps the line OpenStreetMap draws and **cannot be built
+as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of a bridge end are not widened at all.
+Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
 
 **`bridge_end_at_junction` (warning)**
 A junction lies on the end of a bridge and the build could not move it off the deck (the bridge is too short, a road
