@@ -395,8 +395,8 @@ fn a_road_is_smooth_across_a_two_stretch_node() {
     let (a, b) = (&out.stretches[0].points, &out.stretches[1].points);
     assert_eq!(bits(*a.last().unwrap()), bits(node));
     assert_eq!(bits(b[0]), bits(node));
-    // The node is fixed and the corridor is 2 m, so the 30 degree bend is spread over a few samples and the
-    // turn at the node itself falls to 8.0 degrees (measured), not under 5.
+    // Measured: the turn at the fixed node falls to 8.0 degrees (asserted under 10). That is what
+    // W_STAY = 0.02 gives with the node fixed; the plan's "under 5 degrees" is not met at this value.
     let turn = turn_between(a, b);
     assert!(turn < 10.0, "turn {turn}");
 }
@@ -450,6 +450,33 @@ fn a_bridge_keeps_its_ends_and_gets_straighter() {
         let before = resample(&g.stretches[i].points, SAMPLE_M);
         within_corridor(&before, &out.stretches[i].points);
     }
+}
+
+#[test]
+fn a_bridge_deck_is_straighter_than_the_same_deck_unflagged() {
+    let n1 = (40.0, 0.0);
+    let mid = (50.0, 0.0);
+    let n2 = polar(mid, 20.0, 10.0);
+    let with = |bridge: bool| {
+        let mut deck = stretch("br", 2, 3, &[n1, mid, n2]);
+        deck.bridge = bridge;
+        graph(vec![
+            stretch("p1", 1, 2, &[(0.0, 0.0), n1]),
+            deck,
+            stretch("p2", 3, 4, &[n2, polar(n2, 20.0, 40.0)]),
+        ])
+    };
+    let deck_turn = |g: &RoadGraph| {
+        let (out, report) = run(g);
+        assert!(report.kept.is_empty(), "{:?}", report.kept);
+        turns(&out.stretches[1].points)
+            .iter()
+            .map(|t| t.abs())
+            .sum::<f64>()
+    };
+    let bridge = deck_turn(&with(true));
+    let plain = deck_turn(&with(false));
+    assert!(bridge < plain, "bridge {bridge} plain {plain}");
 }
 
 #[test]
@@ -648,19 +675,42 @@ fn a_loop_of_one_stretch_is_smoothed_and_a_tiny_one_is_reported() {
     ]);
     let (out, report) = run(&g);
     assert_eq!(report.chains, 2);
-    assert_eq!(report.kept.len(), 1);
-    assert_eq!(report.kept[0].0, "tiny");
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.skipped_short, 1);
     assert_eq!(out.stretches[1].points, tiny.to_vec());
     assert!(out.stretches[0].points.len() > 5);
 }
 
 #[test]
-fn a_stretch_of_one_point_is_kept_and_does_not_hold_back_its_neighbour() {
+fn a_stretch_of_one_point_keeps_its_line_and_does_not_hold_back_its_neighbour() {
     let g = graph(vec![
         stretch("a", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 0.0)]),
         stretch("z", 2, 3, &[(40.0, 0.0), (40.0, 0.0)]),
     ]);
     let (_, report) = run(&g);
-    assert_eq!(report.kept.len(), 1);
-    assert_eq!(report.kept[0].0, "z");
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.skipped_short, 1);
+}
+
+#[test]
+fn a_short_stretch_is_counted_apart_from_a_failed_one() {
+    let tiny = [(100.0, 0.0), (101.0, 0.0)];
+    let g = graph(vec![
+        stretch("sound", 1, 2, &[(0.0, 0.0), (20.0, 0.0), (40.0, 5.0)]),
+        stretch("short", 3, 4, &tiny),
+        stretch(
+            "bad",
+            5,
+            6,
+            &[(200.0, 0.0), (220.0, f64::NAN), (240.0, 0.0)],
+        ),
+    ]);
+    let (out, report) = run(&g);
+    assert_eq!(report.chains, 3);
+    assert_eq!(report.kept.len(), 1, "{:?}", report.kept);
+    assert_eq!(report.kept[0].0, "bad");
+    assert_eq!(report.skipped_short, 1);
+    assert!(out.stretches[0].points.len() > 3);
+    assert_eq!(out.stretches[1].points, tiny.to_vec());
+    assert_eq!(out.stretches[2].points.len(), 3);
 }

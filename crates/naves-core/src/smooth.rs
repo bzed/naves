@@ -293,13 +293,20 @@ pub struct StretchSmooth {
 pub struct SmoothReport {
     /// The number of chains.
     pub chains: usize,
-    /// Stretches left as they were, with the reason, in stretch order.
+    /// Stretches whose chain could not be fitted (input that is not finite, degenerate input, a failed
+    /// solve), with the reason, in stretch order. A stretch too short to smooth is counted in
+    /// [`Self::skipped_short`] instead.
     pub kept: Vec<(StretchId, String)>,
+    /// Stretches too short to smooth (fewer than three samples, a line of less than one step): they keep
+    /// their line and are counted here, not listed among the failures in [`Self::kept`].
+    pub skipped_short: usize,
     /// The furthest any sample moved, in metres.
     pub max_move_m: f64,
-    /// Road length tighter than its family's minimum radius, before.
+    /// Road length tighter than its family's minimum radius, before. Measured on the resampled line
+    /// ([`SAMPLE_M`] steps), not on the original polyline, so it already has the corners that resampling
+    /// shaved.
     pub tight_before_m: f64,
-    /// The same after.
+    /// The same after, on the same resampled line.
     pub tight_after_m: f64,
     /// One entry per stretch, in stretch order.
     pub per_stretch: Vec<StretchSmooth>,
@@ -560,7 +567,8 @@ fn tight_lengths(points: &[(f64, f64)], bounds: &[usize], minimum: &[f64]) -> Ve
 
 /// The graph with every stretch's line smoothed, chain by chain. Node positions, node ids and stretch ids
 /// are unchanged; no sample moves more than [`CORRIDOR_M`] sideways. A stretch whose chain cannot be fitted
-/// keeps its line and is listed in [`SmoothReport::kept`].
+/// keeps its line and is listed in [`SmoothReport::kept`]; a stretch with fewer than three samples has
+/// nothing to smooth, keeps its line and is counted in [`SmoothReport::skipped_short`] instead.
 ///
 /// `min_radius` gives the tightest radius of a stretch's family (`NaN` or `0.0` for none); it only feeds
 /// the figures of the report.
@@ -581,6 +589,7 @@ pub fn smooth_graph(
         .collect();
     let mut result = graph.clone();
     let mut kept: Vec<Option<String>> = vec![None; graph.stretches.len()];
+    let mut skipped_short = 0;
     let mut per_stretch: Vec<StretchSmooth> = graph
         .stretches
         .iter()
@@ -599,16 +608,18 @@ pub fn smooth_graph(
             .map(|l| graph.stretches.get(l.stretch).map_or(f64::NAN, min_radius))
             .collect();
         let tight_before = tight_lengths(&before, &prepared.bounds, &minimum);
-        let (after, reason) = match fitted {
+        let (after, failure) = match fitted {
             Ok(f) => (f.after.clone(), None),
-            Err(e) => (before.clone(), Some(e.to_string())),
+            Err(e) => (before.clone(), Some(e)),
         };
         let tight_after = tight_lengths(&after, &prepared.bounds, &minimum);
         let mut first = 0;
         for (j, (link, &last)) in plan.links.iter().zip(&prepared.bounds).enumerate() {
-            if let Some(why) = &reason {
-                if let Some(k) = kept.get_mut(link.stretch) {
-                    *k = Some(why.clone());
+            if let Some(error) = failure {
+                if matches!(error, SmoothError::TooShort(_)) {
+                    skipped_short += 1;
+                } else if let Some(k) = kept.get_mut(link.stretch) {
+                    *k = Some(error.to_string());
                 }
             } else if let Some(s) = result.stretches.get_mut(link.stretch) {
                 let mut line: Vec<(f64, f64)> = after
@@ -642,6 +653,7 @@ pub fn smooth_graph(
             .zip(&kept)
             .filter_map(|(s, k)| k.as_ref().map(|why| (s.id.clone(), why.clone())))
             .collect(),
+        skipped_short,
         max_move_m: per_stretch.iter().map(|p| p.max_move_m).fold(0.0, f64::max),
         tight_before_m: per_stretch.iter().map(|p| p.tight_before_m).sum(),
         tight_after_m: per_stretch.iter().map(|p| p.tight_after_m).sum(),

@@ -129,8 +129,9 @@ it inside the corridor). Instead:
 
 ### What a failed fit does
 
-If the solver does not converge for a chain, or the input is degenerate (fewer than three samples, NaN), the chain
-keeps its original line and the report counts it. Nothing panics.
+If the solver does not converge for a chain, or the input is degenerate (NaN, or a line that collapses to one point),
+the chain keeps its original line and the report counts it. Nothing panics. A stretch with fewer than three samples has
+nothing to smooth: it keeps its line and is counted separately (`skipped_short`), not listed among the failures.
 
 ### Effects on other stages
 
