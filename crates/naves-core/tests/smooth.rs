@@ -322,8 +322,12 @@ fn stiffness_belongs_to_the_centre_sample() {
 
 use naves_core::catalog::testing::{synthetic_catalog, synthetic_models};
 use naves_core::catalog::{Family, PieceCatalog};
+use naves_core::roadnet::Crossing;
 use naves_core::roadnet::{RoadGraph, Stretch};
-use naves_core::smooth::{SmoothReport, min_radius, smooth_graph};
+use naves_core::smooth::{
+    SmoothReport, WIDEN_DIRECTIONS, WIDEN_ENABLED, WIDEN_LEAD, WIDEN_PASSES, WIDEN_REACH,
+    WIDEN_SLACK_COST, min_radius, smooth_graph, smooth_graph_fit_only,
+};
 
 fn stretch(id: &str, start: i64, end: i64, points: &[P]) -> Stretch {
     Stretch {
@@ -358,8 +362,9 @@ fn ten(_: &Stretch) -> f64 {
     10.0
 }
 
+/// The fit alone (the widening has its own tests below).
 fn run(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
-    smooth_graph(g, &ten, &SmoothParams::default())
+    smooth_graph_fit_only(g, &ten, &SmoothParams::default())
 }
 
 fn bits(p: P) -> (u64, u64) {
@@ -745,4 +750,338 @@ fn a_short_stretch_is_counted_apart_from_a_failed_one() {
     assert!(out.stretches[0].points.len() > 3);
     assert_eq!(out.stretches[1].points, tiny.to_vec());
     assert_eq!(out.stretches[2].points.len(), 3);
+}
+
+// --- tight curves are widened outward ------------------------------------------------------------------------
+
+#[test]
+fn the_widening_constants_are_the_specs() {
+    assert!(near(WIDEN_LEAD, 2.0, 0.0));
+    assert!(near(WIDEN_REACH, 2.0, 0.0));
+    assert_eq!(WIDEN_DIRECTIONS, 8);
+    assert!(near(WIDEN_SLACK_COST, 1e4, 0.0));
+    assert_eq!(WIDEN_PASSES, 3);
+    const { assert!(WIDEN_ENABLED) };
+}
+
+fn widen_run(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
+    smooth_graph(g, &ten, &SmoothParams::default())
+}
+
+fn fit_only(g: &RoadGraph) -> (RoadGraph, SmoothReport) {
+    smooth_graph_fit_only(g, &ten, &SmoothParams::default())
+}
+
+/// Two legs `gap` m apart, 80 m long, joined by a half circle of radius `gap / 2` (left turning); for a gap of
+/// 8 m the apex is the sample at index 10.
+fn hairpin_of(gap: f64) -> Vec<P> {
+    let r = gap / 2.0;
+    let mut points = vec![(0.0, 0.0), (80.0, 0.0)];
+    for k in 1..18 {
+        let a = (-90.0 + 10.0 * f64::from(k)).to_radians();
+        points.push((80.0 + r * a.cos(), r + r * a.sin()));
+    }
+    points.push((80.0, gap));
+    points.push((0.0, gap));
+    points
+}
+
+fn hairpin_points() -> Vec<P> {
+    hairpin_of(8.0)
+}
+
+fn min_radius_of(line: &[P]) -> f64 {
+    line.windows(3)
+        .map(|w| radius_at(w[0], w[1], w[2]))
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// No sample lies inward of the original hairpin of the given gap (its half circle is drawn with 10 degree
+/// chords, whose middles lie `r (1 - cos 5 deg)` inside the circle; the extra 1e-3 is what the linear
+/// "not inward" row, which measures along the sample's normal rather than the chord's, can miss by).
+fn assert_outside_of_hairpin(line: &[P], gap: f64) {
+    let r = gap / 2.0;
+    let slack = r * (1.0 - 5.0_f64.to_radians().cos()) + 1e-3;
+    for p in line {
+        if p.0 > 80.0 {
+            assert!(dist(*p, (80.0, r)) >= r - slack, "{p:?}");
+        } else if p.0 >= 62.0 && p.1 < r {
+            assert!(p.1 <= 1e-6, "{p:?}");
+        } else if p.0 >= 62.0 {
+            assert!(p.1 >= gap - 1e-6, "{p:?}");
+        }
+    }
+}
+
+/// Measured (see the task report): a hairpin of radius 4 m whose legs are 8 m apart cannot be opened to a
+/// radius of 10 m within the zone `WIDEN_LEAD` gives it: the legs would have to spread by 6 m each, which
+/// takes about 60 m of road, and the zone has about 50. Three passes get the radius from 2.5 m to 5.7 m; the
+/// zone is reported as not reached, which is what the plate that joins the two legs is for.
+#[test]
+fn a_hairpin_is_widened_as_far_as_its_zone_allows() {
+    let g = graph(vec![stretch("h", 1, 2, &hairpin_points())]);
+    let (out, report) = widen_run(&g);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    let z = &report.zones[0];
+    assert_eq!(z.stretches, vec!["h".to_string()]);
+    assert!(near(z.radius_wanted_m, 10.0, 0.0));
+    assert!(!z.reached, "{z:?}");
+    assert!(z.radius_before_m < 3.0, "{z:?}");
+    assert!(z.radius_after_m > 5.0 && z.radius_after_m < 10.0, "{z:?}");
+    let line = &out.stretches[0].points;
+    let total: f64 = turns(line).iter().sum();
+    assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
+    assert_outside_of_hairpin(line, 8.0);
+    assert!(report.tight_after_m < report.tight_before_m);
+    assert!(report.max_outward_m > 0.0);
+    assert!(near(
+        report.per_stretch[0].max_outward_m,
+        report.max_outward_m,
+        0.0
+    ));
+}
+
+#[test]
+fn a_hairpin_with_room_is_widened_to_the_minimum_radius() {
+    let g = graph(vec![stretch("h", 1, 2, &hairpin_of(14.0))]);
+    let (out, report) = widen_run(&g);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    let z = &report.zones[0];
+    assert!(z.reached, "{z:?}");
+    assert!(near(z.radius_wanted_m, 10.0, 0.0));
+    assert!(z.radius_after_m > z.radius_before_m, "{z:?}");
+    let line = &out.stretches[0].points;
+    let worst = min_radius_of(line);
+    assert!(worst >= 10.0 * 0.92, "the tightest radius is {worst}");
+    let total: f64 = turns(line).iter().sum();
+    assert!((total - 180.0).abs() < 5.0, "summed turn {total}");
+    assert_outside_of_hairpin(line, 14.0);
+    assert!(report.tight_after_m < report.tight_before_m);
+}
+
+#[test]
+fn a_right_angle_is_widened() {
+    let g = graph(vec![stretch(
+        "l",
+        1,
+        2,
+        &[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)],
+    )]);
+    let (out, report) = widen_run(&g);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    assert!(report.zones[0].reached, "{:?}", report.zones[0]);
+    let worst = min_radius_of(&out.stretches[0].points);
+    assert!(worst >= 9.2, "the tightest radius is {worst}");
+    assert!(report.max_outward_m > 0.0);
+}
+
+#[test]
+fn a_curve_that_is_wide_enough_is_left_to_the_fit() {
+    let mut points = Vec::new();
+    for k in 0..=18 {
+        let a = (5.0 * f64::from(k)).to_radians();
+        points.push((30.0 * a.sin(), 30.0 * (1.0 - a.cos())));
+    }
+    let g = graph(vec![stretch("arc", 1, 2, &points)]);
+    let (out, report) = widen_run(&g);
+    assert!(report.zones.is_empty(), "{:?}", report.zones);
+    let (fit, fit_report) = fit_only(&g);
+    assert_eq!(format!("{out:?}"), format!("{fit:?}"));
+    assert_eq!(format!("{report:?}"), format!("{fit_report:?}"));
+}
+
+/// A hairpin of the given gap as two stretches that meet at the arc sample `at` (an index into the points of
+/// [`hairpin_of`]; 10 is the apex), with a third stretch that leaves that node when `third` is set.
+fn split_hairpin(gap: f64, at: usize, third: bool) -> RoadGraph {
+    let points = hairpin_of(gap);
+    let node = points[at];
+    let mut stretches = vec![
+        stretch("a", 1, 2, &points[..=at]),
+        stretch("b", 2, 3, &points[at..]),
+    ];
+    let mut joined = vec![0, 1];
+    if third {
+        stretches.push(stretch("c", 2, 4, &[node, (node.0 + 40.0, node.1)]));
+        joined.push(2);
+    }
+    RoadGraph {
+        stretches,
+        crossings: vec![Crossing {
+            node: 2,
+            point: node,
+            stretches: joined,
+        }],
+    }
+}
+
+#[test]
+fn a_way_split_inside_a_bend_moves_with_the_road() {
+    // the apex of the hairpin with room: a node where the road merely continues
+    let g = split_hairpin(14.0, 10, false);
+    let apex = g.stretches[0].points[10];
+    let (out, report) = widen_run(&g);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
+    assert!(report.zones[0].reached, "{:?}", report.zones[0]);
+    assert_eq!(
+        report.zones[0].stretches,
+        vec!["a".to_string(), "b".to_string()]
+    );
+    let a_end = *out.stretches[0].points.last().unwrap();
+    let b_start = out.stretches[1].points[0];
+    assert_eq!(bits(a_end), bits(b_start));
+    assert_ne!(bits(a_end), bits(apex), "the apex node should have moved");
+    assert!(
+        a_end.0 > apex.0,
+        "outward is away from the centre: {a_end:?}"
+    );
+    let crossing = out.crossings.iter().find(|c| c.node == 2).unwrap();
+    assert_eq!(bits(crossing.point), bits(a_end));
+    assert_eq!(crossing.stretches, vec![0, 1]);
+    let ids: Vec<(&str, i64, i64)> = out
+        .stretches
+        .iter()
+        .map(|s| (s.id.as_str(), s.start, s.end))
+        .collect();
+    assert_eq!(ids, vec![("a", 1, 2), ("b", 2, 3)]);
+    let joined: Vec<P> = out.stretches[0]
+        .points
+        .iter()
+        .chain(&out.stretches[1].points[1..])
+        .copied()
+        .collect();
+    let worst = min_radius_of(&joined);
+    assert!(worst >= 9.2, "the tightest radius is {worst}");
+}
+
+#[test]
+fn a_junction_in_the_bend_holds_it_and_the_zone_is_reported() {
+    // the junction sits on the arc, 40 degrees before the apex
+    let g = split_hairpin(8.0, 6, true);
+    let node = g.stretches[0].points[6];
+    let (out, report) = widen_run(&g);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert!(!report.zones.is_empty(), "no zone");
+    for z in &report.zones {
+        assert!(near(z.radius_wanted_m, 10.0, 0.0), "{z:?}");
+    }
+    assert!(
+        report.zones.iter().any(|z| !z.reached),
+        "{:?}",
+        report.zones
+    );
+    assert_eq!(bits(*out.stretches[0].points.last().unwrap()), bits(node));
+    assert_eq!(bits(out.stretches[1].points[0]), bits(node));
+    assert_eq!(bits(out.stretches[2].points[0]), bits(node));
+    let (fit, _) = fit_only(&g);
+    assert_eq!(
+        format!("{:?}", out.stretches[2].points),
+        format!("{:?}", fit.stretches[2].points)
+    );
+}
+
+#[test]
+fn a_bridge_in_a_zone_keeps_its_ends() {
+    let n1 = (60.0, 10.0);
+    let n2 = (60.0, 50.0);
+    let mut bridge = stretch("br", 2, 3, &[n1, n2]);
+    bridge.bridge = true;
+    let g = graph(vec![
+        stretch("p1", 1, 2, &[(0.0, 0.0), (60.0, 0.0), n1]),
+        bridge,
+        stretch("p2", 3, 4, &[n2, (60.0, 90.0)]),
+    ]);
+    let (out, report) = widen_run(&g);
+    assert!(report.kept.is_empty(), "{:?}", report.kept);
+    assert!(!report.zones.is_empty(), "the corner is tight");
+    assert_eq!(bits(*out.stretches[0].points.last().unwrap()), bits(n1));
+    assert_eq!(bits(out.stretches[1].points[0]), bits(n1));
+    assert_eq!(bits(*out.stretches[1].points.last().unwrap()), bits(n2));
+    assert_eq!(bits(out.stretches[2].points[0]), bits(n2));
+}
+
+#[test]
+fn the_outside_is_the_side_away_from_the_bend() {
+    let line = hairpin_points();
+    let mirrored: Vec<P> = line.iter().map(|p| (p.0, 8.0 - p.1)).collect();
+    let (a, _) = widen_run(&graph(vec![stretch("h", 1, 2, &line)]));
+    let (b, _) = widen_run(&graph(vec![stretch("h", 1, 2, &mirrored)]));
+    let (pa, pb) = (&a.stretches[0].points, &b.stretches[0].points);
+    assert_eq!(pa.len(), pb.len());
+    for (p, q) in pa.iter().zip(pb) {
+        assert!(dist((p.0, 8.0 - p.1), *q) < 1e-6, "{p:?} {q:?}");
+    }
+}
+
+#[test]
+fn nothing_outside_a_zone_moves_further_than_the_corridor() {
+    let g = random_walk(7, 20);
+    let (out, report) = widen_run(&g);
+    assert!(
+        report.max_move_m <= CORRIDOR_M + 1e-6,
+        "{}",
+        report.max_move_m
+    );
+    assert!(!report.zones.is_empty(), "the walk has tight curves");
+    for (i, (a, b)) in g.stretches.iter().zip(&out.stretches).enumerate() {
+        if report.per_stretch[i].max_outward_m == 0.0 {
+            let before = resample(&a.points, SAMPLE_M);
+            within_corridor(&before, &b.points);
+        }
+    }
+}
+
+fn zone_graph() -> RoadGraph {
+    let mut stretches = random_walk(11, 20).stretches;
+    stretches.push(stretch("zh", 101, 102, &hairpin_points()));
+    graph(stretches)
+}
+
+#[test]
+fn widening_does_not_depend_on_the_thread_count() {
+    let g = zone_graph();
+    let with = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| widen_run(&g))
+    };
+    let (g1, r1) = with(1);
+    let (g4, r4) = with(4);
+    assert!(!r1.zones.is_empty(), "no zone");
+    assert_eq!(g1, g4);
+    assert_eq!(r1, r4);
+    assert_eq!(format!("{g1:?}"), format!("{g4:?}"));
+    assert_eq!(format!("{r1:?}"), format!("{r4:?}"));
+}
+
+#[test]
+fn widening_gives_the_same_bytes_twice() {
+    let g = zone_graph();
+    let (a, ra) = widen_run(&g);
+    let (b, rb) = widen_run(&g);
+    assert!(!ra.zones.is_empty(), "no zone");
+    let bytes = |g: &RoadGraph| -> Vec<(u64, u64)> {
+        g.stretches
+            .iter()
+            .flat_map(|s| s.points.iter().map(|p| bits(*p)))
+            .collect()
+    };
+    assert_eq!(bytes(&a), bytes(&b));
+    assert_eq!(format!("{ra:?}"), format!("{rb:?}"));
+}
+
+#[test]
+fn a_zone_with_a_nan_or_zero_minimum_is_skipped() {
+    let g = graph(vec![stretch("h", 1, 2, &hairpin_points())]);
+    for value in [f64::NAN, 0.0, f64::INFINITY, -3.0] {
+        let wanted = move |_: &Stretch| value;
+        let (out, report) = smooth_graph(&g, &wanted, &SmoothParams::default());
+        assert!(report.zones.is_empty(), "{value}: {:?}", report.zones);
+        let (fit, _) = smooth_graph_fit_only(&g, &wanted, &SmoothParams::default());
+        assert_eq!(format!("{out:?}"), format!("{fit:?}"), "{value}");
+    }
 }
