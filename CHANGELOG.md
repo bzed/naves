@@ -16,7 +16,7 @@ All notable changes to this project are documented here. The format follows
 - Road lines are smoothed before bridges are fitted (`feat!`): each chain of stretches that merely continue each
   other is fitted by a smooth curve within 2 m of its OpenStreetMap line, with junctions, dead ends and bridge ends
   fixed, and a curve tighter than the tightest curve piece of its road type is widened outward to that radius
-  (an open corner may be cut inward). Breaking: roads move by up to a few metres, so edits that are keyed by slot can
+  (an open corner may be cut inward). Breaking: roads move by up to 2 m, and inside a widened curve by up to two minimum radii (about 20 m), so edits that are keyed by slot can
   be orphaned (`orphaned_edit`). New findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
   section in `build/report.json` and a line in the build summary.
   A curve that cannot be widened goes back to the line as drawn (blended over 6 m at its ends), a widened line does
@@ -46,11 +46,10 @@ All notable changes to this project are documented here. The format follows
   refused split is reported as `would_split`. A joint is never made onto the end node of the run's own stretch that the
   run does not reach (the lower leg of a switchback stays, reported as `loops_back`), and a dead-end side street goes
   whole instead of leaving a short rest joined to the road.
-- The frame of a clean-up of the road graph, which runs after the roads that are drawn twice are dropped. Its four
-  steps (sidepaths, short dead ends, close junctions, bridge approaches) are still empty, so nothing changes in the
-  roads yet. New findings for what the steps will report: `road_sidepath_dropped`, `road_stub_dropped`,
-  `road_junctions_merged`, `bridge_approach_made` (information) and `bridge_end_at_junction` (warning), also in the MCP
-  rule list. The tag `foot` is read from OpenStreetMap (`foot=use_sidepath` on a road).
+- The roads that are drawn twice are dropped before a clean-up of the road graph, whose four steps (sidepaths, short
+  dead ends, close junctions, bridge approaches) are the next entries. Their findings (`road_sidepath_dropped`,
+  `road_stub_dropped`, `road_junctions_merged`, `bridge_approach_made` as information, `bridge_end_at_junction` as a
+  warning) are also in the MCP rule list. The tag `foot` is read from OpenStreetMap (`foot=use_sidepath` on a road).
 - Short dead ends and junctions too close to tell apart are cleaned up before bridges are fitted. A dead-end stretch
   shorter than 6 m that is not drivable, or drivable and shorter than its own width, is not placed
   (`road_stub_dropped`); points of a road closer than 0.5 m to the point before are merged. Junctions joined by a
@@ -78,10 +77,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Collinear points of smoothed road lines are dropped at 0.20 m instead of 0.05 m, which shortens road placement:
-  on the example (terrain size 2048) the smoothed graph has 31 961 points instead of 59 453 and placement takes
-  791 s instead of 877 s, with no finding worse (road in water 8 to 3, earthworks capped 81 to 69, terrain misses
-  3678 to 3627, gaps 369 to 371, conflicts 828 = 828).
+- Road placement is about 40 % faster at equal input (a block-wise nearest-point lookup, bit for bit the same
+  result: 1382 s to 817 s on the example at terrain size 2048), and the smoothed lines drop collinear points at 0.20 m,
+  which shortens it further (31 961 points instead of 59 453 on the example, placement 877 s to 791 s). The 0.20 m
+  line was compared with 0.05 m on the example: road in water 8 to 3, earthworks capped 81 to 69 and terrain misses
+  3678 to 3627 are better, gaps 369 to 371 and kinks 18 to 21 are slightly worse, conflicts 828 = 828.
 - A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road
   pieces allow; before, only a ring tighter than the tightest arc of its surface was. Each collapsed roundabout is a
   new finding, `road_roundabout_collapsed`, at its centre.

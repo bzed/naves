@@ -307,6 +307,14 @@ impl Line {
     ///
     /// Looks only at the segments of the window (the arc lengths never decrease along the line) and passes
     /// over blocks of segments whose box is farther than a distance already found.
+    ///
+    /// Crate considered for the pruning: `rstar` (an R*-tree, 0.14.0, MIT or Apache-2.0, maintained by the georust
+    /// group, many users). Not used: the query here is the nearest point of one polyline within a window of arc
+    /// length that the segments' order already gives by binary search, the line is built once per placed part and
+    /// searched about a hundred thousand times per piece, so a tree per line would be built for few queries, and the
+    /// result must be bit for bit the old linear scan's (the first of equal distances, the same arithmetic per
+    /// segment), which a tree's traversal order does not promise. 16 segments per box and a seed block are
+    /// enough for the speed that is needed.
     fn nearest(&self, point: (f64, f64), lo: f64, hi: f64) -> Near {
         let mut best = Near {
             distance: f64::INFINITY,

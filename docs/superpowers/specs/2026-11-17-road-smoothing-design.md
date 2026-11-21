@@ -108,8 +108,10 @@ Fixed samples:
 - both end nodes of every bridge stretch (the bridge stays over what it spans).
 
 Weights: `c_i = 1` on plain road and `BRIDGE_STRAIGHT_WEIGHT` (10) on samples inside a bridge stretch, so that a
-bend moves off the bridge onto its approaches where the corridor allows. `W_STAY` (0.02) is small: the corridor is
-the real limit, the term only makes the answer unique on straight roads.
+bend moves off the bridge onto its approaches where the corridor allows. `W_STAY` (0.02) is small, but it, not the
+corridor, is what limits the fit: on a unit right-angle corner the largest offset is 0.97 m of the 2 m allowed, and the
+corridor would bind only at about a tenth of that weight (0.002 is the untried candidate: 16 degrees turn, 2.7 m wanted).
+The weight was not tuned (see Open points); it also makes the answer unique on straight roads.
 
 One offset per sample keeps the problem small and stops samples from sliding along the road. The objective is a
 convex quadratic and the constraints are bounds, so the result is unique and deterministic. Chains are independent;
@@ -169,7 +171,7 @@ A second pass does this after the fit, chain by chain:
   keep their positions. A sample that is in a zone keeps its outward side in later passes, so the reverse bends
   of the spreading legs cannot turn the zone around.
 - **Where it cannot be done.** A zone whose smallest radius (its samples and the held sample on each side) is still
-  below `WIDEN_KEEP_FRACTION` (0.9) of the wanted radius after the last pass goes back to the fit's samples (its
+  below `WIDEN_KEEP_FRACTION` (0.9) of the wanted radius after the last pass goes back to the original line (the resampled OpenStreetMap vertices, since the fit is tighter than the original; its
   boundary samples are held, so this is seamless, and it moves no node). It stays in the report with its position,
   the radius the attempt reached, the radius wanted and `plate_candidate: true`: the bend cannot be built as a curve,
   and these are the candidates for the second allowed form, a concrete plate joining the two legs (maintainer,
@@ -216,7 +218,7 @@ stretch whose line is not finite or collapses to one point is a failure even whe
 | `WIDEN_SLACK_COST` | 1e4 | cost of exceeding the radius bound |
 | `WIDEN_PASSES` | 3 | resample-and-repeat limit |
 | `WIDEN_INWARD_MAX_DEG` | 120.0 | an open corner (summed turn up to this) may cut inward |
-| `WIDEN_KEEP_FRACTION` | 0.9 | a zone below this fraction of the wanted radius goes back to the fit |
+| `WIDEN_KEEP_FRACTION` | 0.9 | a zone below this fraction of the wanted radius goes back to the original line |
 | `MAX_CHAIN_SAMPLES` | 200 000 | a longer chain is neither fitted nor widened |
 
 ## Tuning round 1
@@ -239,14 +241,44 @@ Berchtesgaden at terrain size 2048, before against after, one run each:
 - how many bridges get a model instead of a panel grid;
 - road length tighter than the family's minimum radius, before and after;
 - distance of placed piece joints from the line (now median 0.41 m, p95 5.45 m, 26 % over 1 m);
-- largest sideways move of any road (must be at most `CORRIDOR_M`), and that no junction or bridge node moved;
+- largest sideways move of any road (outside widened zones at most `CORRIDOR_M`; inside a zone up to `WIDEN_REACH` times
+  the minimum radius), and that no junction or bridge node moved (nodes where a road merely continues may move inside a zone);
 - the findings must not get worse: `road_gap`, `road_conflict`, `road_not_drivable`, `road_misses_terrain`,
   `road_grade`, `bridge_clearance`, joins over 0.5 m; and the run time.
 
 A game check with `tools/ingame-check` on about ten sites: bridge ends that kinked, two switchbacks, two city
 corners, one straight road as a control.
 
+## Results
+
+Berchtesgaden at terrain size 2048 (ledger `.superpowers/sdd/2026-11-17-naves-road-smoothing/progress.md`). A is the
+base with the stage off, B the first wiring with the stage on, C the placement fix with the stage off, D the placement
+fix with the stage on (0.05 m simplification), E D with `SIMPLIFY_TOL_M` 0.20 m.
+
+| Figure | A (off) | B | C (off, fix) | D | E (0.20 m) |
+|---|---|---|---|---|---|
+| tight length (m) | 16143 | 4237 | | 4088 | |
+| `road_gap` count | 368 | 362 | 389 | 369 | 371 |
+| `road_gap` length (m), largest (m) | 1526, 131.4 | 2189, 416.5 | 1618, 131.4 | 1615, 104.1 | |
+| `road_not_drivable` | 138 | 155 | 141 | 146 | 145 |
+| `road_conflict` | 812 | 837 | 797 | 828 | 828 |
+| `road_misses_terrain` | 3823 | 3615 | 3752 | 3678 | 3627 |
+| `road_in_water` | 8 | 8 | | | 3 |
+| `earthworks_capped` | | | | 81 | 69 |
+| `road_kink` | 22 | 18 | | 18 | 21 |
+| points after the drop | 27894 | 60710 | | 59453 | 31961 |
+| placement (s) | 557 | 822 | 549 | 888 | 791 |
+
+Zones in D: 873, of which 578 reached, 41 near misses and 254 plate candidates; no fixed node moved, 54 of 210
+two-stretch nodes moved. Quiet machine, same code, stage off against on: 551 s and 568 s against 877 s and 927 s at 0.05
+m, and 791 s at 0.20 m (+44 %: the time bar of 20 % is not met; whether the stage ships on is the maintainer's decision). Blank cells
+were not recorded.
+
 ## Open points
+
+- `W_STAY` stays 0.02: the spec sentence that the corridor limits the fit was wrong, 0.002 is the untried candidate,
+  and sharp corners stay tighter and nodes between two stretches keep a kink of about 8 degrees (fixed nodes) until it is
+  tuned.
 
 - `CORRIDOR_M` is a guess. At scale 0.5 a real 4 m shift is 2 m on the map. The measurement decides; it is one
   constant.

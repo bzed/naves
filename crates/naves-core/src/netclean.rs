@@ -68,7 +68,9 @@ pub struct KeptSidepath {
     /// The id of the road it runs beside.
     pub road: String,
     /// Why it stays: `"clear"` (the two earthworks keep their distance and no bridge is near), `"would_disconnect"`
-    /// (the road is out of reach, cannot be joined there, or a connector to it would be too long), `"would_split"`
+    /// (the road is out of reach, cannot be joined there, or a connector to it would be too long), `"loops_back"`
+    /// (a joint would land on an end node of the run's own stretch that the run does not reach, as on the lower leg of
+    /// a switchback), `"would_split"`
     /// (the removal would cut a connected piece off from the rest of the network) or `"crosses"` (a straight
     /// connector to the road would cross a third road).
     pub reason: &'static str,
@@ -352,6 +354,10 @@ fn without_specks(points: &[Point]) -> (Vec<Point>, Vec<Point>) {
 /// other end is a node where something else is joined; a stretch that stands alone, a bridge, a tunnel and a
 /// roundabout stretch are not stubs. The graph is looked at in the order of the ids, and a stub that is taken away
 /// is no longer there for the next one, so two stubs that are the whole of a piece of road do not go both.
+///
+/// What is a stub is decided on the input graph, not on what earlier removals left (a stretch that becomes a dead end
+/// because its neighbour went is not looked at again). A road cut at the edge of the map is no dead end: a free end
+/// on the map edge is not a stub.
 #[must_use]
 pub fn drop_stubs(
     graph: &RoadGraph,

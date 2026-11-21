@@ -123,7 +123,7 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   angles made corners that the piece set cannot build, and new nodes landed next to existing ones): every node on the
   removed part where another stretch joins is connected to the road instead. The joining stretch is continued along
   its own end heading to the point where that line meets the road, if that point is within `2 * SIDEPATH_MAX_M` of the
-  old node; otherwise by a straight connector to the nearest point of the road. The rest of a sidepath at an end of the
+  old node; otherwise by a straight connector to the nearest point of the road (beside a bridge: the nearer end of the deck, which cannot be joined). The rest of a sidepath at an end of the
   removed run meets the road at a point ahead of that end, towards the removed part, by twice its distance from the
   road (at most a connector of `2 * SIDEPATH_MAX_M`), within the part of the road the run lies along: a shallow merge.
   A point on the road is never a new node when a node of the road is within `JUNCTION_SPACING_M` of it (12.5 m, the
@@ -131,7 +131,7 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   them), two new nodes on one road piece are that far apart (the later uses the earlier), and none is within that distance
   of the end of a bridge or tunnel (it moves along the road to that distance; `APPROACH_M` is the smaller of the two). A road
   piece shorter than two junction pieces with a bridge or tunnel at both ends is not joined. Reach is the distance from
-  the node (or the end of the run) to the nearest point of the road, before any of these moves: at most
+  the node (or the end of the run) to the nearest point of the road (beside a bridge: the nearer end of the deck), before any of these moves: at most
   `SIDEPATH_MAX_M` (amended 2026-11-20, controller ruling M8). The connector to the place the point moved to may then
   be up to `2 * SIDEPATH_MAX_M` long, and every connector, also one moved onto an earlier new node, is checked for
   crossing a third road. If a connector would cross a third road or be longer than its limit, if the road is out of
@@ -152,7 +152,7 @@ A sidepath is a part of a stretch that runs beside a road of higher rank (the ra
   joined back to the junction it started from) is refused, and the run stays, reported as `loops_back`; there is no fall back to
   the nearest point.
 - A short end piece also goes with the run when the run covers the other end of its stretch and that end is free: a
-  dead-end spur is removed whole, without a joint or a new node, and a node that two or more roads still pass through needs no connector.
+  dead-end spur is removed whole, without a joint, and a node that two or more roads still pass through needs no connector. Where the spur's near node has exactly one other stretch (the spur continues a road that ends there), that road's end is still joined to the main road by a connector, which can be a new node.
 
 This is the duplicate drop (`drop_duplicates`, which removes a road lying on a higher road) with a wider distance and
 the "disturbs" test; it reuses that code's sampling and leaving points where it fits.
@@ -232,7 +232,7 @@ of the graph as it was and reports it. Nothing panics.
 
 ### Effects on other stages
 
-- **User edits** are keyed by stretch id, preset and slot. Removed stretches and moved ends orphan edits there; this
+- **User edits** are keyed by stretch id, preset and slot. Removed stretches orphan edits there; a stretch whose end moved keeps its id, so edits keyed by it survive; this
   is reported as today (`orphaned_edit`) and noted in the changelog.
 - **Bridges.** The deck-end rules of the bridges work stay. With step 4 most of them have nothing left to do at the
   sites that needed them; they are not removed in this work.
@@ -280,4 +280,13 @@ removed sidepaths, three merged junctions, and the smoothing design's sites.
   switched off and those sites stay reported.
 - `JUNCTION_MERGE_M` and `APPROACH_M` follow from the 4 m cell at size 2048. At other terrain sizes they should
   follow the cell; for now they are constants.
+- `bad_connector` skips stretches that carry an `On` run, and connectors are not checked against each other; a rare
+  case, kept as it is.
+- `JUNCTION_MERGE_M` (6 m) is smaller than `JUNCTION_SPACING_M` (12.5 m), the length of a junction piece: two junctions 6
+  to 12.5 m apart are not merged but cannot both get a full piece. Changing it changes the map and needs a run; it is
+  for the maintainer.
+- `road_below` in step 4 looks at the roads under the part that is cut off, not at roads just beyond the cut.
+- "Disturbs" at a 4 m cell filters nothing: the threshold (two earthworks and a cell) is at least 16 m against the 15 m
+  candidate distance, so every candidate disturbs, and `clear` happens only on finer grids. The maintainer's "leave it if
+  it doesn't disturb" therefore does not spare anything at the example's grid.
 - After this stage: decide whether the height solve moves to a centre line sampled at a fixed step.

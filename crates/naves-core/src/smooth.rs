@@ -16,8 +16,9 @@
 //!
 //! [`smooth_graph`] applies the fit to a whole [`RoadGraph`], chain by chain: a chain is a run of stretches
 //! that merely continue each other at nodes where exactly two stretches meet. Every node of a chain is a
-//! fixed sample, so node positions never change; at a junction the next sample is fixed as well, so the
-//! direction in which a road leaves it does not change either.
+//! fixed sample in the fit, and junctions, dead ends and bridge ends stay where they are; a node where a road
+//! merely continues (two stretches) may move inside a widened zone (see [`WidenedZone`]). At a junction the
+//! next sample is fixed as well, so the direction in which a road leaves it does not change either.
 //!
 //! The fit shrinks curves. [`smooth_graph`] therefore follows it with a second pass per chain (module
 //! `widen`) that widens curves tighter than the road pieces can build, outward, to the family's minimum
@@ -61,7 +62,7 @@ pub const SMOOTH_ENABLED: bool = true;
 /// (up to what a fillet of the minimum radius needs); a bend that turns more is widened outward only.
 pub const WIDEN_INWARD_MAX_DEG: f64 = 120.0;
 /// A zone that still has a sample tighter than this fraction of the wanted radius after the last pass goes
-/// back to the fit.
+/// back to the original line (the resampled vertices OpenStreetMap drew).
 pub const WIDEN_KEEP_FRACTION: f64 = 0.9;
 /// After the stage, a point of a stretch is dropped when taking it out moves the line by less than this, in
 /// metres (a straight 100 m road is two points). Ends of stretches are never dropped.
@@ -366,7 +367,7 @@ pub struct WidenedZone {
     /// (within 1 %).
     pub reached: bool,
     /// The bend cannot be built as a curve: after the last pass the zone was still tighter than
-    /// [`WIDEN_KEEP_FRACTION`] of the wanted radius, so it went back to the fit's line (and moved nothing).
+    /// [`WIDEN_KEEP_FRACTION`] of the wanted radius, so it went back to the original line (the vertices OpenStreetMap drew, and it moved nothing).
     /// `radius_after_m` is what the attempt got. The second allowed form is a concrete plate that joins the two
     /// legs; it is a later task, designed from the zones with this flag.
     pub plate_candidate: bool,
@@ -393,7 +394,8 @@ pub struct SmoothReport {
     pub max_move_m: f64,
     /// Road length tighter than its family's minimum radius, before. Measured on the resampled line
     /// ([`SAMPLE_M`] steps), not on the original polyline, so it already has the corners that resampling
-    /// shaved.
+    /// shaved. A zone that went back to the original line is measured at its vertex, on the resample of the
+    /// written line too, which can read up to about 2 m less per reverted sharp corner.
     pub tight_before_m: f64,
     /// The same after, on the same resampled line.
     pub tight_after_m: f64,
@@ -453,9 +455,18 @@ fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
 /// fewer than three points, or a tolerance that is not positive give the line back unchanged. Deterministic;
 /// iterative, so a long line cannot overflow the stack.
 ///
-/// The crates considered for this were `geo` (its `Simplify` is this algorithm, but it brings `geo-types`,
-/// `robust`, `spade`, `rstar` and more for thirty lines) and `kurbo` (simplifies Bézier paths, not polylines);
-/// neither is a dependency of `naves-core`.
+/// The crates considered for this, none of them a dependency of `naves-core`:
+///
+/// - `geo`: its `Simplify` is this algorithm, but it brings `geo-types`, `robust`, `spade`, `rstar` and more for
+///   thirty lines.
+/// - `kurbo`: simplifies Bézier paths, not polylines.
+/// - `simplify-polyline` 0.5.0 (a port of simplify-js, MIT): one maintainer and no release since October 2023;
+///   `simplify_dp_step` recurses once per kept point (a chain of 200 000 samples can overflow the stack) and
+///   indexes `points[0]` and `points[i]` unchecked; it does not look at non-finite points and a tolerance of
+///   zero or NaN is not refused. Its optional radial pre-filter drops points by a different rule than "every
+///   dropped point lies within the tolerance of the result".
+/// - `rdp` 0.12.8 (MIT): an FFI wrapper around `geo`'s Ramer-Douglas-Peucker and Visvalingam-Whyatt for C callers
+///   (raw pointers, `unsafe`), so it would bring `geo` as well; about a hundred recent downloads.
 #[must_use]
 pub fn simplify_line(line: &[(f64, f64)], tolerance: f64) -> Vec<(f64, f64)> {
     let n = line.len();

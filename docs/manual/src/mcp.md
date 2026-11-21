@@ -72,7 +72,7 @@ empty numbers and no violations, not an error. `validation_list` takes an option
 the tools are missing, the error starts with "Roads need dayzmake" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the
-progress lines the build printed. If a tool is missing, the error names it and the variable to set.
+progress lines the build printed and `smoothing`, the one-line summary of the road smoothing (chains, largest move, tight length before and after, zones reached; `null` when the stage did not run; the numbers are in `roads.smoothing` of `build/report.json`). If a tool is missing, the error names it and the variable to set.
 
 Errors are returned as tool errors with a message (the `isError` flag of the MCP result); the server keeps
 running. The heightmap needs DEM files in `sources.dem`; without them `heightmap_stats` and `render_topdown`
