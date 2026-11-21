@@ -369,12 +369,17 @@ Notes section 3.4, one field per leg, over the leg's box:
 - The grid is laid out so that the end anchor is the centre of a cell (it covers the leg's box and the anchor), so the
   start cost of the Dijkstra from that cell is 0, not a distance inside the cell. 8-connected; the heap is ordered by
   cost (`total_cmp`), then cell index. Not a number in the box, anchor or parameters gives an empty field (estimate 0).
-- An edge between neighbouring cell centres is allowed if the band test passes with the grade limit removed (cut,
-  fill, no data, obstacles, walls still apply), run in the direction of travel, and both cells are within the stray
-  cap.
+- An edge between neighbouring cell centres is allowed if the segment test passes (obstacles, clearances), there is
+  terrain at the band's samples along it, no wall that allows no crossing blocks it, and both cells are within the
+  stray cap (tested at the cell centres). It is run in the direction of travel. This is the band with the grade limit
+  removed: at an infinite grade every sample is reachable from the one before it, so cut and fill never bind, and the
+  code does not call `band_step` but does exactly this (a test pins that the answers agree).
 - Edge cost: since cut + fill > 0, it is the distance (the notes' rule for that case).
 - Estimate at a point: the cell's value divided by `CHAMFER_ERROR`, minus one field cell, not below 0. A cell without
-  a value (cut off by the band, water or a wall), and a point outside the grid, give 0.
+  a value (water, a wall, missing terrain or the stray cap cut it off), a point outside the grid, an empty field and a
+  target inside an obstacle all give 0: 0 does not mean reached, and the search must not prune on it. The estimate is
+  a lower bound on heights, and in the plane only up to the grid: a corridor no 6 m segment fits, and the stray cap
+  tested at centres, can make it too high in narrow places.
 
 ### The search for one leg
 

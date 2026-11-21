@@ -2,24 +2,40 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! The cost-to-go field of a leg: for every cell of a coarse grid over the leg's box, how far it is, by a road
-//! that the band, the obstacles and the walls allow, from the leg's end anchor. The arc search of the leg uses it as
-//! its estimate of the road still to build (spec: "The cost-to-go field", clean-room notes 3.4).
+//! that the obstacles, the walls and the terrain allow, from the leg's end anchor. The arc search of the leg uses it
+//! as its estimate of the road still to build (spec: "The cost-to-go field", clean-room notes 3.4).
 //!
-//! The field runs the band with the grade limit removed and with cut and fill, obstacles and walls as they are, so
-//! it never says more than the search can reach: it is a lower bound of the road that remains. Dijkstra over the
-//! cells is run with an ordered heap (`total_cmp`, then the cell index), so two builds agree bit for bit. Crates
-//! were considered for it (`pathfinding`, `petgraph`) and not used: the edges are tested lazily by the band, which
-//! those crates' graph models cannot do without first building all eight million edges.
+//! The field is the band with the grade limit removed. Then the band stops nothing by height, because at an infinite
+//! grade every sample may be reached from the one before it, and cut and fill never bind. What shapes the field is
+//! the segment test (obstacles, edge, clearances), the terrain (a sample with no height blocks), the walls that
+//! allow no crossing and the stray cap (tested at the cell centres). An edge therefore costs one segment test and
+//! the terrain at the band's samples, the same answer as `band_step` with an infinite grade (a test pins this) at
+//! none of its allocations. It is a lower bound as far as heights go, but only up to the grid's discretisation in
+//! the plane: a corridor that no 6 m centre-to-centre segment fits, and the stray cap tested at centres instead of
+//! at samples, can make the estimate too high in narrow places. An estimate of 0 does not mean the point is
+//! reached: it is also what an unreached cell, an empty field and a target inside an obstacle give.
+//!
+//! Dijkstra runs with an ordered heap (`total_cmp`, then the cell index), so two builds agree bit for bit. The
+//! open set holds one entry per strict improvement of a cell, at most 8 per cell. Crates were considered
+//! (`pathfinding`, `petgraph`) and not used: `pathfinding::dijkstra_all` takes its edges lazily, but needs an `Ord`
+//! cost (`f64` is not), returns a hash map instead of a flat array, and tests all 8 edges of every cell, including
+//! those to settled cells, about twice as many edge tests as relaxing first and testing only on improvement.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::band::{Band, Reach, band_step};
+use super::band::Band;
 use super::raster::{Clearance, Obstacles, Wall};
 use super::{CHAMFER_ERROR, PLAN_STEP_M};
 
 /// How often the resolution is multiplied by 1.25 at most while it is made to fit.
 const MAX_GROWTHS: usize = 400;
+/// Spacing of the terrain samples of an edge when the band's is not usable, in metres (as the band's own).
+const SPACING_DEFAULT: f64 = 2.0;
+/// Most terrain samples of one edge (as the band's own).
+const MAX_SAMPLES: usize = 1_000_000;
+/// Tolerance in the number of samples of an edge (as the band's own).
+const SLACK: f64 = 1e-9;
 
 /// A cell count as `f64` (exact: a field has at most `max_cells` cells, far below 2^32 per side).
 fn fl(n: usize) -> f64 {
@@ -144,11 +160,16 @@ const NEIGHBOURS: [(isize, isize); 8] = [
 impl Field {
     /// The field of a leg. `min` and `max` are the corners of the leg's box and `target` is the end anchor; the
     /// grid covers the box and the target, with the target at the centre of a cell, at the resolution
-    /// `max(step_m, cell_m)` multiplied by 1.25 until there are at most `max_cells` cells. An edge between
-    /// neighbouring cell centres is allowed if the band test passes with the grade limit removed (run from the
-    /// farther cell towards the nearer one, the direction of travel), no wall blocks it, and both cells are within
-    /// `stray_cap_m` of the original line. Its cost is its length. A box, target or parameter that is not a number
-    /// gives an empty field, whose estimate is 0 everywhere.
+    /// `max(step_m, cell_m)` multiplied by 1.25 until there are at most `max_cells` cells. A `max_cells` above
+    /// `u32::MAX` counts as `u32::MAX` (about 34 GB of values), so it is for a trusted constant only. The open set
+    /// of the Dijkstra holds at most 8 entries per cell.
+    ///
+    /// An edge between neighbouring cell centres is allowed if no wall blocks it, the segment test passes, there is
+    /// terrain at the band's samples along it (the band with the grade limit removed; see the module), and both
+    /// of its cells are within `stray_cap_m` of the original line. It is tested from the farther cell towards the
+    /// nearer one, the direction of travel, and its cost is its length. A box or target that is not a number, a
+    /// box too large to fit, or a band the band test refuses gives an empty field or the target cell alone, whose
+    /// estimate is 0 everywhere.
     #[must_use]
     #[expect(
         clippy::too_many_arguments,
@@ -202,19 +223,31 @@ impl Field {
             rows: grid.rows,
             value: vec![f64::INFINITY; grid.cols.saturating_mul(grid.rows)],
         };
-        let free_band = Band {
-            grade: f64::INFINITY,
-            ..*band
-        };
-        field.dijkstra(
-            grid.target,
-            &free_band,
-            ground,
-            obstacles,
-            walls,
-            clear,
-            stray_cap_m,
-        );
+        // The band's own validity rules (a grade that is NaN or negative, a cut, fill or tolerance that is not a
+        // finite, non-negative number) refuse every edge there, so the field is the target cell alone.
+        let finite = |v: f64| v.is_finite() && v >= 0.0;
+        let usable = band.grade >= 0.0
+            && finite(band.cut_m)
+            && finite(band.fill_m)
+            && finite(band.anchor_tol_m);
+        if usable {
+            field.dijkstra(
+                grid.target,
+                band.spacing_m,
+                ground,
+                obstacles,
+                walls,
+                clear,
+                stray_cap_m,
+            );
+        } else if let Some(first) = field.value.get_mut(
+            grid.target
+                .1
+                .saturating_mul(grid.cols)
+                .saturating_add(grid.target.0),
+        ) {
+            *first = 0.0;
+        }
         field
     }
 
@@ -233,31 +266,45 @@ impl Field {
         Some((c, r))
     }
 
-    /// Whether a road may be built from the centre `from` to the centre `to`.
+    /// Whether a road may be built from the centre `from` to the centre `to`: no wall blocks it, the segment test
+    /// passes, and there is terrain at every sample of the band (`spacing_m` apart, the end last, placed as the
+    /// band places them). This is `band_step` with an infinite grade, without its allocations.
     fn edge_ok(
         from: (f64, f64),
         to: (f64, f64),
-        band: &Band,
+        spacing_m: f64,
         ground: &dyn Fn((f64, f64)) -> Option<f64>,
         obstacles: &Obstacles,
         walls: &[Wall],
         clear: Clearance,
     ) -> bool {
-        let Some(z) = ground(from) else {
-            return false;
-        };
-        if walls.iter().any(|w| w.blocks(from, to)) {
+        if walls.iter().any(|w| w.blocks(from, to)) || obstacles.segment(from, to, clear).is_err() {
             return false;
         }
-        band_step(
-            &[from, to],
-            ground,
-            band,
-            Reach::at_anchor(z, band),
-            obstacles,
-            clear,
-        )
-        .is_ok()
+        let has_ground = |p| ground(p).is_some_and(f64::is_finite);
+        let len = (to.0 - from.0).hypot(to.1 - from.1);
+        if !has_ground(from) {
+            return false;
+        }
+        if !(len > 0.0 && len.is_finite()) {
+            return true;
+        }
+        let spacing = if spacing_m.is_finite() && spacing_m > 0.0 {
+            spacing_m
+        } else {
+            SPACING_DEFAULT
+        };
+        let n = count((len / spacing - SLACK).ceil().max(1.0), MAX_SAMPLES).unwrap_or(1);
+        let ds = len / fl(n);
+        (1..=n).all(|i| {
+            let p = if i < n {
+                let t = (fl(i) * ds / len).clamp(0.0, 1.0);
+                (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+            } else {
+                to
+            };
+            has_ground(p)
+        })
     }
 
     #[expect(
@@ -267,7 +314,7 @@ impl Field {
     fn dijkstra(
         &mut self,
         target: (usize, usize),
-        band: &Band,
+        spacing_m: f64,
         ground: &dyn Fn((f64, f64)) -> Option<f64>,
         obstacles: &Obstacles,
         walls: &[Wall],
@@ -292,6 +339,9 @@ impl Field {
             }
             let (col, row) = (cell % cols.max(1), cell / cols.max(1));
             let here = self.centre(col, row);
+            if !within_cap(here) {
+                continue;
+            }
             for d in NEIGHBOURS {
                 let Some((nc, nr)) = self.neighbour(col, row, d) else {
                     continue;
@@ -307,9 +357,8 @@ impl Field {
                     continue;
                 }
                 let there = self.centre(nc, nr);
-                if within_cap(here)
-                    && within_cap(there)
-                    && Self::edge_ok(there, here, band, ground, obstacles, walls, clear)
+                if within_cap(there)
+                    && Self::edge_ok(there, here, spacing_m, ground, obstacles, walls, clear)
                     && let Some(v) = self.value.get_mut(next)
                 {
                     *v = through;
@@ -325,8 +374,9 @@ impl Field {
     /// The estimate of the road still to build from the point `p`: the value of its cell divided by
     /// [`CHAMFER_ERROR`] (the chamfer distance is up to that much longer than the straight one), less one field
     /// cell (the point may be anywhere in its cell), not below 0. A point outside the field, not a number, or in
-    /// a cell that cannot reach the target (enclosed by water, or cut off by the band) gives 0: the estimate is
-    /// only ever a lower bound.
+    /// a cell that cannot reach the target (enclosed by water, cut off by a wall or by missing terrain, or beyond the
+    /// stray cap) gives 0, as do an empty field and a target inside an obstacle: 0 does not mean reached. Up to the
+    /// grid's discretisation it is a lower bound of the road still to build.
     #[must_use]
     pub fn estimate(&self, p: (f64, f64)) -> f64 {
         let col = count(((p.0 - self.origin.0) / self.res).floor(), self.cols);

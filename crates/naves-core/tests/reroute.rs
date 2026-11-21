@@ -983,6 +983,16 @@ fn field_with(
     ground: &dyn Fn((f64, f64)) -> Option<f64>,
     band: &Band,
 ) -> Field {
+    field_capped(obstacles, walls, ground, band, 1.0e9)
+}
+
+fn field_capped(
+    obstacles: &Obstacles,
+    walls: &[Wall],
+    ground: &dyn Fn((f64, f64)) -> Option<f64>,
+    band: &Band,
+    stray_cap_m: f64,
+) -> Field {
     Field::build(
         (0.0, 0.0),
         (200.0, 200.0),
@@ -994,7 +1004,7 @@ fn field_with(
         obstacles,
         walls,
         NONE,
-        1.0e9,
+        stray_cap_m,
         1_000_000,
     )
 }
@@ -1111,11 +1121,26 @@ fn the_field_is_bounded_by_max_cells() {
 
 #[test]
 fn the_field_ignores_the_grade() {
-    let slope = |p: (f64, f64)| Some(0.5 * p.0);
+    // 200 %: a 6 m edge rises 12 m, more than the cut, the tolerance and the grade limit allow together
+    let slope = |p: (f64, f64)| Some(2.0 * p.0);
     let o = open_world();
-    let steep = field_with(&o, &[], &slope, &field_band(0.05));
-    let level = field_with(&o, &[], &flat, &field_band(0.05));
+    let limited = field_band(0.05);
+    assert!(
+        band_step(
+            &[(100.0, 100.0), (106.0, 100.0)],
+            &slope,
+            &limited,
+            Reach::at_anchor(200.0, &limited),
+            &o,
+            NONE
+        )
+        .is_err(),
+        "the band with its grade refuses the edge, so the test can tell"
+    );
+    let steep = field_with(&o, &[], &slope, &limited);
+    let level = field_with(&o, &[], &flat, &limited);
     for p in [(142.0, 100.0), (30.0, 170.0), (190.0, 20.0)] {
+        assert!(steep.estimate(p) > 30.0);
         assert_eq!(steep.estimate(p).to_bits(), level.estimate(p).to_bits());
     }
 }
@@ -1138,34 +1163,115 @@ fn two_builds_agree_bit_for_bit() {
 }
 
 #[test]
-fn points_outside_the_field_and_odd_input_do_not_panic() {
+fn points_outside_the_field_do_not_panic() {
     let field = field_with(&open_world(), &[], &flat, &field_band(0.1));
     for p in [
         (-50.0, 10.0),
         (f64::NAN, 1.0),
         (1.0, f64::INFINITY),
         (1e300, 1e300),
+        (205.0, 100.0), // exactly past the last column
     ] {
-        assert!(field.estimate(p).abs() < 1e-9);
+        assert!(field.estimate(p).abs() < 1e-9, "{p:?}");
     }
-    let obstacles = open_world();
-    let nan = f64::NAN;
-    let broken = Field::build(
-        (nan, 0.0),
-        (200.0, f64::INFINITY),
-        (nan, nan),
-        0.0,
-        nan,
-        &field_band(0.1),
+}
+
+/// A build of the 200 m examples with one bad input at a time.
+#[expect(clippy::too_many_arguments, reason = "one build, every input")]
+fn odd(
+    min: (f64, f64),
+    max: (f64, f64),
+    target: (f64, f64),
+    step: f64,
+    cell: f64,
+    band: &Band,
+    cap: f64,
+    max_cells: usize,
+) -> Field {
+    Field::build(
+        min,
+        max,
+        target,
+        step,
+        cell,
+        band,
         &flat,
-        &obstacles,
+        &open_world(),
         &[],
         NONE,
-        nan,
-        0,
+        cap,
+        max_cells,
+    )
+}
+
+#[test]
+fn each_bad_input_gives_a_field_without_a_panic() {
+    let nan = f64::NAN;
+    let ok = field_band(0.1);
+    let (lo, hi, mid) = ((0.0, 0.0), (200.0, 200.0), (100.0, 100.0));
+    // not a number: target, box (the grid then covers the target only), step and cell (the default step)
+    assert_eq!(
+        odd(lo, hi, (nan, nan), 6.0, 4.0, &ok, 1e9, 1_000_000).cells(),
+        0
     );
-    assert!(broken.estimate((1.0, 1.0)).abs() < 1e-9);
-    // a clearance still gives a field
+    let boxless = odd(
+        (nan, 0.0),
+        (200.0, f64::INFINITY),
+        mid,
+        6.0,
+        4.0,
+        &ok,
+        1e9,
+        1_000_000,
+    );
+    assert!(boxless.cells() >= 1 && boxless.estimate((100.0, 100.0)).abs() < 1e-9);
+    let default_step = odd(lo, hi, mid, 0.0, nan, &ok, 1e9, 1_000_000);
+    assert!((default_step.estimate((142.0, 100.0)) - (42.0 / CHAMFER_ERROR - 6.0)).abs() < 0.5);
+    // a box that cannot be made to fit in the growth limit is empty
+    assert_eq!(
+        odd(lo, (1e300, 1e300), mid, 6.0, 4.0, &ok, 1e9, 1_000_000).cells(),
+        0
+    );
+    // at most one cell for a limit of 0
+    assert_eq!(odd(lo, hi, mid, 6.0, 4.0, &ok, 1e9, 0).cells(), 1);
+    // a cap that is NaN blocks every edge: the target cell alone
+    assert!(
+        odd(lo, hi, mid, 6.0, 4.0, &ok, nan, 1_000_000)
+            .estimate((142.0, 100.0))
+            .abs()
+            < 1e-9
+    );
+    // a band the band test refuses: the same
+    for bad in [
+        Band { grade: nan, ..ok },
+        Band { cut_m: -1.0, ..ok },
+        Band {
+            fill_m: f64::INFINITY,
+            ..ok
+        },
+        Band {
+            anchor_tol_m: nan,
+            ..ok
+        },
+    ] {
+        assert!(
+            odd(lo, hi, mid, 6.0, 4.0, &bad, 1e9, 1_000_000)
+                .estimate((142.0, 100.0))
+                .abs()
+                < 1e-9
+        );
+    }
+    // an infinite grade is the field's own
+    let inf = Band {
+        grade: f64::INFINITY,
+        ..ok
+    };
+    assert!(odd(lo, hi, mid, 6.0, 4.0, &inf, 1e9, 1_000_000).estimate((142.0, 100.0)) > 30.0);
+}
+
+#[test]
+fn a_clearance_and_a_target_outside_the_box_still_give_a_field() {
+    let obstacles = open_world();
     let cleared = Field::build(
         (0.0, 0.0),
         (200.0, 200.0),
@@ -1181,20 +1287,260 @@ fn points_outside_the_field_and_odd_input_do_not_panic() {
         1_000_000,
     );
     assert!(cleared.estimate((20.0, 100.0)) > 100.0);
-    // a target outside the box is covered by the grid all the same
-    let outside = Field::build(
+    let outside = odd(
         (0.0, 0.0),
         (100.0, 100.0),
         (150.0, 100.0),
         6.0,
         4.0,
         &field_band(0.1),
+        1e9,
+        1_000_000,
+    );
+    assert!(outside.estimate((60.0, 100.0)) > 60.0);
+}
+
+#[test]
+fn a_target_inside_an_obstacle_reaches_nothing() {
+    let o = with_lake();
+    let field = Field::build(
+        (0.0, 0.0),
+        (200.0, 200.0),
+        (110.0, 110.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
         &flat,
-        &obstacles,
+        &o,
         &[],
         NONE,
         1.0e9,
         1_000_000,
     );
-    assert!(outside.estimate((60.0, 100.0)) > 60.0);
+    assert!(field.cells() > 0);
+    assert!(field.estimate((50.0, 100.0)).abs() < 1e-9);
+}
+
+#[test]
+fn the_stray_cap_holds_the_field_near_the_original_line() {
+    let mut o = world(0.0);
+    o.set_original(&[(100.0, 100.0), (160.0, 100.0)]);
+    o.finish();
+    let capped = field_capped(&o, &[], &flat, &field_band(0.1), 20.0);
+    let free = field_capped(&o, &[], &flat, &field_band(0.1), 1.0e9);
+    // 60 m off the line: out of reach with the cap, an open-ground value without it
+    assert!(capped.estimate((160.0, 160.0)).abs() < 1e-9);
+    assert!(free.estimate((160.0, 160.0)) > 60.0);
+    // near the line the two agree
+    let near = capped.estimate((150.0, 110.0));
+    assert!(near > 40.0, "{near}");
+    assert_eq!(near.to_bits(), free.estimate((150.0, 110.0)).to_bits());
+}
+
+#[test]
+fn a_limit_above_u32_max_is_capped_not_wrapped() {
+    let big = usize::try_from(u64::from(u32::MAX) + 2).unwrap_or(usize::MAX);
+    let wrapped = odd(
+        (0.0, 0.0),
+        (200.0, 200.0),
+        (100.0, 100.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        1e9,
+        big,
+    );
+    let top = odd(
+        (0.0, 0.0),
+        (200.0, 200.0),
+        (100.0, 100.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        1e9,
+        usize::try_from(u32::MAX).unwrap_or(usize::MAX),
+    );
+    assert_eq!(wrapped.cells(), top.cells());
+    assert!(wrapped.cells() > 1000);
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    reason = "a test helper over a fixed 11 x 11 grid"
+)]
+/// The reference: the same grid as `Field` (box (0, 0)-(60, 60), target (30, 30), step 6: 11 x 11 cells from
+/// (-3, -3)), Dijkstra by the plain O(n^2) rule (lowest cost, then lowest index) and every edge tested through
+/// `band_step` with the grade limit removed. Returns the estimate at every cell centre.
+fn reference(
+    ground: &dyn Fn((f64, f64)) -> Option<f64>,
+    obstacles: &Obstacles,
+    walls: &[Wall],
+    clear: Clearance,
+    cap: f64,
+    grade: f64,
+) -> Vec<f64> {
+    let (n, res, origin) = (11_usize, 6.0_f64, -3.0_f64);
+    let centre = |c: usize, r: usize| {
+        (
+            origin + (f64::from(u32::try_from(c).unwrap()) + 0.5) * res,
+            origin + (f64::from(u32::try_from(r).unwrap()) + 0.5) * res,
+        )
+    };
+    let free = Band {
+        grade,
+        ..field_band(0.1)
+    };
+    let mut value = vec![f64::INFINITY; n * n];
+    let mut done = vec![false; n * n];
+    value[5 * n + 5] = 0.0;
+    loop {
+        let mut pick: Option<usize> = None;
+        for i in 0..n * n {
+            if !done[i]
+                && value[i].is_finite()
+                && pick.is_none_or(|p| value[i].total_cmp(&value[p]).is_lt())
+            {
+                pick = Some(i);
+            }
+        }
+        let Some(cur) = pick else { break };
+        done[cur] = true;
+        let (cc, cr) = (cur % n, cur / n);
+        let here = centre(cc, cr);
+        if o_stray(obstacles, here) > cap {
+            continue;
+        }
+        for (dc, dr) in [
+            (-1_i32, -1_i32),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ] {
+            let (Ok(nc), Ok(nr)) = (
+                usize::try_from(i32::try_from(cc).unwrap() + dc),
+                usize::try_from(i32::try_from(cr).unwrap() + dr),
+            ) else {
+                continue;
+            };
+            if nc >= n || nr >= n {
+                continue;
+            }
+            let len = if dc == 0 || dr == 0 {
+                res
+            } else {
+                res * 2.0_f64.sqrt()
+            };
+            let through = value[cur] + len;
+            if through >= value[nr * n + nc] {
+                continue;
+            }
+            let there = centre(nc, nr);
+            let ok = o_stray(obstacles, there) <= cap
+                && ground(there).is_some()
+                && !walls.iter().any(|w| w.blocks(there, here))
+                && band_step(
+                    &[there, here],
+                    ground,
+                    &free,
+                    Reach::at_anchor(ground(there).unwrap(), &free),
+                    obstacles,
+                    clear,
+                )
+                .is_ok();
+            if ok {
+                value[nr * n + nc] = through;
+            }
+        }
+    }
+    value
+        .iter()
+        .map(|&v| {
+            if v.is_finite() {
+                (v / CHAMFER_ERROR - res).max(0.0)
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn o_stray(o: &Obstacles, p: (f64, f64)) -> f64 {
+    o.stray_m(p)
+}
+
+fn equivalence_setup() -> (Obstacles, Vec<Wall>, Clearance) {
+    let mut o = Obstacles::new((-10.0, -10.0), (70.0, 70.0), 4.0, 70.0, 0.0, 4_000_000);
+    o.stamp_water(&|p: (f64, f64)| (14.0..22.0).contains(&p.0) && (30.0..50.0).contains(&p.1));
+    o.set_original(&[(30.0, 30.0), (55.0, 40.0)]);
+    o.finish();
+    let stream = Wall {
+        line: vec![(40.0, -5.0), (40.0, 22.0)],
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors: [(30.0, 30.0), (55.0, 40.0)],
+        end_m: 5.0,
+    };
+    (
+        o,
+        vec![stream],
+        Clearance::new(2.0, 2.0).unwrap_or(Clearance::NONE),
+    )
+}
+
+fn holey(p: (f64, f64)) -> Option<f64> {
+    // a patch with no terrain, on hilly ground
+    if (44.0..49.0).contains(&p.0) && (40.0..60.0).contains(&p.1) {
+        None
+    } else {
+        Some(8.0 * (p.0 / 9.0).sin() + p.1)
+    }
+}
+
+#[test]
+fn an_edge_costs_what_the_band_with_no_grade_says() {
+    let (o, walls, clear) = equivalence_setup();
+    let cap = 45.0;
+    let field = Field::build(
+        (0.0, 0.0),
+        (60.0, 60.0),
+        (30.0, 30.0),
+        6.0,
+        4.0,
+        &field_band(0.1),
+        &holey,
+        &o,
+        &walls,
+        clear,
+        cap,
+        1_000_000,
+    );
+    assert_eq!(field.cells(), 121);
+    let want = reference(&holey, &o, &walls, clear, cap, f64::INFINITY);
+    let mut reached = 0;
+    for r in 0..11_u32 {
+        for c in 0..11_u32 {
+            let p = (
+                -3.0 + (f64::from(c) + 0.5) * 6.0,
+                -3.0 + (f64::from(r) + 0.5) * 6.0,
+            );
+            let w = want[usize::try_from(r * 11 + c).unwrap()];
+            assert_eq!(field.estimate(p).to_bits(), w.to_bits(), "{p:?}");
+            reached += usize::from(w > 0.0);
+        }
+    }
+    // the setup has something to tell: cells reached, and cells the holes, water, stream and cap cut off
+    assert!(reached > 40 && reached < 110, "{reached}");
+    // and a finite grade in the reference would give other answers on this terrain
+    let graded = reference(&holey, &o, &walls, clear, cap, 0.1);
+    assert!(
+        graded
+            .iter()
+            .zip(&want)
+            .any(|(a, b)| a.to_bits() != b.to_bits())
+    );
 }
