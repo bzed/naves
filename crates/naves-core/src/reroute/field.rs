@@ -24,18 +24,12 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use super::band::Band;
+use super::band::{Band, line_samples};
 use super::raster::{Clearance, Obstacles, Wall};
 use super::{CHAMFER_ERROR, PLAN_STEP_M};
 
 /// How often the resolution is multiplied by 1.25 at most while it is made to fit.
 const MAX_GROWTHS: usize = 400;
-/// Spacing of the terrain samples of an edge when the band's is not usable, in metres (as the band's own).
-const SPACING_DEFAULT: f64 = 2.0;
-/// Most terrain samples of one edge (as the band's own).
-const MAX_SAMPLES: usize = 1_000_000;
-/// Tolerance in the number of samples of an edge (as the band's own).
-const SLACK: f64 = 1e-9;
 
 /// A cell count as `f64` (exact: a field has at most `max_cells` cells, far below 2^32 per side).
 fn fl(n: usize) -> f64 {
@@ -281,30 +275,8 @@ impl Field {
         if walls.iter().any(|w| w.blocks(from, to)) || obstacles.segment(from, to, clear).is_err() {
             return false;
         }
-        let has_ground = |p| ground(p).is_some_and(f64::is_finite);
-        let len = (to.0 - from.0).hypot(to.1 - from.1);
-        if !has_ground(from) {
-            return false;
-        }
-        if !(len > 0.0 && len.is_finite()) {
-            return true;
-        }
-        let spacing = if spacing_m.is_finite() && spacing_m > 0.0 {
-            spacing_m
-        } else {
-            SPACING_DEFAULT
-        };
-        let n = count((len / spacing - SLACK).ceil().max(1.0), MAX_SAMPLES).unwrap_or(1);
-        let ds = len / fl(n);
-        (1..=n).all(|i| {
-            let p = if i < n {
-                let t = (fl(i) * ds / len).clamp(0.0, 1.0);
-                (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
-            } else {
-                to
-            };
-            has_ground(p)
-        })
+        // the samples the band places along the edge, the start first, the end last
+        line_samples(&[from, to], spacing_m).all(|s| ground(s.p).is_some_and(f64::is_finite))
     }
 
     #[expect(

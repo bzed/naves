@@ -1379,6 +1379,7 @@ fn reference(
     clear: Clearance,
     cap: f64,
     grade: f64,
+    ends_only: bool,
 ) -> Vec<f64> {
     let (n, res, origin) = (11_usize, 6.0_f64, -3.0_f64);
     let centre = |c: usize, r: usize| {
@@ -1443,15 +1444,20 @@ fn reference(
             let ok = o_stray(obstacles, there) <= cap
                 && ground(there).is_some()
                 && !walls.iter().any(|w| w.blocks(there, here))
-                && band_step(
-                    &[there, here],
-                    ground,
-                    &free,
-                    Reach::at_anchor(ground(there).unwrap(), &free),
-                    obstacles,
-                    clear,
-                )
-                .is_ok();
+                && if ends_only {
+                    // terrain only at the two ends of the edge: what a field that skipped the samples would do
+                    ground(here).is_some() && obstacles.segment(there, here, clear).is_ok()
+                } else {
+                    band_step(
+                        &[there, here],
+                        ground,
+                        &free,
+                        Reach::at_anchor(ground(there).unwrap(), &free),
+                        obstacles,
+                        clear,
+                    )
+                    .is_ok()
+                };
             if ok {
                 value[nr * n + nc] = through;
             }
@@ -1492,13 +1498,22 @@ fn equivalence_setup() -> (Obstacles, Vec<Wall>, Clearance) {
     )
 }
 
-fn holey(p: (f64, f64)) -> Option<f64> {
-    // a patch with no terrain, on hilly ground
-    if (44.0..49.0).contains(&p.0) && (40.0..60.0).contains(&p.1) {
+fn holey_with(p: (f64, f64), strip_x: bool, strip_y: bool) -> Option<f64> {
+    // a patch with no terrain, two narrow strips that no cell centre is in (x = 44 between the centres 42 and 48,
+    // hit by the sample at 44 of a 3-sample edge; y = 4 between 0 and 6, hit at offset 4 by 3 samples but missed
+    // by the samples of 4), on hilly ground
+    let patch = (44.0..49.0).contains(&p.0) && (40.0..60.0).contains(&p.1);
+    let x = strip_x && (43.6..44.4).contains(&p.0) && (10.0..40.0).contains(&p.1);
+    let y = strip_y && (3.8..4.2).contains(&p.1);
+    if patch || x || y {
         None
     } else {
         Some(8.0 * (p.0 / 9.0).sin() + p.1)
     }
+}
+
+fn holey(p: (f64, f64)) -> Option<f64> {
+    holey_with(p, true, true)
 }
 
 #[test]
@@ -1520,7 +1535,7 @@ fn an_edge_costs_what_the_band_with_no_grade_says() {
         1_000_000,
     );
     assert_eq!(field.cells(), 121);
-    let want = reference(&holey, &o, &walls, clear, cap, f64::INFINITY);
+    let want = reference(&holey, &o, &walls, clear, cap, f64::INFINITY, false);
     let mut reached = 0;
     for r in 0..11_u32 {
         for c in 0..11_u32 {
@@ -1536,11 +1551,95 @@ fn an_edge_costs_what_the_band_with_no_grade_says() {
     // the setup has something to tell: cells reached, and cells the holes, water, stream and cap cut off
     assert!(reached > 40 && reached < 110, "{reached}");
     // and a finite grade in the reference would give other answers on this terrain
-    let graded = reference(&holey, &o, &walls, clear, cap, 0.1);
+    let graded = reference(&holey, &o, &walls, clear, cap, 0.1, false);
     assert!(
         graded
             .iter()
             .zip(&want)
             .any(|(a, b)| a.to_bits() != b.to_bits())
     );
+    // and a field that looked at the ends of an edge only would give other answers, for each strip alone: the
+    // samples in between decide
+    for (sx, sy) in [(true, false), (false, true)] {
+        let g = move |p: (f64, f64)| holey_with(p, sx, sy);
+        let full = reference(&g, &o, &walls, clear, cap, f64::INFINITY, false);
+        let ends = reference(&g, &o, &walls, clear, cap, f64::INFINITY, true);
+        let differing = ends
+            .iter()
+            .zip(&full)
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert!(differing >= 2, "strips {sx} {sy}: {differing}");
+        let field = Field::build(
+            (0.0, 0.0),
+            (60.0, 60.0),
+            (30.0, 30.0),
+            6.0,
+            4.0,
+            &field_band(0.1),
+            &g,
+            &o,
+            &walls,
+            clear,
+            cap,
+            1_000_000,
+        );
+        let (mut same, mut total) = (0, 0);
+        for r in 0..11_u32 {
+            for c in 0..11_u32 {
+                let p = (
+                    -3.0 + (f64::from(c) + 0.5) * 6.0,
+                    -3.0 + (f64::from(r) + 0.5) * 6.0,
+                );
+                total += 1;
+                same += usize::from(
+                    field.estimate(p).to_bits()
+                        == full
+                            .get(usize::try_from(r * 11 + c).unwrap_or(0))
+                            .map_or(0, |v| v.to_bits()),
+                );
+            }
+        }
+        assert_eq!(same, total, "the field follows the full reference");
+    }
+}
+
+#[test]
+fn more_samples_than_the_band_takes_are_clamped_like_the_band() {
+    // 6 m edges at a spacing of 1e-9 m would be 6e9 samples; the band takes 10^6, which still find a strip 0.2 m wide
+    let tiny = Band {
+        spacing_m: 1.0e-9,
+        ..field_band(0.1)
+    };
+    let strip = |p: (f64, f64)| (!(2.9..3.1).contains(&p.0)).then_some(0.0);
+    let o = Obstacles::new((0.0, 0.0), (30.0, 30.0), 4.0, 30.0, 0.0, 4_000_000);
+    assert_eq!(
+        band_step(
+            &[(0.0, 12.0), (6.0, 12.0)],
+            &strip,
+            &tiny,
+            Reach::at_anchor(0.0, &tiny),
+            &o,
+            NONE
+        )
+        .map(|_| ()),
+        Err(BandFail::NoGround)
+    );
+    let field = Field::build(
+        (0.0, 0.0),
+        (24.0, 24.0),
+        (12.0, 12.0),
+        6.0,
+        4.0,
+        &tiny,
+        &strip,
+        &o,
+        &[],
+        NONE,
+        1.0e9,
+        1_000_000,
+    );
+    // the left column (x = 0) is behind the strip, 12 m from the target: 5.09 when reached, 0 when not
+    assert!(field.estimate((0.0, 12.0)).abs() < 1e-9);
+    assert!(field.estimate((24.0, 12.0)) > 5.0);
 }

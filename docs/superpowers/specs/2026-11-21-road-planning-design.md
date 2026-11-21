@@ -368,9 +368,10 @@ Notes section 3.4, one field per leg, over the leg's box:
   `PLAN_FIELD_MAX_CELLS` cells.
 - The grid is laid out so that the end anchor is the centre of a cell (it covers the leg's box and the anchor), so the
   start cost of the Dijkstra from that cell is 0, not a distance inside the cell. 8-connected; the heap is ordered by
-  cost (`total_cmp`), then cell index. Not a number in the box, anchor or parameters gives an empty field (estimate 0).
+  cost (`total_cmp`), then cell index. A target that is not a number, or a box too large to fit, gives an empty field; a box that is not a number gives the
+  target's cell, and a band or stray cap that refuses every edge the target's cell alone (estimate 0 in each case).
 - An edge between neighbouring cell centres is allowed if the segment test passes (obstacles, clearances), there is
-  terrain at the band's samples along it, no wall that allows no crossing blocks it, and both cells are within the
+  terrain at the band's samples along it (placed by the one helper that `band_step` also uses), no wall that allows no crossing blocks it, and both cells are within the
   stray cap (tested at the cell centres). It is run in the direction of travel. This is the band with the grade limit
   removed: at an infinite grade every sample is reachable from the one before it, so cut and fill never bind, and the
   code does not call `band_step` but does exactly this (a test pins that the answers agree).

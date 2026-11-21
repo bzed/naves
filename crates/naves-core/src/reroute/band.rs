@@ -151,9 +151,11 @@ pub fn ground_at(map: &Heightmap, p: (f64, f64)) -> Option<f64> {
 
 /// A sample of a route: a position and the distance from the previous sample.
 #[derive(Debug, Clone, Copy)]
-struct At {
-    p: (f64, f64),
-    ds: f64,
+pub(crate) struct At {
+    /// The position.
+    pub(crate) p: (f64, f64),
+    /// The distance from the previous sample (0 for the first).
+    pub(crate) ds: f64,
 }
 
 #[expect(
@@ -173,52 +175,101 @@ fn to_f64(n: usize) -> f64 {
     n as f64
 }
 
+/// The samples of a polyline, without allocating: the start, then `n` points equally spaced along the line, at
+/// most `spacing` apart (a spacing that is not a positive finite number counts as 2 m, `n` is at least 1 and at most
+/// 10^6), the end point last. A line of no length, or of fewer than two points, has its first point only, and an
+/// empty line has none. The one placement of samples that the band and the cost field both use. The points of the
+/// line must be finite; [`band_step`] and the field's edges guarantee it.
+pub(crate) fn line_samples(line: &[(f64, f64)], spacing: f64) -> LineSamples<'_> {
+    let total: f64 = line
+        .iter()
+        .zip(line.iter().skip(1))
+        .map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1))
+        .sum();
+    let (n, ds) = if total <= 0.0 || !total.is_finite() {
+        (0, 0.0)
+    } else {
+        let spacing = if spacing.is_finite() && spacing > 0.0 {
+            spacing
+        } else {
+            SPACING_DEFAULT
+        };
+        let n = step_count((total / spacing - SLACK).ceil());
+        (n, total / to_f64(n))
+    };
+    LineSamples {
+        line,
+        n,
+        ds,
+        k: 0,
+        seg: 0,
+        before: 0.0,
+    }
+}
+
+/// The iterator of [`line_samples`].
+#[derive(Debug, Clone)]
+pub(crate) struct LineSamples<'a> {
+    line: &'a [(f64, f64)],
+    n: usize,
+    ds: f64,
+    /// How many samples were given.
+    k: usize,
+    seg: usize,
+    before: f64,
+}
+
+impl LineSamples<'_> {
+    /// The length of segment `i` of the line.
+    fn len(&self, i: usize) -> Option<f64> {
+        let a = self.line.get(i)?;
+        let b = self.line.get(i + 1)?;
+        Some((b.0 - a.0).hypot(b.1 - a.1))
+    }
+}
+
+impl Iterator for LineSamples<'_> {
+    type Item = At;
+
+    fn next(&mut self) -> Option<At> {
+        let first = self.line.first().copied()?;
+        let k = self.k;
+        if k > self.n {
+            return None;
+        }
+        self.k += 1;
+        if k == 0 {
+            return Some(At { p: first, ds: 0.0 });
+        }
+        let target = to_f64(k) * self.ds;
+        while let Some(len) = self.len(self.seg)
+            && self.before + len < target
+            && self.seg + 1 < self.line.len().saturating_sub(1)
+        {
+            self.before += len;
+            self.seg += 1;
+        }
+        let p = match (
+            self.line.get(self.seg).copied(),
+            self.line.get(self.seg + 1).copied(),
+            self.len(self.seg),
+        ) {
+            (Some(a), Some(b), Some(len)) if k < self.n && len > 0.0 => {
+                let t = ((target - self.before) / len).clamp(0.0, 1.0);
+                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            }
+            _ => self.line.last().copied().unwrap_or(first),
+        };
+        Some(At { p, ds: self.ds })
+    }
+}
+
 /// The samples of a polyline: equally spaced, at most `spacing` apart, the end point last.
 fn sample_line(line: &[(f64, f64)], spacing: f64) -> Result<Vec<At>, BandFail> {
     if line.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
         return Err(BandFail::NoGround);
     }
-    let Some(&first) = line.first() else {
-        return Ok(Vec::new());
-    };
-    let lengths: Vec<f64> = line
-        .iter()
-        .zip(line.iter().skip(1))
-        .map(|(a, b)| (b.0 - a.0).hypot(b.1 - a.1))
-        .collect();
-    let total: f64 = lengths.iter().sum();
-    let mut out = vec![At { p: first, ds: 0.0 }];
-    if total <= 0.0 || !total.is_finite() {
-        return Ok(out);
-    }
-    let spacing = if spacing.is_finite() && spacing > 0.0 {
-        spacing
-    } else {
-        SPACING_DEFAULT
-    };
-    let n = step_count((total / spacing - SLACK).ceil());
-    let ds = total / to_f64(n);
-    let (mut seg, mut before) = (0_usize, 0.0_f64);
-    for i in 1..=n {
-        let target = to_f64(i) * ds;
-        while let Some(&len) = lengths.get(seg)
-            && before + len < target
-            && seg + 1 < lengths.len()
-        {
-            before += len;
-            seg += 1;
-        }
-        let end = line.get(seg + 1).copied();
-        let p = match (line.get(seg).copied(), end, lengths.get(seg)) {
-            (Some(a), Some(b), Some(&len)) if i < n && len > 0.0 => {
-                let t = ((target - before) / len).clamp(0.0, 1.0);
-                (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
-            }
-            _ => line.last().copied().unwrap_or(first),
-        };
-        out.push(At { p, ds });
-    }
-    Ok(out)
+    Ok(line_samples(line, spacing).collect())
 }
 
 /// The terrain height at every sample.
