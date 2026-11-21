@@ -307,9 +307,9 @@ a saddle or outside the lot.
 
 - The quadratic needs at least 10 terrain vertices in the group; fewer get the plane.
 - "Stationary point inside the lot" means inside a member's outer ring (a summit in a hole counts) or within two
-  cells of a member's edge; a grid vertex can be a discrete extremum when the stationary point lies up to about one
-  and a half cells outside. In addition, a quadratic with a vertex that has all eight neighbours in the group and is
-  strictly (more than 1e-9 m) higher or lower than all of them becomes the plane.
+  cells of a member's edge. The two-cell margin is a cautious choice, not one the grid forces: it turns a few lots
+  whose hollow lies just outside into planes. In addition, a quadratic with a vertex that has all eight neighbours
+  in the group and is strictly (more than 1e-9 m) higher or lower than all of them becomes the plane.
 - `Assessed.relief_before_m` and `relief_after_m` are the largest local relief, not the 95th percentile: only a
   subadditive measure gives "at most `(1 − λ)` of before plus 0.12 m". `local_relief` returns both; the judging
   report calls it for the 95th percentile.

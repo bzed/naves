@@ -471,13 +471,23 @@ fn the_capped_curvature_keeps_its_direction() {
 
 #[test]
 fn a_hollow_just_outside_is_a_plane_and_one_far_outside_is_not() {
-    // a bowl of exactly the capped curvature, so the fitted stationary point is the bowl's minimum
-    let bowl =
-        |s: f64| heightmap(move |x, y| 100.0 + ((x - s).powi(2) + (y - 128.0).powi(2)) / 1200.0);
-    let area = rect("osm/way/1", 100.5, 78.5, 100.0, 100.0);
-    let (near, _) = one(area.clone(), &bowl(96.5));
+    // a bowl of exactly the capped curvature, so the fitted stationary point is the bowl's minimum; the lot is a
+    // right triangle and the bowl's bottom is off both of its axes, so a sign error in either half of the
+    // stationary-point formula throws the point to the far side of the centroid, well outside the lot
+    let bowl = |sx: f64, sy: f64| {
+        heightmap(move |x, y| 100.0 + ((x - sx).powi(2) + (y - sy).powi(2)) / 1200.0)
+    };
+    let area = lot_from(
+        "osm/way/1",
+        closed(&[(50.5, 50.5), (150.5, 50.5), (50.5, 150.5)]),
+        Vec::new(),
+        5000.0,
+    );
+    // 4.5 m beyond the corner (150.5, 50.5): within two cells of the lot
+    let (near, _) = one(area.clone(), &bowl(154.5, 48.5));
     assert_eq!(near.outcome, Outcome::Smoothed { form: Form::Plane });
-    let (far, _) = one(area, &bowl(84.5));
+    // 12.6 m beyond it: not
+    let (far, _) = one(area, &bowl(162.5, 45.5));
     assert_eq!(
         far.outcome,
         Outcome::Smoothed {

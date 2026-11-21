@@ -14,6 +14,11 @@ mod surface;
 pub use surface::{
     Assessed, Form, LotSurface, NO_GROUP, Outcome, Polygon, Surface, assess, local_relief,
 };
+#[expect(
+    unused_imports,
+    reason = "the clean-up of the road graph uses it from the next commit on"
+)]
+pub(crate) use surface::touches;
 
 /// Digitising tolerance of "inside", and of "touching" for groups, in metres.
 pub const LOT_INSIDE_TOL_M: f64 = 1.0;
