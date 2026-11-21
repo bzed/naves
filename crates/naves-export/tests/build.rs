@@ -1106,7 +1106,20 @@ fn two_builds_are_byte_identical() {
 fn the_report_has_the_violations() {
     let (_dir, env, proj) = setup();
     roads_project(&proj);
-    let out = build(&proj, &env.tools(), &quiet).unwrap();
+    let lines = RefCell::new(Vec::new());
+    let out = build(&proj, &env.tools(), &|l| {
+        lines.borrow_mut().push(l.to_string());
+    })
+    .unwrap();
+    // the progress stream is sentences: the time of the smoothing is one, not a `TIMING` measurement line
+    let lines = lines.into_inner();
+    assert!(lines.iter().all(|l| !l.starts_with("TIMING")), "{lines:#?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Smoothing the road lines (") && l.ends_with(" s)")),
+        "{lines:#?}"
+    );
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
             .unwrap();

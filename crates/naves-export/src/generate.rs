@@ -330,7 +330,10 @@ pub fn plan_roads(
         ..
     } = fitted_graph(features, catalog, base, &water_test(lakes, frame));
     if smooth.is_some() {
-        progress(&format!("TIMING smooth {:.1} s", smooth_time.as_secs_f64()));
+        progress(&format!(
+            "Smoothing the road lines ({:.1} s)",
+            smooth_time.as_secs_f64()
+        ));
     }
     let first = place_once(&widened, catalog, base)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {

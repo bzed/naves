@@ -336,7 +336,7 @@ The stage can move roads, so edits to the road objects that are keyed by slot ma
 `roads.smoothing` (`chains`, `max_move_m`, `max_outward_m`, `tight_before_m`, `tight_after_m`, `skipped_short`, the
 point counts `points_before`, `points_fitted` and `points_after`, `kept` and `widen_failed` as lists of
 `{stretch, reason}`, and `zones`), and the build prints one line with the chains, the largest move, the tight length
-before and after and the zones reached.
+before and after and the zones reached. The progress output (also the one the MCP `build` tool returns) has a line `Smoothing the road lines (0.4 s)` with the time the stage took.
 
 **Bridges join their road.** A bridge deck lies on its OpenStreetMap line, with the heading of the line. The road before
 it is fitted to the deck's start; where the pieces cannot end exactly there, the deck slides at most 2.5 m along its

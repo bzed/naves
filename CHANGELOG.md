@@ -18,7 +18,7 @@ All notable changes to this project are documented here. The format follows
   fixed, and a curve tighter than the tightest curve piece of its road type is widened outward to that radius
   (an open corner may be cut inward). Breaking: roads move by up to 2 m, and inside a widened curve by up to two minimum radii (about 20 m), so edits that are keyed by slot can
   be orphaned (`orphaned_edit`). New findings `road_curve_widened` and `road_curve_too_tight`, a `roads.smoothing`
-  section in `build/report.json` and a line in the build summary.
+  section in `build/report.json`, a line in the build summary and a progress line with the time of the stage.
   A curve that cannot be widened goes back to the line as drawn (blended over 6 m at its ends), a widened line does
   not enter water (`blocked_by_water`), curves within 25 m of a bridge end are not widened, and points within 0.20 m
   of the line through their neighbours are dropped after the stage (the placement walks fewer points).
