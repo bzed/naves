@@ -21,10 +21,11 @@ use crate::heightmap::Heightmap;
 use crate::reroute::band::{Band, arrive, drawn_grade, ground_at, leg_limit, relaxed_limits};
 use crate::reroute::field::Field;
 use crate::reroute::raster::{
-    Clearance, Obstacles, Wall, WallKind, crossings_away, exempt_samples, samples_with_arc,
+    Clearance, Obstacles, Wall, WallKind, cross_point, crossings_away, exempt_samples,
+    samples_with_arc,
 };
 use crate::reroute::search::{
-    LegInput, LegOutcome, Route, Weights, search_leg_relaxed, self_clearance,
+    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed, self_clearance,
 };
 use crate::roadnet::{RoadGraph, Stretch, crossings_of};
 use crate::smooth::{ChainPlan, Link, WaterTest, plan_chains, radius_at, resample, tight_runs};
@@ -172,8 +173,8 @@ pub struct RerouteParams {
     pub w_earth: f64,
     /// See [`W_STRAY`].
     pub w_stray: f64,
-    /// See [`PLAN_BUDGETS`].
-    pub budgets: [(f64, usize); 3],
+    /// See [`PLAN_BUDGETS`]; each pair is the heuristic weight and the number of states of one try.
+    pub budgets: Vec<(f64, usize)>,
     /// See [`PLAN_MAX_ZONE_M`].
     pub max_zone_m: f64,
     /// See [`PLAN_EXEMPT_EXTEND_M`].
@@ -210,7 +211,7 @@ impl Default for RerouteParams {
             w_curve: W_CURVE,
             w_earth: W_EARTH,
             w_stray: W_STRAY,
-            budgets: PLAN_BUDGETS,
+            budgets: PLAN_BUDGETS.to_vec(),
             max_zone_m: PLAN_MAX_ZONE_M,
             exempt_extend_m: PLAN_EXEMPT_EXTEND_M,
             crossing_end_m: PLAN_CROSSING_END_M,
@@ -269,8 +270,9 @@ pub enum ZoneOutcome {
     /// Every leg of the zone was planned and written into the graph.
     Planned,
     /// At least one leg of the zone kept its drawn line, with the reason and a detail for the report
-    /// (`anchors_close`, `crosses_deck`, `tight_run_held`, ...). The zone's planned legs are still written into
-    /// the graph; the kept legs keep their drawn line.
+    /// (`anchors_close`, `crosses_deck`, `tight_run_held`, ...), the reason of the first kept leg. The zone's
+    /// planned legs are still written into the graph; the kept legs keep their drawn line, and the measures of the
+    /// planned legs are the zone's (`radius_after_m`, `length_after_m`, `planned_grade`, `weight`, ...).
     Kept {
         /// Why it kept its line.
         reason: KeptReason,
@@ -322,8 +324,8 @@ pub struct PlannedZone {
     pub radius_before_m: f64,
     /// The minimum radius the road pieces ask for there, in metres.
     pub radius_wanted_m: f64,
-    /// The smallest radius of the planned route on its 2 m samples, in metres (the drawn radius if the zone kept
-    /// its line).
+    /// The smallest radius of the planned routes on their 2 m samples, in metres (the drawn radius if no leg of
+    /// the zone was planned).
     pub radius_after_m: f64,
     /// The length of the drawn line from the zone's first to its last sample, in metres.
     pub length_before_m: f64,
@@ -337,8 +339,8 @@ pub struct PlannedZone {
     pub drawn_grade: f64,
     /// The steepest drawn grade over a window of [`PLAN_DRAWN_WINDOW_M`], reported only.
     pub drawn_grade_window: f64,
-    /// The steepest grade of the planned road profile (`Profile::max_grade`), in metres of rise per metre;
-    /// 0 if the zone kept its line.
+    /// The steepest grade of the planned road profiles (`Profile::max_grade`), in metres of rise per metre;
+    /// 0 if no leg of the zone was planned.
     pub planned_grade: f64,
     /// The grade limit the route was planned at (the drawn limit if the zone kept its line).
     pub grade_limit: f64,
@@ -370,8 +372,12 @@ pub struct PlannedZone {
 pub struct RerouteReport {
     /// The zones, in chain order and then along the chain.
     pub zones: Vec<PlannedZone>,
-    /// The stretches and zones that were not planned at all, with the reason: `(subject, reason)`.
+    /// The stretches and zones that were not planned at all, with the reason: `(subject, reason)`. A zone that was
+    /// searched and kept its line is not here but in [`RerouteReport::kept_zones`].
     pub skipped: Vec<(String, String)>,
+    /// The zones that were searched and kept their drawn line, with the reason of the first kept leg:
+    /// `(zone id, detail)`.
+    pub kept_zones: Vec<(String, String)>,
     /// Road length tighter than its family's minimum radius, before, in metres.
     pub tight_before_m: f64,
     /// The same after, in metres.
@@ -380,11 +386,51 @@ pub struct RerouteReport {
     pub max_stray_m: f64,
     /// The number of planned legs steeper than drawn by more than [`PLAN_STEEPER_MARGIN`].
     pub steeper_than_drawn: usize,
-    /// The routes reverted because they came too near an earlier accepted route (the cross-check is a later
-    /// task; it is 0 here).
+    /// The routes reverted because they came too near an earlier accepted route; each is a leg that kept its line
+    /// with reason [`KeptReason::BlockedByRoad`] and detail `route_of <zone id>`.
     pub reverted: usize,
-    /// The states every search of every leg expanded.
+    /// The states every search of every leg expanded, the diagnostic searches included.
     pub states: usize,
+}
+
+impl RerouteReport {
+    /// The number of zones that kept their drawn line for `reason`.
+    #[must_use]
+    pub fn kept(&self, reason: KeptReason) -> usize {
+        self.zones
+            .iter()
+            .filter(
+                |zone| matches!(&zone.outcome, ZoneOutcome::Kept { reason: r, .. } if *r == reason),
+            )
+            .count()
+    }
+
+    /// The one-line summary of the build: `Road planning: <n> zones, <n> planned, <n> kept (no_route <n>, held <n>,
+    /// blocked_by_water <n>, blocked_by_road <n>), tight length <m> m -> <m> m, largest move <m> m, <n> steeper than
+    /// drawn`. The lengths are whole metres, the largest move one decimal.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let planned = self
+            .zones
+            .iter()
+            .filter(|zone| matches!(zone.outcome, ZoneOutcome::Planned))
+            .count();
+        format!(
+            "Road planning: {} zones, {} planned, {} kept (no_route {}, held {}, blocked_by_water {}, \
+             blocked_by_road {}), tight length {:.0} m -> {:.0} m, largest move {:.1} m, {} steeper than drawn",
+            self.zones.len(),
+            planned,
+            self.zones.len().saturating_sub(planned),
+            self.kept(KeptReason::NoRoute),
+            self.kept(KeptReason::Held),
+            self.kept(KeptReason::BlockedByWater),
+            self.kept(KeptReason::BlockedByRoad),
+            self.tight_before_m,
+            self.tight_after_m,
+            self.max_stray_m,
+            self.steeper_than_drawn
+        )
+    }
 }
 
 /// Re-routes the tight bends of `graph`: finds the zones of the chains whose drawn line is tighter than the road
@@ -1206,8 +1252,9 @@ fn leg_families(graph: &RoadGraph, chain: &ChainLine, a: usize, b: usize) -> Vec
 }
 
 /// The node of a bridge hold next to a leg: the bridge end the hold is anchored at, not the chain's far end. The
-/// leg starts at `bridge_end + hold` (or ends at `bridge_start − hold`); the near bridge node is the bridge's exit
-/// (for a start) or entry (for an end).
+/// leg starts at the first sample at or after `bridge_end + hold` (or ends at the last one at or before
+/// `bridge_start − hold`), so the bridge end is up to one sample away from that arc: the nearest bridge end
+/// within the hold, on the anchor's side, is the node.
 fn bridge_hold_node(
     bridge_links: &[usize],
     bounds: &[usize],
@@ -1217,6 +1264,7 @@ fn bridge_hold_node(
     at_start: bool,
     hold: f64,
 ) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, (f64, f64))> = None;
     for &j in bridge_links {
         let first = if j == 0 {
             0
@@ -1225,14 +1273,19 @@ fn bridge_hold_node(
         };
         let last = bounds.get(j).copied().unwrap_or(first);
         let (start, end) = (arcs.get(first).copied()?, arcs.get(last).copied()?);
-        if at_start && (arc - (end + hold)).abs() <= 1e-6 {
-            return pts.get(last).copied();
-        }
-        if !at_start && (arc - (start - hold)).abs() <= 1e-6 {
-            return pts.get(first).copied();
+        let (node, offset) = if at_start {
+            (pts.get(last).copied()?, arc - end)
+        } else {
+            (pts.get(first).copied()?, start - arc)
+        };
+        if offset >= 0.0
+            && offset <= hold + SAMPLE_M + ARC_EPS
+            && best.is_none_or(|(nearest, _)| offset < nearest)
+        {
+            best = Some((offset, node));
         }
     }
-    None
+    best.map(|(_, node)| node)
 }
 
 /// Searches one leg: its obstacles, walls, field, band and limits, then the arc search.
@@ -1257,7 +1310,6 @@ fn plan_leg(
     let start_anchor = leg_anchor(chain, job.a, job.start, true, params);
     let end_anchor = leg_anchor(chain, job.b, job.end, false, params);
     let anchors = [start_anchor.at, end_anchor.at];
-    let end_m = params.crossing_end_m;
     let drawn = drawn_grade(orig, &ground_fn, params.drawn_window_m);
     let (drawn_mean, _) = drawn.map_or((0.0, 0.0), |d| (d.mean, d.window));
     let half_width = (job.a..=job.b)
@@ -1309,26 +1361,14 @@ fn plan_leg(
         high = (high.0.max(p.0), high.1.max(p.1));
     }
     let pad = stray_cap + clearance + 2.0 * cell;
-    let box_min = (low.0 - pad, low.1 - pad);
-    let box_max = (high.0 + pad, high.1 + pad);
     let extent = f64::from(ground.size.saturating_sub(1)) * cell;
     let near_edge = orig.iter().any(|p| {
         p.0 < reach_own || p.1 < reach_own || p.0 > extent - reach_own || p.1 > extent - reach_own
     });
     let edge_margin = if near_edge { 0.0 } else { reach_own };
-    let mut obstacles = Obstacles::new(
-        box_min,
-        box_max,
-        cell,
-        extent,
-        edge_margin,
-        params.raster_max_cells,
-    );
-    obstacles.stamp_water(in_water);
-    let own: BTreeSet<usize> = chain.links.iter().map(|l| l.stretch).collect();
-    let mut fixed_anchors: Vec<(f64, f64)> = [job.start, job.end]
+    let mut fixed: Vec<(f64, f64)> = [job.start, job.end]
         .iter()
-        .zip([start_anchor.at, end_anchor.at])
+        .zip(anchors)
         .filter_map(|(&kind, at)| kind.fixed().then_some(at))
         .collect();
     // A bridge or tunnel at a hold is part of the anchor, not an obstacle beside it (the tunnel of a TunnelHold is
@@ -1337,8 +1377,8 @@ fn plan_leg(
     let start_arc = chain.arc.get(job.a).copied().unwrap_or(0.0);
     let end_arc = chain.arc.get(job.b).copied().unwrap_or(0.0);
     match job.start {
-        EndKind::TunnelHold => fixed_anchors.extend(chain.pts.first().copied()),
-        EndKind::BridgeHold => fixed_anchors.extend(bridge_hold_node(
+        EndKind::TunnelHold => fixed.extend(chain.pts.first().copied()),
+        EndKind::BridgeHold => fixed.extend(bridge_hold_node(
             &chain.bridge_links,
             &chain.bounds,
             &chain.pts,
@@ -1350,8 +1390,8 @@ fn plan_leg(
         _ => {}
     }
     match job.end {
-        EndKind::TunnelHold => fixed_anchors.extend(chain.pts.last().copied()),
-        EndKind::BridgeHold => fixed_anchors.extend(bridge_hold_node(
+        EndKind::TunnelHold => fixed.extend(chain.pts.last().copied()),
+        EndKind::BridgeHold => fixed.extend(bridge_hold_node(
             &chain.bridge_links,
             &chain.bounds,
             &chain.pts,
@@ -1362,74 +1402,37 @@ fn plan_leg(
         )),
         _ => {}
     }
-    let mut walls: Vec<Wall> = Vec::new();
-    let mut deck_crossed = false;
-    let filter = (box_min.0 - clearance, box_min.1 - clearance);
-    let filter_hi = (box_max.0 + clearance, box_max.1 + clearance);
-    for (i, s) in graph.stretches.iter().enumerate() {
-        if own.contains(&i) || !line_near(&s.points, filter, filter_hi) {
-            continue;
-        }
-        let reach_other = core_reach_m(s.family.width_m() / 2.0, cell);
-        let deck = s.bridge || s.tunnel;
-        let near_fixed = fixed_anchors
-            .iter()
-            .any(|p| poly_dist(*p, &s.points) <= params.deck_anchor_m);
-        let cross = crossings_away(orig, &s.points, anchors, end_m);
-        if deck && !near_fixed {
-            obstacles.stamp_road(&s.points, reach_other, &[]);
-            if cross > 0 {
-                deck_crossed = true;
-            }
-        } else {
-            let near = reach_other + obstacles.threshold(clearance);
-            let flags = exempt_samples(&s.points, orig, near, params.exempt_extend_m);
-            obstacles.stamp_road(&s.points, reach_other, &flags);
-            if flags.iter().any(|&f| f) {
-                walls.push(Wall {
-                    line: s.points.clone(),
-                    allowed: cross,
-                    kind: WallKind::Road,
-                    anchors,
-                    end_m,
-                });
-            }
-        }
-    }
-    // the road the leg continues into: the first `PLAN_SELF_FREE` along the chain from each anchor is not an
-    // obstacle. The distance is measured along the chain (the arc of its 2 m samples), not as the crow flies.
-    let self_free = obstacles.threshold(clearance) + reach_own;
-    if let Some(before) = chain.pts.get(..=job.a)
-        && before.len() >= 2
-    {
-        let flags = self_free_flags(before, true, self_free);
-        obstacles.stamp_road(before, reach_own, &flags);
-    }
-    if let Some(after) = chain.pts.get(job.b..)
-        && after.len() >= 2
-    {
-        let flags = self_free_flags(after, false, self_free);
-        obstacles.stamp_road(after, reach_own, &flags);
-    }
-    for stream in streams {
-        if !line_near(stream, filter, filter_hi) {
-            continue;
-        }
-        let allowed = crossings_away(orig, stream, anchors, end_m);
-        walls.push(Wall {
-            line: stream.clone(),
-            allowed,
-            kind: WallKind::Stream,
-            anchors,
-            end_m,
-        });
-    }
-    obstacles.set_original(orig);
-    obstacles.finish();
-    let original_feasible = orig
-        .windows(2)
-        .all(|w| matches!(w, [a, b] if obstacles.segment(*a, *b, clear).is_ok()));
-    if deck_crossed {
+    let setup = LegSetup {
+        graph,
+        chain,
+        job,
+        orig,
+        anchors,
+        start: start_anchor,
+        end: end_anchor,
+        fixed: &fixed,
+        reach: reach_own,
+        clearance,
+        clear,
+        box_min: (low.0 - pad, low.1 - pad),
+        box_max: (high.0 + pad, high.1 + pad),
+        edge_margin,
+        extent,
+        stray_cap,
+        check_radius: wanted * params.reached_fraction,
+    };
+    let band = Band::from_params(params, limit, cell);
+    let scenario = setup.scenario(
+        Omit::Nothing,
+        &ground_fn,
+        cell,
+        in_water,
+        streams,
+        params,
+        &band,
+    );
+    let original_feasible = scenario.original_feasible;
+    if scenario.deck_crossed {
         return kept_leg(
             job,
             KeptReason::Held,
@@ -1437,44 +1440,13 @@ fn plan_leg(
             0,
             false,
             limit,
-            drawn_mean,
+            drawn.mean,
             original_feasible,
         );
     }
-    let band = Band::from_params(params, limit, cell);
-    let field = Field::build(
-        box_min,
-        box_max,
-        end_anchor.at,
-        params.step_m,
-        cell,
-        &band,
-        &ground_fn,
-        &obstacles,
-        &walls,
-        clear,
-        stray_cap,
-        params.field_max_cells,
+    let input = setup.input(
+        &scenario, &band, radius, &ground_fn, params, self_along, self_clear,
     );
-    let input = LegInput {
-        start: start_anchor,
-        end: end_anchor,
-        radius,
-        step_m: params.step_m,
-        band: &band,
-        ground: &ground_fn,
-        obstacles: &obstacles,
-        walls: &walls,
-        clear,
-        field: &field,
-        weights: Weights::from_params(params),
-        stray_cap_m: stray_cap,
-        arrive_reach_m: (3.0 * params.step_m).max(4.0 * radius),
-        self_along_m: self_along,
-        self_clear_m: self_clear,
-        original: orig,
-        budgets: params.budgets.as_slice(),
-    };
     match search_leg_relaxed(&input, &limits) {
         Ok(LegOutcome::Found(route)) => {
             let rband = Band::from_params(params, route.grade_limit, cell);
@@ -1500,8 +1472,24 @@ fn plan_leg(
         Ok(LegOutcome::NoRoute {
             budget_exhausted,
             states,
+            checked,
             ..
         }) => {
+            if checked > 0 {
+                // a route the check from scratch rejects is a bug, not a leg without a route
+                return kept_leg(
+                    job,
+                    KeptReason::NoRoute,
+                    "check_failed",
+                    states,
+                    false,
+                    limit,
+                    drawn.mean,
+                    original_feasible,
+                );
+            }
+            // A search that fails at a pose that never moves is `held` (the spec's first reason): a diagnostic
+            // search would only say what the fixed pose already takes away.
             let lead = params.lead * wanted;
             let near_fixed = |kind: EndKind, at: (f64, f64)| {
                 kind.fixed()
@@ -1510,17 +1498,74 @@ fn plan_leg(
                         .iter()
                         .any(|&k| chain.pts.get(k).is_some_and(|p| dist(*p, at) <= lead))
             };
-            let (reason, detail) =
-                if near_fixed(job.start, start_anchor.at) || near_fixed(job.end, end_anchor.at) {
-                    (KeptReason::Held, "fixed_anchor")
-                } else {
-                    (KeptReason::NoRoute, "no_route")
+            if near_fixed(job.start, start_anchor.at) || near_fixed(job.end, end_anchor.at) {
+                return kept_leg(
+                    job,
+                    KeptReason::Held,
+                    "fixed_anchor",
+                    states,
+                    budget_exhausted,
+                    limit,
+                    drawn.mean,
+                    original_feasible,
+                );
+            }
+            // The diagnostic searches run only for a leg without a route: at the ceiling grade, with the last
+            // budget pair, once without the water (areas and streams) and once without the other roads.
+            let ceiling_band = Band::from_params(params, ceiling, cell);
+            let last: Vec<(f64, usize)> = params.budgets.iter().rev().take(1).copied().collect();
+            let mut total = states;
+            for (omit, reason) in [
+                (Omit::Water, KeptReason::BlockedByWater),
+                (Omit::Roads, KeptReason::BlockedByRoad),
+            ] {
+                let checked_scenario = setup.scenario(
+                    omit,
+                    &ground_fn,
+                    cell,
+                    in_water,
+                    streams,
+                    params,
+                    &ceiling_band,
+                );
+                let diag = setup.input(
+                    &checked_scenario,
+                    &ceiling_band,
+                    radius,
+                    &ground_fn,
+                    params,
+                    self_along,
+                    self_clear,
+                );
+                let diag = LegInput {
+                    budgets: &last,
+                    ..diag
                 };
+                match search_leg(&diag) {
+                    Ok(LegOutcome::Found(route)) => {
+                        return kept_leg(
+                            job,
+                            reason,
+                            reason.id(),
+                            total.saturating_add(route.states),
+                            budget_exhausted,
+                            ceiling,
+                            drawn.mean,
+                            original_feasible,
+                        );
+                    }
+                    Ok(LegOutcome::NoRoute { states: n, .. }) => {
+                        total = total.saturating_add(n);
+                    }
+                    // a diagnostic search with wrong input changes nothing: the leg keeps the reason it had
+                    Err(_) => {}
+                }
+            }
             kept_leg(
                 job,
-                reason,
-                detail,
-                states,
+                KeptReason::NoRoute,
+                "no_route",
+                total,
                 budget_exhausted,
                 limit,
                 drawn.mean,
@@ -1538,6 +1583,263 @@ fn plan_leg(
             original_feasible,
         ),
     }
+}
+
+/// What a search of a leg leaves out of its obstacles, for the diagnostic searches of a leg without a route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Omit {
+    /// Nothing.
+    Nothing,
+    /// The water: its areas and the stream walls.
+    Water,
+    /// The other roads: their earthwork and their walls, bridge decks and tunnels included.
+    Roads,
+}
+
+/// The obstacles, the walls and the cost-to-go field of one leg, built with or without parts of the input.
+struct Scenario {
+    obstacles: Obstacles,
+    walls: Vec<Wall>,
+    field: Field,
+    /// The drawn line passes over or under a deck or a tunnel away from the anchors.
+    deck_crossed: bool,
+    /// The drawn line itself passes the segment test, its clearances included.
+    original_feasible: bool,
+}
+
+/// The parts of a leg that every scenario needs and that do not change with the obstacles.
+struct LegSetup<'a> {
+    graph: &'a RoadGraph,
+    chain: &'a ChainLine,
+    job: &'a LegJob,
+    orig: &'a [(f64, f64)],
+    anchors: [(f64, f64); 2],
+    start: Anchor,
+    end: Anchor,
+    /// The anchors that never move, and the bridge or tunnel end of a hold.
+    fixed: &'a [(f64, f64)],
+    reach: f64,
+    clearance: f64,
+    clear: Clearance,
+    box_min: (f64, f64),
+    box_max: (f64, f64),
+    edge_margin: f64,
+    extent: f64,
+    stray_cap: f64,
+    /// The tightest three-point radius a returned route may have on its 2 m samples.
+    check_radius: f64,
+}
+
+impl LegSetup<'_> {
+    /// The obstacles, walls and field of the leg with `omit` left out, and the field of the band `band`.
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the scenario is built in one place, so that no rule is applied twice"
+    )]
+    fn scenario(
+        &self,
+        omit: Omit,
+        ground: &dyn Fn((f64, f64)) -> Option<f64>,
+        cell: f64,
+        in_water: WaterTest<'_>,
+        streams: &[Vec<(f64, f64)>],
+        params: &RerouteParams,
+        band: &Band,
+    ) -> Scenario {
+        let (graph, chain, job, orig) = (self.graph, self.chain, self.job, self.orig);
+        let (anchors, clearance, clear) = (self.anchors, self.clearance, self.clear);
+        let end_m = params.crossing_end_m;
+        let mut obstacles = Obstacles::new(
+            self.box_min,
+            self.box_max,
+            cell,
+            self.extent,
+            self.edge_margin,
+            params.raster_max_cells,
+        );
+        if omit != Omit::Water {
+            obstacles.stamp_water(in_water);
+        }
+        let mut walls: Vec<Wall> = Vec::new();
+        let mut deck_crossed = false;
+        let own: BTreeSet<usize> = chain.links.iter().map(|l| l.stretch).collect();
+        let filter = (self.box_min.0 - clearance, self.box_min.1 - clearance);
+        let filter_hi = (self.box_max.0 + clearance, self.box_max.1 + clearance);
+        if omit != Omit::Roads {
+            for (i, s) in graph.stretches.iter().enumerate() {
+                if own.contains(&i) || !line_near(&s.points, filter, filter_hi) {
+                    continue;
+                }
+                let reach_other = core_reach_m(s.family.width_m() / 2.0, cell);
+                if s.bridge || s.tunnel {
+                    // a deck or tunnel is never exempt, except one within PLAN_DECK_ANCHOR_M of a fixed anchor:
+                    // that one is part of the anchor and is not stamped. A crossing of the drawn line with it
+                    // anywhere but at the anchor is `crosses_deck`.
+                    let near_fixed = self
+                        .fixed
+                        .iter()
+                        .any(|p| poly_dist(*p, &s.points) <= params.deck_anchor_m);
+                    if !near_fixed {
+                        obstacles.stamp_road(&s.points, reach_other, &[]);
+                    }
+                    if deck_crossings(
+                        orig,
+                        &s.points,
+                        anchors,
+                        end_m,
+                        self.fixed,
+                        params.deck_anchor_m,
+                    ) > 0
+                    {
+                        deck_crossed = true;
+                    }
+                } else {
+                    let near = reach_other + obstacles.threshold(clearance);
+                    let flags = exempt_samples(&s.points, orig, near, params.exempt_extend_m);
+                    obstacles.stamp_road(&s.points, reach_other, &flags);
+                    if flags.iter().any(|&f| f) {
+                        walls.push(Wall {
+                            line: s.points.clone(),
+                            allowed: crossings_away(orig, &s.points, anchors, end_m),
+                            kind: WallKind::Road,
+                            anchors,
+                            end_m,
+                        });
+                    }
+                }
+            }
+        }
+        // the road the leg continues into: the first `PLAN_SELF_FREE` along the chain from each anchor is not an
+        // obstacle. The distance is measured along the chain (the arc of its 2 m samples), not as the crow flies.
+        let self_free = obstacles.threshold(clearance) + self.reach;
+        if let Some(before) = chain.pts.get(..=job.a)
+            && before.len() >= 2
+        {
+            let flags = self_free_flags(before, true, self_free);
+            obstacles.stamp_road(before, self.reach, &flags);
+        }
+        if let Some(after) = chain.pts.get(job.b..)
+            && after.len() >= 2
+        {
+            let flags = self_free_flags(after, false, self_free);
+            obstacles.stamp_road(after, self.reach, &flags);
+        }
+        if omit != Omit::Water {
+            for stream in streams {
+                if !line_near(stream, filter, filter_hi) {
+                    continue;
+                }
+                walls.push(Wall {
+                    line: stream.clone(),
+                    allowed: crossings_away(orig, stream, anchors, end_m),
+                    kind: WallKind::Stream,
+                    anchors,
+                    end_m,
+                });
+            }
+        }
+        obstacles.set_original(orig);
+        obstacles.finish();
+        let original_feasible = orig
+            .windows(2)
+            .all(|w| matches!(w, [a, b] if obstacles.segment(*a, *b, clear).is_ok()));
+        let field = Field::build(
+            self.box_min,
+            self.box_max,
+            self.end.at,
+            params.step_m,
+            cell,
+            band,
+            ground,
+            &obstacles,
+            &walls,
+            clear,
+            self.stray_cap,
+            params.field_max_cells,
+        );
+        Scenario {
+            obstacles,
+            walls,
+            field,
+            deck_crossed,
+            original_feasible,
+        }
+    }
+
+    /// The input of the search of the leg over `scenario`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the input of one search, one value per field"
+    )]
+    fn input<'a>(
+        &'a self,
+        scenario: &'a Scenario,
+        band: &'a Band,
+        radius: f64,
+        ground: &'a dyn Fn((f64, f64)) -> Option<f64>,
+        params: &'a RerouteParams,
+        self_along: f64,
+        self_clear: f64,
+    ) -> LegInput<'a> {
+        LegInput {
+            start: self.start,
+            end: self.end,
+            radius,
+            step_m: params.step_m,
+            band,
+            ground,
+            obstacles: &scenario.obstacles,
+            walls: &scenario.walls,
+            clear: self.clear,
+            field: &scenario.field,
+            weights: Weights::from_params(params),
+            stray_cap_m: self.stray_cap,
+            arrive_reach_m: (3.0 * params.step_m).max(4.0 * radius),
+            self_along_m: self_along,
+            self_clear_m: self_clear,
+            original: self.orig,
+            check_radius_m: self.check_radius,
+            budgets: params.budgets.as_slice(),
+        }
+    }
+}
+
+/// How often the drawn line crosses a deck's line farther than `end_m` from the leg's anchors and farther than
+/// `deck_anchor_m` from every fixed anchor: a crossing at a fixed anchor is part of that anchor.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the ends of the two segments, as in the geometry"
+)]
+fn deck_crossings(
+    orig: &[(f64, f64)],
+    deck: &[(f64, f64)],
+    anchors: [(f64, f64); 2],
+    end_m: f64,
+    fixed: &[(f64, f64)],
+    deck_anchor_m: f64,
+) -> usize {
+    let mut n = 0;
+    for a in orig.windows(2) {
+        for b in deck.windows(2) {
+            let ([p, q], [r, s]) = (a, b) else {
+                continue;
+            };
+            let Some(x) = cross_point(*p, *q, *r, *s) else {
+                continue;
+            };
+            let away = anchors
+                .iter()
+                .all(|e| (e.0 - x.0).hypot(e.1 - x.1) > end_m + ARC_EPS);
+            let at_anchor = fixed
+                .iter()
+                .any(|e| (e.0 - x.0).hypot(e.1 - x.1) <= deck_anchor_m);
+            if away && !at_anchor {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// Which samples of the own chain outside a leg are exempt: the first `self_free` metres **along the line** from
@@ -1705,6 +2007,138 @@ fn rewrite_stretch(points: &[(f64, f64)], s0: f64, legs: &[&LegRoute]) -> Vec<(f
     out
 }
 
+/// The reach of a leg's own road, in metres either side of its centre line.
+fn leg_reach(chain: &ChainLine, cell: f64, a: usize, b: usize) -> f64 {
+    let half = (a..=b)
+        .filter_map(|k| chain.half.get(k).copied())
+        .fold(0.0_f64, f64::max);
+    core_reach_m(half, cell)
+}
+
+/// The lowest and the highest coordinate of a polyline; a point that is not a number makes the box unusable.
+fn line_bounds(line: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    line.iter().fold(
+        (
+            (f64::INFINITY, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(lo, hi), p| {
+            (
+                (lo.0.min(p.0), lo.1.min(p.1)),
+                (hi.0.max(p.0), hi.1.max(p.1)),
+            )
+        },
+    )
+}
+
+/// Whether two polylines come within `near_m` of each other, by the true distance of a point of one to the other.
+/// The samples are at most [`SAMPLE_M`] apart, so two lines that cross measure as at most a metre apart.
+fn lines_near(a: &[(f64, f64)], b: &[(f64, f64)], near_m: f64) -> bool {
+    let (alo, ahi) = line_bounds(a);
+    let (blo, bhi) = line_bounds(b);
+    if !(alo.0 - near_m <= bhi.0
+        && blo.0 - near_m <= ahi.0
+        && alo.1 - near_m <= bhi.1
+        && blo.1 - near_m <= ahi.1)
+    {
+        return false;
+    }
+    a.iter().any(|&p| poly_dist(p, b) < near_m) || b.iter().any(|&p| poly_dist(p, a) < near_m)
+}
+
+/// A planned route that the check of the routes against each other accepted.
+struct AcceptedRoute {
+    /// The index of the leg's result.
+    result: usize,
+    /// The zone the route belongs to.
+    zone: usize,
+    /// The reach of its own road, in metres.
+    reach: f64,
+    /// Its leg's chain and samples, for the drawn line.
+    chain: usize,
+    a: usize,
+    b: usize,
+}
+
+/// The routes against each other, in zone order: a route that comes within the road clearance of a route accepted
+/// before it, where the two drawn lines did not, is reverted; its leg keeps its line with reason
+/// [`KeptReason::BlockedByRoad`] and detail `route_of <zone id>`. The road clearance is the true distance at which
+/// the two roads' earthwork touches: the earlier route's reach and this leg's clearance (its own reach and one
+/// terrain cell). Returns how many routes were reverted.
+fn check_routes(
+    results: &mut [LegPlan],
+    jobs: &[LegJob],
+    chains: &[ChainLine],
+    works: &[ZoneWork],
+    cell: f64,
+) -> usize {
+    let mut accepted: Vec<AcceptedRoute> = Vec::new();
+    let mut reverted = 0_usize;
+    for i in 0..results.len() {
+        let (Some(job), Some(result)) = (jobs.get(i), results.get(i)) else {
+            continue;
+        };
+        if !matches!(result.outcome, LegOutcomeKind::Planned) {
+            continue;
+        }
+        let Some(route) = result.route.as_ref() else {
+            continue;
+        };
+        let Some(chain) = chains.get(job.chain) else {
+            continue;
+        };
+        let Some(orig) = chain.pts.get(job.a..=job.b) else {
+            continue;
+        };
+        let own = leg_reach(chain, cell, job.a, job.b);
+        let mut conflict: Option<String> = None;
+        for other in &accepted {
+            let (Some(other_result), Some(other_chain)) =
+                (results.get(other.result), chains.get(other.chain))
+            else {
+                continue;
+            };
+            let (Some(other_route), Some(other_orig)) = (
+                other_result.route.as_ref(),
+                other_chain.pts.get(other.a..=other.b),
+            ) else {
+                continue;
+            };
+            let threshold = other.reach + own + cell;
+            if !lines_near(&route.points, &other_route.points, threshold)
+                || lines_near(orig, other_orig, threshold)
+            {
+                continue;
+            }
+            conflict = works.get(other.zone).map(|work| work.id.clone());
+            if conflict.is_some() {
+                break;
+            }
+        }
+        if let Some(zone) = conflict {
+            if let Some(result) = results.get_mut(i) {
+                result.outcome = LegOutcomeKind::Kept {
+                    reason: KeptReason::BlockedByRoad,
+                    detail: format!("route_of {zone}"),
+                };
+                result.route = None;
+                result.weight = None;
+                reverted = reverted.saturating_add(1);
+            }
+            continue;
+        }
+        accepted.push(AcceptedRoute {
+            result: i,
+            zone: job.zone,
+            reach: own,
+            chain: job.chain,
+            a: job.a,
+            b: job.b,
+        });
+    }
+    reverted
+}
+
 /// The main stage: finds the zones, searches the legs and writes the routes back.
 #[expect(
     clippy::too_many_lines,
@@ -1727,6 +2161,7 @@ fn plan_graph_impl(
     let context = GraphContext::new(graph);
     let plans = plan_chains(graph);
     let mut skipped: Vec<(String, String)> = Vec::new();
+    let mut kept_zones: Vec<(String, String)> = Vec::new();
     let mut chains: Vec<ChainLine> = Vec::new();
     for plan in &plans {
         if let Some(chain) = build_chain_line(
@@ -1775,13 +2210,20 @@ fn plan_graph_impl(
             });
         }
     }
-    let results: Vec<LegPlan> = jobs
+    let mut results: Vec<LegPlan> = jobs
         .par_iter()
         .map(|job| match chains.get(job.chain) {
             Some(chain) => plan_leg(job, chain, graph, ground, in_water, streams, params),
             None => kept_leg(job, KeptReason::Held, "no_chain", 0, false, 0.0, 0.0, true),
         })
         .collect();
+    let reverted = check_routes(
+        &mut results,
+        &jobs,
+        &chains,
+        &works,
+        f64::from(ground.cell_m),
+    );
     let mut zone_legs: Vec<Vec<&LegPlan>> = vec![Vec::new(); works.len()];
     for (job, result) in jobs.iter().zip(&results) {
         if let Some(list) = zone_legs.get_mut(job.zone) {
@@ -1799,11 +2241,10 @@ fn plan_graph_impl(
     }
     pair_partners(&mut zones);
     for zone in &zones {
-        if matches!(zone.outcome, ZoneOutcome::Kept { .. })
+        if let ZoneOutcome::Kept { detail, .. } = &zone.outcome
             && !skipped.iter().any(|(id, _)| id == &zone.id)
-            && let ZoneOutcome::Kept { detail, .. } = &zone.outcome
         {
-            skipped.push((zone.id.clone(), detail.clone()));
+            kept_zones.push((zone.id.clone(), detail.clone()));
         }
     }
 
@@ -1894,11 +2335,12 @@ fn plan_graph_impl(
         RerouteReport {
             zones,
             skipped,
+            kept_zones,
             tight_before_m: tight_before,
             tight_after_m: tight_after,
             max_stray_m: max_stray,
             steeper_than_drawn,
-            reverted: 0,
+            reverted,
             states,
         },
     )
@@ -2168,5 +2610,45 @@ mod tests {
         let from_end = self_free_flags(&line, true, 32.0);
         assert_eq!(from_end.last(), Some(&true));
         assert_eq!(from_end.first(), Some(&false));
+    }
+
+    #[test]
+    fn a_bridge_hold_is_found_for_any_sampling_of_the_hold() {
+        // links: 0 plain (samples 0..50), 1 bridge (50..65), 2 plain (65..110), 3 bridge (110..150)
+        let bounds = [50, 65, 110, 150];
+        let pts: Vec<(f64, f64)> = (0..=150).map(|i| (f64::from(i), 0.0)).collect();
+        let arcs: Vec<f64> = (0..=150).map(f64::from).collect();
+        // the hold of 25 m starts at the bridge's end (65), and the leg's first sample outside it is 90 m or up
+        // to one sample later: the bridge end is found whatever that sample is
+        for arc in [90.0, 91.3, 89.4] {
+            assert_eq!(
+                bridge_hold_node(&[1], &bounds, &pts, &arcs, arc, true, 25.0),
+                Some((65.0, 0.0)),
+                "{arc}"
+            );
+        }
+        // the same at an end anchor, before the other bridge
+        assert_eq!(
+            bridge_hold_node(&[3], &bounds, &pts, &arcs, 84.3, false, 25.0),
+            Some((110.0, 0.0))
+        );
+        // a leg anchor outside the hold finds no bridge end: the bridge is not part of that anchor
+        assert_eq!(
+            bridge_hold_node(&[1], &bounds, &pts, &arcs, 116.3, true, 25.0),
+            None
+        );
+        assert_eq!(
+            bridge_hold_node(&[1], &bounds, &pts, &arcs, 30.0, true, 25.0),
+            None
+        );
+        // two bridges, one on each side of the anchor: only the one the hold belongs to
+        assert_eq!(
+            bridge_hold_node(&[1, 3], &bounds, &pts, &arcs, 91.3, true, 25.0),
+            Some((65.0, 0.0))
+        );
+        assert_eq!(
+            bridge_hold_node(&[1, 3], &bounds, &pts, &arcs, 84.3, false, 25.0),
+            Some((110.0, 0.0))
+        );
     }
 }

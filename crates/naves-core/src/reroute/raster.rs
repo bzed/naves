@@ -844,7 +844,7 @@ pub fn exempt_samples(
 /// not twice. A route that only touches the line from the positive side is counted twice, from the other side not at
 /// all, and a route that ends on the line from the positive side once: that needs coordinates that agree exactly and
 /// does not happen on measured data.
-fn cross_point(
+pub(crate) fn cross_point(
     a1: (f64, f64),
     a2: (f64, f64),
     b1: (f64, f64),

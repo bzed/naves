@@ -131,6 +131,7 @@ mod reroute_search_case {
             self_along_m: 58.0,
             self_clear_m: self_clearance(&original, 58.0, 12.0, 6.0),
             original: &original,
+            check_radius_m: radius * 0.99 / 1.05,
             budgets: &[(1.0, 40), (1.5, 40)],
         };
         let outcomes = [

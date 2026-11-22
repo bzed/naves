@@ -42,10 +42,7 @@ use super::band::{Band, Reach, arrive, arrives, band_step, check_band, line_samp
 use super::dubins::{DubinsPath, arc_points, dubins_paths, follow, segments};
 use super::field::Field;
 use super::raster::{Clearance, Obstacles, Wall};
-use super::{
-    Anchor, PLAN_MAX_TURN_DEG, PLAN_RADIUS_MARGIN, PLAN_REACHED_FRACTION, Pose, RerouteError,
-    RerouteParams, SAMPLE_M,
-};
+use super::{Anchor, PLAN_MAX_TURN_DEG, Pose, RerouteError, RerouteParams, SAMPLE_M};
 
 /// The most states one try may expand, whatever its budget says.
 const MAX_STATES: usize = 200_000;
@@ -152,6 +149,9 @@ pub struct LegInput<'a> {
     /// The original line of the leg, for the true distance of a route from it ([`Route::max_move_m`], and the stray
     /// cap when it is below two raster cells).
     pub original: &'a [(f64, f64)],
+    /// The tightest three-point radius a route that is returned may have on its 2 m samples, in metres: the
+    /// caller's `PLAN_REACHED_FRACTION` of the family's tightest arc.
+    pub check_radius_m: f64,
     /// The heuristic weight and the number of states to expand of each try; the next try runs only when the
     /// budget ran out.
     pub budgets: &'a [(f64, usize)],
@@ -209,6 +209,11 @@ pub enum LegOutcome {
         states: usize,
         /// The smallest distance of an expanded state to the end anchor, in metres.
         closest_m: f64,
+        /// How many arrival candidates were built on their fine points and dropped by the check from scratch
+        /// ([`Route`]'s promises: the radius, the obstacles, the stray cap, the walls, the self-clearance, the
+        /// profile). A check that fails is a bug and not a leg without a route: the caller reports it
+        /// (`check_failed`).
+        checked: usize,
     },
 }
 
@@ -470,6 +475,7 @@ fn validate(input: &LegInput<'_>) -> Result<(), RerouteError> {
     let w = input.weights;
     let numbers = [
         input.radius,
+        input.check_radius_m,
         input.step_m,
         input.stray_cap_m,
         input.arrive_reach_m,
@@ -551,7 +557,7 @@ impl<'a> Leg<'a> {
             cell: input.step_m / 2.0,
             blockers,
             counted,
-            min_radius: PLAN_REACHED_FRACTION * input.radius / PLAN_RADIUS_MARGIN,
+            min_radius: input.check_radius_m,
             true_cap: input.stray_cap_m < TRUE_CAP_CELLS * input.obstacles.resolution_m(),
             chord_ratio: {
                 let half = (SAMPLE_M / (2.0 * input.radius)).min(1.5);
@@ -693,6 +699,8 @@ struct Search<'a, 'b> {
     verified_g: f64,
     /// The routes of verified arrivals that wait in the open set, by the index of their node.
     pending: Vec<(u32, Route)>,
+    /// Arrival candidates whose whole route was built and dropped by the check from scratch.
+    checked: usize,
 }
 
 /// The samples of a step: every `SAMPLE_M` along it and its end, with their distance along the route, not the
@@ -754,6 +762,7 @@ impl<'a, 'b> Search<'a, 'b> {
             closest: dist(leg.input.start.at, leg.input.end.at),
             verified_g: f64::INFINITY,
             pending: Vec::new(),
+            checked: 0,
         }
     }
 
@@ -1367,6 +1376,7 @@ impl<'a, 'b> Search<'a, 'b> {
             return Settled::Found(Box::new(self.pending.swap_remove(at).1));
         }
         let Some(route) = self.finish(idx) else {
+            self.checked = self.checked.saturating_add(1);
             if let Via::Dubins { rank, .. } = node.via {
                 self.try_arrivals(node.parent, usize::from(rank) + 1);
             }
@@ -1427,22 +1437,25 @@ fn search_at(
     band: Band,
     relax_steps: usize,
 ) -> Result<LegOutcome, RerouteError> {
-    let none = |exhausted: bool, states: usize, closest: f64| {
+    let none = |exhausted: bool, states: usize, closest: f64, checked: usize| {
         Ok(LegOutcome::NoRoute {
             budget_exhausted: exhausted,
             states,
             closest_m: closest,
+            checked,
         })
     };
     let closest0 = dist(input.start.at, input.end.at);
     let Some(leg) = Leg::new(input, band) else {
-        return none(false, 0, closest0);
+        return none(false, 0, closest0, 0);
     };
     let (mut states, mut closest) = (0_usize, closest0);
+    let mut checked = 0_usize;
     for &(weight, budget) in input.budgets {
         let mut search = Search::new(&leg, weight);
         let tried = search.run(budget.min(MAX_STATES));
         states = states.saturating_add(search.expanded);
+        checked = checked.saturating_add(search.checked);
         closest = closest.min(search.closest);
         match tried {
             Tried::Found(mut route) => {
@@ -1450,11 +1463,11 @@ fn search_at(
                 route.states = states;
                 return Ok(LegOutcome::Found(*route));
             }
-            Tried::Emptied => return none(false, states, closest),
+            Tried::Emptied => return none(false, states, closest, checked),
             Tried::Exhausted => {}
         }
     }
-    none(true, states, closest)
+    none(true, states, closest, checked)
 }
 
 /// The distance that the own road's samples that are more than `self_along_m` apart along it must keep from each other
@@ -1546,6 +1559,7 @@ pub fn search_leg_relaxed(
         return Err(RerouteError::Degenerate);
     }
     let (mut states, mut closest) = (0_usize, f64::INFINITY);
+    let mut checked = 0_usize;
     let mut last = None;
     for (k, &limit) in limits.iter().enumerate() {
         let band = Band {
@@ -1561,8 +1575,10 @@ pub fn search_leg_relaxed(
                 budget_exhausted,
                 states: n,
                 closest_m,
+                checked: c,
             } => {
                 states = states.saturating_add(n);
+                checked = checked.saturating_add(c);
                 closest = closest.min(closest_m);
                 last = Some(budget_exhausted);
             }
@@ -1572,5 +1588,6 @@ pub fn search_leg_relaxed(
         budget_exhausted: last.unwrap_or(false),
         states,
         closest_m: closest,
+        checked,
     })
 }

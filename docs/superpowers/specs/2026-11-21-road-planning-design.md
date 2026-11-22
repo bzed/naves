@@ -579,6 +579,38 @@ accepted route, where the two original lines did not, is reverted, kept with rea
 search. This is sequential and deterministic. The spike counted 26 such routes (1.3 % of 2046) and did not revert
 them.
 
+**As built** (`reroute.rs`, plan Task 7):
+
+- **The threshold of the cross-check** is the true distance at which the two roads' earthwork touches, the same
+  quantity the raster test keeps from a stamped road: the earlier route's reach (`core_reach_m` of its own half
+  width) plus this leg's clearance (its own reach plus one terrain cell), about 26 m for two City stretches. The
+  samples of the routes and of the drawn lines are compared by their true distance ([`lines_near`], a point of one
+  to the other; the samples are at most 2 m apart, so two lines that cross measure as at most a metre apart). A
+  pair whose drawn lines already come that near is not checked, which also covers the two legs of one bend, which
+  share an anchor.
+- **The diagnostic searches** of a leg without a route run at the ceiling grade with the last budget pair only:
+  first without the water areas and the stream walls, then without the other roads (their earthwork, their walls
+  and the decks and tunnels). A route found there gives `blocked_by_water` or `blocked_by_road` with the reason's
+  own id as the detail; the states of both are added to the leg's. The own chain outside the leg is not "other
+  roads" and stays an obstacle in both.
+- **`check_failed`**: the search counts the arrival candidates whose whole route was built and dropped by the check
+  from scratch (`LegOutcome::NoRoute.checked`). A leg whose search ended without a route and with at least one such
+  candidate keeps its line with reason `no_route`, detail `check_failed`, and no diagnostic search runs for it.
+  The check's radius is `RerouteParams::reached_fraction` times the family's tightest arc
+  (`LegInput::check_radius_m`, 0.99 of it by default), so a test can force the check to reject every route.
+- **`RerouteReport`**: `kept(reason)` counts the zones that kept their line for a reason and `summary()` is the
+  build's one line (`Road planning: <n> zones, ...`, whole metres for the tight lengths, one decimal for the largest
+  move). `skipped` is only what was not planned at all (a tunnel chain, a roundabout, a zone longer than
+  `PLAN_MAX_ZONE_M`, a zone whose tight run is held, a chain that is not finite or too long); a zone that was
+  searched and kept its line is in `kept_zones` with its detail, and `reverted` counts the cross-check's routes.
+- **A deck near a fixed anchor** is exempt as a whole (it is not stamped), because that is what makes the
+  clean-up's junction 8 m from a bridge end plannable; the crossing check is the one that is per place: a crossing
+  of the drawn line with the deck farther than `PLAN_CROSSING_END_M` from the leg's anchors and farther than
+  `PLAN_DECK_ANCHOR_M` from every fixed anchor is `crosses_deck` (review M8).
+- **A bridge hold's bridge end** is the nearest bridge end within the hold on the anchor's side (plus one sample),
+  not only the one that lies exactly at `bridge_end + hold`: the leg starts at the first sample outside the hold,
+  which is up to 2 m further (review N2').
+
 ### Failure and reporting
 
 A leg that is not planned keeps its original line. Nothing else changes. Nothing panics.

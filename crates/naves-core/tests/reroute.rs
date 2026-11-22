@@ -1956,6 +1956,8 @@ impl Setup {
             self_along_m: self.self_along,
             self_clear_m: self.self_clear.unwrap_or_else(|| self.clear.road_m()),
             original: &self.original,
+            check_radius_m: RHO * naves_core::reroute::PLAN_REACHED_FRACTION
+                / naves_core::reroute::PLAN_RADIUS_MARGIN,
             budgets: &self.budgets,
         };
         edit(&mut input);
@@ -4033,7 +4035,13 @@ fn plan_a_tight_kink_between_junctions_is_held_close() {
     assert_eq!(reason, KeptReason::Held);
     assert_eq!(detail, "anchors_close");
     assert!(
-        report.skipped.iter().any(|(id, _)| *id == zone.id),
+        report.kept_zones.iter().any(|(id, _)| *id == zone.id),
+        "{:?}",
+        report.kept_zones
+    );
+    // it was searched and kept, so it is not in the list of what was not planned at all
+    assert!(
+        !report.skipped.iter().any(|(id, _)| *id == zone.id),
         "{:?}",
         report.skipped
     );
@@ -5210,7 +5218,7 @@ fn plan_a_planned_leg_keeps_the_clearance_from_the_own_chain() {
                 .copied()
                 .filter(|p| {
                     !unchanged.contains(&(p.0.to_bits(), p.1.to_bits()))
-                        && (p.0 - zone.at.0).hypot(p.1 - zone.at.1) <= 60.0
+                        && (p.0 - zone.at.0).hypot(p.1 - zone.at.1) <= 40.0
                 })
                 .collect();
             assert!(new_points.len() >= 2);
@@ -5259,4 +5267,672 @@ fn plan_a_leg_starting_at_a_bridge_hold_is_planned() {
     assert!(is_planned(zone), "{zone:?}");
     assert_eq!(zone.anchors.0, AnchorKind::BridgeHold);
     assert_eq!(points_of(&out, "1:1-2"), bridge, "the bridge moved");
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Task 7: why a bend was kept, routes against each other, the report (plan Task 7).
+// ----------------------------------------------------------------------------------------------------------
+
+/// A heightmap of the fixture size whose height at a point is `height`.
+fn map_with(height: impl Fn(f64, f64) -> f64) -> Heightmap {
+    let mut h = Vec::with_capacity((MAP_SIZE * MAP_SIZE) as usize);
+    for row in 0..MAP_SIZE {
+        for col in 0..MAP_SIZE {
+            #[expect(clippy::cast_possible_truncation, reason = "a fixture height")]
+            let z = height(f64::from(col) * MAP_CELL_M, f64::from(row) * MAP_CELL_M) as f32;
+            h.push(z);
+        }
+    }
+    Heightmap {
+        size: MAP_SIZE,
+        cell_m: 4.0,
+        h,
+    }
+}
+
+/// Water from y = 445 on: 5 m above the anchors of the hairpins below, and over the drawn apex.
+fn water_above_445(p: (f64, f64)) -> bool {
+    p.1 >= 445.0
+}
+
+#[test]
+fn plan_a_hairpin_under_water_is_a_curved_bridge() {
+    let g = edge_hairpin(500.0);
+    let params = RerouteParams::default();
+    // the same graph without the water is planned: the fixture can fail
+    let (_out, free) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert!(is_planned(only_zone(&free)), "{:?}", free.zones);
+    // water 5 m above the anchors: the free loop needs 10.5 m of room to turn round
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &water_above_445,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g, "a kept zone keeps its line bit for bit");
+    let zone = only_zone(&report);
+    let (reason, _) = kept(zone);
+    assert_eq!(reason, KeptReason::BlockedByWater, "{zone:?}");
+    assert_eq!(zone.candidate, Some(Candidate::CurvedBridge));
+    assert_eq!(report.kept(KeptReason::BlockedByWater), 1);
+    assert_eq!(report.kept(KeptReason::NoRoute), 0);
+    // the water is not a page of the report's "not planned at all"
+    assert!(
+        !report.skipped.iter().any(|(id, _)| *id == zone.id),
+        "{:?}",
+        report.skipped
+    );
+    assert!(
+        report.kept_zones.iter().any(|(id, _)| *id == zone.id),
+        "{:?}",
+        report.kept_zones
+    );
+    assert!(
+        report.summary().starts_with(
+            "Road planning: 1 zones, 0 planned, 1 kept (no_route 0, held 0, blocked_by_water 1, \
+             blocked_by_road 0), tight length"
+        ),
+        "{}",
+        report.summary()
+    );
+}
+
+#[test]
+fn plan_a_drawn_line_in_a_deck_earthwork_is_kept_for_a_road() {
+    // the town corner with a bridge deck parallel to and 6 m north of its first leg: the deck's earthwork covers
+    // the drawn line and both anchors, and the drawn line crosses the deck nowhere (so this is not `crosses_deck`)
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+        bridge_way(4, &[20, 21], &[(420.0, 506.0), (496.0, 506.0)]),
+    ]);
+    let params = RerouteParams::default();
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g, "a kept zone keeps its line bit for bit");
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::BlockedByRoad, "{zone:?}");
+    assert_ne!(detail, "crosses_deck", "the drawn line crosses no deck");
+    assert_eq!(zone.candidate, None);
+    assert!(!zone.original_feasible, "{zone:?}");
+    // without the deck the same corner is planned
+    let clean = town_corner();
+    let (_out, report) = plan_with(
+        &clean,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
+}
+
+/// The Task 5 hairpin as a chain, its legs 12 m apart from y = 400 to 460, with an apex 12 m wide and 4 m high.
+fn facing_hairpin(way: i64, left: f64) -> Feature {
+    let mut nodes: Vec<i64> = vec![way * 100 + 1, way * 100 + 2];
+    let mut points: Vec<(f64, f64)> = vec![(left, 400.0), (left, 460.0)];
+    let mut next = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((left + 6.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(way * 100 + next);
+        next += 1;
+    }
+    for p in [(left + 12.0, 460.0), (left + 12.0, 400.0)] {
+        points.push(p);
+        nodes.push(way * 100 + next);
+        next += 1;
+    }
+    city_way(way, &nodes, &points)
+}
+
+/// Two hairpins whose loops bulge into the 32 m between them, 4.5 m each, so that the routes come 23 m apart.
+fn two_facing_hairpins() -> Vec<Feature> {
+    vec![facing_hairpin(1, 500.0), facing_hairpin(2, 544.0)]
+}
+
+#[test]
+fn plan_two_routes_that_run_into_each_other_are_checked() {
+    let features = two_facing_hairpins();
+    let g = build_graph(&features);
+    let params = RerouteParams::default();
+    let plan = |graph: &RoadGraph| {
+        plan_with(
+            graph,
+            &flat_map(),
+            &|_: &Stretch| CITY_MIN_R,
+            &|_: (f64, f64)| false,
+            &[],
+            &params,
+        )
+    };
+    let (out, report) = plan(&g);
+    assert_eq!(report.zones.len(), 2, "{:?}", report.zones);
+    assert_eq!(report.reverted, 1, "{:?}", report.zones);
+    let first = &report.zones[0];
+    let second = &report.zones[1];
+    assert!(
+        is_planned(first),
+        "the lower chain id is planned: {first:?}"
+    );
+    let (reason, detail) = kept(second);
+    assert_eq!(reason, KeptReason::BlockedByRoad, "{second:?}");
+    assert_eq!(detail, format!("route_of {}", first.id));
+    assert_eq!(second.candidate, None);
+    // the reverted route's line is bit for bit, and a planned leg was written
+    let stretches = stretches_of(&g);
+    assert_eq!(stretches.len(), 2, "{stretches:?}");
+    let second_id = stretches
+        .last()
+        .map_or_else(|| panic!("no second stretch"), |s| s.id.clone());
+    assert_eq!(points_of(&out, &second_id), points_of(&g, &second_id));
+    assert_ne!(out, g, "the first zone is planned");
+    assert_eq!(report.kept(KeptReason::BlockedByRoad), 1);
+    // swapped stretches give the same graph and report
+    let mut reversed = features.clone();
+    reversed.reverse();
+    let g_rev = build_graph(&reversed);
+    assert_eq!(g_rev, g);
+    let (out_rev, report_rev) = plan(&g_rev);
+    assert_eq!(out_rev, out);
+    assert_eq!(report_rev, report);
+    // and the check is the same on 1, 4 and 16 threads
+    for threads in [1_usize, 4, 16] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap_or_else(|e| panic!("pool: {e}"));
+        let (out_t, report_t) = pool.install(|| plan(&g));
+        assert_eq!(out_t, out, "{threads} threads");
+        assert_eq!(report_t, report, "{threads} threads");
+    }
+}
+
+fn stretches_of(graph: &RoadGraph) -> Vec<Stretch> {
+    graph.stretches.clone()
+}
+
+/// A corner that turns by 120 degrees, 60 m after a junction, on ground that rises 0.33 m per metre north.
+fn corner_120(x0: f64) -> RoadGraph {
+    let apex = x0 + 100.0;
+    let direction = (-0.5, 0.866_025_403_784_438_6);
+    build_graph(&[
+        city_way(
+            1,
+            &[2, 1, 3],
+            &[
+                (apex - 60.0, 500.0),
+                (apex, 500.0),
+                (apex + 60.0 * direction.0, 500.0 + 60.0 * direction.1),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 2, 11],
+            &[
+                (apex - 60.0, 400.0),
+                (apex - 60.0, 500.0),
+                (apex - 60.0, 600.0),
+            ],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_leg_only_at_a_relaxed_limit_is_counted_steeper() {
+    let g = corner_120(400.0);
+    let map = map_with(|_, y| 100.0 + 0.33 * (y - 500.0));
+    // the cap keeps the route in a corridor along the drawn line: the 120 degree fillet is 27.6 m long and the
+    // drawn line needs 6.0 m of climb over its 42 m
+    let params = RerouteParams {
+        stray_max: 0.6,
+        ..RerouteParams::default()
+    };
+    let (out, report) = plan_with(
+        &g,
+        &map,
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert!(zone.relax_steps > 0, "{zone:?}");
+    assert!(
+        zone.planned_grade > zone.drawn_grade + 0.02,
+        "planned {} drawn {}",
+        zone.planned_grade,
+        zone.drawn_grade
+    );
+    assert_eq!(report.steeper_than_drawn, 1);
+    // the plan is within the limit it was found at
+    assert!(
+        zone.grade_limit <= 0.27 + 1e-9 && zone.grade_limit > zone.drawn_grade,
+        "{zone:?}"
+    );
+    assert!(zone.length_after_m > 0.0 && zone.length_after_m < 42.0);
+    let _ = out;
+}
+
+/// A hairpin whose legs are 12 m apart (`left` and `left + 12`) from `bottom` up 60 m, with an apex 12 m wide
+/// and 4 m high.
+fn small_hairpin(way: i64, left: f64, bottom: f64) -> Feature {
+    let mut nodes: Vec<i64> = vec![way * 1000 + 1, way * 1000 + 2];
+    let mut points: Vec<(f64, f64)> = vec![(left, bottom), (left, bottom + 60.0)];
+    let mut next = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((left + 6.0 + 6.0 * a.cos(), bottom + 60.0 + 4.0 * a.sin()));
+        nodes.push(way * 1000 + next);
+        next += 1;
+    }
+    for p in [(left + 12.0, bottom + 60.0), (left + 12.0, bottom)] {
+        points.push(p);
+        nodes.push(way * 1000 + next);
+        next += 1;
+    }
+    city_way(way, &nodes, &points)
+}
+
+#[test]
+fn plan_fifty_bends_with_a_tiny_budget_report_the_same() {
+    // A town corner is found in 37 states, so a budget of 50 does not exhaust it; the loop of a hairpin needs 619.
+    // Fifty hairpins with a 50-state budget therefore all keep their line with the budget exhausted, and the work
+    // stays within the four limits and the two diagnostic searches of 50 states each.
+    let features: Vec<Feature> = (0..50_i64)
+        .map(|k| {
+            let x = 150.0 + 240.0 * f64::from(i32::try_from(k % 8).unwrap_or(0));
+            let y = 150.0 + 250.0 * f64::from(i32::try_from(k / 8).unwrap_or(0));
+            small_hairpin(10 * k + 1, x, y)
+        })
+        .collect();
+    let g = build_graph(&features);
+    let params = RerouteParams {
+        budgets: vec![(1.0, 50)],
+        ..RerouteParams::default()
+    };
+    let plan = |graph: &RoadGraph| {
+        plan_with(
+            graph,
+            &flat_map(),
+            &|_: &Stretch| CITY_MIN_R,
+            &|_: (f64, f64)| false,
+            &[],
+            &params,
+        )
+    };
+    let (out, report) = plan(&g);
+    assert_eq!(out, g);
+    assert_eq!(report.zones.len(), 50, "{}", report.zones.len());
+    for zone in &report.zones {
+        let (reason, _) = kept(zone);
+        assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
+        assert!(zone.budget_exhausted, "{zone:?}");
+    }
+    assert_eq!(report.kept(KeptReason::NoRoute), 50);
+    // the main search tries the four limits, the two diagnostics the last budget pair only
+    assert!(report.states <= 50 * (4 * 50 + 2 * 50), "{}", report.states);
+    let (_out, again) = plan(&g);
+    assert_eq!(again, report, "the same report on a second run");
+}
+
+#[test]
+fn plan_a_route_the_check_rejects_is_no_route_with_check_failed() {
+    let g = town_corner();
+    // a check radius above the planning radius: every route the search finds fails the check from scratch
+    let params = RerouteParams {
+        reached_fraction: 4.0,
+        budgets: vec![(1.0, 2_000)],
+        ..RerouteParams::default()
+    };
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
+    assert_eq!(detail, "check_failed");
+    assert_eq!(zone.candidate, Some(Candidate::Plate));
+}
+
+/// One zone of the report, for the summary's fixture.
+fn reported_zone(id: &str, outcome: ZoneOutcome, planned_grade: f64) -> PlannedZone {
+    PlannedZone {
+        id: id.to_string(),
+        at: (500.0, 500.0),
+        stretches: vec![id.to_string()],
+        legs: 1,
+        anchors: (AnchorKind::Line, AnchorKind::Line),
+        junction: None,
+        partner: None,
+        outcome,
+        radius_before_m: 4.0,
+        radius_wanted_m: 10.0,
+        radius_after_m: 10.4,
+        length_before_m: 40.0,
+        length_after_m: 42.0,
+        max_stray_m: 3.5,
+        drawn_grade: 0.10,
+        drawn_grade_window: 0.2,
+        planned_grade,
+        grade_limit: 0.14,
+        relax_steps: 0,
+        climb_m: 4.0,
+        earthwork_m2: 1.0,
+        cut_max_m: 0.2,
+        fill_max_m: 0.3,
+        states: 100,
+        weight: Some(1.0),
+        budget_exhausted: false,
+        original_feasible: true,
+        candidate: None,
+    }
+}
+
+#[test]
+fn plan_the_summary_of_a_report() {
+    let report = RerouteReport {
+        zones: vec![
+            reported_zone("1:1-3#0", ZoneOutcome::Planned, 0.14),
+            reported_zone("1:1-3#1", ZoneOutcome::Planned, 0.18),
+            reported_zone(
+                "2:4-6#0",
+                ZoneOutcome::Kept {
+                    reason: KeptReason::Held,
+                    detail: "fixed_anchor".to_string(),
+                },
+                0.0,
+            ),
+        ],
+        skipped: vec![("3:7-9".to_string(), "tunnel".to_string())],
+        kept_zones: vec![("2:4-6#0".to_string(), "fixed_anchor".to_string())],
+        tight_before_m: 16135.4,
+        tight_after_m: 1547.2,
+        max_stray_m: 28.46,
+        steeper_than_drawn: 1,
+        reverted: 0,
+        states: 300,
+    };
+    assert_eq!(
+        report.summary(),
+        "Road planning: 3 zones, 2 planned, 1 kept (no_route 0, held 1, blocked_by_water 0, \
+         blocked_by_road 0), tight length 16135 m -> 1547 m, largest move 28.5 m, 1 steeper than drawn"
+    );
+    assert_eq!(report.kept(KeptReason::Held), 1);
+    assert_eq!(report.kept(KeptReason::NoRoute), 0);
+    assert_eq!(report.kept(KeptReason::BlockedByWater), 0);
+    assert_eq!(report.kept(KeptReason::BlockedByRoad), 0);
+}
+
+#[test]
+fn plan_the_lines_of_the_summary_are_the_reports_own_numbers() {
+    // a real report: one planned corner and one held bend, and the counts the words speak of
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+        city_way(
+            4,
+            &[30, 31, 32],
+            &[(1000.0, 500.0), (1003.0, 503.0), (1006.0, 500.0)],
+        ),
+        city_way(
+            5,
+            &[20, 30, 21],
+            &[(1000.0, 400.0), (1000.0, 500.0), (1000.0, 600.0)],
+        ),
+        city_way(
+            6,
+            &[22, 32, 23],
+            &[(1006.0, 400.0), (1006.0, 500.0), (1006.0, 600.0)],
+        ),
+    ]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(report.zones.len(), 2, "{:?}", report.zones);
+    assert_eq!(report.kept(KeptReason::Held), 1, "{:?}", report.zones);
+    assert_eq!(
+        report.zones.iter().filter(|z| is_planned(z)).count(),
+        1,
+        "{:?}",
+        report.zones
+    );
+    let want = format!(
+        "Road planning: {} zones, {} planned, {} kept (no_route {}, held {}, blocked_by_water {}, \
+         blocked_by_road {}), tight length {:.0} m -> {:.0} m, largest move {:.1} m, {} steeper than drawn",
+        report.zones.len(),
+        report.zones.iter().filter(|z| is_planned(z)).count(),
+        report.zones.len() - report.zones.iter().filter(|z| is_planned(z)).count(),
+        report.kept(KeptReason::NoRoute),
+        report.kept(KeptReason::Held),
+        report.kept(KeptReason::BlockedByWater),
+        report.kept(KeptReason::BlockedByRoad),
+        report.tight_before_m,
+        report.tight_after_m,
+        report.max_stray_m,
+        report.steeper_than_drawn
+    );
+    assert_eq!(report.summary(), want);
+    assert_eq!(report.kept(KeptReason::Held), 1);
+    assert_ne!(out, g);
+}
+
+/// A chain with a corner 12 m before a 4 m bridge's hold, a straight past it and a tight 9 m arc whose first
+/// sample is 22 m past the hold, so that the zone's two legs fail differently.
+fn partly_planned_chain() -> RoadGraph {
+    let approach_nodes: Vec<i64> = vec![1, 2, 40];
+    let approach = vec![(400.0, 500.0), (490.0, 500.0), (490.0, 513.0)];
+    let mut nodes: Vec<i64> = vec![41, 3];
+    let mut points: Vec<(f64, f64)> = vec![(490.0, 517.0), (490.0, 540.0)];
+    let mut next = 4_i64;
+    for i in 1..=16 {
+        let a = PI / 2.0 * f64::from(i) / 16.0;
+        points.push((490.0 + 9.0 * (1.0 - a.cos()), 540.0 + 9.0 * a.sin()));
+        nodes.push(next);
+        next += 1;
+    }
+    points.push((530.0, 549.0));
+    nodes.push(next);
+    build_graph(&[
+        city_way(1, &approach_nodes, &approach),
+        bridge_way(2, &[40, 41], &[(490.0, 513.0), (490.0, 517.0)]),
+        city_way(3, &nodes, &points),
+    ])
+}
+
+#[test]
+fn plan_a_partly_planned_zone_is_kept_and_writes_its_planned_leg() {
+    // the bridge's 2 m hold splits the zone into two legs: the first (the corner 12 m before the hold) is planned,
+    // the second keeps its line because its drawn line runs through its own chain's earthwork. The zone is `Kept`
+    // with the first *kept* leg's reason, and the planned leg is still written.
+    let g = partly_planned_chain();
+    let params = RerouteParams {
+        bridge_hold_m: 1.0,
+        ..RerouteParams::default()
+    };
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    let zone = only_zone(&report);
+    assert_eq!(zone.legs, 2, "{zone:?}");
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
+    assert_eq!(detail, "no_route");
+    assert_eq!(zone.candidate, Some(Candidate::Plate));
+    assert_eq!(report.kept(KeptReason::NoRoute), 1);
+    assert!(
+        report.kept_zones.iter().any(|(id, _)| *id == zone.id),
+        "{:?}",
+        report.kept_zones
+    );
+    // the zone reports its planned leg's measures, not the kept leg's
+    assert!(zone.radius_after_m >= CITY_MIN_R - 0.01, "{zone:?}");
+    assert_ne!(zone.length_after_m, zone.length_before_m, "{zone:?}");
+    assert!(zone.weight.is_some(), "{zone:?}");
+    // the planned leg is written: the corner at (490, 500) is replaced by a fillet
+    let written = points_of(&out, "1:1-40");
+    assert!(
+        !written.iter().any(|&p| same_bits(p, (490.0, 500.0))),
+        "the planned leg was not written: {written:?}"
+    );
+    // the bridge and the kept leg keep their line bit for bit
+    assert_eq!(points_of(&out, "2:40-41"), points_of(&g, "2:40-41"));
+    assert_eq!(points_of(&out, "3:20-41"), points_of(&g, "3:20-41"));
+}
+
+#[test]
+fn plan_a_deck_near_a_junction_crossed_elsewhere_is_held() {
+    // a corner 20 m after a junction, and a bridge deck whose end is 5 m from the junction but which the drawn
+    // line crosses 20 m from it: that crossing is not part of the anchor
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(500.0, 500.0), (500.0, 520.0), (560.0, 520.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 500.0), (500.0, 500.0), (600.0, 500.0)],
+        ),
+        bridge_way(3, &[20, 21], &[(505.0, 490.0), (505.0, 540.0)]),
+    ]);
+    let params = RerouteParams::default();
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    assert_eq!(zone.anchors.0, AnchorKind::Junction(1), "{zone:?}");
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::Held, "{zone:?}");
+    assert_eq!(detail, "crosses_deck");
+    // without the deck the corner is planned: 20 m after the junction the arm is free
+    let clean = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(500.0, 500.0), (500.0, 520.0), (560.0, 520.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 500.0), (500.0, 500.0), (600.0, 500.0)],
+        ),
+    ]);
+    let (_out, report) = plan_with(
+        &clean,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
+}
+
+/// A chain with a vertex 5 cm before the end anchor's sample, after off-grid 90 degree corners.
+fn vertex_a_hand_span_before_the_end() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3, 4, 5, 6, 7, 8],
+            &[
+                (400.0, 500.0),
+                (441.3, 500.0),
+                (441.3, 503.3),
+                (482.9, 503.3),
+                (482.9, 500.0),
+                (560.0, 500.0),
+                (560.0, 519.80),
+                (560.0, 600.0),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 8, 13],
+            &[(460.0, 600.0), (560.0, 600.0), (660.0, 600.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_vertex_a_hand_span_before_the_end_anchor_is_not_written_after_it() {
+    let g = vertex_a_hand_span_before_the_end();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = zone_matching(&report, |z| z.at.0 > 540.0 && z.at.1 < 520.0);
+    assert!(is_planned(zone), "{zone:?}");
+    let written = points_of(&out, "1:1-8");
+    assert_no_reversal(&written);
+    assert!(
+        !written.iter().any(|&p| same_bits(p, (560.0, 519.80))),
+        "the vertex 2 cm before the anchor sample is written after the route"
+    );
+    assert!(
+        written.iter().any(|&p| (p.1 - 520.0).abs() <= 1.0),
+        "the end anchor is not on the written line"
+    );
 }
