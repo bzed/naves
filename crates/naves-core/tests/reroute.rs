@@ -12,6 +12,7 @@
 )]
 
 use naves_core::catalog::Family;
+use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::reroute::band::{
     Band, BandFail, DrawnGrade, Reach, arrive, arrives, band_step, drawn_grade, ground_at,
@@ -21,7 +22,11 @@ use naves_core::reroute::field::Field;
 use naves_core::reroute::raster::{
     Blocked, Clearance, Obstacles, Wall, WallKind, chamfer, crossings_away, exempt_samples, samples,
 };
-use naves_core::reroute::{CHAMFER_ERROR, RerouteParams};
+use naves_core::reroute::{
+    AnchorKind, CHAMFER_ERROR, Candidate, KeptReason, PlannedZone, RerouteParams, RerouteReport,
+    ZoneOutcome, reroute_graph,
+};
+use naves_core::roadnet::{RoadGraph, Stretch, build_graph};
 use proptest::prelude::*;
 use proptest::test_runner::{FileFailurePersistence, RngSeed};
 
@@ -3342,5 +3347,1310 @@ fn the_cap_is_tested_in_the_middle_of_a_chord() {
     match s.run().unwrap() {
         LegOutcome::NoRoute { .. } => {}
         other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Road planning: zones, anchors, legs and the write-back (plan Task 6).
+// ----------------------------------------------------------------------------------------------------------
+
+/// The tightest arc of the City family in these fixtures, in metres.
+const CITY_MIN_R: f64 = 10.0;
+/// The half width of a City road, in metres.
+const CITY_HALF: f64 = 5.0;
+/// The terrain cell of the fixtures, in metres.
+const MAP_CELL_M: f64 = 4.0;
+/// The vertices per side of the fixture map (2048 m at 4 m).
+const MAP_SIZE: u32 = 513;
+
+fn flat_map() -> Heightmap {
+    Heightmap {
+        size: MAP_SIZE,
+        cell_m: 4.0,
+        h: vec![100.0_f32; (MAP_SIZE * MAP_SIZE) as usize],
+    }
+}
+
+/// A slope of 10 % along the town-corner road: east from x = 400 at y = 500, then north.
+fn ramp_map() -> Heightmap {
+    let mut h = Vec::with_capacity((MAP_SIZE * MAP_SIZE) as usize);
+    for row in 0..MAP_SIZE {
+        for col in 0..MAP_SIZE {
+            let x = f64::from(col) * MAP_CELL_M;
+            let y = f64::from(row) * MAP_CELL_M;
+            let along = (x - 400.0) + (y - 500.0).max(0.0);
+            #[expect(clippy::cast_possible_truncation, reason = "a fixture height")]
+            let z = (100.0 + 0.10 * along) as f32;
+            h.push(z);
+        }
+    }
+    Heightmap {
+        size: MAP_SIZE,
+        cell_m: 4.0,
+        h,
+    }
+}
+
+fn road_way(
+    way: i64,
+    family: Family,
+    nodes: &[i64],
+    points: &[(f64, f64)],
+    bridge: bool,
+    tunnel: bool,
+    roundabout: bool,
+) -> Feature {
+    Feature {
+        id: format!("osm/way/{way}/0"),
+        way_id: way,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family,
+            drivable: true,
+            bridge,
+            tunnel,
+            roundabout,
+            layer: 0,
+            use_sidepath: false,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    }
+}
+
+fn city_way(way: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    road_way(way, Family::City, nodes, points, false, false, false)
+}
+
+fn bridge_way(way: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    road_way(way, Family::City, nodes, points, true, false, false)
+}
+
+fn plan_with(
+    graph: &RoadGraph,
+    map: &Heightmap,
+    min: &(dyn Fn(&Stretch) -> f64 + Sync),
+    water: &(dyn Fn((f64, f64)) -> bool + Sync),
+    streams: &[Vec<(f64, f64)>],
+    params: &RerouteParams,
+) -> (RoadGraph, RerouteReport) {
+    reroute_graph(graph, map, min, water, streams, params)
+}
+
+fn plan_graph(graph: &RoadGraph, map: &Heightmap) -> (RoadGraph, RerouteReport) {
+    plan_with(
+        graph,
+        map,
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &RerouteParams::default(),
+    )
+}
+
+fn points_of(graph: &RoadGraph, id: &str) -> Vec<(f64, f64)> {
+    graph
+        .stretches
+        .iter()
+        .find(|s| s.id == id)
+        .map_or_else(|| panic!("no stretch {id}"), |s| s.points.clone())
+}
+
+/// The position of the crossing of `node` in the graph.
+fn crossing_point(graph: &RoadGraph, node: i64) -> Option<(f64, f64)> {
+    graph
+        .crossings
+        .iter()
+        .find(|c| c.node == node)
+        .map(|c| c.point)
+}
+
+fn stretch_ids(graph: &RoadGraph) -> Vec<String> {
+    graph.stretches.iter().map(|s| s.id.clone()).collect()
+}
+
+fn node_ids(graph: &RoadGraph) -> Vec<i64> {
+    graph.crossings.iter().map(|c| c.node).collect()
+}
+
+/// The one zone of the report that matches.
+fn zone_matching(report: &RerouteReport, what: impl Fn(&PlannedZone) -> bool) -> &PlannedZone {
+    let found: Vec<&PlannedZone> = report.zones.iter().filter(|z| what(z)).collect();
+    assert_eq!(found.len(), 1, "zones: {:?}", report.zones);
+    found[0]
+}
+
+fn only_zone(report: &RerouteReport) -> &PlannedZone {
+    assert_eq!(report.zones.len(), 1, "zones: {:?}", report.zones);
+    &report.zones[0]
+}
+
+fn is_planned(zone: &PlannedZone) -> bool {
+    matches!(zone.outcome, ZoneOutcome::Planned)
+}
+
+fn kept(zone: &PlannedZone) -> (KeptReason, &str) {
+    match &zone.outcome {
+        ZoneOutcome::Kept { reason, detail } => (*reason, detail.as_str()),
+        ZoneOutcome::Planned => panic!("zone planned: {zone:?}"),
+    }
+}
+
+/// The town corner of the brief: J1 (400, 500), a corner at (500, 500), J2 (500, 600), with a through side road
+/// at J1 and at J2.
+fn town_corner() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+    ])
+}
+
+/// The same corner, but 15 m after J1 and with J2 further north.
+fn corner_after_junction() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (415.0, 500.0), (415.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(315.0, 600.0), (415.0, 600.0), (515.0, 600.0)],
+        ),
+    ])
+}
+
+/// A corner 15 m before a dead end.
+fn corner_before_dead_end() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (450.0, 500.0), (450.0, 515.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+    ])
+}
+
+/// A corner `gap` metres before a 30 m bridge.
+fn corner_before_bridge(gap: f64) -> RoadGraph {
+    let start = 500.0 + gap;
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, start)],
+        ),
+        bridge_way(2, &[3, 4], &[(500.0, start), (500.0, start + 30.0)]),
+        city_way(3, &[4, 5], &[(500.0, start + 30.0), (500.0, start + 60.0)]),
+        city_way(
+            4,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            5,
+            &[12, 5, 13],
+            &[
+                (400.0, start + 60.0),
+                (500.0, start + 60.0),
+                (600.0, start + 60.0),
+            ],
+        ),
+    ])
+}
+
+/// A bridge whose end is 8 m from a junction, with the corner 15 m past that junction.
+fn junction_near_bridge() -> RoadGraph {
+    build_graph(&[
+        bridge_way(1, &[1, 2], &[(500.0, 500.0), (500.0, 540.0)]),
+        city_way(2, &[2, 3], &[(500.0, 540.0), (500.0, 548.0)]),
+        city_way(
+            3,
+            &[10, 3, 11],
+            &[(400.0, 548.0), (500.0, 548.0), (600.0, 548.0)],
+        ),
+        city_way(
+            4,
+            &[3, 4, 5],
+            &[(500.0, 548.0), (500.0, 563.0), (560.0, 563.0)],
+        ),
+    ])
+}
+
+/// A 6 m kink between two junctions.
+fn tight_kink_between_junctions() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (403.0, 503.0), (406.0, 500.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(406.0, 400.0), (406.0, 500.0), (406.0, 600.0)],
+        ),
+    ])
+}
+
+/// A node inside the zone where two stretches of different families continue each other.
+fn two_stretch_node() -> RoadGraph {
+    build_graph(&[
+        road_way(
+            1,
+            Family::Asf3,
+            &[1, 2],
+            &[(400.0, 500.0), (490.0, 500.0)],
+            false,
+            false,
+            false,
+        ),
+        city_way(
+            2,
+            &[2, 3, 4],
+            &[(490.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            4,
+            &[12, 4, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+    ])
+}
+
+/// The town corner with a bridge deck crossing the drawn line 12 m after the start anchor.
+fn town_corner_with_deck() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+        bridge_way(4, &[20, 21], &[(492.0, 470.0), (492.0, 530.0)]),
+    ])
+}
+
+/// The Task 5 hairpin, 35 m below a road across its top.
+fn hairpin_with_a_road() -> RoadGraph {
+    let mut nodes = vec![1_i64];
+    let mut points = vec![(500.0, 400.0), (500.0, 460.0)];
+    nodes.push(2);
+    let mut node = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((506.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(node);
+        node += 1;
+    }
+    points.push((512.0, 460.0));
+    nodes.push(node);
+    node += 1;
+    points.push((512.0, 400.0));
+    nodes.push(node);
+    build_graph(&[
+        city_way(1, &nodes, &points),
+        city_way(2, &[100, 101], &[(450.0, 499.0), (550.0, 499.0)]),
+    ])
+}
+
+/// Three hairpins whose parallel legs are 25 m apart.
+fn switchback_stack() -> RoadGraph {
+    let mut nodes: Vec<i64> = Vec::new();
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    let mut next = 1_i64;
+    let mut push = |p: (f64, f64), nodes: &mut Vec<i64>| {
+        points.push(p);
+        nodes.push(next);
+        next += 1;
+    };
+    push((450.0, 400.0), &mut nodes);
+    push((550.0, 400.0), &mut nodes);
+    // hairpin from the east leg (y = 400) to the next leg (y = 425), bulging east
+    for i in 1..16 {
+        let a = -PI / 2.0 - PI * f64::from(i) / 16.0;
+        push((554.0 + 4.0 * a.cos(), 412.5 + 4.0 * a.sin()), &mut nodes);
+    }
+    push((550.0, 425.0), &mut nodes);
+    push((450.0, 425.0), &mut nodes);
+    // hairpin west, y = 425 -> 450
+    for i in 1..16 {
+        let a = PI / 2.0 - PI * f64::from(i) / 16.0;
+        push((446.0 + 4.0 * a.cos(), 437.5 + 4.0 * a.sin()), &mut nodes);
+    }
+    push((450.0, 450.0), &mut nodes);
+    push((550.0, 450.0), &mut nodes);
+    // hairpin east, y = 450 -> 475
+    for i in 1..16 {
+        let a = -PI / 2.0 - PI * f64::from(i) / 16.0;
+        push((554.0 + 4.0 * a.cos(), 462.5 + 4.0 * a.sin()), &mut nodes);
+    }
+    push((550.0, 475.0), &mut nodes);
+    push((450.0, 475.0), &mut nodes);
+    build_graph(&[city_way(1, &nodes, &points)])
+}
+
+/// The town corner with a narrow side road 8 m from the first leg at one place and far outside the corner later.
+fn town_corner_with_side_road() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+        road_way(
+            4,
+            Family::Mud,
+            &[20, 21, 22],
+            &[(400.0, 508.0), (525.0, 508.0), (525.0, 620.0)],
+            false,
+            false,
+            false,
+        ),
+    ])
+}
+
+/// A ring whose cut (the lowest node) has a tight kink 10 m after it, and another tight corner elsewhere.
+fn ring_with_a_kink() -> RoadGraph {
+    build_graph(&[city_way(
+        1,
+        &[1, 2, 3, 4, 5, 6, 1],
+        &[
+            (400.0, 500.0),
+            (410.0, 502.0),
+            (430.0, 500.0),
+            (500.0, 500.0),
+            (500.0, 600.0),
+            (400.0, 600.0),
+            (400.0, 500.0),
+        ],
+    )])
+}
+
+/// Two corners on the map edge: one at x = 8 (the drawn line is already in the margin), one at x = 30.
+fn corner_at_the_edge(x: f64) -> RoadGraph {
+    build_graph(&[
+        city_way(1, &[1, 2, 3], &[(200.0, 500.0), (x, 500.0), (x, 600.0)]),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(200.0, 400.0), (200.0, 500.0), (200.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(x, 600.0), (x + 100.0, 600.0), (x + 200.0, 600.0)],
+        ),
+    ])
+}
+
+/// A corner 10 m from a dead end on the map edge, at (0, 500).
+fn road_to_the_edge() -> RoadGraph {
+    build_graph(&[
+        city_way(1, &[1, 2, 3], &[(0.0, 500.0), (0.0, 510.0), (60.0, 510.0)]),
+        city_way(
+            2,
+            &[12, 3, 13],
+            &[(60.0, 410.0), (60.0, 510.0), (60.0, 610.0)],
+        ),
+    ])
+}
+
+/// A U-turn of radius 25 (tight against a minimum of 30) with a bridge deck's earthwork across its top, and long
+/// straights on both sides so that the zone's anchors are clear of the deck.
+fn u_turn_with_a_deck() -> RoadGraph {
+    let mut nodes = vec![1_i64, 2, 3];
+    let mut points = vec![(200.0, 500.0), (300.0, 500.0), (360.0, 500.0)];
+    let mut node = 4_i64;
+    for i in 1..32 {
+        let a = PI * f64::from(i) / 32.0;
+        points.push((385.0 - 25.0 * a.cos(), 500.0 + 25.0 * a.sin()));
+        nodes.push(node);
+        node += 1;
+    }
+    for p in [(410.0, 500.0), (470.0, 500.0), (570.0, 500.0)] {
+        points.push(p);
+        nodes.push(node);
+        node += 1;
+    }
+    build_graph(&[
+        city_way(1, &nodes, &points),
+        bridge_way(2, &[100, 101], &[(370.0, 535.0), (400.0, 535.0)]),
+    ])
+}
+
+#[expect(
+    clippy::many_single_char_names,
+    reason = "the endpoint names of the two segments, as in the geometry"
+)]
+fn segment_crossings(a: &[(f64, f64)], b: &[(f64, f64)]) -> usize {
+    let cross = |p: (f64, f64), q: (f64, f64), r: (f64, f64), s: (f64, f64)| {
+        let (d1, d2) = ((q.0 - p.0, q.1 - p.1), (s.0 - r.0, s.1 - r.1));
+        let den = d1.0 * d2.1 - d1.1 * d2.0;
+        if den.abs() < 1e-12 {
+            return false;
+        }
+        let t = ((r.0 - p.0) * d2.1 - (r.1 - p.1) * d2.0) / den;
+        let u = ((r.0 - p.0) * d1.1 - (r.1 - p.1) * d1.0) / den;
+        let e = 1e-9;
+        t > e && t < 1.0 - e && u > e && u < 1.0 - e
+    };
+    let mut n = 0;
+    for sa in a.windows(2) {
+        for sb in b.windows(2) {
+            if cross(sa[0], sa[1], sb[0], sb[1]) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// The smallest distance of the polyline `a` to the polyline `b`.
+fn line_distance(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    a.iter()
+        .map(|&p| dist_to_line(p, b))
+        .fold(f64::INFINITY, f64::min)
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Step 1: zones and anchors
+// ----------------------------------------------------------------------------------------------------------
+
+#[test]
+fn plan_a_graph_without_a_tight_run_is_unchanged() {
+    let g = build_graph(&[city_way(1, &[1, 2], &[(400.0, 500.0), (700.0, 500.0)])]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    assert!(report.zones.is_empty(), "{:?}", report.zones);
+    assert_eq!(report.tight_before_m, 0.0);
+    assert_eq!(report.tight_after_m, 0.0);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+}
+
+#[test]
+fn plan_a_town_corner() {
+    let g = town_corner();
+    let before = g.clone();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_eq!(zone.anchors, (AnchorKind::Line, AnchorKind::Line));
+    assert_eq!(zone.radius_wanted_m, CITY_MIN_R);
+    assert_eq!(zone.junction, None);
+    assert!(
+        zone.radius_before_m < CITY_MIN_R,
+        "{}",
+        zone.radius_before_m
+    );
+    assert!(
+        zone.radius_after_m >= CITY_MIN_R - 0.01,
+        "{}",
+        zone.radius_after_m
+    );
+    assert!(zone.legs >= 1);
+    assert_eq!(zone.stretches.len(), 1);
+    // the junctions never move
+    for node in [1, 3] {
+        assert_eq!(crossing_point(&out, node), crossing_point(&before, node));
+    }
+    assert_eq!(stretch_ids(&out), stretch_ids(&before));
+    assert_eq!(node_ids(&out), node_ids(&before));
+    // the corner is buildable now
+    assert_eq!(report.tight_after_m, 0.0, "{}", report.tight_after_m);
+    assert!(report.tight_before_m > 1.0, "{}", report.tight_before_m);
+    assert!(report.max_stray_m >= 0.0);
+    // the written stretch covers the same nodes and is longer than the chord
+    let main = points_of(&out, "1:1-3");
+    assert!(is_close(main[0], (400.0, 500.0), 1e-9));
+    assert!(is_close(*main.last().unwrap(), (500.0, 600.0), 1e-9));
+    assert!(length_of(&main) > 190.0);
+}
+
+#[test]
+fn plan_a_corner_after_a_junction_keeps_the_arm() {
+    let g = corner_after_junction();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_eq!(zone.anchors.0, AnchorKind::Junction(1));
+    assert_eq!(zone.junction, Some(1));
+    let main = points_of(&out, "1:1-3");
+    assert!(is_close(main[0], (400.0, 500.0), 1e-12));
+    let arm = (main[1].1 - main[0].1).atan2(main[1].0 - main[0].0);
+    assert!(arm.abs() < 1e-9, "{arm}");
+    let mut along = 0.0;
+    for pair in main.windows(2) {
+        if along > 6.25 + 1e-9 {
+            break;
+        }
+        assert!((pair[0].1 - 500.0).abs() < 1e-6, "{:?}", pair[0]);
+        along += (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+    }
+    assert!(along >= 6.25, "{along}");
+}
+
+#[test]
+fn plan_a_corner_before_a_dead_end_keeps_it() {
+    let g = corner_before_dead_end();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_eq!(zone.anchors.1, AnchorKind::DeadEnd(3));
+    let main = points_of(&out, "1:1-3");
+    assert!(is_close(*main.last().unwrap(), (450.0, 515.0), 1e-12));
+}
+
+#[test]
+fn plan_a_bridge_keeps_its_points_and_held_approach() {
+    let g = corner_before_bridge(10.0);
+    let bridge = points_of(&g, "2:3-4");
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(points_of(&out, "2:3-4"), bridge, "the bridge moved");
+    assert_eq!(out, g, "a held corner changed the graph");
+    let zone = only_zone(&report);
+    let (reason, _) = kept(zone);
+    assert_eq!(reason, KeptReason::Held, "{zone:?}");
+    assert_eq!(zone.candidate, Some(Candidate::Plate));
+    assert_eq!(zone.anchors.1, AnchorKind::BridgeHold);
+    let ends = [(500.0, 510.0), (500.0, 540.0)];
+    for (a, b) in g.stretches.iter().zip(&out.stretches) {
+        for (p, q) in a.points.iter().zip(&b.points) {
+            if ends
+                .iter()
+                .any(|e| (e.0 - p.0).hypot(e.1 - p.1) <= 25.0 + 1e-9)
+            {
+                assert_eq!(p, q, "{}", a.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn plan_a_corner_too_near_a_bridge_is_held() {
+    let g = corner_before_bridge(12.0);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, _) = kept(zone);
+    assert_eq!(reason, KeptReason::Held, "{zone:?}");
+    assert_eq!(zone.candidate, Some(Candidate::Plate));
+    assert_eq!(zone.legs, 0, "the hold leaves no leg: {zone:?}");
+}
+
+#[test]
+fn plan_a_deck_near_a_junction_belongs_to_the_anchor() {
+    let g = junction_near_bridge();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let _ = &out;
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_eq!(zone.anchors.0, AnchorKind::Junction(3));
+    assert_eq!(zone.junction, Some(3));
+}
+
+#[test]
+fn plan_a_tight_kink_between_junctions_is_held_close() {
+    let g = tight_kink_between_junctions();
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::Held);
+    assert_eq!(detail, "anchors_close");
+    assert!(
+        report.skipped.iter().any(|(id, _)| *id == zone.id),
+        "{:?}",
+        report.skipped
+    );
+}
+
+#[test]
+fn plan_a_node_inside_a_leg_moves() {
+    let g = two_stretch_node();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let first = points_of(&out, "1:1-2");
+    let second = points_of(&out, "2:2-4");
+    assert_eq!(first.last(), second.first());
+    assert!(!is_close(*first.last().unwrap(), (490.0, 500.0), 1e-6));
+    let crossing = out
+        .crossings
+        .iter()
+        .find(|c| c.node == 2)
+        .unwrap_or_else(|| panic!("no crossing at node 2: {:?}", out.crossings));
+    assert_eq!(Some(crossing.point), first.last().copied());
+    assert_eq!(crossing.stretches.len(), 2);
+}
+
+#[test]
+fn plan_a_zone_under_a_deck_is_held() {
+    let g = town_corner_with_deck();
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::Held);
+    assert_eq!(detail, "crosses_deck");
+}
+
+#[test]
+fn plan_the_grade_of_a_leg() {
+    let g = town_corner();
+    let (out, report) = plan_graph(&g, &ramp_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert!(
+        (zone.drawn_grade - 0.10).abs() <= 0.005,
+        "{}",
+        zone.drawn_grade
+    );
+    assert!(
+        (zone.grade_limit - 0.14).abs() < 1e-9,
+        "{}",
+        zone.grade_limit
+    );
+    assert!(zone.length_after_m > 0.0);
+    assert!(
+        zone.planned_grade <= 0.14 + 1.0 / zone.length_after_m,
+        "{} {}",
+        zone.planned_grade,
+        zone.length_after_m
+    );
+    // the drawn grade is a mean, the window the steepest part
+    assert!(zone.drawn_grade_window >= zone.drawn_grade);
+    let _ = out;
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Step 2: obstacles on the graph
+// ----------------------------------------------------------------------------------------------------------
+
+#[test]
+fn plan_a_route_keeps_off_a_road_beyond_the_hairpin() {
+    let g = hairpin_with_a_road();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let id = g
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    let route = points_of(&out, &id);
+    let road = [(450.0, 499.0), (550.0, 499.0)];
+    // the road's reach (9 to 11 m here) plus the segment threshold of a 15 m clearance
+    let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
+    let clearance = reach + MAP_CELL_M;
+    let threshold = (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt();
+    let want = reach + threshold - 2.0;
+    let got = line_distance(&route, &road);
+    assert!(got >= want, "{got} against {want}");
+}
+
+#[test]
+fn plan_a_side_road_is_exempt_where_the_drawn_line_comes_near() {
+    let g = town_corner_with_side_road();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = zone_matching(&report, |z| z.stretches == ["1:1-3"]);
+    assert!(is_planned(zone), "{zone:?}");
+    let route = points_of(&out, "1:1-3");
+    // the far part of the side road, beyond the per-place exemption, keeps the clearance
+    let far = [(525.0, 508.0), (525.0, 620.0)];
+    let reach = naves_core::conform::core_reach_m(2.5, MAP_CELL_M);
+    let clearance = reach + MAP_CELL_M;
+    let got = line_distance(&route, &far);
+    assert!(got >= clearance - 2.0, "{got} against {clearance}");
+    // and it crosses the side road as often as the drawn line
+    let side = points_of(&g, "4:20-22");
+    let drawn = [(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)];
+    assert_eq!(
+        segment_crossings(&route, &side),
+        segment_crossings(&drawn, &side)
+    );
+}
+
+#[test]
+fn plan_a_switchback_stack_is_not_cut_through() {
+    let g = switchback_stack();
+    let id = g
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    let original = points_of(&g, &id);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert!(!report.zones.is_empty(), "no zones: {report:?}");
+    let route_line = points_of(&out, &id);
+    let unchanged: Vec<(u64, u64)> = original
+        .iter()
+        .map(|p| (p.0.to_bits(), p.1.to_bits()))
+        .collect();
+    // the points the routes added: the written line keeps the drawn points outside the zones bit for bit
+    let new_points: Vec<(f64, f64)> = route_line
+        .iter()
+        .copied()
+        .filter(|p| !unchanged.contains(&(p.0.to_bits(), p.1.to_bits())))
+        .collect();
+    assert!(new_points.len() >= 2, "the routes added no points");
+    let clearance = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
+    for zone in &report.zones {
+        if !is_planned(zone) {
+            continue;
+        }
+        let half = zone.length_before_m / 2.0;
+        let at = zone.at;
+        // the own chain outside the leg, as contiguous pieces (never joined across the leg)
+        let mut pieces: Vec<Vec<(f64, f64)>> = Vec::new();
+        let mut current: Vec<(f64, f64)> = Vec::new();
+        for &p in &original {
+            if (p.0 - at.0).hypot(p.1 - at.1) > half {
+                current.push(p);
+            } else if current.len() >= 2 {
+                pieces.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+        if current.len() >= 2 {
+            pieces.push(current);
+        }
+        // the points this zone's route added, in the written order
+        let zone_new: Vec<(f64, f64)> = route_line
+            .iter()
+            .copied()
+            .filter(|p| {
+                !unchanged.contains(&(p.0.to_bits(), p.1.to_bits()))
+                    && (p.0 - at.0).hypot(p.1 - at.1) <= half + 30.0
+            })
+            .collect();
+        for piece in &pieces {
+            if zone_new.len() >= 2 {
+                let got = zone_new
+                    .iter()
+                    .map(|&p| dist_to_line(p, piece))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    got >= clearance - 2.0,
+                    "zone {}: {got} against {clearance}",
+                    zone.id
+                );
+                assert_eq!(
+                    segment_crossings(&zone_new, piece),
+                    0,
+                    "zone {} crosses the chain's other legs",
+                    zone.id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn plan_streams_are_crossed_only_as_often_as_before() {
+    // a stream 15 m outside the corner, not crossed by the drawn line
+    let g = town_corner();
+    let stream = vec![(490.0, 480.0), (530.0, 480.0)];
+    let streams = [stream.clone()];
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &streams,
+        &RerouteParams::default(),
+    );
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let route = points_of(&out, "1:1-3");
+    assert_eq!(
+        segment_crossings(&route, &stream),
+        0,
+        "the route crossed a new stream"
+    );
+
+    // a stream the drawn line crosses once, 12 m from the start anchor
+    let crossing = vec![(492.0, 480.0), (492.0, 520.0)];
+    let streams = [crossing.clone()];
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &streams,
+        &RerouteParams::default(),
+    );
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let route = points_of(&out, "1:1-3");
+    assert_eq!(segment_crossings(&route, &crossing), 1);
+}
+
+#[test]
+fn plan_a_ring_cut_is_held_and_the_rest_is_planned() {
+    let g = ring_with_a_kink();
+    let pond = |p: (f64, f64)| (395.0..=405.0).contains(&p.0) && (495.0..=505.0).contains(&p.1);
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &pond,
+        &[],
+        &RerouteParams::default(),
+    );
+    let cut = zone_matching(&report, |z| matches!(z.anchors.0, AnchorKind::RingCut(_)));
+    let (reason, _) = kept(cut);
+    assert_eq!(reason, KeptReason::Held, "{cut:?}");
+    assert!(
+        matches!(cut.anchors.0, AnchorKind::RingCut(_)),
+        "{:?}",
+        cut.anchors
+    );
+    let planned = zone_matching(&report, |z| {
+        is_planned(z) && z.at.0 > 450.0 && z.at.1 < 550.0
+    });
+    assert!(is_planned(planned), "{planned:?}");
+    // the ring's first and last point (the cut) stay bit for bit
+    let ring = points_of(&out, "1:1-1");
+    assert_eq!(ring.first(), Some(&(400.0, 500.0)));
+    assert_eq!(ring.last(), Some(&(400.0, 500.0)));
+}
+
+#[test]
+fn plan_the_map_edge_blocks_only_what_is_outside() {
+    // the drawn line is already in the edge margin at x = 8: only the outside of the map blocks
+    let g = corner_at_the_edge(8.0);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let main = points_of(&out, "1:1-3");
+    assert!(
+        main.iter().all(|p| p.0 >= 0.0),
+        "a point outside the map: {main:?}"
+    );
+    // a road that runs to the edge keeps its end there
+    let g = road_to_the_edge();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let main = points_of(&out, "1:1-3");
+    assert!(is_close(main[0], (0.0, 500.0), 1e-12));
+    assert_eq!(main[0], (0.0, 500.0));
+
+    // a corner 30 m from the edge may not come into the margin (reach 11 m)
+    let g = corner_at_the_edge(30.0);
+    let (out, _) = plan_graph(&g, &flat_map());
+    let main = points_of(&out, "1:1-3");
+    let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
+    assert!(main.iter().all(|p| p.0 >= reach - 2.0), "{main:?}");
+}
+
+#[test]
+fn plan_a_drawn_line_inside_another_earthwork_can_leave_it() {
+    // a U-turn of radius 25 against a minimum of 30: the zone's drawn line runs through the earthwork of the bridge
+    // deck across its top, and the anchors are far enough away to be clear of it
+    let g = u_turn_with_a_deck();
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| 30.0,
+        &|_: (f64, f64)| false,
+        &[],
+        &RerouteParams::default(),
+    );
+    let zone = only_zone(&report);
+    assert!(!zone.original_feasible, "{zone:?}");
+    assert!(is_planned(zone), "{zone:?}");
+    let _ = out;
+}
+
+#[test]
+fn plan_skips_a_stretch_that_is_not_finite() {
+    let mut features = vec![
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+    ];
+    let clean = build_graph(&features);
+    features.push(city_way(4, &[90, 91], &[(f64::NAN, 700.0), (800.0, 700.0)]));
+    let g = build_graph(&features);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|(id, reason)| id == "4:90-91" && reason.to_lowercase().contains("finite")),
+        "{:?}",
+        report.skipped
+    );
+    let (clean_out, clean_report) = plan_graph(&clean, &flat_map());
+    let zone = zone_matching(&report, |z| z.at.0 > 450.0 && is_planned(z));
+    let clean_zone = zone_matching(&clean_report, |z| z.at.0 > 450.0 && is_planned(z));
+    assert_eq!(zone, clean_zone);
+    let _ = (out, clean_out);
+}
+
+#[test]
+fn plan_a_stretch_far_too_long_is_skipped_or_kept_without_panic() {
+    let g = build_graph(&[city_way(
+        1,
+        &[1, 2],
+        &[
+            (f64::from(MAP_SIZE) * MAP_CELL_M / 2.0, 500.0),
+            (1.0e9, 500.0),
+        ],
+    )]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    let budget: usize = RerouteParams::default().budgets.iter().map(|b| b.1).sum();
+    assert!(report.states <= budget, "{}", report.states);
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Step 3: determinism
+// ----------------------------------------------------------------------------------------------------------
+
+#[test]
+fn plan_the_same_graph_gives_the_same_result() {
+    let features = vec![
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            2,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            3,
+            &[12, 3, 13],
+            &[(400.0, 600.0), (500.0, 600.0), (600.0, 600.0)],
+        ),
+    ];
+    let map = flat_map();
+    let g = build_graph(&features);
+    let (graph_a, report_a) = plan_graph(&g, &map);
+    let (graph_b, report_b) = plan_graph(&g, &map);
+    assert_eq!(graph_a, graph_b);
+    assert_eq!(report_a, report_b);
+
+    let mut reversed = features.clone();
+    reversed.reverse();
+    let g_rev = build_graph(&reversed);
+    assert_eq!(g_rev, g);
+    let (graph_c, report_c) = plan_graph(&g_rev, &map);
+    assert_eq!(graph_a, graph_c);
+    assert_eq!(report_a, report_c);
+
+    for threads in [1_usize, 4, 16] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap_or_else(|e| panic!("pool: {e}"));
+        let (graph_d, report_d) = pool.install(|| plan_graph(&g, &map));
+        assert_eq!(graph_a, graph_d, "{threads} threads");
+        assert_eq!(report_a, report_d, "{threads} threads");
+    }
+}
+
+#[test]
+fn plan_the_labels_of_the_report() {
+    let reasons = [
+        (KeptReason::NoRoute, "no_route"),
+        (KeptReason::BlockedByWater, "blocked_by_water"),
+        (KeptReason::BlockedByRoad, "blocked_by_road"),
+        (KeptReason::Held, "held"),
+    ];
+    for (reason, id) in reasons {
+        assert_eq!(reason.id(), id);
+    }
+    assert_eq!(Candidate::Plate.id(), "plate");
+    assert_eq!(Candidate::CurvedBridge.id(), "curved_bridge");
+}
+
+/// A corner 30 m after the end of a tunnel.
+fn corner_past_a_tunnel() -> RoadGraph {
+    build_graph(&[
+        road_way(
+            1,
+            Family::City,
+            &[1, 2],
+            &[(500.0, 500.0), (500.0, 540.0)],
+            false,
+            true,
+            false,
+        ),
+        city_way(
+            2,
+            &[2, 3, 4],
+            &[(500.0, 540.0), (500.0, 570.0), (560.0, 570.0)],
+        ),
+        city_way(
+            3,
+            &[12, 4, 13],
+            &[(400.0, 570.0), (560.0, 570.0), (660.0, 570.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_tunnel_is_skipped_and_its_end_holds_the_leg() {
+    let g = corner_past_a_tunnel();
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|(id, reason)| id == "1:1-2" && reason == "tunnel"),
+        "{:?}",
+        report.skipped
+    );
+    let zone = only_zone(&report);
+    assert_eq!(
+        zone.anchors.0,
+        AnchorKind::TunnelHold,
+        "the leg starts after the tunnel's hold: {zone:?}"
+    );
+    assert_eq!(out, g);
+}
+
+#[test]
+fn plan_a_roundabout_is_not_planned() {
+    let g = build_graph(&[road_way(
+        1,
+        Family::City,
+        &[1, 2, 3],
+        &[(400.0, 500.0), (500.0, 500.0), (500.0, 600.0)],
+        false,
+        false,
+        true,
+    )]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::Held);
+    assert_eq!(detail, "roundabout");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|(id, r)| *id == zone.id && r == "roundabout"),
+        "{:?}",
+        report.skipped
+    );
+}
+
+#[test]
+fn plan_a_zone_longer_than_the_limit_is_kept() {
+    let g = town_corner();
+    let params = RerouteParams {
+        max_zone_m: 10.0,
+        ..RerouteParams::default()
+    };
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (_, detail) = kept(zone);
+    assert_eq!(detail, "too_long");
+}
+
+#[test]
+fn plan_a_bad_parameter_keeps_the_zone() {
+    let g = town_corner();
+    // a planning radius above the search's limit
+    let params = RerouteParams {
+        radius_margin: 1000.0,
+        ..RerouteParams::default()
+    };
+    let (_out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    let (_, detail) = kept(only_zone(&report));
+    assert_eq!(detail, "bad_radius");
+
+    // a value that is not a number reaches the search's own check
+    let params = RerouteParams {
+        stray_max: f64::NAN,
+        ..RerouteParams::default()
+    };
+    let (_out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    let (_, detail) = kept(only_zone(&report));
+    assert_eq!(detail, "invalid_input");
+}
+
+/// A corner at a node where the second stretch is stored the other way round.
+fn reversed_corner() -> RoadGraph {
+    build_graph(&[
+        city_way(1, &[1, 5], &[(400.0, 500.0), (500.0, 500.0)]),
+        road_way(
+            2,
+            Family::Asf3,
+            &[0, 5],
+            &[(500.0, 600.0), (500.0, 500.0)],
+            false,
+            false,
+            false,
+        ),
+        city_way(
+            3,
+            &[10, 1, 11],
+            &[(400.0, 400.0), (400.0, 500.0), (400.0, 600.0)],
+        ),
+        city_way(
+            4,
+            &[12, 0, 13],
+            &[(500.0, 700.0), (500.0, 600.0), (500.0, 500.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_reversed_link_is_written_back_in_its_own_direction() {
+    let g = reversed_corner();
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let a = points_of(&out, "1:1-5");
+    let b = points_of(&out, "2:0-5");
+    // the corner is node 5, which is the *last* point of both stored stretches
+    assert_eq!(a.last(), b.last());
+    assert!(crossing_point(&out, 5).is_some_and(|p| !is_close(p, (500.0, 500.0), 1e-6)));
+    assert!(is_close(b[0], (500.0, 600.0), 1e-12));
+    assert!(is_close(a[0], (400.0, 500.0), 1e-12));
+}
+
+/// Two chains that each have a tight bend near the same junction.
+fn two_bends_at_a_junction() -> RoadGraph {
+    build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3],
+            &[(300.0, 500.0), (490.0, 490.0), (500.0, 500.0)],
+        ),
+        city_way(
+            2,
+            &[3, 4, 5],
+            &[(500.0, 500.0), (510.0, 510.0), (600.0, 520.0)],
+        ),
+        city_way(
+            3,
+            &[10, 3, 11],
+            &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        city_way(
+            4,
+            &[20, 1, 21],
+            &[(300.0, 400.0), (300.0, 500.0), (300.0, 600.0)],
+        ),
+        city_way(
+            5,
+            &[22, 5, 23],
+            &[(600.0, 420.0), (600.0, 520.0), (600.0, 620.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_two_zones_at_a_junction_are_partners() {
+    let g = two_bends_at_a_junction();
+    let (_out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(report.zones.len(), 2, "{:?}", report.zones);
+    for (i, zone) in report.zones.iter().enumerate() {
+        assert_eq!(zone.junction, Some(3), "{zone:?}");
+        let partner = zone
+            .partner
+            .as_ref()
+            .unwrap_or_else(|| panic!("no partner"));
+        let other = report
+            .zones
+            .get(1 - i)
+            .unwrap_or_else(|| panic!("no other"));
+        assert_eq!(partner, &other.id);
     }
 }

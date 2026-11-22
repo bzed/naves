@@ -536,6 +536,26 @@ cap; every segment clear; wall crossings equal away from the anchors; self-clear
 the limit it was found at. A route that fails is a bug: the leg keeps its line with reason `no_route`, detail
 `check_failed` (1 leg in the spike).
 
+**As built** (`reroute.rs`, plan Task 6):
+
+- The chain line is resampled per stretch at `SAMPLE_M`; a chain whose line is not finite, or would have more than
+  `smooth::MAX_CHAIN_SAMPLES` samples (a stretch of about 10⁹ m), is not built at all and its stretch is listed in the
+  report's skipped list (as is every tunnel chain).
+- A zone whose tight run lies wholly in a held part, on a roundabout, longer than `PLAN_MAX_ZONE_M`, or without an arc
+  piece is reported as a zone with outcome `kept` (detail `tight_run_held`, `roundabout`, `too_long`, `no_arc`) and
+  listed in the skipped list; a leg whose anchors are too close is `kept` with detail `anchors_close`, and one whose
+  drawn line crosses a never-exempt deck or tunnel with detail `crosses_deck`.
+- `PlannedZone::max_stray_m` is the larger true measure, the search's `Route::max_move_m`, not the raster's stored
+  stray (which is 0 across the cells the drawn line touches). `planned_grade` is the steepest step of the accepted
+  route's two-pass profile (`Profile::max_grade`), so it is bounded by the limit the route was found at up to
+  `2 · PLAN_ANCHOR_TOL_M / length`.
+- The report's `tight_before_m` and `tight_after_m` are measured on the 2 m chain lines with the same half-segment
+  rule as the smoothing (`tight_lengths`), before the write-back and on the written graph.
+- A bend across a junction is paired when exactly two zones have an anchor at that junction; each names the other in
+  `partner`. More than two zones at one junction are not paired (a junction piece's arms are not resolved yet).
+- The write-back replaces the planned part of each stretch and keeps every other point bit for bit; a node inside a
+  leg is the same route point in both stretches because both compute it from the same fraction of the leg's length.
+
 **Routes against each other (controller).** Legs are searched independently against the original graph, in parallel.
 Then, in zone order (by the chain's first stretch id, then along the chain, then leg order), each planned route is
 checked against the routes accepted before it: a route that comes within the road clearance threshold of an earlier

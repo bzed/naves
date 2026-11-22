@@ -126,7 +126,7 @@ impl State {
 }
 
 /// The inclusive index ranges of consecutive samples whose radius is below their minimum.
-fn tight_runs(points: &[P], minimum: &[f64]) -> Vec<(usize, usize)> {
+pub(crate) fn tight_runs(points: &[P], minimum: &[f64]) -> Vec<(usize, usize)> {
     let mut runs: Vec<(usize, usize)> = Vec::new();
     for (k, w) in points.windows(3).enumerate() {
         let index = k + 1;
