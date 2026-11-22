@@ -342,7 +342,8 @@ pub fn surfaces(
 /// beside a lot; a value that is not a finite number is taken as 0), and `features` the road features the graph was
 /// built from: with them the metres inside a lot are counted per way, with an empty list per stretch.
 ///
-/// A lot gets [`SurfaceClass::Tarmac`] if it is paved and [`SurfaceClass::Grass`] if not.
+/// A lot gets [`SurfaceClass::Tarmac`] if it is paved and [`SurfaceClass::Grass`] if not. Callers that report what
+/// decided it use [`surfaces_with_sources`].
 #[must_use]
 pub fn surfaces_with(
     assessed: &[Assessed],
@@ -351,6 +352,50 @@ pub fn surfaces_with(
     cell_m: f64,
     features: &[Feature],
 ) -> Vec<(String, SurfaceClass)> {
+    surfaces_with_sources(assessed, graph, clean, cell_m, features)
+        .into_iter()
+        .map(|(id, class, _)| (id, class))
+        .collect()
+}
+
+/// What decided a lot's surface class (see [`surfaces_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceSource {
+    /// The lot's own `surface` tag.
+    Tag,
+    /// The roads that serve it: the roads removed inside it, its access roads and the roads that pass through it.
+    Roads,
+    /// A street beside it, within reach of its earthwork.
+    Street,
+    /// No road at all: grass, and a camp site whose own tag does not make it paved (see the module).
+    Unserved,
+}
+
+impl SurfaceSource {
+    /// `tag`, `roads`, `street` or `none`.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            SurfaceSource::Tag => "tag",
+            SurfaceSource::Roads => "roads",
+            SurfaceSource::Street => "street",
+            SurfaceSource::Unserved => "none",
+        }
+    }
+}
+
+/// [`surfaces_with`] with what decided each class: one entry per lot, in the order of the ids.
+///
+/// # Panics
+/// Never; a hand-built list whose decisions do not line up with the lots still gives one entry per lot.
+#[must_use]
+pub fn surfaces_with_sources(
+    assessed: &[Assessed],
+    graph: &RoadGraph,
+    clean: &CleanReport,
+    cell_m: f64,
+    features: &[Feature],
+) -> Vec<(String, SurfaceClass, SurfaceSource)> {
     let cell_m = if cell_m.is_finite() && cell_m > 0.0 {
         cell_m
     } else {
@@ -390,7 +435,9 @@ pub fn surfaces_with(
     }
     let removed: BTreeSet<&str> = clean.lot_roads.iter().map(|d| d.stretch.as_str()).collect();
     // a group without roads of its own decides by the streets beside all its members, once
-    let mut group_beside: BTreeMap<usize, SurfaceClass> = BTreeMap::new();
+    // a group without roads of its own decides by the streets beside all its members, once; a group with no street
+    // either is grass
+    let mut group_beside: BTreeMap<usize, (SurfaceClass, bool)> = BTreeMap::new();
     for group in &found {
         if pooled.get(group.group).is_some_and(Tally::is_empty) {
             let members: Vec<&LotArea> = group
@@ -398,36 +445,52 @@ pub fn surfaces_with(
                 .iter()
                 .filter_map(|m| areas.get(m.as_str()).copied())
                 .collect();
-            let class = beside(&members, graph, &removed, cell_m, features).class();
-            group_beside.insert(group.group, class);
+            let tally = beside(&members, graph, &removed, cell_m, features);
+            group_beside.insert(group.group, (tally.class(), !tally.is_empty()));
         }
     }
     lots.into_iter()
         .map(|lot| {
             let id = lot.area.id.as_str();
-            let class = if not_a_number(&lot.area) {
-                SurfaceClass::Grass
+            let (class, source) = if not_a_number(&lot.area) {
+                (SurfaceClass::Grass, SurfaceSource::Unserved)
             } else if let Some(tag) = lot.area.surface_tag {
-                match tag {
+                let class = match tag {
                     Paving::Paved => SurfaceClass::Tarmac,
                     Paving::Unpaved => SurfaceClass::Grass,
-                }
+                };
+                (class, SurfaceSource::Tag)
             } else if lot.area.kind == LotKind::CampSite {
-                SurfaceClass::Grass
+                (SurfaceClass::Grass, SurfaceSource::Unserved)
             } else if let Some(tally) = own.get(id).filter(|t| !t.is_empty()) {
-                tally.class()
+                (tally.class(), SurfaceSource::Roads)
             } else if let Some(group) = group_of.get(id).copied() {
                 match pooled.get(group).filter(|t| !t.is_empty()) {
-                    Some(tally) => tally.class(),
-                    None => group_beside
-                        .get(&group)
-                        .copied()
-                        .unwrap_or(SurfaceClass::Grass),
+                    Some(tally) => (tally.class(), SurfaceSource::Roads),
+                    None => group_beside.get(&group).copied().map_or(
+                        (SurfaceClass::Grass, SurfaceSource::Unserved),
+                        |(class, served)| {
+                            (
+                                class,
+                                if served {
+                                    SurfaceSource::Street
+                                } else {
+                                    SurfaceSource::Unserved
+                                },
+                            )
+                        },
+                    ),
                 }
             } else {
-                beside(&[&lot.area], graph, &removed, cell_m, features).class()
+                let tally = beside(&[&lot.area], graph, &removed, cell_m, features);
+                let source = if tally.is_empty() {
+                    SurfaceSource::Unserved
+                } else {
+                    SurfaceSource::Street
+                };
+                (tally.class(), source)
             };
-            (id.to_string(), class)
+            (id.to_string(), class, source)
         })
         .collect()
 }

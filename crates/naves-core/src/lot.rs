@@ -12,12 +12,19 @@
 mod paving;
 mod surface;
 
-pub use paving::{surfaces, surfaces_with};
+pub use paving::{SurfaceSource, surfaces, surfaces_with, surfaces_with_sources};
 pub(crate) use surface::touches;
 pub use surface::{
     Assessed, Form, LotSurface, NO_GROUP, Outcome, Polygon, Surface, assess, local_relief,
 };
 
+use crate::netclean::CleanReport;
+use crate::surface::SurfaceClass;
+
+/// The switch of the lot stage: off until the judging runs and the game check confirm it; the maintainer switches it
+/// on. Off ([`crate::lot::LOTS_ENABLED`] is `false`), the stage does nothing: no lot is assessed, no road is removed
+/// and no ground is shaped.
+pub const LOTS_ENABLED: bool = false;
 /// Digitising tolerance of "inside", and of "touching" for groups, in metres.
 pub const LOT_INSIDE_TOL_M: f64 = 1.0;
 /// A lot whose plane is within this of its ground (95th percentile) gets the plane, in metres.
@@ -69,6 +76,74 @@ pub enum Placement {
     StreetSide,
     /// Not at ground level: underground, a multi-storey or roof car park, a building, another `layer`.
     NotAtGround,
+}
+
+impl LotKind {
+    /// Every kind, in the order the reports count them.
+    pub const ALL: [LotKind; 5] = [
+        LotKind::CarPark,
+        LotKind::BusParking,
+        LotKind::RestArea,
+        LotKind::CampSite,
+        LotKind::CaravanSite,
+    ];
+
+    /// The stable name of the kind, for the report and the findings.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            LotKind::CarPark => "car_park",
+            LotKind::BusParking => "bus_parking",
+            LotKind::RestArea => "rest_area",
+            LotKind::CampSite => "camp_site",
+            LotKind::CaravanSite => "caravan_site",
+        }
+    }
+
+    /// What the kind is called in words, singular and plural.
+    #[must_use]
+    pub const fn words(self) -> (&'static str, &'static str) {
+        match self {
+            LotKind::CarPark => ("car park", "car parks"),
+            LotKind::BusParking => ("coach park", "coach parks"),
+            LotKind::RestArea => ("rest area", "rest areas"),
+            LotKind::CampSite => ("camp site", "camp sites"),
+            LotKind::CaravanSite => ("caravan site", "caravan sites"),
+        }
+    }
+}
+
+impl Form {
+    /// `plane` or `quadratic`.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Form::Plane => "plane",
+            Form::Quadratic => "quadratic",
+        }
+    }
+}
+
+impl Outcome {
+    /// `smoothed`, `surface_only` or `excluded`.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Outcome::Smoothed { .. } => "smoothed",
+            Outcome::SurfaceOnly { .. } => "surface_only",
+            Outcome::Excluded { .. } => "excluded",
+        }
+    }
+
+    /// Why a lot is not smoothed: `street_side`, `no_vertex`, `not_at_ground` or `in_water`; `None` for a smoothed
+    /// lot.
+    #[must_use]
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Outcome::Smoothed { .. } => None,
+            Outcome::SurfaceOnly { reason } | Outcome::Excluded { reason } => Some(reason),
+        }
+    }
 }
 
 /// Whether a `surface` tag names a paved or an unpaved surface; the type of
@@ -334,6 +409,27 @@ pub(crate) fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f
     (p.0 - (a.0 + t * dx)).hypot(p.1 - (a.1 + t * dy))
 }
 
+/// The centre of the lot, for the findings and the report: the mean of its outer ring without the closing point.
+#[must_use]
+pub fn centre(area: &LotArea) -> (f64, f64) {
+    let mut points = area.outer.as_slice();
+    if points.len() > 1 && points.first() == points.last() {
+        points = points.get(..points.len() - 1).unwrap_or(points);
+    }
+    if points.is_empty() {
+        return (0.0, 0.0);
+    }
+    let sum = points
+        .iter()
+        .fold((0.0, 0.0), |(x, y), p| (x + p.0, y + p.1));
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "an outer ring has a few thousand points at most"
+    )]
+    let count = points.len() as f64;
+    (sum.0 / count, sum.1 / count)
+}
+
 /// The distance in metres from `p` to the nearest edge of the lot, the edges of its holes included (infinite for
 /// a lot without edges).
 #[must_use]
@@ -346,4 +442,242 @@ pub fn edge_distance(area: &LotArea, p: (f64, f64)) -> f64 {
             _ => None,
         })
         .fold(f64::INFINITY, f64::min)
+}
+
+/// `1 car park` or `3 car parks`.
+fn plural(number: usize, one: &str, many: &str) -> String {
+    if number == 1 {
+        format!("{number} {one}")
+    } else {
+        format!("{number} {many}")
+    }
+}
+
+/// How many lots of a report there are, by kind, outcome, form and reason, and by surface class.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LotCounts {
+    /// Every lot.
+    pub total: usize,
+    /// The lots of every kind that occurs, in the order of [`LotKind::ALL`].
+    pub kinds: Vec<(LotKind, usize)>,
+    /// The smoothed lots of every form that occurs, the plane before the quadratic.
+    pub forms: Vec<(Form, usize)>,
+    /// Smoothed lots.
+    pub smoothed: usize,
+    /// Lots that get a surface only.
+    pub surface_only: usize,
+    /// Lots that are left alone.
+    pub excluded: usize,
+    /// The lots that get a surface only or are excluded, by reason, in a fixed order.
+    pub reasons: Vec<(&'static str, usize)>,
+    /// Every kind that occurs with every outcome that occurs, in the order of [`LotKind::ALL`] and of the outcomes
+    /// (smoothed with its form first, then the reasons).
+    pub outcomes: Vec<(LotKind, Outcome, usize)>,
+    /// Lots painted paved ([`SurfaceClass::Tarmac`]): every lot that gets a surface, a surface-only lot included.
+    /// [`LotReport::summary`] counts the smoothed lots of the two classes, not these.
+    pub paved: usize,
+    /// Lots painted grass or anything else (see [`LotCounts::paved`]).
+    pub grass: usize,
+    /// Smoothed lots whose slope is above [`LOT_STEEP`].
+    pub steep: usize,
+    /// Smoothed lots whose change the move guard scaled ([`LOT_MAX_MOVE_M`]).
+    pub move_limited: usize,
+}
+
+/// What the lot stage found and decided: every assessed lot, the smooth surface of every group and the surface class
+/// of every lot that gets one. The roads that were removed and the access roads that were cut are in the
+/// [`CleanReport`] of the same graph.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LotReport {
+    /// Every lot, sorted by id (see [`assess`]).
+    pub assessed: Vec<Assessed>,
+    /// The smooth surface of every group of smoothed lots, in the order of their lowest member id.
+    pub surfaces: Vec<LotSurface>,
+    /// The surface class of every lot that is not excluded, sorted by id.
+    pub classes: Vec<(String, SurfaceClass)>,
+    /// What decided the class of the lot at the same index in [`LotReport::classes`].
+    pub sources: Vec<SurfaceSource>,
+}
+
+impl LotReport {
+    /// The group's smooth surface of `lot`; `None` for a lot that has none (surface only or excluded).
+    #[must_use]
+    pub fn surface_of(&self, lot: &Assessed) -> Option<&LotSurface> {
+        self.surfaces.get(lot.group)
+    }
+
+    /// The surface class of the lot with `id`; `None` for a lot that gets none.
+    #[must_use]
+    pub fn class_of(&self, id: &str) -> Option<SurfaceClass> {
+        self.classes
+            .iter()
+            .find(|(lot, _)| lot == id)
+            .map(|(_, class)| *class)
+    }
+
+    /// What decided the class of the lot with `id`; `None` for a lot that gets none.
+    #[must_use]
+    pub fn source_of(&self, id: &str) -> Option<SurfaceSource> {
+        self.classes
+            .iter()
+            .position(|(lot, _)| lot == id)
+            .and_then(|index| self.sources.get(index).copied())
+    }
+
+    /// The factor the move guard scaled the lot's change by, where it scaled it (below 1); `None` for a lot that
+    /// has no surface or whose change is not scaled.
+    #[must_use]
+    pub fn move_limited(&self, lot: &Assessed) -> Option<f64> {
+        self.surface_of(lot)
+            .map(|surface| surface.surface.lambda)
+            .filter(|lambda| *lambda < 1.0)
+    }
+
+    /// The counts of the lots of this report.
+    #[must_use]
+    pub fn counts(&self) -> LotCounts {
+        let mut counts = LotCounts {
+            total: self.assessed.len(),
+            ..LotCounts::default()
+        };
+        for kind in LotKind::ALL {
+            let number = self
+                .assessed
+                .iter()
+                .filter(|lot| lot.area.kind == kind)
+                .count();
+            if number > 0 {
+                counts.kinds.push((kind, number));
+            }
+        }
+        let forms = [Form::Plane, Form::Quadratic];
+        for form in forms {
+            let number = self
+                .assessed
+                .iter()
+                .filter(|lot| lot.outcome == Outcome::Smoothed { form })
+                .count();
+            if number > 0 {
+                counts.forms.push((form, number));
+            }
+        }
+        let with = |outcome: Outcome| {
+            self.assessed
+                .iter()
+                .filter(|lot| lot.outcome == outcome)
+                .count()
+        };
+        counts.smoothed = with(Outcome::Smoothed { form: Form::Plane })
+            + with(Outcome::Smoothed {
+                form: Form::Quadratic,
+            });
+        counts.surface_only = with(Outcome::SurfaceOnly {
+            reason: "street_side",
+        }) + with(Outcome::SurfaceOnly {
+            reason: "no_vertex",
+        });
+        counts.excluded = with(Outcome::Excluded {
+            reason: "not_at_ground",
+        }) + with(Outcome::Excluded { reason: "in_water" });
+        let mut outcomes: Vec<Outcome> = forms
+            .iter()
+            .map(|&form| Outcome::Smoothed { form })
+            .collect();
+        for reason in ["street_side", "no_vertex", "not_at_ground", "in_water"] {
+            let number = self
+                .assessed
+                .iter()
+                .filter(|lot| lot.outcome.reason() == Some(reason))
+                .count();
+            if number > 0 {
+                counts.reasons.push((reason, number));
+                outcomes.push(match reason {
+                    "street_side" | "no_vertex" => Outcome::SurfaceOnly { reason },
+                    _ => Outcome::Excluded { reason },
+                });
+            }
+        }
+        for kind in LotKind::ALL {
+            for outcome in &outcomes {
+                let number = self
+                    .assessed
+                    .iter()
+                    .filter(|lot| lot.area.kind == kind && lot.outcome == *outcome)
+                    .count();
+                if number > 0 {
+                    counts.outcomes.push((kind, *outcome, number));
+                }
+            }
+        }
+        for (_, class) in &self.classes {
+            if *class == SurfaceClass::Tarmac {
+                counts.paved += 1;
+            } else {
+                counts.grass += 1;
+            }
+        }
+        counts.steep = self
+            .assessed
+            .iter()
+            .filter(|lot| lot.steep && matches!(lot.outcome, Outcome::Smoothed { .. }))
+            .count();
+        counts.move_limited = self
+            .assessed
+            .iter()
+            .filter(|lot| self.move_limited(lot).is_some())
+            .count();
+        counts
+    }
+
+    /// One line for the build summary: the lots of each kind, how many were smoothed with which form and surface,
+    /// how many are steep or move limited, how many get a surface only or are excluded, and what `clean` removed and
+    /// cut.
+    #[must_use]
+    pub fn summary(&self, clean: &CleanReport) -> String {
+        let counts = self.counts();
+        if counts.total == 0 {
+            return "Lots: none".to_string();
+        }
+        let kinds: Vec<String> = counts
+            .kinds
+            .iter()
+            .map(|&(kind, number)| {
+                let (one, many) = kind.words();
+                plural(number, one, many)
+            })
+            .collect();
+        let form = |wanted: Form| {
+            counts
+                .forms
+                .iter()
+                .find(|(form, _)| *form == wanted)
+                .map_or(0, |(_, number)| *number)
+        };
+        // the surface classes of the smoothed lots: they are what the parenthesised part describes
+        let smoothed_paved = self
+            .assessed
+            .iter()
+            .filter(|lot| matches!(lot.outcome, Outcome::Smoothed { .. }))
+            .filter(|lot| self.class_of(&lot.area.id) == Some(SurfaceClass::Tarmac))
+            .count();
+        let smoothed_grass = counts.smoothed - smoothed_paved;
+        let metres: f64 = clean.lot_roads.iter().map(|dropped| dropped.length_m).sum();
+        format!(
+            "Lots: {} ({}), {} smoothed ({} plane, {} quadratic; {} paved, {} grass; {} steep, {} move limited), \
+             {} surface only, {} excluded; {} ({metres:.0} m) removed, {} cut",
+            counts.total,
+            kinds.join(", "),
+            counts.smoothed,
+            form(Form::Plane),
+            form(Form::Quadratic),
+            smoothed_paved,
+            smoothed_grass,
+            counts.steep,
+            counts.move_limited,
+            counts.surface_only,
+            counts.excluded,
+            plural(clean.lot_roads.len(), "road", "roads"),
+            plural(clean.lot_access.len(), "access road", "access roads"),
+        )
+    }
 }

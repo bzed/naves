@@ -530,6 +530,12 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeEndAtJunction,
         Rule::RoadCurveWidened,
         Rule::RoadCurveTooTight,
+        Rule::LotSmoothed,
+        Rule::LotSurfaceOnly,
+        Rule::LotExcluded,
+        Rule::LotSteep,
+        Rule::LotMoveLimited,
+        Rule::RoadInLotDropped,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();

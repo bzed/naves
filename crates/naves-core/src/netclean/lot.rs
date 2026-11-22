@@ -953,6 +953,24 @@ pub(super) fn junctions_removed(
         .len()
 }
 
+/// The cut access roads whose new node the graph still has, in the order of `entries`: a later clean-up step (a
+/// junction merge, a bridge approach) can take the node away that the lot step put at a lot's edge, and an entry whose
+/// node is gone gets no junction (see [`add_lot_entries`](crate::junctions::add_lot_entries)). The count of the ones
+/// that are gone is [`CleanReport::lot_entries_lost`](crate::netclean::CleanReport::lot_entries_lost).
+#[must_use]
+pub fn surviving_entries(graph: &RoadGraph, entries: &[CutAccess]) -> Vec<CutAccess> {
+    let nodes: BTreeSet<i64> = graph
+        .stretches
+        .iter()
+        .flat_map(|stretch| [stretch.start, stretch.end])
+        .collect();
+    entries
+        .iter()
+        .filter(|entry| nodes.contains(&entry.node))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     //! The test for a split is an argument of the private variant, so a split that "by construction" never happens

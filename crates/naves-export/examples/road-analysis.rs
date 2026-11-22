@@ -45,16 +45,20 @@ use naves_core::features::{road_features, water_lines};
 use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
 use naves_core::junctions::{HOLD_M, Junctions};
 use naves_core::limits::{CROSS_FALL_LIMIT, drive_grade, grade_aim, min_vertical_radius};
+use naves_core::lot::{
+    LOTS_ENABLED, LotArea, LotKind, LotReport, Outcome, centre, contains, edge_distance,
+};
+use naves_core::netclean::{CleanReport, CutAccess};
 use naves_core::osm::read_ways;
 use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
-use naves_core::validate::{Rule, bridge_end_steps, check_roads};
+use naves_core::validate::{Rule, bridge_end_steps, check_roads, lot_violations};
 use naves_export::catalog_read::road_catalog;
 use naves_export::generate::{
-    FittedGraph, Placed, fitted_graph, fitted_graph_with, place_once, plan_roads,
+    FittedGraph, Placed, Stages, fitted_graph_with, place_once, plan_roads_with,
 };
 use naves_export::tools::Tools;
 
@@ -179,6 +183,25 @@ fn main() {
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
     let in_water = naves_core::validate::water_test(lakes, &frame);
+    // the lot stage: its own switch (`LOTS=on` or `LOTS=off` overrides the constant), and the lot areas of the same
+    // extract the ground is decided from
+    let lots_on = match std::env::var("LOTS").ok().as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => LOTS_ENABLED,
+    };
+    let stages = Stages {
+        smooth: naves_core::smooth::SMOOTH_ENABLED,
+        lots: lots_on,
+    };
+    println!("STAGES lots={lots_on}");
+    let (lot_areas, skipped_lots) = sources
+        .osm
+        .as_ref()
+        .map_or((Vec::new(), 0), |land| naves_core::lot::areas(land, &frame));
+    let holes_dropped: usize = lot_areas.iter().map(|area| area.holes_dropped).sum();
+    println!("LOT_SKIPPED {skipped_lots}");
+    println!("LOT_HOLES {holes_dropped}");
     let FittedGraph {
         graph: widened,
         built,
@@ -186,10 +209,15 @@ fn main() {
         clean,
         smooth,
         smooth_time,
+        lots: _,
+        lots_time,
         bridges,
-    } = fitted_graph(&features, &catalog, &base, &in_water);
+    } = fitted_graph_with(&features, &catalog, &base, stages, &in_water, &lot_areas);
     if smooth.is_some() {
         println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
+    }
+    if lots_on {
+        println!("TIMING lots {:.1} s", lots_time.as_secs_f64());
     }
     if let Some(report) = &smooth {
         // the nodes of the graph against the graph without the smoothing: by how many stretch ends meet there
@@ -211,7 +239,17 @@ fn main() {
             }
             at
         };
-        let plain = fitted_graph_with(&features, &catalog, &base, false, &in_water);
+        let plain = fitted_graph_with(
+            &features,
+            &catalog,
+            &base,
+            Stages {
+                smooth: false,
+                lots: false,
+            },
+            &in_water,
+            &[],
+        );
         let (after, before) = (ends(&built), ends(&plain.built));
         // classes: two-stretch, junction, dead end, bridge end
         let mut totals = [0_usize; 4];
@@ -540,9 +578,19 @@ fn main() {
         );
     }
     let started = Instant::now();
-    let plan = plan_roads(&features, &catalog, &base, &streams, lakes, &frame, &|m| {
-        eprintln!("{m}");
-    })
+    let plan = plan_roads_with(
+        &features,
+        &catalog,
+        &base,
+        &streams,
+        lakes,
+        &frame,
+        stages,
+        &lot_areas,
+        &|m| {
+            eprintln!("{m}");
+        },
+    )
     .expect("plan");
     let plan_s = started.elapsed().as_secs_f64();
     println!(
@@ -561,6 +609,32 @@ fn main() {
         profiles = solve_profiles(&net, &base, &Junctions::default(), &side).expect("solve");
     }
     judging_figures(&graph, &net, &bridges);
+    if let Some(report) = net.lots.as_ref() {
+        println!("LOT {}", report.summary(&net.clean));
+        for line in lot_outcome_lines(report) {
+            println!("{line}");
+        }
+        println!("{}", lot_roads_line(&net.clean));
+        for line in lot_relief_lines(report) {
+            println!("{line}");
+        }
+        for line in lot_move_lines(report) {
+            println!("{line}");
+        }
+        for line in lot_flag_lines(report) {
+            println!("{line}");
+        }
+        for entry in &net.clean.lot_access {
+            if let Some(step) = entry_step(&net, &profiles, &junctions, &base, report, entry) {
+                println!("{}", lot_entry_line(&entry.stretch, step));
+            }
+        }
+        for stretch in &net.clean.lot_through {
+            if let Some(largest) = through_gap(&net, &profiles, &base, report, stretch) {
+                println!("{}", lot_through_line(stretch, largest));
+            }
+        }
+    }
     let t_place = t0.elapsed();
     let t_profiles = t_place;
     if let Ok(path) = std::env::var("SHIFT_DUMP") {
@@ -1581,6 +1655,13 @@ fn main() {
         &dips,
     );
     println!("violations total {}", violations.len());
+    if let Some(report) = net.lots.as_ref() {
+        let mut all = violations.clone();
+        all.extend(lot_violations(report, &net.clean));
+        for line in lot_near_lines(report, &all) {
+            println!("{line}");
+        }
+    }
     for e in bridge_end_steps(&net, &profiles, &junctions) {
         println!(
             "ENDSTEP {} end {} {:+.2} m {} at ({:.1}, {:.1})",
@@ -7362,4 +7443,486 @@ fn judging_figures(
         percentile(&mut gaps, 1.0),
         100.0 * over_1m as f64 / gaps.len().max(1) as f64
     );
+}
+
+// =========================================================================================================
+// The lots: the lines of the stage, and the figures of the spec's "How it is judged".
+// =========================================================================================================
+
+/// How far from a smoothed lot a violation still counts as near it, in metres (the spec's "within 50 m of a lot").
+const NEAR_LOT_M: f64 = 50.0;
+
+/// The 95th percentile by the nearest-rank rule, as `lot::percentile95` computes it (0 for an empty list).
+fn percentile95(values: &mut Vec<f64>) -> f64 {
+    values.retain(|value| value.is_finite());
+    values.sort_by(f64::total_cmp);
+    let rank = (values.len() * 95).div_ceil(100);
+    rank.checked_sub(1)
+        .and_then(|index| values.get(index))
+        .copied()
+        .unwrap_or(0.0)
+}
+
+/// `LOT_OUTCOME <kind> <outcome> <form or reason> <count>`, one line per kind and outcome that occurs.
+fn lot_outcome_lines(report: &LotReport) -> Vec<String> {
+    report
+        .counts()
+        .outcomes
+        .iter()
+        .map(|(kind, outcome, number)| {
+            let detail = match outcome {
+                Outcome::Smoothed { form } => form.id(),
+                _ => outcome.reason().unwrap_or(""),
+            };
+            format!(
+                "LOT_OUTCOME {} {} {detail} {number}",
+                kind.id(),
+                outcome.id()
+            )
+        })
+        .collect()
+}
+
+/// `LOT_ROADS removed <n> <m> m, access cut <n>, junctions removed <n>`.
+fn lot_roads_line(clean: &CleanReport) -> String {
+    let metres: f64 = clean.lot_roads.iter().map(|dropped| dropped.length_m).sum();
+    format!(
+        "LOT_ROADS removed {} {metres:.0} m, access cut {}, junctions removed {}",
+        clean.lot_roads.len(),
+        clean.lot_access.len(),
+        clean.junctions_in_lots
+    )
+}
+
+/// The smoothed lots of `kind`.
+fn smoothed_of(report: &LotReport, kind: LotKind) -> Vec<&naves_core::lot::Assessed> {
+    report
+        .assessed
+        .iter()
+        .filter(|lot| lot.area.kind == kind && matches!(lot.outcome, Outcome::Smoothed { .. }))
+        .collect()
+}
+
+/// `LOT_RELIEF <kind> before <p95> <max> after <p95> <max>` per kind with smoothed lots, in metres.
+fn lot_relief_lines(report: &LotReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for kind in LotKind::ALL {
+        let lots = smoothed_of(report, kind);
+        let mut before: Vec<f64> = lots.iter().map(|lot| lot.relief_before_m).collect();
+        let mut after: Vec<f64> = lots.iter().map(|lot| lot.relief_after_m).collect();
+        if before.iter().all(|value| !value.is_finite()) {
+            continue;
+        }
+        let largest = |values: &[f64]| values.iter().copied().fold(0.0, f64::max);
+        let (max_before, max_after) = (largest(&before), largest(&after));
+        lines.push(format!(
+            "LOT_RELIEF {} before {:.2} {max_before:.2} after {:.2} {max_after:.2}",
+            kind.id(),
+            percentile95(&mut before),
+            percentile95(&mut after)
+        ));
+    }
+    lines
+}
+
+/// `LOT_MOVE <kind> <p95 of the 95th-percentile moves> <largest move>` per kind with smoothed lots, in metres.
+fn lot_move_lines(report: &LotReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for kind in LotKind::ALL {
+        let lots = smoothed_of(report, kind);
+        let mut moves: Vec<f64> = lots.iter().map(|lot| lot.move_p95_m).collect();
+        if moves.iter().all(|value| !value.is_finite()) {
+            continue;
+        }
+        let largest = lots.iter().map(|lot| lot.move_max_m).fold(0.0, f64::max);
+        lines.push(format!(
+            "LOT_MOVE {} {:.2} {largest:.2}",
+            kind.id(),
+            percentile95(&mut moves)
+        ));
+    }
+    lines
+}
+
+/// `LOT_FLAG <id> <x> <y> steep|move_limited <value>` for every steep and every move-limited lot, at its centre.
+fn lot_flag_lines(report: &LotReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for lot in &report.assessed {
+        let at = centre(&lot.area);
+        if lot.steep && matches!(lot.outcome, Outcome::Smoothed { .. }) {
+            lines.push(format!(
+                "LOT_FLAG {} {:.1} {:.1} steep {:.3}",
+                lot.area.id, at.0, at.1, lot.slope_p95
+            ));
+        }
+        if let Some(lambda) = report.move_limited(lot) {
+            lines.push(format!(
+                "LOT_FLAG {} {:.1} {:.1} move_limited {lambda:.3}",
+                lot.area.id, at.0, at.1
+            ));
+        }
+    }
+    lines
+}
+
+/// `LOT_ENTRY <stretch> <step m>`.
+fn lot_entry_line(stretch: &str, step: f64) -> String {
+    format!("LOT_ENTRY {stretch} {step:.2}")
+}
+
+/// `LOT_THROUGH <stretch> <largest difference m>`.
+fn lot_through_line(stretch: &str, largest: f64) -> String {
+    format!("LOT_THROUGH {stretch} {largest:.2}")
+}
+
+/// `LOT_NEAR <rule> <count>`: how many findings of every rule lie within [`NEAR_LOT_M`] of a smoothed lot.
+fn lot_near_lines(
+    report: &LotReport,
+    violations: &[naves_core::validate::Violation],
+) -> Vec<String> {
+    let smoothed: Vec<&LotArea> = report
+        .assessed
+        .iter()
+        .filter(|lot| matches!(lot.outcome, Outcome::Smoothed { .. }))
+        .map(|lot| &lot.area)
+        .collect();
+    let near = |at: (f64, f64)| {
+        smoothed
+            .iter()
+            .any(|area| contains(area, at) || edge_distance(area, at) <= NEAR_LOT_M)
+    };
+    Rule::ALL
+        .iter()
+        .filter_map(|rule| {
+            let count = violations
+                .iter()
+                .filter(|violation| violation.rule == *rule && near(violation.at))
+                .count();
+            (count > 0).then(|| format!("LOT_NEAR {} {count}", rule.id()))
+        })
+        .collect()
+}
+
+/// The step at a cut access road's entry: the height of the road's profile joint nearest the entry junction
+/// against the lot's target there.
+fn entry_step(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    junctions: &Junctions,
+    base: &Heightmap,
+    report: &LotReport,
+    entry: &CutAccess,
+) -> Option<f64> {
+    let surface = report
+        .surfaces
+        .iter()
+        .find(|surface| surface.members.contains(&entry.lot))?;
+    let at = junctions
+        .points
+        .iter()
+        .find(|junction| {
+            junction.kind == naves_core::junctions::JunctionKind::LotEntry
+                && junction.stretches.contains(&entry.stretch)
+        })
+        .map(|junction| junction.at)?;
+    let owns = |road: usize| {
+        net.roads
+            .get(road)
+            .is_some_and(|road| road.slot.stretch.split('|').any(|p| p == entry.stretch))
+    };
+    let mut best: Option<(f64, f64)> = None;
+    for strip in &profiles.strips {
+        if !strip.slots.iter().any(|&road| owns(road)) {
+            continue;
+        }
+        for joint in [strip.joints.first(), strip.joints.last()]
+            .into_iter()
+            .flatten()
+        {
+            let distance = (joint.0 - at.0).hypot(joint.1 - at.1);
+            if best.is_none_or(|(_, nearest)| distance < nearest) {
+                best = Some((joint.2, distance));
+            }
+        }
+    }
+    let (height, _) = best?;
+    let ground = f64::from(base.sample(at.0, at.1).height);
+    let target = surface.target(at, ground);
+    (height.is_finite() && target.is_finite()).then(|| (height - target).abs())
+}
+
+/// The largest difference between a joint of the through `stretch` over a lot and the lot's surface there.
+fn through_gap(
+    net: &naves_core::roadplace::PlacedNetwork,
+    profiles: &naves_core::profile::Profiles,
+    base: &Heightmap,
+    report: &LotReport,
+    stretch: &str,
+) -> Option<f64> {
+    let owns = |road: usize| {
+        net.roads
+            .get(road)
+            .is_some_and(|road| road.slot.stretch.split('|').any(|p| p == stretch))
+    };
+    let mut largest: Option<f64> = None;
+    for strip in &profiles.strips {
+        for (index, joint) in strip.joints.iter().enumerate() {
+            // a joint belongs to the segments on both of its sides
+            let of_stretch = [index.checked_sub(1), Some(index)]
+                .into_iter()
+                .flatten()
+                .any(|segment| strip.slots.get(segment).is_some_and(|&road| owns(road)));
+            if !of_stretch {
+                continue;
+            }
+            let at = (joint.0, joint.1);
+            for surface in &report.surfaces {
+                if !surface.contains(at) {
+                    continue;
+                }
+                let ground = f64::from(base.sample(at.0, at.1).height);
+                let target = surface.target(at, ground);
+                if target.is_finite() && joint.2.is_finite() {
+                    let difference = (joint.2 - target).abs();
+                    largest = Some(largest.map_or(difference, |best: f64| best.max(difference)));
+                }
+                break;
+            }
+        }
+    }
+    largest
+}
+
+#[cfg(test)]
+mod tests {
+    //! The lines the example prints about the lots: the formatting, not the run on a map.
+    use super::*;
+    use naves_core::lot::{Assessed, Form, LotSurface, NO_GROUP, Placement, Surface};
+    use naves_core::netclean::{CutAccess, DroppedInLot};
+    use naves_core::surface::SurfaceClass;
+    use naves_core::validate::Violation;
+
+    fn area(id: &str, kind: LotKind) -> LotArea {
+        LotArea {
+            id: id.to_string(),
+            kind,
+            placement: Placement::Ground,
+            outer: vec![
+                (100.0, 100.0),
+                (200.0, 100.0),
+                (200.0, 200.0),
+                (100.0, 200.0),
+                (100.0, 100.0),
+            ],
+            holes: Vec::new(),
+            area_m2: 10_000.0,
+            surface_tag: None,
+            holes_dropped: 0,
+        }
+    }
+
+    fn smoothed(id: &str, kind: LotKind, form: Form, move_max_m: f64) -> Assessed {
+        Assessed {
+            area: area(id, kind),
+            group: 0,
+            outcome: Outcome::Smoothed { form },
+            steep: false,
+            move_p95_m: move_max_m / 2.0,
+            move_max_m,
+            slope_p95: 0.1,
+            relief_before_m: 0.4,
+            relief_after_m: 0.1,
+            range_before: (100.0, 101.0),
+            range_after: (100.2, 101.0),
+            water_share: 0.0,
+        }
+    }
+
+    fn unsmoothed(id: &str, kind: LotKind, outcome: Outcome) -> Assessed {
+        Assessed {
+            area: area(id, kind),
+            group: NO_GROUP,
+            outcome,
+            steep: false,
+            move_p95_m: f64::NAN,
+            move_max_m: f64::NAN,
+            slope_p95: f64::NAN,
+            relief_before_m: f64::NAN,
+            relief_after_m: f64::NAN,
+            range_before: (f64::NAN, f64::NAN),
+            range_after: (f64::NAN, f64::NAN),
+            water_share: 0.0,
+        }
+    }
+
+    fn surface(lambda: f64) -> LotSurface {
+        LotSurface {
+            group: 0,
+            members: vec!["osm/way/1".to_string()],
+            polygons: vec![(area("osm/way/1", LotKind::CarPark).outer, Vec::new())],
+            surface: Surface {
+                at: (150.0, 150.0),
+                coeffs: [100.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                form: Form::Plane,
+                lambda,
+            },
+        }
+    }
+
+    fn report(assessed: Vec<Assessed>, lambda: f64) -> LotReport {
+        let classes = assessed
+            .iter()
+            .filter(|lot| !matches!(lot.outcome, Outcome::Excluded { .. }))
+            .map(|lot| (lot.area.id.clone(), SurfaceClass::Tarmac))
+            .collect::<Vec<_>>();
+        let sources = vec![naves_core::lot::SurfaceSource::Tag; classes.len()];
+        LotReport {
+            assessed,
+            surfaces: vec![surface(lambda)],
+            classes,
+            sources,
+        }
+    }
+
+    #[test]
+    fn the_outcome_lines_name_the_form_or_the_reason() {
+        let report = report(
+            vec![
+                smoothed("osm/way/1", LotKind::CarPark, Form::Plane, 1.0),
+                smoothed("osm/way/2", LotKind::CarPark, Form::Quadratic, 1.0),
+                smoothed("osm/way/3", LotKind::CampSite, Form::Quadratic, 1.0),
+                unsmoothed(
+                    "osm/way/4",
+                    LotKind::CarPark,
+                    Outcome::SurfaceOnly {
+                        reason: "street_side",
+                    },
+                ),
+                unsmoothed(
+                    "osm/way/5",
+                    LotKind::CaravanSite,
+                    Outcome::Excluded { reason: "in_water" },
+                ),
+            ],
+            1.0,
+        );
+        assert_eq!(
+            lot_outcome_lines(&report),
+            [
+                "LOT_OUTCOME car_park smoothed plane 1",
+                "LOT_OUTCOME car_park smoothed quadratic 1",
+                "LOT_OUTCOME car_park surface_only street_side 1",
+                "LOT_OUTCOME camp_site smoothed quadratic 1",
+                "LOT_OUTCOME caravan_site excluded in_water 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_roads_line_has_the_metres_and_the_counts() {
+        let clean = CleanReport {
+            lot_roads: vec![
+                DroppedInLot {
+                    stretch: "1:1-2".to_string(),
+                    lot: "osm/way/1".to_string(),
+                    length_m: 300.0,
+                    at: (1.0, 2.0),
+                },
+                DroppedInLot {
+                    stretch: "2:2-3".to_string(),
+                    lot: "osm/way/1".to_string(),
+                    length_m: 236.4,
+                    at: (3.0, 4.0),
+                },
+            ],
+            lot_access: vec![CutAccess {
+                stretch: "3:3-4".to_string(),
+                lot: "osm/way/1".to_string(),
+                cut_m: 4.0,
+                entry: (5.0, 6.0),
+                node: 99,
+            }],
+            junctions_in_lots: 4,
+            ..CleanReport::default()
+        };
+        assert_eq!(
+            lot_roads_line(&clean),
+            "LOT_ROADS removed 2 536 m, access cut 1, junctions removed 4"
+        );
+    }
+
+    #[test]
+    fn the_relief_and_move_lines_are_per_kind_and_by_the_nearest_rank() {
+        let mut first = smoothed("osm/way/1", LotKind::CarPark, Form::Plane, 4.0);
+        first.relief_before_m = 1.0;
+        first.relief_after_m = 0.1;
+        first.move_p95_m = 1.0;
+        first.move_max_m = 2.0;
+        let mut second = smoothed("osm/way/2", LotKind::CarPark, Form::Plane, 4.0);
+        second.relief_before_m = 0.5;
+        second.relief_after_m = 0.12;
+        second.move_p95_m = 0.25;
+        second.move_max_m = 1.0;
+        let report = report(vec![first, second], 1.0);
+        // nearest rank over two values is the larger one
+        assert_eq!(
+            lot_relief_lines(&report),
+            ["LOT_RELIEF car_park before 1.00 1.00 after 0.12 0.12"]
+        );
+        assert_eq!(lot_move_lines(&report), ["LOT_MOVE car_park 1.00 2.00"]);
+    }
+
+    #[test]
+    fn the_flags_name_the_lot_the_place_and_the_value() {
+        let mut steep = smoothed("osm/way/1", LotKind::CarPark, Form::Plane, 1.0);
+        steep.steep = true;
+        steep.slope_p95 = 0.33;
+        let report = report(vec![steep], 0.67);
+        assert_eq!(
+            lot_flag_lines(&report),
+            [
+                "LOT_FLAG osm/way/1 150.0 150.0 steep 0.330",
+                "LOT_FLAG osm/way/1 150.0 150.0 move_limited 0.670",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_entry_and_through_lines_are_rounded_to_centimetres() {
+        assert_eq!(lot_entry_line("1:1-2", 0.0), "LOT_ENTRY 1:1-2 0.00");
+        assert_eq!(lot_entry_line("1:1-2", 0.284), "LOT_ENTRY 1:1-2 0.28");
+        assert_eq!(lot_through_line("2:2-3", 0.31), "LOT_THROUGH 2:2-3 0.31");
+    }
+
+    #[test]
+    fn the_near_lines_count_only_the_findings_within_fifty_metres_of_a_smoothed_lot() {
+        let report = report(
+            vec![
+                smoothed("osm/way/1", LotKind::CarPark, Form::Plane, 1.0),
+                unsmoothed(
+                    "osm/way/2",
+                    LotKind::CampSite,
+                    Outcome::SurfaceOnly {
+                        reason: "no_vertex",
+                    },
+                ),
+            ],
+            1.0,
+        );
+        let violation = |rule, at| Violation {
+            rule,
+            at,
+            message: String::new(),
+        };
+        let violations = vec![
+            violation(Rule::RoadGap, (150.0, 150.0)),
+            violation(Rule::RoadGap, (240.0, 150.0)),
+            violation(Rule::RoadGap, (1000.0, 1000.0)),
+            violation(Rule::LotSteep, (900.0, 900.0)),
+        ];
+        assert_eq!(
+            lot_near_lines(&report, &violations),
+            ["LOT_NEAR road_gap 2"]
+        );
+    }
 }

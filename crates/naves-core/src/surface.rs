@@ -61,6 +61,18 @@ impl SurfaceClass {
         }
     }
 
+    /// The stable lowercase name of the class, for `build/report.json` and the findings.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            SurfaceClass::Grass => "grass",
+            SurfaceClass::Rock => "rock",
+            SurfaceClass::Forest => "forest",
+            SurfaceClass::Soil => "soil",
+            SurfaceClass::Tarmac => "tarmac",
+        }
+    }
+
     /// A short name for legends.
     #[must_use]
     pub const fn name(self) -> &'static str {

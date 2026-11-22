@@ -99,6 +99,27 @@ hundred megabytes, a country-sized one several gigabytes. Prefer the smallest ex
 Several extracts are merged before the areas are built, so an area that each of them cuts at its border is still
 whole.
 
+**Lots get one surface (switched off in this release).** With the lot stage on (`LOTS_ENABLED`, see
+[Roads](#roads)), every lot that is not excluded is painted as one area: after the decided ground, before the paths
+and the road beds.
+- **Paved or grass.** The lot's own `surface` tag wins; a camp site is grass unless it is tagged paved; otherwise the
+  roads that serve the lot decide (the roads removed inside it, its access roads and the roads that pass through it),
+  each metre by its way's `surface` tag and, without one, by its road type (asphalt 1 to 3 and street paved, gravel and
+  dirt track grass); a lot with none of its own takes the street beside it within reach of a road's earthwork; a lot
+  with nothing is grass.
+- **The tarmac layer.** Paved lots use the game's tarmac surface, layer slot 4, selected by the mask value
+  (0, 0, 0, 128); grass lots use the class the ground decision gave the place, so a car park in a forest is forest.
+  The slot's mask value is fitted to Livonia's terrain masks but has not been seen in the game yet: `TARMAC_PAINTED` in
+  the generation maps paved lots to soil instead when it is off, and that is the one place where the fallback happens.
+  A build whose map has no paved lot writes the four layers and their masks exactly as before.
+- **Smooth ground.** The ground of a lot and one and a half cells beyond its edge is one plane, or, where the ground is
+  curved, a gentle quadratic whose curvature is at most that of the gentlest road (a 600 m vertical radius). Heights
+  inside a lot do not go up and down within 24 m; only larger areas differ in height. A road's core keeps its own
+  height inside its width, a road through the lot is pulled to the surface, and an access road's end is held to it. A
+  lot whose surface would move the ground by more than 3 m is scaled down for the whole lot (`lot_move_limited`); a
+  lot on a slope above 20 % stays that steep (`lot_steep`). A road over a lot that still differs from the surface at
+  its edge is reported (`road_conflict`, see [troubleshooting](troubleshooting.md)).
+
 A map made from OpenStreetMap contains OSM-derived data under the ODbL: if you publish it, keep the attribution
 that `naves build` writes to `ATTRIBUTION.txt` in the mod folder, and share the derived database alike. The same
 file carries the WorldCover (CC BY 4.0) and Copernicus credits. It lists only the sources the build used. See
@@ -308,6 +329,26 @@ is cut off. Otherwise nothing changes and the place is reported with the reason 
 not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
 fix, "warning" means a place worth a look.
+
+**Lots: a car park or a camp site gets one surface and smooth ground (switched off in this release).** Car parks,
+camp sites and similar areas are *lots*: an area tagged `amenity=parking`, `amenity=tourist_bus_parking`,
+`highway=rest_area`, `tourism=camp_site` or `tourism=caravan_site`. The stage exists but is off (`LOTS_ENABLED`), so
+nothing below happens in a build of this release, and `roads.lots` in `build/report.json` says `{"enabled": false}`.
+With it on, the lot step runs before every other step of the clean-up:
+- The streets inside a lot are not built, whatever their tags: aisles, driveways and yard roads become neither road
+  pieces nor painted paths. A footway or cycleway through a lot stays painted, on top of the lot's surface, and a
+  bridge or a tunnel in a lot keeps its stretch.
+- A road that only reaches into a lot (a dead end after the removal) is cut where it enters and ends one terrain cell
+  (4 m) inside, so its last joint stands on the lot's ground; a road whose part inside is shorter than that is left as
+  it is. A road that enters, leaves and enters again is cut only at its last entry.
+- A road that passes through a lot stays whole: of the inside stretches, the shortest chain between two places where
+  roads leave the lot stays, and aisles, dead ends and longer chains go. Those stretches are counted as through roads
+  in the report.
+- A lot is not smoothed when it is not on the ground (underground, multi-storey, rooftop, a building, a `layer` other
+  than 0) or mostly in water; a street-side strip and a lot with fewer than three terrain vertices inside get a surface
+  only.
+The ground of a smoothed lot is one surface (see [ground from real data](#ground-from-real-data)); every change is a
+finding (see [troubleshooting](troubleshooting.md)) and `roads.lots` in `build/report.json` has the numbers.
 
 **Road lines can be smoothed (switched off in this release).** The stage exists but is off: the road planning is being
 built first, and it will then be decided whether the stage is still needed; with it on, road placement was about

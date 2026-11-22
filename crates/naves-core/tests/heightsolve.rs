@@ -3357,10 +3357,10 @@ fn a_dead_end_two_and_a_half_metres_inside_the_lot_keeps_a_step() {
     // entry junction. The end joint is free and only the soft ground target pulls it up towards the surface.
     //
     // **Pinned limitation, not the wanted behaviour.** The end keeps a step of about half the difference between
-    // the surface and the ground. It is not reported either: the road's core covers the vertex at the end, so the
-    // shaping has no ground between the road and the lot there to see the face. The wanted end would be held to the
-    // surface, which needs a datum the lot step does not report today for a dead end it does not cut. Whoever adds
-    // that datum must make this test fail and replace it with one that asserts no step.
+    // the surface and the ground. The 50 m square of the end reports a conflict at least that large (the assertion
+    // below), but the wanted end would be held to the surface, which needs a datum the lot step does not report today
+    // for a dead end it does not cut. Whoever adds that datum must make this test fail and replace it with one that
+    // asserts no step.
     let hm = terrain(128, 6.25, |_, _| 100.0);
     let net = network(vec![pieces(
         "a",
@@ -3390,4 +3390,22 @@ fn a_dead_end_two_and_a_half_metres_inside_the_lot_keeps_a_step() {
     assert!(end.2 > 100.4 && end.2 < 101.0, "{end:?}");
     let step = 101.0 - end.2;
     assert!(step > 0.3, "the end reached the surface: {end:?}");
+    // the gap is not silent: the 50 m square of the end has a `RoadConflict` at least as large as the step. The
+    // step itself is not its own record: the square keeps its worst place, and beside the end the road climbs from
+    // the ground to the lot's surface, which is worse there (0.64 m, 11 m back along the road).
+    let patch = AreaPatch {
+        surface: lot,
+        rank: 0,
+    };
+    let out = conform_areas(&hm, &p.strips, &[], std::slice::from_ref(&patch), &[]).unwrap();
+    let region = |v: f64| (v / 50.0).floor() as i64;
+    assert!(
+        out.conflicts
+            .iter()
+            .any(|conflict| region(conflict.at.0) == region(end.0)
+                && region(conflict.at.1) == region(end.1)
+                && conflict.height_difference_m >= step - 1e-6),
+        "the step of {step:.2} m at the end is not reported: {:?}",
+        out.conflicts
+    );
 }

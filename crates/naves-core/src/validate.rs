@@ -15,6 +15,7 @@ use crate::dips::{Dip, DipAction};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
+use crate::lot::{LOT_MAX_MOVE_M, LOT_STEEP, LotReport, Outcome, centre};
 use crate::netclean::{ApproachKind, CleanReport};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
@@ -22,6 +23,7 @@ use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profil
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 use crate::smooth::SmoothReport;
+use crate::surface::SurfaceClass;
 
 /// A bridge's deck that ends this far (metres) above or below the road or junction it joins is a finding.
 pub const END_STEP_TOL_M: f64 = 0.5;
@@ -111,11 +113,23 @@ pub enum Rule {
     RoadCurveWidened,
     /// A curve that cannot be built as a curve: widening did not reach the radius of the road pieces.
     RoadCurveTooTight,
+    /// A lot whose ground is shaped to a smooth surface (the form, the largest move and the surface class).
+    LotSmoothed,
+    /// A lot that gets a surface but whose ground is not shaped, with the reason.
+    LotSurfaceOnly,
+    /// A lot that is left alone, with the reason.
+    LotExcluded,
+    /// A lot whose slope is above what a vehicle can take across a road.
+    LotSteep,
+    /// A lot whose surface would move the ground too far, so the change is scaled for the whole lot.
+    LotMoveLimited,
+    /// A road inside a lot that is not built, and an access road cut at a lot's edge.
+    RoadInLotDropped,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 31] = [
+    pub const ALL: [Rule; 37] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -147,6 +161,12 @@ impl Rule {
         Rule::BridgeEndAtJunction,
         Rule::RoadCurveWidened,
         Rule::RoadCurveTooTight,
+        Rule::LotSmoothed,
+        Rule::LotSurfaceOnly,
+        Rule::LotExcluded,
+        Rule::LotSteep,
+        Rule::LotMoveLimited,
+        Rule::RoadInLotDropped,
     ];
 
     /// The stable id of the rule.
@@ -184,6 +204,12 @@ impl Rule {
             Rule::BridgeEndAtJunction => "bridge_end_at_junction",
             Rule::RoadCurveWidened => "road_curve_widened",
             Rule::RoadCurveTooTight => "road_curve_too_tight",
+            Rule::LotSmoothed => "lot_smoothed",
+            Rule::LotSurfaceOnly => "lot_surface_only",
+            Rule::LotExcluded => "lot_excluded",
+            Rule::LotSteep => "lot_steep",
+            Rule::LotMoveLimited => "lot_move_limited",
+            Rule::RoadInLotDropped => "road_in_lot_dropped",
         }
     }
 }
@@ -1108,6 +1134,106 @@ fn dip_violations(dips: &[(Dip, DipAction)]) -> Vec<Violation> {
         .collect()
 }
 
+/// Sorts violations the way they are reported: by rule, then by position (x, then y). Deterministic, which is what
+/// `build/report.json` and the findings rely on.
+pub fn sort_violations(violations: &mut [Violation]) {
+    violations.sort_by(|a, b| {
+        a.rule
+            .cmp(&b.rule)
+            .then(a.at.0.total_cmp(&b.at.0))
+            .then(a.at.1.total_cmp(&b.at.1))
+    });
+}
+
+/// The class of a lot in words, for the findings.
+fn class_word(class: Option<SurfaceClass>) -> &'static str {
+    match class {
+        Some(SurfaceClass::Tarmac) => "paved",
+        Some(_) => "grass",
+        None => "no",
+    }
+}
+
+/// The findings of the lot stage: what became of every lot (the form, surface class and largest move of a smoothed
+/// one, the reason of a surface-only or an excluded one), the steep and the move-limited ones with their numbers
+/// against [`LOT_STEEP`] and [`LOT_MAX_MOVE_M`], and every road that is not built or is cut. The position is the
+/// lot's centre ([`LotReport`]'s lots) or the place of the road.
+#[must_use]
+pub fn lot_violations(report: &LotReport, clean: &CleanReport) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for lot in &report.assessed {
+        let at = centre(&lot.area);
+        let id = lot.area.id.as_str();
+        let (one, _) = lot.area.kind.words();
+        let class = class_word(report.class_of(id));
+        match lot.outcome {
+            Outcome::Smoothed { form } => {
+                out.push(violation(
+                    Rule::LotSmoothed,
+                    at,
+                    format!(
+                        "Lot {id} ({one}) is smoothed: {form}, {class}, the ground moves by up to {:.2} m",
+                        lot.move_max_m,
+                        form = form.id()
+                    ),
+                ));
+                if lot.steep {
+                    out.push(violation(
+                        Rule::LotSteep,
+                        at,
+                        format!(
+                            "Lot {id} ({one}) keeps a slope of {:.0} % (95th percentile), more than the {:.0} % a                              vehicle can take across a road",
+                            lot.slope_p95 * 100.0,
+                            LOT_STEEP * 100.0
+                        ),
+                    ));
+                }
+                if let Some(lambda) = report.move_limited(lot) {
+                    out.push(violation(
+                        Rule::LotMoveLimited,
+                        at,
+                        format!(
+                            "Lot {id} ({one}) would move the ground by {:.2} m, more than the {LOT_MAX_MOVE_M:.1} m a                              lot may; the change is scaled by lambda {lambda:.2}",
+                            LOT_MAX_MOVE_M / lambda
+                        ),
+                    ));
+                }
+            }
+            Outcome::SurfaceOnly { reason } => out.push(violation(
+                Rule::LotSurfaceOnly,
+                at,
+                format!("Lot {id} ({one}) gets a {class} surface only ({reason}), its ground is not shaped"),
+            )),
+            Outcome::Excluded { reason } => out.push(violation(
+                Rule::LotExcluded,
+                at,
+                format!("Lot {id} ({one}) is left alone ({reason}): no surface, no shaping"),
+            )),
+        }
+    }
+    for dropped in &clean.lot_roads {
+        out.push(violation(
+            Rule::RoadInLotDropped,
+            dropped.at,
+            format!(
+                "Road {} inside lot {} is not built ({:.0} m)",
+                dropped.stretch, dropped.lot, dropped.length_m
+            ),
+        ));
+    }
+    for entry in &clean.lot_access {
+        out.push(violation(
+            Rule::RoadInLotDropped,
+            entry.entry,
+            format!(
+                "The access road {} of lot {} is cut {:.0} m inside the lot",
+                entry.stretch, entry.lot, entry.cut_m
+            ),
+        ));
+    }
+    out
+}
+
 /// All the violations of a generated road network, sorted by rule and then by position.
 ///
 /// `water` are the OSM areas of the project; only those with the priority of water count. Bridges may stand
@@ -1212,11 +1338,6 @@ pub fn check_roads(
     out.extend(buried_violations(&conformed.buried, net, profiles));
     out.extend(post_violations(&conformed.floating));
     out.extend(end_step_violations(net, profiles, junctions));
-    out.sort_by(|a, b| {
-        a.rule
-            .cmp(&b.rule)
-            .then(a.at.0.total_cmp(&b.at.0))
-            .then(a.at.1.total_cmp(&b.at.1))
-    });
+    sort_violations(&mut out);
     out
 }

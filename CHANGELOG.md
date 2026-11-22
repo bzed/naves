@@ -13,6 +13,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or grass surface and
+  smooth ground; the roads inside them are no longer built, and their access roads end just inside them. **The stage is
+  switched off in this release** (`LOTS_ENABLED`); with it on, a paved lot is painted with the game's tarmac surface
+  (layer slot 4, mask value (0, 0, 0, 128), not yet confirmed in the game), and a build whose map has a paved lot writes
+  a fifth ground layer on those tiles. Switching it on is a **breaking** change for user edits: edits on removed or cut
+  roads are orphaned (`orphaned_edit`); on the example about 85 roads are removed and 21 cut. New findings
+  `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited` and `road_in_lot_dropped`, a
+  `roads.lots` section in `build/report.json`, a line in the build summary and a progress line with the time of the
+  stage; off, `roads.lots` is `{"enabled": false}` and every output is as before.
 - A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
   (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
   moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each

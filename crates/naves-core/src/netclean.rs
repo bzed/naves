@@ -15,7 +15,9 @@ pub mod lot;
 mod sidepath;
 
 use lot::components_each;
-pub use lot::{CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads};
+pub use lot::{
+    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads, surviving_entries,
+};
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -201,6 +203,9 @@ pub struct CleanReport {
     pub lot_through: Vec<String>,
     /// The groups whose removal would have split a component and that were left as they are.
     pub lots_split: Vec<usize>,
+    /// Access roads whose entry node a later step of the clean-up took away (a junction merge or a bridge approach
+    /// moved it): they get no entry junction.
+    pub lot_entries_lost: usize,
     /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
     /// the lot step.
     pub junctions_in_lots: usize,
@@ -922,6 +927,7 @@ pub fn clean_with(
         lot_roads: step.dropped.clone(),
         lot_access: step.access.clone(),
         lots_split: step.unchanged.clone(),
+        lot_entries_lost: step.access.len() - surviving_entries(&graph4, &step.access).len(),
         components_before: components_before.unwrap_or_default(),
         components_after: components_after.unwrap_or_default(),
         components_by_step: counted.iter().skip(2).copied().collect(),
