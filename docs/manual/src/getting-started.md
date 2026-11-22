@@ -351,7 +351,7 @@ With it on, the lot step runs before every other step of the clean-up:
 
 The ground of a smoothed lot is one surface (see [ground from real data](#ground-from-real-data)); every change is a
 finding (see [troubleshooting](troubleshooting.md)) and `roads.lots` in `build/report.json` has the numbers. The
-progress output has a line `Shaping the lots (0.4 s)` with the time the stage's own work took: the assessment of the
+progress output has a line `Assessing the lots (0.4 s)` with the time the stage's own work took: the assessment of the
 lots, their groups and the surface decision. The clean-up's lot step runs inside the clean-up and is not in that time,
 and neither is the terrain shaping or the painting, which are one pass each with the roads and with the ground.
 

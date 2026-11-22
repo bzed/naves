@@ -343,7 +343,7 @@ pub fn fitted_graph_with(
         Vec::new()
     };
     let lots_time = if stages.lots {
-        started_lots.elapsed().saturating_sub(clean_time)
+        lot_time(started_lots.elapsed(), Some(clean_time))
     } else {
         std::time::Duration::ZERO
     };
@@ -485,7 +485,7 @@ pub fn plan_roads_with(
     }
     if lot_report.is_some() {
         progress(&format!(
-            "Shaping the lots ({:.1} s)",
+            "Assessing the lots ({:.1} s)",
             lots_time.as_secs_f64()
         ));
     }
@@ -626,6 +626,14 @@ fn empty_roads() -> Roads {
     }
 }
 
+/// The lot stage's own time, from two clock readings: the span from the assessment to the surface decision, less the
+/// clean-up that ran inside it (`None` when the path runs no clean-up). The terrain shaping and the painting happen
+/// after the span, so neither is in it. The clocks are not injected, but both paths read them at the same points
+/// around their lot work, and the subtraction is what this is: tested with fixed durations, without a clock.
+fn lot_time(span: std::time::Duration, clean: Option<std::time::Duration>) -> std::time::Duration {
+    span.saturating_sub(clean.unwrap_or_default())
+}
+
 /// The lots of a project without any road: their surface classes and their smooth ground, without a placement. The
 /// class is decided like the build's, on an empty graph, so a lot with no road of its own is grass unless its tag
 /// says otherwise.
@@ -657,12 +665,15 @@ fn lots_only(
         classes,
         sources,
     };
+    // the time is read before the terrain is shaped: the shaping is not the lot stage's own work, and the roads path
+    // measures the same steps (assessment and surface decision, with no clean-up here)
+    let lots_time = lot_time(started.elapsed(), None);
+    progress(&format!(
+        "Assessing the lots ({:.1} s)",
+        lots_time.as_secs_f64()
+    ));
     let patches = area_patches(&report.surfaces);
     let conformed = conform_areas(base, &[], &[], &patches, &[])?;
-    progress(&format!(
-        "Shaping the lots ({:.1} s)",
-        started.elapsed().as_secs_f64()
-    ));
     Ok(Roads {
         net: PlacedNetwork {
             lots: Some(report),
@@ -1230,4 +1241,29 @@ pub fn generate_with(
         lots: roads.net.lots.clone(),
         clean: roads.net.clean.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_lot_time_is_the_span_less_the_clean_up() {
+        // no clean-up (a project without roads): the whole span
+        assert_eq!(
+            lot_time(Duration::from_millis(100), None),
+            Duration::from_millis(100)
+        );
+        // the clean-up runs inside the span and is taken out
+        assert_eq!(
+            lot_time(Duration::from_millis(100), Some(Duration::from_millis(40))),
+            Duration::from_millis(60)
+        );
+        // a clock that ticked backwards, or a clean-up that cannot be inside the span, gives zero, never a negative
+        assert_eq!(
+            lot_time(Duration::from_millis(10), Some(Duration::from_millis(40))),
+            Duration::ZERO
+        );
+    }
 }

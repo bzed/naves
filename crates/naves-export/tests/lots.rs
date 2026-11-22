@@ -28,7 +28,9 @@ use naves_core::smooth::SMOOTH_ENABLED;
 use naves_core::surface::SurfaceClass;
 use naves_core::validate::Rule;
 use naves_export::build::build_with;
-use naves_export::generate::{Stages, fitted_graph, fitted_graph_with, generate_with, plan_roads};
+use naves_export::generate::{
+    Stages, fitted_graph, fitted_graph_with, generate_with, plan_roads, plan_roads_with,
+};
 use naves_export::testing::FakeEnv;
 use tiff::encoder::{TiffEncoder, colortype};
 use tiff::tags::Tag;
@@ -616,7 +618,7 @@ fn with_the_stage_on_the_ground_is_the_lots_target_and_its_surface_is_painted() 
         lines
             .borrow()
             .iter()
-            .any(|line| line.starts_with("Shaping the lots (") && line.ends_with(" s)")),
+            .any(|line| line.starts_with("Assessing the lots (") && line.ends_with(" s)")),
         "{:?}",
         lines.borrow()
     );
@@ -765,4 +767,45 @@ fn with_the_stage_on_a_project_without_roads_or_lots_says_so() {
     assert_eq!(json["roads"]["lots"]["enabled"], true);
     assert_eq!(json["roads"]["lots"]["smoothed"], 0);
     assert_eq!(json["roads"]["lots"]["lots"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn the_smoothing_stage_has_its_own_progress_line_when_it_is_on() {
+    // the two stages print different lines, and each only when it ran: the smoothing one is not the lot one
+    let catalog = synthetic_catalog();
+    let base = flat();
+    let project = Project::new("P", 47.55, 12.975, 1000.0);
+    let frame = MapGeo::new(&project).unwrap();
+    let lines = std::cell::RefCell::new(Vec::new());
+    plan_roads_with(
+        &camp_site_roads(),
+        &catalog,
+        &base,
+        &[],
+        &[],
+        &frame,
+        Stages {
+            smooth: true,
+            lots: false,
+        },
+        &[],
+        &|line| lines.borrow_mut().push(line.to_string()),
+    )
+    .unwrap();
+    assert!(
+        lines
+            .borrow()
+            .iter()
+            .any(|line| line.starts_with("Smoothing the road lines (") && line.ends_with(" s)")),
+        "{:?}",
+        lines.borrow()
+    );
+    assert!(
+        lines
+            .borrow()
+            .iter()
+            .all(|line| !line.starts_with("Assessing the lots (")),
+        "{:?}",
+        lines.borrow()
+    );
 }

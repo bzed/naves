@@ -1182,7 +1182,8 @@ pub fn lot_violations(report: &LotReport, clean: &CleanReport) -> Vec<Violation>
                         Rule::LotSteep,
                         at,
                         format!(
-                            "Lot {id} ({one}) keeps a slope of {:.0} % (95th percentile), more than the {:.0} % a vehicle can take across a road",
+                            "Lot {id} ({one}) keeps a slope of {:.0} % (95th percentile), more than the {:.0} % a \
+                             vehicle can take across a road",
                             lot.slope_p95 * 100.0,
                             LOT_STEEP * 100.0
                         ),
@@ -1193,7 +1194,8 @@ pub fn lot_violations(report: &LotReport, clean: &CleanReport) -> Vec<Violation>
                         Rule::LotMoveLimited,
                         at,
                         format!(
-                            "Lot {id} ({one}): its group's surface would move the ground by {:.2} m, more than the {LOT_MAX_MOVE_M:.1} m a lot may move it; the change is scaled by lambda {lambda:.2}",
+                            "Lot {id} ({one}): its group's surface would move the ground by {:.2} m, more than the \
+                             {LOT_MAX_MOVE_M:.1} m a lot may move it; the change is scaled by lambda {lambda:.2}",
                             LOT_MAX_MOVE_M / lambda
                         ),
                     ));
