@@ -616,6 +616,8 @@ struct ChainLine {
     id: String,
     /// The stretches, in the chain's direction.
     links: Vec<Link>,
+    /// The links that are bridges, by index into `links`.
+    bridge_links: Vec<usize>,
     /// The samples, every [`SAMPLE_M`] along the chain.
     pts: Vec<(f64, f64)>,
     /// The distance along the chain of every sample.
@@ -751,8 +753,14 @@ fn build_chain_line(
             if let Some(&p) = sampled.get(k) {
                 pts.push(p);
             }
+            // the last sample is exactly the link's end: `(L · n) / n` is not always `L` in floating point,
+            // and the write-back compares this arc with the stretch's own exact length `L`
             let at = if segments > 0 {
-                total + link_len * fl(k) / fl(segments)
+                if k == segments {
+                    total + link_len
+                } else {
+                    total + link_len * fl(k) / fl(segments)
+                }
             } else {
                 total
             };
@@ -767,8 +775,9 @@ fn build_chain_line(
     let mut half = vec![0.0_f64; count];
     let mut roundabout = vec![false; count];
     let mut held: Vec<HeldPart> = Vec::new();
+    let mut bridge_links: Vec<usize> = Vec::new();
     let mut first_sample = 0_usize;
-    for (link, &last) in plan.links.iter().zip(&bounds) {
+    for (index, (link, &last)) in plan.links.iter().zip(&bounds).enumerate() {
         let s = graph.stretches.get(link.stretch)?;
         let minimum = min_of
             .get(link.stretch)
@@ -791,6 +800,7 @@ fn build_chain_line(
             }
         }
         if s.bridge {
+            bridge_links.push(index);
             let from = arc.get(first_sample).copied().unwrap_or(0.0) - params.bridge_hold_m;
             let to = arc.get(last).copied().unwrap_or(0.0) + params.bridge_hold_m;
             held.push(HeldPart {
@@ -840,6 +850,7 @@ fn build_chain_line(
     Some(ChainLine {
         id,
         links: plan.links.clone(),
+        bridge_links,
         pts,
         arc,
         bounds,
@@ -1194,6 +1205,36 @@ fn leg_families(graph: &RoadGraph, chain: &ChainLine, a: usize, b: usize) -> Vec
     set.into_iter().collect()
 }
 
+/// The node of a bridge hold next to a leg: the bridge end the hold is anchored at, not the chain's far end. The
+/// leg starts at `bridge_end + hold` (or ends at `bridge_start − hold`); the near bridge node is the bridge's exit
+/// (for a start) or entry (for an end).
+fn bridge_hold_node(
+    bridge_links: &[usize],
+    bounds: &[usize],
+    pts: &[(f64, f64)],
+    arcs: &[f64],
+    arc: f64,
+    at_start: bool,
+    hold: f64,
+) -> Option<(f64, f64)> {
+    for &j in bridge_links {
+        let first = if j == 0 {
+            0
+        } else {
+            bounds.get(j - 1).copied().unwrap_or(0)
+        };
+        let last = bounds.get(j).copied().unwrap_or(first);
+        let (start, end) = (arcs.get(first).copied()?, arcs.get(last).copied()?);
+        if at_start && (arc - (end + hold)).abs() <= 1e-6 {
+            return pts.get(last).copied();
+        }
+        if !at_start && (arc - (start - hold)).abs() <= 1e-6 {
+            return pts.get(first).copied();
+        }
+    }
+    None
+}
+
 /// Searches one leg: its obstacles, walls, field, band and limits, then the arc search.
 #[expect(
     clippy::too_many_lines,
@@ -1290,17 +1331,36 @@ fn plan_leg(
         .zip([start_anchor.at, end_anchor.at])
         .filter_map(|(&kind, at)| kind.fixed().then_some(at))
         .collect();
-    // A bridge or tunnel hold ends at the chain's end node; a deck or tunnel there is part of the anchor, not an
-    // obstacle beside it (the tunnel of a TunnelHold is a chain of its own and would otherwise block the start).
-    if matches!(job.start, EndKind::TunnelHold | EndKind::BridgeHold)
-        && let Some(&p) = chain.pts.first()
-    {
-        fixed_anchors.push(p);
+    // A bridge or tunnel at a hold is part of the anchor, not an obstacle beside it (the tunnel of a TunnelHold is
+    // a chain of its own and would otherwise block the start). A tunnel hold is at a chain end; a bridge is inside
+    // the chain, so its own end node is the anchor, not the chain's far end.
+    let start_arc = chain.arc.get(job.a).copied().unwrap_or(0.0);
+    let end_arc = chain.arc.get(job.b).copied().unwrap_or(0.0);
+    match job.start {
+        EndKind::TunnelHold => fixed_anchors.extend(chain.pts.first().copied()),
+        EndKind::BridgeHold => fixed_anchors.extend(bridge_hold_node(
+            &chain.bridge_links,
+            &chain.bounds,
+            &chain.pts,
+            &chain.arc,
+            start_arc,
+            true,
+            params.bridge_hold_m,
+        )),
+        _ => {}
     }
-    if matches!(job.end, EndKind::TunnelHold | EndKind::BridgeHold)
-        && let Some(&p) = chain.pts.last()
-    {
-        fixed_anchors.push(p);
+    match job.end {
+        EndKind::TunnelHold => fixed_anchors.extend(chain.pts.last().copied()),
+        EndKind::BridgeHold => fixed_anchors.extend(bridge_hold_node(
+            &chain.bridge_links,
+            &chain.bounds,
+            &chain.pts,
+            &chain.arc,
+            end_arc,
+            false,
+            params.bridge_hold_m,
+        )),
+        _ => {}
     }
     let mut walls: Vec<Wall> = Vec::new();
     let mut deck_crossed = false;
@@ -2069,6 +2129,29 @@ fn pair_partners(zones: &mut [PlannedZone]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bridge_hold_uses_the_bridge_end_not_the_chain_end() {
+        // links: 0 plain (samples 0..50), 1 bridge (50..65), 2 plain (65..150); the bridge is mid-chain
+        let bounds = [50, 65, 150];
+        let pts: Vec<(f64, f64)> = (0..=150).map(|i| (f64::from(i), 0.0)).collect();
+        let arcs: Vec<f64> = (0..=150).map(f64::from).collect();
+        // a leg starting 25 m after the bridge's end at sample 65
+        assert_eq!(
+            bridge_hold_node(&[1], &bounds, &pts, &arcs, 65.0 + 25.0, true, 25.0),
+            Some((65.0, 0.0))
+        );
+        // a leg ending 25 m before the bridge's start at sample 50
+        assert_eq!(
+            bridge_hold_node(&[1], &bounds, &pts, &arcs, 50.0 - 25.0, false, 25.0),
+            Some((50.0, 0.0))
+        );
+        // never the chain's far end
+        assert_ne!(
+            bridge_hold_node(&[1], &bounds, &pts, &arcs, 65.0 + 25.0, true, 25.0),
+            Some((150.0, 0.0))
+        );
+    }
 
     #[test]
     fn the_self_free_part_of_the_own_chain_is_measured_along_it() {

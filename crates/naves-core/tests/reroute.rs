@@ -4177,6 +4177,7 @@ fn plan_a_switchback_stack_is_not_cut_through() {
     let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
     let clearance = reach + MAP_CELL_M;
     let self_free = (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt() + reach;
+    let bound = reach + (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt() - 2.0;
     // the 25 m legs leave no room for the road clearance: the stage keeps every zone and says why
     for zone in &report.zones {
         match &zone.outcome {
@@ -4197,11 +4198,7 @@ fn plan_a_switchback_stack_is_not_cut_through() {
                         .iter()
                         .map(|&p| dist_to_line(p, piece))
                         .fold(f64::INFINITY, f64::min);
-                    assert!(
-                        got >= clearance - 1.0,
-                        "zone {}: {got} against {clearance}",
-                        zone.id
-                    );
+                    assert!(got >= bound, "zone {}: {got} against {bound}", zone.id);
                     assert_eq!(
                         segment_crossings(&zone_new, piece),
                         0,
@@ -4301,11 +4298,64 @@ fn plan_a_ring_cut_is_held_and_the_rest_is_planned() {
     assert!(ring.first().is_some_and(|&p| same_bits(p, (400.0, 500.0))));
     assert!(ring.last().is_some_and(|&p| same_bits(p, (400.0, 500.0))));
 }
+/// The Task 5 hairpin with its legs at `x0` and `x0 + 12`, its free loop bulging about 4.6 m outward.
+fn edge_hairpin(x0: f64) -> RoadGraph {
+    let mut nodes = vec![1_i64];
+    let mut points = vec![(x0, 400.0), (x0, 460.0)];
+    nodes.push(2);
+    let mut node = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((x0 + 6.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(node);
+        node += 1;
+    }
+    points.push((x0 + 12.0, 460.0));
+    nodes.push(node);
+    node += 1;
+    points.push((x0 + 12.0, 400.0));
+    nodes.push(node);
+    build_graph(&[city_way(1, &nodes, &points)])
+}
+
 #[test]
 fn plan_the_map_edge_blocks_only_what_is_outside() {
+    let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
+    // a hairpin 200 m from the edge: its free loop bulges about 4.6 m outward, below x = 200 - 3
+    let far = edge_hairpin(200.0);
+    let (out, report) = plan_graph(&far, &flat_map());
+    let id = far
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    assert!(report.zones.iter().any(is_planned), "{report:?}");
+    let written = points_of(&out, &id);
+    let min_x = written.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    assert!(min_x < 200.0 - 3.0, "the free loop does not bulge: {min_x}");
+    // the same hairpin near the edge: its drawn line is outside the 11 m margin, the free loop would enter it
+    let near = edge_hairpin(13.0);
+    let (out, _report) = plan_graph(&near, &flat_map());
+    let id = near
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    let drawn = points_of(&near, &id);
+    assert!(
+        drawn.iter().all(|p| p.0 >= reach - 1e-9),
+        "the drawn line is in the margin"
+    );
+    let written = points_of(&out, &id);
+    // the raster marks cells whose centre is in the margin, so the bound it can guarantee is a cell below
+    // `reach`; the free loop (13 - 4.6 = 8.4) is below it
+    assert!(
+        written
+            .iter()
+            .all(|p| p.0 >= reach - MAP_CELL_M / 4.0 - 1e-6),
+        "a written point is inside the edge margin: {:?}",
+        written.iter().map(|p| p.0).fold(f64::INFINITY, f64::min)
+    );
     // the drawn line is already in the margin at x = 8: the margin is not applied, the fillet may use it, but
-    // no point goes outside the map. Without the near-edge exemption the start anchor (x = 8, inside the
-    // 11 m margin) would be blocked and the zone could not be planned at all.
+    // no point goes outside the map
     let g = corner_at_the_edge(8.0);
     let (out, report) = plan_graph(&g, &flat_map());
     assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
@@ -4860,12 +4910,12 @@ fn off_grid_vertex_before_the_end() -> RoadGraph {
             &[1, 2, 3, 4, 5, 6, 7, 8],
             &[
                 (400.0, 500.0),
-                (440.0, 500.0),
-                (440.0, 503.3),
-                (480.0, 503.3),
-                (480.0, 500.0),
+                (441.3, 500.0),
+                (441.3, 503.3),
+                (482.9, 503.3),
+                (482.9, 500.0),
                 (560.0, 500.0),
-                (560.0, 519.3),
+                (560.0, 519.2),
                 (560.0, 600.0),
             ],
         ),
@@ -4891,7 +4941,7 @@ fn plan_a_vertex_just_before_the_end_anchor_is_not_written_after_it() {
     let written = points_of(&out, "1:1-8");
     assert_no_reversal(&written);
     assert!(
-        !written.iter().any(|&p| same_bits(p, (560.0, 519.3))),
+        !written.iter().any(|&p| same_bits(p, (560.0, 519.2))),
         "the vertex before the anchor is written after the route"
     );
     assert!(
@@ -4988,6 +5038,7 @@ fn plan_a_wide_u_turn_keeps_the_clearance_from_its_own_road() {
     let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
     let clearance = reach + MAP_CELL_M;
     let self_free = (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt() + reach;
+    let bound = reach + (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt() - 2.0;
     let planned: Vec<&PlannedZone> = report.zones.iter().filter(|z| is_planned(z)).collect();
     assert!(!planned.is_empty(), "no zone planned: {report:?}");
     for zone in &planned {
@@ -5000,11 +5051,7 @@ fn plan_a_wide_u_turn_keeps_the_clearance_from_its_own_road() {
                 .iter()
                 .map(|&p| dist_to_line(p, piece))
                 .fold(f64::INFINITY, f64::min);
-            assert!(
-                got >= clearance - 1.0,
-                "zone {}: {got} against {clearance}",
-                zone.id
-            );
+            assert!(got >= bound, "zone {}: {got} against {bound}", zone.id);
             assert_eq!(
                 segment_crossings(&zone_new, piece),
                 0,
@@ -5014,4 +5061,202 @@ fn plan_a_wide_u_turn_keeps_the_clearance_from_its_own_road() {
         }
     }
     assert_no_reversal(&written);
+}
+
+/// A chain whose first stretch is `l` metres long, with a two-stretch node at its end inside a zone.
+fn node_at_a_length(l: f64) -> RoadGraph {
+    build_graph(&[
+        road_way(
+            1,
+            Family::Asf3,
+            &[1, 2],
+            &[(50.0, 500.0), (50.0 + l, 500.0)],
+            false,
+            false,
+            false,
+        ),
+        city_way(
+            2,
+            &[2, 3, 4],
+            &[(50.0 + l, 500.0), (60.0 + l, 500.0), (60.0 + l, 600.0)],
+        ),
+        city_way(
+            3,
+            &[10, 1, 11],
+            &[(50.0, 400.0), (50.0, 500.0), (50.0, 600.0)],
+        ),
+        city_way(
+            4,
+            &[12, 4, 13],
+            &[(40.0 + l, 600.0), (60.0 + l, 600.0), (80.0 + l, 600.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_node_at_a_length_that_loses_a_bit_is_one_point() {
+    // `(l * n) / n` is not always `l` in f64; the fixture must use such a length, or it cannot see the last-bit
+    // split of the node
+    let mut chosen = None;
+    let candidates: [f64; 6] = [
+        1_899.876_587_074_421_4,
+        1_899.595_112_120_010_5,
+        1_898.882_184_302_414,
+        955.3,
+        477.7,
+        6.1,
+    ];
+    for &l in &candidates {
+        let n = (l / 2.0).round();
+        if n >= 1.0 && ((l * n) / n).to_bits() != l.to_bits() {
+            chosen = Some((l, n));
+            break;
+        }
+    }
+    let (l, n) = chosen.unwrap_or_else(|| panic!("no length loses a bit"));
+    assert!(
+        ((l * n) / n).to_bits() != l.to_bits(),
+        "the fixture lost its point"
+    );
+    let g = node_at_a_length(l);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let first = points_of(&out, "1:1-2");
+    let second = points_of(&out, "2:2-4");
+    assert!(
+        same_bits(*first.last().unwrap(), *second.first().unwrap()),
+        "the node splits in the last bit: {:?} {:?}",
+        first.last(),
+        second.first()
+    );
+    let crossing = crossing_point(&out, 2).unwrap_or_else(|| panic!("no crossing at node 2"));
+    assert!(same_bits(crossing, *first.last().unwrap()));
+    assert!(
+        !same_bits(crossing, (50.0 + l, 500.0)),
+        "the node did not move"
+    );
+    let _ = n;
+}
+
+/// The Task 5 hairpin, with a return leg of the same chain above its apex and 24 m east: the free loop bulges
+/// toward it. The return leg is a horizontal piece at y = 470 from x = 536 to 560, reached from (512, 400).
+fn hairpin_with_a_return_leg(with_leg: bool) -> RoadGraph {
+    let mut nodes = vec![1_i64];
+    let mut points = vec![(500.0, 400.0), (500.0, 460.0)];
+    nodes.push(2);
+    let mut node = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((506.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(node);
+        node += 1;
+    }
+    points.push((512.0, 460.0));
+    nodes.push(node);
+    node += 1;
+    points.push((512.0, 400.0));
+    nodes.push(node);
+    node += 1;
+    if with_leg {
+        for p in [(560.0, 400.0), (560.0, 470.0), (536.0, 470.0)] {
+            points.push(p);
+            nodes.push(node);
+            node += 1;
+        }
+    }
+    build_graph(&[city_way(1, &nodes, &points)])
+}
+
+#[test]
+fn plan_a_planned_leg_keeps_the_clearance_from_the_own_chain() {
+    let return_leg = [(536.0, 470.0), (560.0, 470.0)];
+    let reach = naves_core::conform::core_reach_m(CITY_HALF, MAP_CELL_M);
+    let clearance = reach + MAP_CELL_M;
+    let threshold = (clearance + 2.0) * CHAMFER_ERROR + 2.0 * 2.0_f64.sqrt();
+    let bound = reach + threshold - 2.0;
+    // without the return leg the free loop comes closer than the bound
+    let free_graph = hairpin_with_a_return_leg(false);
+    let (free_out, free_report) = plan_graph(&free_graph, &flat_map());
+    let id = free_graph
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    assert!(free_report.zones.iter().any(is_planned), "{free_report:?}");
+    let free = points_of(&free_out, &id);
+    let got = line_distance(&free, &return_leg);
+    assert!(
+        got < bound,
+        "the free loop is not near the return leg: {got} against {bound}"
+    );
+    // with it, a planned route keeps the bound or the zone is kept
+    let g = hairpin_with_a_return_leg(true);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let id = g
+        .stretches
+        .first()
+        .map_or_else(|| panic!("no stretch"), |s| s.id.clone());
+    let zone = report.zones.first().unwrap_or_else(|| panic!("no zone"));
+    match &zone.outcome {
+        ZoneOutcome::Planned => {
+            let route = points_of(&out, &id);
+            let original = points_of(&g, &id);
+            let unchanged: Vec<(u64, u64)> = original
+                .iter()
+                .map(|p| (p.0.to_bits(), p.1.to_bits()))
+                .collect();
+            let new_points: Vec<(f64, f64)> = route
+                .iter()
+                .copied()
+                .filter(|p| {
+                    !unchanged.contains(&(p.0.to_bits(), p.1.to_bits()))
+                        && (p.0 - zone.at.0).hypot(p.1 - zone.at.1) <= 60.0
+                })
+                .collect();
+            assert!(new_points.len() >= 2);
+            let got = line_distance(&new_points, &return_leg);
+            assert!(
+                got >= bound,
+                "a planned route at {got} from its own chain, bound {bound}"
+            );
+        }
+        ZoneOutcome::Kept { reason, .. } => {
+            assert!(
+                matches!(reason, KeptReason::Held | KeptReason::NoRoute),
+                "{zone:?}"
+            );
+        }
+    }
+}
+
+/// A bridge followed by an approach with a corner 40 m past the bridge's end: the leg starts at the bridge hold.
+fn corner_past_a_bridge() -> RoadGraph {
+    build_graph(&[
+        bridge_way(1, &[1, 2], &[(500.0, 400.0), (500.0, 440.0)]),
+        city_way(
+            2,
+            &[2, 3, 4],
+            &[(500.0, 440.0), (500.0, 480.0), (560.0, 480.0)],
+        ),
+        city_way(
+            3,
+            &[12, 4, 13],
+            &[(400.0, 480.0), (560.0, 480.0), (660.0, 480.0)],
+        ),
+    ])
+}
+
+#[test]
+fn plan_a_leg_starting_at_a_bridge_hold_is_planned() {
+    let g = corner_past_a_bridge();
+    let bridge = points_of(&g, "1:1-2");
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_ne!(
+        out, g,
+        "the corner past the hold must be planned: {report:?}"
+    );
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_eq!(zone.anchors.0, AnchorKind::BridgeHold);
+    assert_eq!(points_of(&out, "1:1-2"), bridge, "the bridge moved");
 }
