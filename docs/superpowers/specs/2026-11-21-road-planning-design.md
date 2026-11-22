@@ -262,9 +262,13 @@ cells.
   is not). **`self_clear_m` is not the road clearance (controller, review of Task 5):** with the road clearance a
   hairpin whose legs are 8 m apart has no route at all, because the first and the last samples of every route are more
   than `PLAN_SELF_ALONG` apart along it and 8 m apart on the ground. The caller gives it as a field of the leg's input,
-  `min(road clearance threshold, the smallest distance between two samples of the original line, every 2 m, that are
-  more than PLAN_SELF_ALONG apart along it)`, but not less than the road's width, which `search::self_clearance` computes
-  (no such pair: the threshold). A route is thereby asked to keep apart what the original line kept apart, as the
+  `min(road clearance, the smallest distance between two samples of the original line, every 2 m, that are more than
+  PLAN_SELF_ALONG apart along it, the distance between the leg's two anchors, whatever their distance along the line)`,
+  but not less than the road's width, which `search::self_clearance` computes. The anchors count because a route
+  between close anchors is longer than `PLAN_SELF_ALONG` (a radius-10.5 hairpin between anchors 8 m apart is 66.9 m)
+  even where the drawing is shorter (a knot of 52 m), and its first and last samples are then a pair. The value for the road
+  clearance is the true distance `c` (about 13 m), not the raster's threshold `thr(c)` (18 to 21 m): the samples are
+  compared by their true distance. A route is thereby asked to keep apart what the original line kept apart, as the
   per-place exemption does for other roads. The spike had no self-clearance at all: the own chain outside the leg touches
   the leg at its anchors, so its per-road exemption always exempted it.
 - **Bridge decks and tunnels:** stamped like other roads and never exempt, except a deck or tunnel within

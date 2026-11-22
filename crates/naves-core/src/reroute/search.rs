@@ -16,9 +16,10 @@
 //! put back with its real cost.
 //!
 //! The search is deterministic: its open set is ordered by priority, cost, state key and insertion order with
-//! `total_cmp`, and the table of state keys is only looked up, never iterated. Two states of a cell and a heading
-//! bin are both kept when the dearer one can reach heights the cheaper cannot (its reachable interval is not inside
-//! the cheaper one's), up to [`PER_KEY`] of them.
+//! `total_cmp`, and the table of state keys is only looked up, never iterated. A state is dropped when a stored state of
+//! its cell and heading bin costs no more and reaches as far towards the end anchor's height; the comparison is of
+//! the end of the reachable interval that matters, within [`DOMINANCE_TOL_M`] (below the end's heights the top, above
+//! them the bottom, where they meet both ends). Otherwise both are kept, up to [`PER_KEY`] of them.
 //!
 //! The estimate of the cost to go is the larger of the cost-to-go [`Field`] and an analytic bound from the distance
 //! and from the gap between the state's reachable heights and the end anchor's. The field is not strictly
@@ -53,7 +54,8 @@ const MAX_STATES: usize = 200_000;
 const MAX_RADIUS_M: f64 = 1_000.0;
 const MAX_STEP_M: f64 = 1_000.0;
 const MAX_REACH_M: f64 = 10_000.0;
-/// States kept per cell and heading bin: the cheapest of those whose reachable heights are not inside another's.
+/// States kept per cell and heading bin: those that no cheaper state dominates (see [`DOMINANCE_TOL_M`]); the dearest
+/// goes beyond this number.
 pub const PER_KEY: usize = 4;
 /// The estimate of the cost to go is never above this (a leg whose heights cannot be met has no finite bound).
 const HEURISTIC_CAP: f64 = 1.0e12;
@@ -69,7 +71,7 @@ const GRADE_SLACK: f64 = 1e-9;
 /// Slack of the end of a route, in metres.
 const END_SLACK_M: f64 = 1e-6;
 /// How much wider than a cheaper state's reachable interval a dearer state's must be, at an end, to be kept, in metres.
-const DOMINANCE_TOL_M: f64 = 2.0;
+pub const DOMINANCE_TOL_M: f64 = 2.0;
 /// Slack of the comparison of two reachable intervals, and of two costs, in their own units.
 const SLACK: f64 = 1e-9;
 /// Samples this near (metres) to each other count as nearer than the self-clearance only if they are nearer by
@@ -142,8 +144,9 @@ pub struct LegInput<'a> {
     /// other, in metres.
     pub self_along_m: f64,
     /// The distance that such samples must keep, in metres: given by the caller, who sets it to the smallest
-    /// distance that the original line itself kept between two such samples, but no more than the road clearance and
-    /// no less than the road's width (see [`self_clearance`]). A hairpin whose legs are 8 m apart clears itself by
+    /// distance that the original line itself kept between two such samples and between its two ends, but no more
+    /// than the road clearance (the true distance, about 13 m, not the raster's threshold) and no less than the
+    /// road's width (see [`self_clearance`]). A hairpin whose legs are 8 m apart clears itself by
     /// 8 m, not by the road clearance. 0 turns the rule off.
     pub self_clear_m: f64,
     /// The original line of the leg, for the true distance of a route from it ([`Route::max_move_m`], and the stray
@@ -454,6 +457,8 @@ struct Leg<'a> {
     min_radius: f64,
     /// The cap is tested by the true distance to the original line.
     true_cap: bool,
+    /// The least ratio of a chord of `SAMPLE_M` to its arc at the planning radius.
+    chord_ratio: f64,
 }
 
 /// The inputs must be numbers.
@@ -548,6 +553,10 @@ impl<'a> Leg<'a> {
             counted,
             min_radius: PLAN_REACHED_FRACTION * input.radius / PLAN_RADIUS_MARGIN,
             true_cap: input.stray_cap_m < TRUE_CAP_CELLS * input.obstacles.resolution_m(),
+            chord_ratio: {
+                let half = (SAMPLE_M / (2.0 * input.radius)).min(1.5);
+                half.sin() / half
+            },
         })
     }
 
@@ -682,6 +691,8 @@ struct Search<'a, 'b> {
     closest: f64,
     /// The lowest real cost of an arrival whose whole route was checked and that waits in the open set.
     verified_g: f64,
+    /// The routes of verified arrivals that wait in the open set, by the index of their node.
+    pending: Vec<(u32, Route)>,
 }
 
 /// The samples of a step: every `SAMPLE_M` along it and its end, with their distance along the route, not the
@@ -742,6 +753,7 @@ impl<'a, 'b> Search<'a, 'b> {
             expanded: 0,
             closest: dist(leg.input.start.at, leg.input.end.at),
             verified_g: f64::INFINITY,
+            pending: Vec::new(),
         }
     }
 
@@ -1103,7 +1115,9 @@ impl<'a, 'b> Search<'a, 'b> {
             .skip(first_rank)
         {
             let length = path.length() + end.straight_m;
-            if node.g + length >= self.verified_g {
+            // the cost of a candidate is at least the length of its chords, which is the arc length times
+            // `sin x / x` (x the half angle of a chord); the curve term is not counted
+            if node.g + length * leg.chord_ratio >= self.verified_g {
                 // the paths are sorted by length: none of the next is cheaper
                 break;
             }
@@ -1144,7 +1158,9 @@ impl<'a, 'b> Search<'a, 'b> {
             }
             (2.0 * alpha, r * 2.0 * alpha.abs())
         };
-        if node.g + length >= self.verified_g || !self.leg.height_ok(node.reach, length) {
+        if node.g + length * self.leg.chord_ratio >= self.verified_g
+            || !self.leg.height_ok(node.reach, length)
+        {
             return;
         }
         let mut poly = arc_polyline(from, delta, length, false);
@@ -1346,6 +1362,10 @@ impl<'a, 'b> Search<'a, 'b> {
     /// next Dubins path of the state it came from is tried. A route whose real cost is above the next entry of the
     /// open set is put back with its real cost, to be popped in its turn.
     fn settle(&mut self, idx: u32, node: &Node) -> Settled {
+        if let Some(at) = self.pending.iter().position(|(i, _)| *i == idx) {
+            // a verified arrival popped again: its route was checked and kept
+            return Settled::Found(Box::new(self.pending.swap_remove(at).1));
+        }
         let Some(route) = self.finish(idx) else {
             if let Via::Dubins { rank, .. } = node.via {
                 self.try_arrivals(node.parent, usize::from(rank) + 1);
@@ -1360,7 +1380,9 @@ impl<'a, 'b> Search<'a, 'b> {
         again.g = route.cost;
         again.verified = true;
         self.verified_g = self.verified_g.min(route.cost);
-        self.push(again);
+        if let Some(again_idx) = self.push(again) {
+            self.pending.push((again_idx, route));
+        }
         Settled::Dropped
     }
 
@@ -1437,10 +1459,16 @@ fn search_at(
 
 /// The distance that the own road's samples that are more than `self_along_m` apart along it must keep from each other
 /// (the `self_clear_m` of [`LegInput`]), set from the original line of the leg: the smallest distance between two
-/// samples of the original line (every 2 m) that are more than `self_along_m` apart along it, but no more than
-/// `road_threshold_m` (the road clearance threshold) and no less than `width_m` (the road's width). A hairpin whose
-/// legs are 8 m apart gets 8 m, not the road clearance: a bend and the spread of its legs are one road. A line with no
-/// two such samples, or with a coordinate that is not a number, gets the threshold (but not less than the width).
+/// samples of the original line (every 2 m) that are more than `self_along_m` apart along it, and the distance between
+/// its two ends whatever their distance along it, but no more than `road_threshold_m` and no less than `width_m` (the
+/// road's width). A hairpin whose legs are 8 m apart gets 8 m, not the road clearance: a bend and the spread of its
+/// legs are one road. The ends count because a route between close anchors is longer than `self_along_m` even where
+/// the drawing is shorter. A line of one point, or with a coordinate that is not a number, gets the threshold (but not
+/// less than the width).
+///
+/// `road_threshold_m` is the road clearance itself (about 13 m: the reach of the road plus a terrain cell), because the
+/// samples are compared by their true distance; not the raster's `thr(c) = (c + res) · 1.0824 + res · √2`, which is
+/// the measure of the chamfer map.
 #[must_use]
 pub fn self_clearance(
     original: &[(f64, f64)],
@@ -1468,7 +1496,12 @@ pub fn self_clearance(
             (at.p.0, at.p.1, s)
         })
         .collect();
-    let mut least = threshold;
+    // The two ends of the original line count whatever their distance along it: the route between them is at least
+    // as long as the Dubins path between the poses, often longer than `self_along_m` where the drawing was shorter.
+    let mut least = match (original.first(), original.last()) {
+        (Some(first), Some(last)) if original.len() > 1 => threshold.min(dist(*first, *last)),
+        _ => threshold,
+    };
     for (i, a) in samples.iter().enumerate() {
         for b in samples.iter().skip(i + 1) {
             if b.2 - a.2 > self_along_m {

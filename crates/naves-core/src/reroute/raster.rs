@@ -839,7 +839,7 @@ pub fn exempt_samples(
 
 /// The point where the segments `a1`-`a2` and `b1`-`b2` cross, if they cross. A crossing is a change of side: of
 /// the ends of each segment against the line of the other. An end that lies exactly on that line counts as on the
-/// positive side, the same way for every segment that shares it, so a route that passes through a vertex of its own
+/// non-positive side, the same way for every segment that shares it, so a route that passes through a vertex of its own
 /// polyline, or of the wall, is counted once (by the one of its two segments that changes the side), not never and
 /// not twice. A route that only touches the line from the positive side is counted twice, from the other side not at
 /// all, and a route that ends on the line from the positive side once: that needs coordinates that agree exactly and

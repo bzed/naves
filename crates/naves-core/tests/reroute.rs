@@ -3154,9 +3154,13 @@ fn the_self_clearance_of_an_original_line() {
         13.0,
         1e-12
     ));
-    // a line too short to have a pair more than `along` apart
+    // a line too short to have a pair more than `along` apart: the distance of its two ends counts, whatever their
+    // distance along the line (the route between them is long, whatever the drawing was)
     let short = line_at(&[(0.0, 0.0), (20.0, 0.0), (20.0, 8.0), (0.0, 8.0)]);
-    assert!(close(self_clearance(&short, along, 13.0, 6.0), 13.0, 1e-12));
+    assert!(close(self_clearance(&short, along, 13.0, 6.0), 8.0, 1e-12));
+    // ends further apart than the threshold: the threshold
+    let apart = line_at(&[(0.0, 0.0), (20.0, 0.0), (20.0, 30.0)]);
+    assert!(close(self_clearance(&apart, along, 13.0, 6.0), 13.0, 1e-12));
     // a threshold below the width gives the width; nothing that is not a number is used
     assert!(close(
         self_clearance(&straight, along, 4.0, 6.0),
@@ -3238,4 +3242,105 @@ fn sizes_that_would_blow_up_the_search_are_refused() {
         s.run_edited(None, |i| i.self_clear_m = -1.0).unwrap_err(),
         RerouteError::Degenerate
     );
+}
+
+/// The hairpin with legs from y = 20 to 40 only: about 52 m of drawing between the anchors.
+fn short_hairpin_line() -> Vec<(f64, f64)> {
+    let mut line = vec![(0.0, 20.0), (0.0, 40.0)];
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        line.push((4.0 + 4.0 * a.cos(), 40.0 + 4.0 * a.sin()));
+    }
+    line.extend([(8.0, 40.0), (8.0, 20.0)]);
+    line
+}
+
+#[test]
+fn a_short_drawn_hairpin_clears_itself_as_well() {
+    // About 52 m of drawing, less than `self_along` (59 m): no pair of the original is that far apart along it, but
+    // every route between the anchors is longer than 66.9 m, so its first and last samples are, and they are 8 m apart.
+    // The distance between the anchors counts, and the leg has a route at production clearances.
+    let along = PI * RHO + 26.0;
+    let original = short_hairpin_line();
+    let drawn = length_of(&original);
+    assert!(drawn > 50.0 && drawn < along, "{drawn}");
+    let own = self_clearance(&line_at(&original), along, 13.0, 6.0);
+    assert!(close(own, 8.0, 1e-9), "{own}");
+    let mut s = Setup::new(
+        anchor(0.0, 20.0, FRAC_PI_2),
+        anchor(8.0, 20.0, -FRAC_PI_2),
+        &original,
+    );
+    s.clear = Clearance::new(9.0, 13.0).unwrap();
+    s.self_along = along;
+    s.self_clear = Some(own);
+    let r = s.route();
+    assert!(close(r.length_m, 66.93, 0.5), "{}", r.length_m);
+    assert!(self_gaps(&r.points, along) >= own - 1.5);
+}
+
+#[test]
+fn a_route_that_crosses_one_wall_twice_and_another_not_at_all_is_no_route() {
+    // Wall A is a U open at the bottom: the straight line through it crosses it twice. Wall B ends above the
+    // original's detour, which the straight line passes. The original crosses A once and B once; with no stray cost
+    // the cheapest route is the straight line: 2 crossings of A, none of B, the same sum as the original's. Only
+    // the count wall by wall refuses it.
+    let original = [
+        (0.0, 0.0),
+        (30.0, 0.0),
+        (30.0, -8.0),
+        (60.0, -8.0),
+        (80.0, 0.0),
+    ];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(80.0, 0.0, 0.0), &original);
+    let anchors = [at(0.0, 0.0), at(80.0, 0.0)];
+    let mut a = Wall {
+        line: line_at(&[(25.4, -5.0), (25.4, 5.0), (35.4, 5.0), (35.4, -5.0)]),
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors,
+        end_m: 10.0,
+    };
+    let mut b = Wall {
+        line: line_at(&[(55.4, -40.0), (55.4, -3.0)]),
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors,
+        end_m: 10.0,
+    };
+    for w in [&mut a, &mut b] {
+        w.allowed = crossings_away(&s.original, &w.line, anchors, 10.0);
+    }
+    assert_eq!((a.allowed, b.allowed), (1, 1));
+    // the straight line is what the sum would let through
+    let straight = line_at(&[(0.0, 0.0), (80.0, 0.0)]);
+    assert_eq!((a.crossings(&straight), b.crossings(&straight)), (2, 0));
+    s.walls = vec![a, b];
+    let LegOutcome::Found(r) = s.run_edited(None, |i| i.weights.stray = 0.0).unwrap() else {
+        panic!("a route that crosses each once exists");
+    };
+    for w in &s.walls {
+        assert_eq!(w.crossings(&r.points), 1);
+    }
+}
+
+#[test]
+fn the_cap_is_tested_in_the_middle_of_a_chord() {
+    // A notch 2 m wide in the original line. The straight route has chord ends on the original at x = 28 and x = 30,
+    // and the middle of that chord, 1 m from the arms and 5 m from the bottom, is outside a true cap of 0.5 m. No
+    // route within 0.5 m of the original exists (a radius of 10.5 cannot follow the notch).
+    let original = [
+        (0.0, 0.0),
+        (28.0, 0.0),
+        (28.0, -5.0),
+        (30.0, -5.0),
+        (30.0, 0.0),
+        (60.0, 0.0),
+    ];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &original);
+    s.cap = 0.5;
+    match s.run().unwrap() {
+        LegOutcome::NoRoute { .. } => {}
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
+    }
 }

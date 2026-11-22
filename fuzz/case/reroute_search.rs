@@ -15,7 +15,9 @@ mod reroute_search_case {
     use naves_core::reroute::band::Band;
     use naves_core::reroute::field::Field;
     use naves_core::reroute::raster::{Clearance, Obstacles, Wall, WallKind};
-    use naves_core::reroute::search::{LegInput, LegOutcome, Weights, search_leg, search_leg_relaxed};
+    use naves_core::reroute::search::{
+        LegInput, LegOutcome, Weights, search_leg, search_leg_relaxed, self_clearance,
+    };
     use naves_core::reroute::{Anchor, RerouteParams};
 
     fn number(head: &[u8], index: usize) -> f64 {
@@ -127,7 +129,7 @@ mod reroute_search_case {
             stray_cap_m: 31.5,
             arrive_reach_m: 42.0,
             self_along_m: 58.0,
-            self_clear_m: 12.0,
+            self_clear_m: self_clearance(&original, 58.0, 12.0, 6.0),
             original: &original,
             budgets: &[(1.0, 40), (1.5, 40)],
         };
