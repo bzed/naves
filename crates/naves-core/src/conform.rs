@@ -1082,6 +1082,15 @@ fn claim_cores(
 ) {
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
     let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
+    let area_start = strips.len() + patches.len();
+    // the worst difference per pair of owners, at the place where it is worst
+    let mut record = |a: usize, b: usize, difference: f64, at: (f64, f64)| {
+        let key = (a.min(b), a.max(b));
+        let worst = clashes.entry(key).or_insert((difference, at));
+        if difference > worst.0 {
+            *worst = (difference, at);
+        }
+    };
     for (vertex, mut wanting) in candidates(strips, patches, areas, grid, base, under, own) {
         let contested = order_wanting(&mut wanting);
         let Some(&winner) = wanting.first() else {
@@ -1090,12 +1099,24 @@ fn claim_cores(
         for other in &wanting {
             let difference = f64::from((winner.height - other.height).abs());
             if difference > CONFLICT_M && winner.edge <= 0.0 && other.edge <= 0.0 {
-                let key = (winner.owner.min(other.owner), winner.owner.max(other.owner));
-                let worst = clashes
-                    .entry(key)
-                    .or_insert((difference, grid.position(vertex)));
-                if difference > worst.0 {
-                    *worst = (difference, grid.position(vertex));
+                record(winner.owner, other.owner, difference, grid.position(vertex));
+            }
+        }
+        // a road that parts from a lot's claimed ground: inside a lot the road's core touches the lot's cores
+        // directly, so no flooded vertex lies between them and `clamp_flooded` cannot report the face. The ring
+        // vertex where the road's height and the lot's target differ most is the report.
+        for (i, a) in wanting.iter().enumerate() {
+            for b in wanting.iter().skip(i + 1) {
+                let (road, area) = if !a.patch && b.owner >= area_start {
+                    (a, b)
+                } else if !b.patch && a.owner >= area_start {
+                    (b, a)
+                } else {
+                    continue;
+                };
+                let difference = f64::from((road.height - area.height).abs());
+                if difference > CONFLICT_M {
+                    record(road.owner, area.owner, difference, grid.position(vertex));
                 }
             }
         }
@@ -1199,7 +1220,9 @@ pub fn conform(
 }
 
 /// Shapes `base` to fit `strips`, the level `patches`, the lot `areas` and the decks of `bridges`; `base` itself is
-/// not changed. [`conform_bridges`] is the same without lots.
+/// not changed. [`conform_bridges`] is the same without lots. A road that runs over or beside a lot's claimed ground
+/// and parts from the lot's target there by more than the conflict tolerance (0.3 m) is reported in
+/// [`Conformed::conflicts`], at the ring vertex where the difference is worst for that road and lot.
 ///
 /// # Errors
 /// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.

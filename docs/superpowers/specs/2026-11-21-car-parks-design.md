@@ -410,17 +410,22 @@ and reported (`lot_steep`). On the example 44: 42 car parks, the caravan site P2
   claimed;
 - beyond the shoulder the earthworks flood from it with the hillside cut and fill slopes, capped at
   `MAX_EARTHWORK_M`, as from a road: the lot blends into the terrain as a road's edge does;
-- a hole keeps its own ground beyond the shoulder of its edge.
+- a hole keeps its own ground beyond the shoulder of its edge;
+- a road that runs over or beside the lot's claimed ground and whose height there differs from the lot's target by
+  more than `CONFLICT_M` is reported: one `RoadConflict` per road and lot, at the ring vertex where the difference is
+  worst (Task 7 fix round 1). Inside a lot the road's core touches the lot's cores directly, so no flooded vertex lies
+  between them and `clamp_flooded` cannot see the face; this rule reports it. A `LevelPatch` keeps its old behaviour.
 
 **Access roads.** Each entry becomes a `Junction` of a new kind `JunctionKind::LotEntry` at the access road's placed
-end, with the access stretch in its `stretches`, `patch_m` half the road's width, and the lot's surface as its height
-(and the surface's gradient there as its gradient). In the solve its height is a constant, as a junction on a
-roundabout takes the ring's plane (`Source::Constant` in `profile::model`). The hold rules `End` and `Inward` hold the
-road's end joint and the joints inward that lie over the lot to the surface's height there. So the road arrives at the
-lot's height, with no step. `junctions::add_lot_entries` adds them and puts the smoothed lots into `Junctions::lots`.
-An entry whose lot has no surface (surface only or excluded) gets no junction: the lot step cuts no access road there,
-and a dead end not cut (its inside part shorter than `LOT_ENTRY_M`) is covered only by the ground target below, not by
-a held end.
+end, with the access stretch in its `stretches`, `patch_m` half the road's width, and the height of the lot's target
+there (and the gradient of that target, `λ·∇S + (1 − λ)·∇g` with `∇g` the base ground's central difference over one
+cell at the entry, as its gradient; Task 7 fix round 1, the brief's `λ·∇S` alone leaves a step on a λ < 1 lot on a
+slope). In the solve its height is a constant, as a junction on a roundabout takes the ring's plane
+(`Source::Constant` in `profile::model`). The hold rules `End` and `Inward` hold the road's end joint and the joints
+inward that lie over the lot to the surface's height there. So the road arrives at the lot's height, with no step.
+`junctions::add_lot_entries` adds them and puts the smoothed lots into `Junctions::lots`. An entry whose lot has no
+surface (surface only or excluded) gets no junction: the lot step cuts no access road there, and a dead end not cut
+(its inside part shorter than `LOT_ENTRY_M`) is covered only by the ground target below, not by a held end.
 
 **Through roads.** A road that crosses a lot keeps its own earthworks, and the two must meet without a step
 (**(controller)**: "the smooth surface meets them at the road's shoulder"). Composed in two parts:
@@ -435,8 +440,11 @@ a held end.
   where it could not, the difference is a face, reported as `road_conflict` as today and counted by the judging within
   50 m of lots.
 
-A lot reached only from a street beside it has no entry; the street is not pulled to the lot. The shoulder meets the
-street's core as any patch does; the judging counts the steps there.
+A lot reached only from a street beside it has no entry; nothing pulls the street and the lot together. The road strip
+wins inside the road's half width, and the lot's shoulder meets the street's core as any patch does. Where the lot's
+target at the road's edge differs from the street's height by more than `CONFLICT_M`, the difference stays as a face
+and is reported by the rule above; a lot whose surface leaves the ground by more than that at its edge can therefore
+meet a street with a reported step (Task 7 fix round 1, I2).
 
 ### Order in the pipeline
 

@@ -19,7 +19,7 @@ use naves_core::conform::{
 use naves_core::heightmap::Heightmap;
 use naves_core::lot::{
     Form, LOT_MAX_MOVE_M, LotArea, LotKind, LotSurface, Outcome, Placement, Polygon, Surface,
-    assess, contains, local_relief,
+    assess, contains, edge_distance, local_relief,
 };
 use naves_core::profile::RoadStrip;
 
@@ -1044,7 +1044,14 @@ fn a_lot_is_shaped_to_its_plane_and_the_hill_falls_back_to_the_ground() {
 
 #[test]
 fn a_lot_gets_its_capped_quadratic_and_is_not_bumpy() {
-    let base = terrain(64, 4.0, |x, _| 100.0 + (x - 30.0) * (x - 30.0) / 600.0);
+    // the smooth quadratic of the base, with 12 m bumps of ±0.5 m that the surface must remove
+    let base = terrain(64, 4.0, |x, y| {
+        100.0
+            + (x - 30.0) * (x - 30.0) / 600.0
+            + 0.5
+                * (std::f64::consts::TAU * x / 12.0).sin()
+                * (std::f64::consts::TAU * y / 12.0).sin()
+    });
     let lot = lot_area("osm/way/1", ring(50.5, 60.5, 109.5, 100.5), Vec::new());
     let (assessed, surfaces) = assess(std::slice::from_ref(&lot), &base, &|_| false);
     assert!(matches!(
@@ -1054,19 +1061,26 @@ fn a_lot_gets_its_capped_quadratic_and_is_not_bumpy() {
         }
     ));
     assert_eq!(surfaces.len(), 1);
+    assert!((surfaces[0].surface.lambda - 1.0).abs() < 1e-12);
     let patch = AreaPatch {
         surface: surfaces[0].clone(),
         rank: 0,
     };
     let out = conform_areas(&base, &[], &[], &[patch], &[]).unwrap();
     let mut inside: Vec<(i64, i64)> = Vec::new();
+    let mut claimed = 0;
     for row in 0..64_u32 {
         for col in 0..64_u32 {
             let p = pos(&base, col, row);
-            if !contains(&lot, p) {
+            let inside_lot = contains(&lot, p);
+            // inside the lot and in its 1.5-cell shoulder (6 m) are claimed at the target
+            if !inside_lot && edge_distance(&lot, p) > 6.0 {
                 continue;
             }
-            inside.push((i64::from(col), i64::from(row)));
+            claimed += 1;
+            if inside_lot {
+                inside.push((i64::from(col), i64::from(row)));
+            }
             let ground = f64::from(base.at(col, row));
             let want = surfaces[0].target(p, ground);
             let got = f64::from(out.heightmap.at(col, row));
@@ -1074,6 +1088,15 @@ fn a_lot_gets_its_capped_quadratic_and_is_not_bumpy() {
         }
     }
     assert!(inside.len() > 20);
+    assert!(claimed > inside.len(), "{claimed} {}", inside.len());
+    // the bound means something: the original ground is bumpier than 0.12 m
+    let ground_at = |c: i64, r: i64| {
+        let col = u32::try_from(c).ok()?;
+        let row = u32::try_from(r).ok()?;
+        Some(f64::from(base.at(col, row)))
+    };
+    let before = local_relief(&ground_at, &inside, 4.0).1;
+    assert!(before > 0.12, "the base is too smooth: {before}");
     let relief = local_relief(&|c, r| shaped_at(&out, c, r), &inside, 4.0).1;
     assert!(relief <= 0.12 + 1e-6, "local relief {relief}");
 }
@@ -1154,6 +1177,7 @@ fn a_vertex_under_a_bridge_span_is_not_claimed_by_a_lot() {
 #[test]
 fn the_two_lots_of_one_group_meet_on_their_shared_edge() {
     let base = terrain(64, 4.0, |_, _| 100.0);
+    let gradient = (0.03, 0.01);
     let lot = plane_patch(
         vec![
             (ring(100.0, 100.0, 180.0, 180.0), Vec::new()),
@@ -1161,40 +1185,83 @@ fn the_two_lots_of_one_group_meet_on_their_shared_edge() {
         ],
         (180.0, 140.0),
         101.0,
-        (0.0, 0.0),
+        gradient,
         1.0,
     );
+    let target = |p: (f64, f64)| 101.0 + gradient.0 * (p.0 - 180.0) + gradient.1 * (p.1 - 140.0);
     let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    // the vertices on the shared edge, and those one cell either side of it, are on the one surface
     for y in [104.0, 120.0, 140.0, 160.0, 176.0] {
+        let on = shaped(&out, 180.0, y);
+        assert!((on - target((180.0, y))).abs() < 1e-4, "edge ({y}): {on}");
         let west = shaped(&out, 176.0, y);
         let east = shaped(&out, 184.0, y);
-        assert!((west - 101.0).abs() < 1e-4, "west {y}: {west}");
-        assert!((east - 101.0).abs() < 1e-4, "east {y}: {east}");
-        assert!((west - east).abs() < 1e-4, "{y}: {west} vs {east}");
+        assert!((west - target((176.0, y))).abs() < 1e-4, "west {y}: {west}");
+        assert!((east - target((184.0, y))).abs() < 1e-4, "east {y}: {east}");
+        // no jump over the shared edge beyond the surface's own rise
+        assert!((west - on).abs() <= 4.0 * gradient.0.abs() + 1e-4);
+        assert!((east - on).abs() <= 4.0 * gradient.0.abs() + 1e-4);
     }
 }
 
-#[test]
-fn conforming_without_areas_is_conforming_bridges_bit_for_bit() {
-    let base = terrain(120, 6.25, |_, _| 100.0);
+/// The `tests/bridge_ground.rs` fixture: flat ground at 100 on a 2 m cell, a level road along x = 100 with a deck
+/// from y = 50 to y = 90.
+fn bridge_ground_fixture() -> (Heightmap, RoadStrip, BridgeSpan) {
+    let base = terrain(101, 2.0, |_, _| 100.0);
     let mut road = strip(
         &[
-            (300.0, 100.0, 100.0),
-            (300.0, 300.0, 100.0),
-            (300.0, 500.0, 100.0),
-            (300.0, 700.0, 100.0),
+            (100.0, 0.0, 100.0),
+            (100.0, 50.0, 100.0),
+            (100.0, 90.0, 100.0),
+            (100.0, 190.0, 100.0),
         ],
         3.5,
         3,
     );
     road.bridge = vec![false, true, false];
-    let spans = [deck(300.0, 500.0)];
-    let with = conform_areas(&base, std::slice::from_ref(&road), &[], &[], &spans).unwrap();
-    let without = conform_bridges(&base, std::slice::from_ref(&road), &[], &spans).unwrap();
-    assert_eq!(with, without);
-    for (a, b) in with.heightmap.h.iter().zip(&without.heightmap.h) {
-        assert_eq!(a.to_bits(), b.to_bits());
+    let span = BridgeSpan {
+        stretch: "deck".to_string(),
+        first: (100.0, 50.0, 100.0),
+        second: (100.0, 90.0, 100.0),
+        shape: PartShape::level(40.0, 3.0, 3.5),
+        own_strips: Vec::new(),
+    };
+    (base, road, span)
+}
+
+/// A stable hash of the shaped heights (FNV-1a over the bits of every height).
+fn height_hash(hm: &Heightmap) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for height in &hm.h {
+        for byte in height.to_bits().to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
     }
+    hash
+}
+
+#[test]
+fn conforming_without_areas_keeps_the_bridge_ground_fixture_as_before() {
+    // the brief's bit-for-bit guard, against a fixed golden rather than against the wrapper of the new function.
+    // `GOLDEN` was recorded on the no-areas path after the refactor; the pre-refactor code no longer exists as a
+    // separate function, and the unchanged `bridge_ground` suite pins that path to it (see the report).
+    const GOLDEN: u64 = 2_072_355_618_203_790_015;
+    let (base, road, span) = bridge_ground_fixture();
+    let out = conform_areas(
+        &base,
+        std::slice::from_ref(&road),
+        &[],
+        &[],
+        std::slice::from_ref(&span),
+    )
+    .unwrap();
+    assert_eq!(height_hash(&out.heightmap), GOLDEN);
+    assert!(
+        out.conflicts.is_empty(),
+        "a conflict under the deck: {:?}",
+        out.conflicts
+    );
 }
 
 #[test]
@@ -1231,7 +1298,7 @@ fn no_claimed_vertex_moves_more_than_the_guard() {
 }
 
 #[test]
-fn a_street_beside_a_lot_meets_it_without_a_step() {
+fn a_street_beside_a_lot_that_is_a_little_above_it_leaves_no_step() {
     let base = terrain(64, 4.0, |_, _| 100.0);
     let lot = plane_patch(
         vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
@@ -1240,23 +1307,56 @@ fn a_street_beside_a_lot_meets_it_without_a_step() {
         (0.0, 0.0),
         1.0,
     );
-    // a street one metre outside the lot's south edge
-    let street = road((100.0, 98.0), (180.0, 98.0), 100.4, 100.4, 3.5, 2);
+    // a street whose centre line is two metres outside the lot's south edge; its width reaches 1.5 m into the lot
+    let street = road((80.0, 98.0), (200.0, 98.0), 100.3, 100.3, 3.5, 2);
     let out = conform_areas(&base, &[street], &[], &[lot], &[]).unwrap();
-    // inside the street's width and on the lot's edge beside it, the street's height
+    // inside the street's width and on the lot's edge beside it, the street's height (0.2 m is a compatible tie,
+    // which the road's higher rank wins)
     for (x, y) in [(104.0, 96.0), (104.0, 100.0), (140.0, 96.0), (140.0, 100.0)] {
         let got = shaped(&out, x, y);
-        assert!((got - 100.4).abs() < 1e-4, "({x}, {y}): {got}");
+        assert!((got - 100.3).abs() < 1e-4, "({x}, {y}): {got}");
     }
     // deeper in the lot its surface
     let inside = shaped(&out, 140.0, 112.0);
     assert!((inside - 100.5).abs() < 1e-4, "{inside}");
-    // and no vertex jumps by more than the conflict tolerance from one cell to the next
-    for y in [100.0, 104.0, 108.0, 112.0] {
+    // no vertex jumps by more than the conflict tolerance from one cell to the next
+    for y in [96.0, 100.0, 104.0, 108.0, 112.0] {
         let here = shaped(&out, 140.0, y);
         let next = shaped(&out, 140.0, y + 4.0);
         assert!((next - here).abs() <= 0.3, "y {y}: {here} -> {next}");
     }
+    assert!(out.conflicts.is_empty(), "{:?}", out.conflicts);
+}
+
+#[test]
+fn a_street_beside_a_lot_that_is_well_above_it_is_reported_at_the_edge() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        100.5,
+        (0.0, 0.0),
+        1.0,
+    );
+    // 0.8 m apart: more than the conflict tolerance, so the lot (the nearer edge) wins the ring and the ground
+    // steps at the street's edge. Nothing pulls the lot or the street together; the step is reported.
+    let street = road((80.0, 98.0), (200.0, 98.0), 99.7, 99.7, 3.5, 2);
+    let out = conform_areas(&base, &[street], &[], std::slice::from_ref(&lot), &[]).unwrap();
+    // inside the street's width it is the street's height; in the ring the lot's surface
+    assert!((shaped(&out, 140.0, 96.0) - 99.7).abs() < 1e-4);
+    assert!((shaped(&out, 140.0, 104.0) - 100.5).abs() < 1e-4);
+    // the step is at least the conflict tolerance between neighbouring vertices of the edge
+    assert!(shaped(&out, 140.0, 104.0) - shaped(&out, 140.0, 100.0) > 0.3);
+    // and it is reported at the lot's edge beside the street
+    assert!(
+        out.conflicts.iter().any(|conflict| {
+            conflict.height_difference_m > 0.3
+                && (96.0..=108.0).contains(&conflict.at.1)
+                && (96.0..=184.0).contains(&conflict.at.0)
+        }),
+        "{:?}",
+        out.conflicts
+    );
 }
 
 #[test]

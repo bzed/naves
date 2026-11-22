@@ -392,8 +392,9 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   bridges: &[BridgeSpan]) -> Result<Conformed, ConformError>`; `conform_bridges` calls it with `&[]`, unchanged.
 - `JunctionKind::LotEntry`; `Junctions::lots: Vec<LotSurface>`; `junctions::add_lot_entries(junctions: &mut
   Junctions, net: &PlacedNetwork, lots: &[LotSurface], entries: &[CutAccess], base: &Heightmap)`: one junction per entry
-  of a smoothed lot at the placed end of its access road, height `target` there, gradient `gradient_at` (times λ),
-  `patch_m` half the road's width, `stretches` the access stretch, rank 0. Entries of surface-only lots get none.
+  of a smoothed lot at the placed end of its access road, height `target` there, gradient the gradient of that target
+  `λ·∇S + (1 − λ)·∇g` (`∇g` the base ground over one cell), `patch_m` half the road's width, `stretches` the access
+  stretch, rank 0. Entries of surface-only lots get none.
 - In `profile::model`, a `LotEntry` junction is a constant plane like a ring junction; `ground_targets` uses
   `LotSurface::target` for a joint over a smoothed lot instead of the original ground.
 - `generate::place_once_with(graph, catalog, base, lots: &[LotSurface], entries: &[CutAccess]) -> Result<Placed,

@@ -1102,6 +1102,12 @@ fn an_entry_is_a_junction_at_the_placed_end_with_the_lots_surface() {
     assert_eq!(entry.kind, JunctionKind::LotEntry);
     assert_eq!(entry.at, (200.0, 300.0));
     assert!((entry.height - 101.0).abs() < 1e-9, "{entry:?}");
+    // the ground is the ground, not the surface: `height - ground` is the move the entry makes
+    assert!((entry.ground - 100.0).abs() < 1e-9, "{entry:?}");
+    assert!(
+        (entry.height - entry.ground - 1.0).abs() < 1e-9,
+        "{entry:?}"
+    );
     assert_eq!(entry.gradient, (0.0, 0.0));
     assert!((entry.patch_m - 3.5).abs() < 1e-9, "{entry:?}");
     assert_eq!(entry.rank, 0);
@@ -1201,4 +1207,73 @@ fn an_entry_of_an_unplaced_road_or_of_a_lot_that_is_not_a_number_gets_no_junctio
     let mut junctions = Junctions::default();
     add_lot_entries(&mut junctions, &net, &[broken], &[an_entry()], &hm);
     assert!(junctions.points.is_empty(), "{junctions:?}");
+}
+
+#[test]
+fn an_entry_gradient_uses_the_ground_where_it_is_known() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let mut hm = terrain(128, 6.25, |_, _| 100.0);
+    // the ground is missing at the low-x sample of the central difference: that component falls back to 0
+    hm.h[48 * 128 + 31] = f64::NAN as f32;
+    let mut lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (200.0, 300.0),
+        102.0,
+        0.5,
+    );
+    lot.surface.coeffs[1] = 0.04;
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    let entry = &junctions.points[0];
+    // λ·∇S alone, because the ground's x difference is unknown (and y is flat)
+    assert!((entry.gradient.0 - 0.02).abs() < 1e-12, "{entry:?}");
+    assert!(entry.gradient.1.abs() < 1e-12, "{entry:?}");
+}
+
+#[test]
+fn an_entry_of_a_heightmap_without_a_cell_takes_only_the_surface_gradient() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = Heightmap {
+        size: 32,
+        cell_m: 0.0,
+        h: vec![100.0; 32 * 32],
+    };
+    let mut lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (200.0, 300.0),
+        102.0,
+        0.5,
+    );
+    lot.surface.coeffs[1] = 0.04;
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    let entry = &junctions.points[0];
+    assert!((entry.gradient.0 - 0.02).abs() < 1e-12, "{entry:?}");
+    assert!(entry.gradient.1.abs() < 1e-12, "{entry:?}");
 }

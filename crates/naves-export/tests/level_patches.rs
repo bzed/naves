@@ -5,14 +5,18 @@
 
 use std::collections::BTreeSet;
 
+use naves_core::bridgekind::crossing_thickness;
 use naves_core::catalog::testing::synthetic_models;
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
-use naves_core::junctions::{Junction, JunctionKind, Junctions, RingPlane};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, RingPlane, find_junctions};
 use naves_core::lot::{Form, LotSurface, Surface};
 use naves_core::netclean::CutAccess;
-use naves_core::roadnet::build_graph;
+use naves_core::profile::{Profiles, solve_clearing};
+use naves_core::roadnet::{BridgeOverRoad, build_graph};
+use naves_core::roadplace::place_network;
+use naves_core::sideslope::side_slopes;
 use naves_export::generate::{Placed, area_patches, level_patches, place_once, place_once_with};
 
 fn junction(kind: JunctionKind, at: (f64, f64), height: f64) -> Junction {
@@ -176,8 +180,13 @@ fn bridge_graph() -> naves_core::roadnet::RoadGraph {
 
 /// The heights, tilts and side slopes bit for bit, and the shapes they belong to.
 fn bits(placed: &Placed) -> Vec<u64> {
+    bits_of(&placed.profiles, &placed.junctions, &placed.side)
+}
+
+/// [`bits`] of the profiles, junctions and side slopes apart.
+fn bits_of(profiles: &Profiles, junctions: &Junctions, side: &[f64]) -> Vec<u64> {
     let mut out = Vec::new();
-    for strip in &placed.profiles.strips {
+    for strip in &profiles.strips {
         out.push(u64::try_from(strip.joints.len()).unwrap_or(u64::MAX));
         for joint in &strip.joints {
             out.push(joint.0.to_bits());
@@ -185,15 +194,15 @@ fn bits(placed: &Placed) -> Vec<u64> {
             out.push(joint.2.to_bits());
         }
     }
-    out.push(u64::try_from(placed.junctions.points.len()).unwrap_or(u64::MAX));
-    for junction in &placed.junctions.points {
+    out.push(u64::try_from(junctions.points.len()).unwrap_or(u64::MAX));
+    for junction in &junctions.points {
         out.push(junction.at.0.to_bits());
         out.push(junction.at.1.to_bits());
         out.push(junction.height.to_bits());
         out.push(junction.gradient.0.to_bits());
         out.push(junction.gradient.1.to_bits());
     }
-    for slope in &placed.side {
+    for slope in side {
         out.push(slope.to_bits());
     }
     out
@@ -238,11 +247,18 @@ fn placing_without_lots_is_placing_bit_for_bit() {
     let catalog = PieceCatalog::from_models(&synthetic_models()).unwrap();
     let graph = bridge_graph();
     let base = flat();
-    let plain = place_once(&graph, &catalog, &base).unwrap();
+    // the path of `place_once` before the lots were added, written out here rather than called through the wrapper
+    let net = place_network(&graph, &catalog).unwrap();
+    let junctions = find_junctions(&net, &graph, &base);
+    let side = side_slopes(&net, &base);
+    let thickness = |crossing: &BridgeOverRoad| crossing_thickness(&catalog, crossing);
+    let (old_profiles, old_junctions) =
+        solve_clearing(&net, &base, &junctions, &side, &graph, &thickness).unwrap();
     let with = place_once_with(&graph, &catalog, &base, &[], &[]).unwrap();
-    assert_eq!(bits(&plain), bits(&with));
-    assert_eq!(plain.junctions, with.junctions);
-    assert_eq!(plain.profiles, with.profiles);
+    assert_eq!(bits_of(&old_profiles, &old_junctions, &side), bits(&with));
+    assert_eq!(old_junctions, with.junctions);
+    assert_eq!(old_profiles, with.profiles);
+    assert_eq!(net, with.net);
 }
 
 #[test]

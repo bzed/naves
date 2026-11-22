@@ -83,9 +83,11 @@ pub struct Junction {
     pub at: (f64, f64),
     /// What meets here.
     pub kind: JunctionKind,
-    /// Median of the original ground.
+    /// Median of the original ground (for a lot entry: the ground at its place; its `height` is the lot's target
+    /// there).
     pub ground: f64,
-    /// The height the roads get: `ground` as found, the solved height after [`crate::profile::solve_clearing`].
+    /// The height the roads get: `ground` as found, the solved height after [`crate::profile::solve_clearing`] (a lot
+    /// entry keeps the lot's target there).
     pub height: f64,
     /// Rank of the most important road meeting here.
     pub rank: u8,
@@ -781,12 +783,48 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
     junctions
 }
 
+/// The central difference of the base ground over one cell at `at`: 0 for a component whose samples are missing
+/// (no data, or a cell that is not a positive number).
+fn ground_gradient(base: &Heightmap, at: (f64, f64), cell: f64) -> (f64, f64) {
+    if !(cell.is_finite() && cell > 0.0) {
+        return (0.0, 0.0);
+    }
+    let height = |dx: f64, dy: f64| {
+        let h = f64::from(base.sample(at.0 + dx, at.1 + dy).height);
+        h.is_finite().then_some(h)
+    };
+    let along = |low: Option<f64>, high: Option<f64>| match (low, high) {
+        (Some(low), Some(high)) => (high - low) / (2.0 * cell),
+        _ => 0.0,
+    };
+    (
+        along(height(-cell, 0.0), height(cell, 0.0)),
+        along(height(0.0, -cell), height(0.0, cell)),
+    )
+}
+
+/// The gradient of the height the terrain gets at `at`: `λ·∇S + (1 − λ)·∇g` (see [`LotSurface::target`]), with `∇g`
+/// the base ground's central difference over one cell there.
+fn target_gradient(
+    surface: &LotSurface,
+    at: (f64, f64),
+    base: &Heightmap,
+    cell: f64,
+) -> (f64, f64) {
+    let (sx, sy) = surface.surface.gradient_at(at);
+    let lambda = surface.surface.lambda;
+    let (gx, gy) = ground_gradient(base, at, cell);
+    (
+        lambda * sx + (1.0 - lambda) * gx,
+        lambda * sy + (1.0 - lambda) * gy,
+    )
+}
+
 /// Adds a `LotEntry` junction for every cut access road of a smoothed lot, at the placed end of the road: the
-/// height of the lot's surface there, its gradient along the surface (times the surface's `lambda`), half the road's
-/// width as the patch, rank 0 and the access stretch (see [`crate::profile::solve_clearing`]). The smoothed lots go
-/// into [`Junctions::lots`] so that the ground target of a joint over one of them is its surface.
-/// `entries` are the cuts of the lot step: an entry whose lot has no surface (a surface-only or an excluded lot) gets
-/// no junction.
+/// height of the lot's target there and the gradient of that target (`λ·∇S + (1 − λ)·∇g`), half the road's width as
+/// the patch, rank 0 and the access stretch (see [`crate::profile::solve_clearing`]). The smoothed lots go into
+/// [`Junctions::lots`] so that the ground target of a joint over one of them is its surface. `entries` are the cuts
+/// of the lot step: an entry whose lot has no surface (a surface-only or an excluded lot) gets no junction.
 pub fn add_lot_entries(
     junctions: &mut Junctions,
     net: &PlacedNetwork,
@@ -796,11 +834,6 @@ pub fn add_lot_entries(
 ) {
     junctions.lots = lots.to_vec();
     let cell = f64::from(base.cell_m);
-    let cell = if cell.is_finite() && cell > 0.0 {
-        cell
-    } else {
-        0.0
-    };
     // the entries in a fixed order, whatever order the lot step reports them in
     let mut sorted: Vec<&CutAccess> = entries.iter().collect();
     sorted.sort_by(|a, b| {
@@ -842,8 +875,7 @@ pub fn add_lot_entries(
         };
         let ground = f64::from(base.sample(at.0, at.1).height);
         let height = surface.target(at, ground);
-        let (gx, gy) = surface.surface.gradient_at(at);
-        let (gx, gy) = (surface.surface.lambda * gx, surface.surface.lambda * gy);
+        let (gx, gy) = target_gradient(surface, at, base, cell);
         if !(at.0.is_finite()
             && at.1.is_finite()
             && ground.is_finite()
@@ -857,7 +889,7 @@ pub fn add_lot_entries(
         added.push(Junction {
             at,
             kind: JunctionKind::LotEntry,
-            ground: height,
+            ground,
             height,
             rank: 0,
             patch_m: half_width,

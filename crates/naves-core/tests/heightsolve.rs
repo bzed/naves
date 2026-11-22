@@ -28,7 +28,8 @@ use naves_core::lot::{Form, LotSurface, Surface};
 use naves_core::netclean::CutAccess;
 use naves_core::profile::{
     BRIDGE_CLEARANCE_M, CLEARANCE_TOLERANCE_M, GradeExcessKind, MEETING_GRADE, ProfileError,
-    Profiles, chain_holds, nearby_pairs, segment_ceilings, solve_clearing, solve_clearing_with,
+    Profiles, RoadStrip, chain_holds, nearby_pairs, segment_ceilings, solve_clearing,
+    solve_clearing_with,
 };
 use naves_core::qp::QpError;
 use naves_core::roadfit::Pose;
@@ -2790,6 +2791,28 @@ fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<(f64, f64)> {
     vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
 }
 
+/// The distance from `p` to the nearest point of `strip` and the strip's height there.
+fn road_at(strip: &RoadStrip, p: (f64, f64)) -> (f64, f64) {
+    strip
+        .joints
+        .windows(2)
+        .filter_map(|pair| {
+            let [a, b] = pair else { return None };
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 0.0 {
+                (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy);
+            Some((distance, a.2 + t * (b.2 - a.2)))
+        })
+        .fold((f64::INFINITY, 0.0), |best, found| {
+            if found.0 < best.0 { found } else { best }
+        })
+}
+
 /// A lot's surface as a level plane at `height` through `at`, with no move guard.
 fn lot_surface(id: &str, outer: Vec<(f64, f64)>, at: (f64, f64), height: f64) -> LotSurface {
     LotSurface {
@@ -2834,8 +2857,8 @@ fn access_into_a_lot(
         ),
         lot_surface(
             "osm/way/1",
-            rectangle(250.0, 250.0, 400.0, 350.0),
-            (325.0, 300.0),
+            rectangle(260.0, 250.0, 400.0, 350.0),
+            (330.0, 300.0),
             height,
         ),
     ];
@@ -2886,6 +2909,56 @@ fn an_access_road_ends_at_the_lots_surface_and_holds_the_joints_inward() {
 }
 
 #[test]
+fn a_free_access_road_of_a_hundred_metres_ends_at_the_lots_surface() {
+    // the brief's case: the free start of the chain 100 m from the entry, the lot from x = 250, surface 101
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (190.0, 300.0),
+        (290.0, 300.0),
+        10.0,
+    )]);
+    let lot = lot_surface(
+        "osm/way/1",
+        rectangle(250.0, 250.0, 400.0, 350.0),
+        (325.0, 300.0),
+        101.0,
+    );
+    let entry = CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (290.0, 300.0),
+        node: 9,
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[entry],
+        &hm,
+    );
+    let (p, solved) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let joints = &p.strips[0].joints;
+    let end = joints.last().unwrap();
+    assert!((end.2 - 101.0).abs() < 1e-6, "{end:?}");
+    // the joints the entry holds are exactly on the surface
+    for j in joints.iter().filter(|j| j.0 >= 279.0) {
+        assert!((j.2 - 101.0).abs() < 1e-6, "{j:?}");
+    }
+    // the joints over the lot that only the soft target pulls follow it within the conflict tolerance
+    for j in joints.iter().filter(|j| j.0 >= 250.0) {
+        assert!((j.2 - 101.0).abs() <= 0.3, "{j:?}");
+    }
+    for g in grades(&p, 0) {
+        assert!(g.abs() <= grade_ceiling(Family::City) + 1e-4, "{g}");
+    }
+    assert!(solved.unresolved.is_empty(), "{:?}", solved.unresolved);
+}
+
+#[test]
 fn an_access_road_that_would_climb_too_fast_is_reported() {
     let (net, hm, mut junctions, lots, entries) = access_into_a_lot(130.0);
     add_lot_entries(&mut junctions, &net, &lots, &entries, &hm);
@@ -2914,7 +2987,7 @@ fn a_through_road_over_a_lot_takes_its_surface_as_the_ground_target() {
         100.5,
     );
     let mut junctions = Junctions::default();
-    add_lot_entries(&mut junctions, &net, &[lot], &[], &hm);
+    add_lot_entries(&mut junctions, &net, std::slice::from_ref(&lot), &[], &hm);
     let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
     let over: Vec<_> = p.strips[0]
         .joints
@@ -2930,6 +3003,38 @@ fn a_through_road_over_a_lot_takes_its_surface_as_the_ground_target() {
     for j in &over {
         assert!((j.2 - 100.5).abs() <= 0.3, "{j:?}");
     }
+    // the shaping: the vertices beside the road's ring take the road's height, and no conflict is reported
+    let patch = AreaPatch {
+        surface: lot,
+        rank: 0,
+    };
+    let out = conform_areas(&hm, &p.strips, &[], std::slice::from_ref(&patch), &[]).unwrap();
+    let cell = f64::from(hm.cell_m);
+    let half = p.strips[0].half_width;
+    let mut beside = 0;
+    for row in 0..hm.size {
+        for col in 0..hm.size {
+            let at = (f64::from(col) * cell, f64::from(row) * cell);
+            if !patch.surface.contains(at) {
+                continue;
+            }
+            let (distance, road) = road_at(&p.strips[0], at);
+            if distance > half + 1.5 * cell {
+                continue;
+            }
+            beside += 1;
+            let got = f64::from(out.heightmap.at(col, row));
+            assert!((got - road).abs() <= 0.3, "({at:?}): {got} vs road {road}");
+        }
+    }
+    assert!(beside > 10, "{beside}");
+    assert!(
+        out.conflicts
+            .iter()
+            .all(|conflict| !patch.surface.contains(conflict.at)),
+        "{:?}",
+        out.conflicts
+    );
 }
 
 #[test]
@@ -2974,38 +3079,62 @@ fn a_through_road_keeps_its_ceiling_where_the_lot_slopes_too_much() {
         .map(|j| (j.2 - (100.0 + 0.35 * (j.0 - 300.0))).abs())
         .fold(0.0, f64::max);
     assert!(worst > 0.3, "the road followed the surface: {worst}");
-    // the lot's ground and the road part: the shaping reports a conflict there, and does not panic
-    let out = conform_areas(
-        &hm,
-        &p.strips,
-        &[],
-        &[AreaPatch {
-            surface: lot,
-            rank: 0,
-        }],
-        &[],
-    )
-    .unwrap();
-    assert!(!out.conflicts.is_empty(), "{out:?}");
+    // the lot's ground and the road part: the shaping reports a conflict inside the lot, where they differ by
+    // more than the conflict tolerance, and the same roads without the lot report none there
+    let patch = AreaPatch {
+        surface: lot,
+        rank: 0,
+    };
+    let out = conform_areas(&hm, &p.strips, &[], std::slice::from_ref(&patch), &[]).unwrap();
+    let inside: Vec<_> = out
+        .conflicts
+        .iter()
+        .filter(|conflict| patch.surface.contains(conflict.at))
+        .collect();
+    assert!(!inside.is_empty(), "{:?}", out.conflicts);
+    let worst = inside
+        .iter()
+        .max_by(|a, b| a.height_difference_m.total_cmp(&b.height_difference_m))
+        .expect("a conflict inside the lot");
+    assert!(worst.height_difference_m > 0.3, "{worst:?}");
+    // it lies where the road's height and the lot's target part by that much
+    let (_, road) = road_at(&p.strips[0], worst.at);
+    let ground = f64::from(hm.sample(worst.at.0, worst.at.1).height);
+    let surface = patch.surface.target(worst.at, ground);
+    assert!(
+        (road - surface).abs() - worst.height_difference_m < 1e-6,
+        "{road} vs {surface}: {worst:?}"
+    );
+    // the control: no lot, no conflict inside the lot's area
+    let control = conform_areas(&hm, &p.strips, &[], &[], &[]).unwrap();
+    assert!(
+        control
+            .conflicts
+            .iter()
+            .all(|conflict| !patch.surface.contains(conflict.at)),
+        "{:?}",
+        control.conflicts
+    );
 }
 
 #[test]
-fn a_dead_end_that_was_not_cut_gets_no_entry_but_its_joints_take_the_surface() {
-    // the road ends 50 m inside the lot without a cut of the lot step: no entry junction (the data has none),
-    // but every joint over the lot is pulled to the surface as the ground target
+fn a_dead_end_that_ends_at_the_lots_edge_is_not_cut_and_its_ground_target_stays() {
+    // the real uncovered case: the road ends half a metre outside the lot, so the lot step cuts nothing (the inside
+    // part is shorter than LOT_ENTRY_M); there is no entry junction and the end joint keeps the original ground,
+    // while the terrain beside it is shaped to the surface. The difference is reported by the lot rule (I3).
     let hm = terrain(128, 6.25, |_, _| 100.0);
     let net = network(vec![pieces(
         "a",
         Family::City,
-        (200.0, 300.0),
-        (290.0, 300.0),
+        (187.5, 300.0),
+        (237.5, 300.0),
         10.0,
     )]);
     let lot = lot_surface(
         "osm/way/1",
         rectangle(240.0, 250.0, 400.0, 350.0),
-        (320.0, 300.0),
-        100.5,
+        (325.0, 300.0),
+        101.0,
     );
     let mut junctions = Junctions::default();
     add_lot_entries(&mut junctions, &net, std::slice::from_ref(&lot), &[], &hm);
@@ -3016,9 +3145,33 @@ fn a_dead_end_that_was_not_cut_gets_no_entry_but_its_joints_take_the_surface() {
             .all(|j| j.kind != JunctionKind::LotEntry)
     );
     let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
-    for j in p.strips[0].joints.iter().filter(|j| j.0 >= 240.0) {
-        assert!((j.2 - 100.5).abs() <= 0.3, "{j:?}");
-    }
+    let end = p.strips[0].joints.last().unwrap();
+    // the end joint keeps the original ground, not the lot's surface
+    assert!((end.2 - 100.0).abs() < 1e-3, "{end:?}");
+    assert!((lot.target((end.0, end.1), 100.0) - 101.0).abs() < 1e-9);
+    // the terrain beside the road end is the lot's surface, and the rule reports the step
+    let patch = AreaPatch {
+        surface: lot,
+        rank: 0,
+    };
+    let out = conform_areas(&hm, &p.strips, &[], std::slice::from_ref(&patch), &[]).unwrap();
+    let beside = f64::from(out.heightmap.sample(243.75, 300.0).height);
+    assert!((beside - 101.0).abs() < 1e-4, "{beside}");
+    let near_the_edge = |at: (f64, f64)| {
+        at.0 >= 240.0 - 9.375 - 1e-6
+            && at.0 <= 400.0 + 9.375 + 1e-6
+            && at.1 >= 250.0 - 9.375 - 1e-6
+            && at.1 <= 350.0 + 9.375 + 1e-6
+    };
+    assert!(
+        out.conflicts.iter().any(|conflict| {
+            near_the_edge(conflict.at)
+                && road_at(&p.strips[0], conflict.at).0 <= 3.5 + 9.375 + 1e-6
+                && conflict.height_difference_m > 0.3
+        }),
+        "{:?}",
+        out.conflicts
+    );
 }
 
 #[test]
@@ -3074,4 +3227,68 @@ fn a_lot_entry_without_a_height_is_an_error_not_a_panic() {
     };
     let error = solve_plain(&net, &hm, &junctions, &[]).expect_err("no height at the entry");
     assert!(matches!(error, ProfileError::Invalid { .. }), "{error:?}");
+}
+
+#[test]
+fn an_entry_follows_the_ground_it_gets_when_the_surface_is_scaled() {
+    // the ground rises 20 % to the east, the lot's surface is level 5 m above it and λ = 2/3: the terrain gets
+    // g + λ(S − g), whose gradient is λ·∇S + (1 − λ)·∇g = 6.67 %. With λ·∇S alone the held joints drift by 0.6 m.
+    let hm = terrain(128, 6.25, |x, _| 100.0 + 0.20 * (x - 300.0));
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (200.0, 300.0),
+        (290.0, 300.0),
+        10.0,
+    )]);
+    let lot = LotSurface {
+        group: 0,
+        members: vec!["osm/way/1".to_string()],
+        polygons: vec![(rectangle(240.0, 250.0, 400.0, 350.0), Vec::new())],
+        surface: Surface {
+            at: (300.0, 300.0),
+            coeffs: [105.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            form: Form::Plane,
+            lambda: 2.0 / 3.0,
+        },
+    };
+    let entry = CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (290.0, 300.0),
+        node: 9,
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[entry],
+        &hm,
+    );
+    assert!(
+        (junctions.points[0].gradient.0 - 1.0 / 15.0).abs() < 1e-9,
+        "{:?}",
+        junctions.points[0]
+    );
+    let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    // the joints the entry holds (within its reach) are on the target the terrain gets
+    for (at, _) in chain_holds(&net, &net.chains[0], 6.25, &junctions)
+        .iter()
+        .filter(|(at, hold)| hold.is_some() && (at.0 - 290.0).abs() <= 12.875)
+    {
+        let ground = f64::from(hm.sample(at.0, at.1).height);
+        let target = lot.target(*at, ground);
+        let joint = p.strips[0]
+            .joints
+            .iter()
+            .min_by(|a, b| {
+                (a.0 - at.0)
+                    .hypot(a.1 - at.1)
+                    .total_cmp(&(b.0 - at.0).hypot(b.1 - at.1))
+            })
+            .expect("a joint");
+        assert!((joint.2 - target).abs() <= 0.05, "{joint:?} vs {target}");
+    }
 }
