@@ -605,8 +605,9 @@ pub fn paint_lots(
     }
 }
 
-/// Whether every point of a path, sampled every metre along the line (its vertices included), lies in one and the same
-/// lot or within [`LOT_INSIDE_TOL_M`] of its edge.
+/// Whether every point of a path, sampled every metre along the line (its vertices included), lies in some lot of
+/// `lots` or within [`LOT_INSIDE_TOL_M`] of its edge. It may pass from one lot into another that touches it: the lots
+/// of one group share one surface.
 fn path_in_lot(points: &[(f64, f64)], lots: &[LotArea]) -> bool {
     let mut samples: Vec<(f64, f64)> = points.to_vec();
     for pair in points.windows(2) {
@@ -625,18 +626,18 @@ fn path_in_lot(points: &[(f64, f64)], lots: &[LotArea]) -> bool {
         }
     }
     !samples.is_empty()
-        && lots.iter().any(|lot| {
-            samples
-                .iter()
-                .all(|&p| contains(lot, p) || edge_distance(lot, p) <= LOT_INSIDE_TOL_M)
+        && samples.iter().all(|&p| {
+            lots.iter()
+                .any(|lot| contains(lot, p) || edge_distance(lot, p) <= LOT_INSIDE_TOL_M)
         })
 }
 
 /// Paints the paths with lots: a path that is a street of a lot (`street: true`: a driveway or a parking aisle) and lies
-/// wholly in one of `lots` (every point of its line, not only its vertices) is not painted, the lot's own surface is the
-/// ground there. Every other path, a footway through a lot included, a street that leaves its lot and one that runs
-/// between two lots, is painted as before. `lots` are the lots that are painted (those with a decision): pass no lot
-/// that is excluded. Paint the lots first.
+/// wholly in the lots (every point of its line, not only its vertices, in some lot of `lots` or within
+/// [`LOT_INSIDE_TOL_M`] of its edge) is not painted, the lot's own surface is the ground there. A street may pass from
+/// one lot into another that touches it. Every other path, a footway through a lot included, a street that leaves the
+/// lots and one that runs between two lots with a gap, is painted as before. `lots` are the lots that are painted (those
+/// with a decision): pass no lot that is excluded. Paint the lots first.
 pub fn paint_paths_with(surfaces: &mut SurfaceGrid, features: &[Feature], lots: &[LotArea]) {
     for feature in features {
         if let FeatureKind::Path { width_m, street } = feature.kind {

@@ -22,7 +22,8 @@
 //!    `core_reach_m(half the family's width, cell) + cell` of its edge. When no member of a group has roads of its own
 //!    the streets beside *all* its members are pooled (each metre once) and every member gets the same class, so two
 //!    touching car parks never differ for that reason; a member with a tag of its own still follows its tag.
-//! 6. Nothing at all: grass. So is a lot with a coordinate that is not a finite number.
+//! 6. Nothing at all: grass. So is a lot with a ring, an outer ring or a hole, that has a point which is not a finite
+//!    number.
 //!
 //! The metres inside a lot are those of the road's ways, not the stretch's average, when the road features are given
 //! ([`surfaces_with`]): a stretch can be made of ways with different tags. Without them each metre of a stretch counts
@@ -264,14 +265,21 @@ fn beside(
     tally
 }
 
+/// Whether any ring of the lot, the outer ring or a hole, has a point that is not a finite number.
+fn not_a_number(area: &LotArea) -> bool {
+    let bad = |p: &(f64, f64)| !p.0.is_finite() || !p.1.is_finite();
+    area.outer.iter().any(bad) || area.holes.iter().any(|hole| hole.iter().any(bad))
+}
+
 /// The roads of every lot: what was removed inside it, the part of an access road that lay inside it, and the roads that
-/// stay over it as through roads (to the smallest lot that holds their middle).
+/// stay over it as through roads (to the smallest lot that holds their middle, among the lots of `owners`).
 fn own_roads<'a>(
     lots: &[&'a Assessed],
     by_stretch: &BTreeMap<&str, &Stretch>,
     areas: &BTreeMap<&str, &LotArea>,
     clean: &'a CleanReport,
     features: &[Feature],
+    owners: &BTreeSet<&str>,
 ) -> BTreeMap<&'a str, Tally> {
     // the roads of a lot: what was removed inside it, and the part of an access road that lay inside it
     let mut own: BTreeMap<&str, Tally> = BTreeMap::new();
@@ -297,6 +305,7 @@ fn own_roads<'a>(
         let middle = point_along(&stretch.points, polyline_length(&stretch.points) / 2.0);
         let owner = lots
             .iter()
+            .filter(|lot| owners.contains(lot.area.id.as_str()))
             .filter(|lot| contains(&lot.area, middle))
             .min_by(|a, b| {
                 a.area
@@ -358,14 +367,20 @@ pub fn surfaces_with(
         .iter()
         .map(|a| (a.area.id.as_str(), &a.area))
         .collect();
-    let own = own_roads(&lots, &by_stretch, &areas, clean, features);
     // the roads of the groups, pooled
     let mut group_of: BTreeMap<&str, usize> = BTreeMap::new();
     let found = groups(assessed);
-    let mut pooled: Vec<Tally> = vec![Tally::default(); found.len()];
     for group in &found {
         for member in &group.members {
             group_of.insert(member.as_str(), group.group);
+        }
+    }
+    // only a lot of a group of the lot step can own a through road: a street-side strip is no member
+    let owners: BTreeSet<&str> = group_of.keys().copied().collect();
+    let own = own_roads(&lots, &by_stretch, &areas, clean, features, &owners);
+    let mut pooled: Vec<Tally> = vec![Tally::default(); found.len()];
+    for group in &found {
+        for member in &group.members {
             if let (Some(tally), Some(slot)) =
                 (own.get(member.as_str()), pooled.get_mut(group.group))
             {
@@ -390,12 +405,7 @@ pub fn surfaces_with(
     lots.into_iter()
         .map(|lot| {
             let id = lot.area.id.as_str();
-            let class = if lot
-                .area
-                .outer
-                .iter()
-                .any(|p| !p.0.is_finite() || !p.1.is_finite())
-            {
+            let class = if not_a_number(&lot.area) {
                 SurfaceClass::Grass
             } else if let Some(tag) = lot.area.surface_tag {
                 match tag {

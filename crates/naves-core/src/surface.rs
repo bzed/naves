@@ -425,7 +425,6 @@ fn clamp_to(v: f64, max: usize) -> usize {
     }
 }
 
-/// A polygon edge in map metres, from one (x, y) point to the next.
 /// The edges of a ring, closed (a zero-length closing edge crosses no row).
 fn ring_edges(ring: &[(f64, f64)]) -> Vec<Edge> {
     let mut edges: Vec<Edge> = ring
@@ -489,6 +488,7 @@ fn row_spans(
         .collect()
 }
 
+/// A polygon edge in map metres, from one (x, y) point to the next.
 type Edge = ((f64, f64), (f64, f64));
 
 /// The areas of OSM as a class and priority per cell.

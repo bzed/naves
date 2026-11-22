@@ -291,7 +291,7 @@ fn paths_are_painted_as_before_without_lots() {
 }
 
 #[test]
-fn a_street_path_is_skipped_only_if_the_whole_line_lies_in_one_lot() {
+fn a_street_path_that_leaves_its_lot_is_painted() {
     // an L-shaped lot: x 100..300, y 100..150 and x 100..150, y 100..300; the inner corner is open ground
     let l_shape = LotArea {
         outer: vec![
@@ -331,4 +331,37 @@ fn a_street_path_between_two_lots_is_painted() {
     let mut surfaces = grass();
     paint_paths_with(&mut surfaces, &[across], &[one, two]);
     assert_eq!(surfaces.at(200.0, 125.0), SurfaceClass::Soil);
+}
+
+#[test]
+fn an_aisle_across_two_touching_lots_is_not_painted() {
+    // two car parks mapped edge to edge, one group, and a parking aisle through both
+    let one = area(
+        "osm/way/1",
+        LotKind::CarPark,
+        square(100.0, 100.0, 200.0, 150.0),
+    );
+    let two = area(
+        "osm/way/2",
+        LotKind::CarPark,
+        square(200.0, 100.0, 300.0, 150.0),
+    );
+    let aisle = path(10, &[(120.0, 125.0), (280.0, 125.0)], true);
+    let decided = vec![
+        ("osm/way/1".to_string(), SurfaceClass::Tarmac),
+        ("osm/way/2".to_string(), SurfaceClass::Tarmac),
+    ];
+    let mut surfaces = grass();
+    paint_lots(&mut surfaces, &[one.clone(), two.clone()], &decided);
+    paint_paths_with(&mut surfaces, &[aisle], &[one, two]);
+    assert_eq!(
+        surfaces.at(250.0, 125.0),
+        SurfaceClass::Tarmac,
+        "in lot two"
+    );
+    assert_eq!(
+        surfaces.at(180.0, 125.0),
+        SurfaceClass::Tarmac,
+        "in lot one"
+    );
 }

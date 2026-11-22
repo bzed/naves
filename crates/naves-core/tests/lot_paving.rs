@@ -655,6 +655,8 @@ fn a_through_road_of_nested_lots_belongs_to_the_smallest_and_unknown_ids_are_ign
             Family::Asf2,
             ASPHALT,
         ),
+        // 60 m of gravel of the large lot's own, removed and outside the small lot
+        along(20, 120.0, -10.0, 50.0, Family::Mud, GRAVEL),
     ];
     let lots = [
         car_park("osm/way/1", square(0.0, 0.0, 100.0, 100.0)),
@@ -664,8 +666,10 @@ fn a_through_road_of_nested_lots_belongs_to_the_smallest_and_unknown_ids_are_ign
     let (_, mut report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
     report.lot_through.push("no/such/stretch".to_string());
     let decided = surfaces(&lots, &graph, &report, CELL);
+    // the smallest lot holds the road's middle: 80 m of asphalt against nothing, and the large lot's own gravel
+    // leaves it grass. Were the largest lot the owner, it would be paved (80 m against 60 m).
     assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
-    assert_eq!(class_of(&decided, "osm/way/2"), Some(PAVED), "same group");
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(GRASS), "the largest");
 }
 
 #[test]
@@ -677,5 +681,76 @@ fn a_feature_with_one_point_is_no_way_of_a_stretch() {
     let graph = build_graph(&[street.clone(), access.clone()]);
     let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
     let decided = surfaces_with(&lots, &graph, &report, CELL, &[street, access, stray]);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
+}
+
+// ---- fix round 2 (the Task 6 leftovers) ----
+
+/// A street-side strip, which the lot step leaves out of its groups.
+fn strip(id: &str, outer: Vec<Pt>) -> Assessed {
+    let mut lot = car_park(id, outer);
+    lot.area.placement = Placement::StreetSide;
+    lot.outcome = Outcome::SurfaceOnly {
+        reason: "street_side",
+    };
+    lot
+}
+
+#[test]
+fn a_street_side_strip_does_not_own_a_through_road() {
+    // a car park with a through road from west to east and a 50 m gravel stub of its own; a street-side strip lies
+    // over the middle of the through road and is smaller than the car park
+    let features = [
+        joined(
+            1,
+            &[1, 2],
+            &[(-50.0, 50.0), (10.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+        joined(
+            2,
+            &[2, 3],
+            &[(10.0, 50.0), (90.0, 50.0)],
+            Family::Asf3,
+            ASPHALT,
+        ),
+        joined(
+            3,
+            &[3, 4],
+            &[(90.0, 50.0), (150.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+        along(20, 80.0, 20.0, 70.0, Family::Mud, GRAVEL),
+    ];
+    let park = car_park("osm/way/1", square(0.0, 0.0, 100.0, 100.0));
+    // a street-side strip over the road's middle at (50, 50): 40 m by 10 m, smaller than the car park
+    let small_strip = strip("osm/way/2", square(30.0, 45.0, 70.0, 55.0));
+    let lots = [park, small_strip];
+    let graph = build_graph(&features);
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    assert_eq!(report.lot_through.len(), 1, "{:?}", report.lot_through);
+    let decided = surfaces(&lots, &graph, &report, CELL);
+    // the car park takes the asphalt through road (80 m) and its own 50 m of gravel: paved. The strip may not own
+    // the road (it is no member of the lot step's groups), so without the fix the car park would be grass.
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(PAVED));
+}
+
+#[test]
+fn a_lot_whose_hole_is_not_a_number_is_grass() {
+    let mut park = small();
+    park.area.holes.push(vec![
+        (10.0, 10.0),
+        (20.0, 10.0),
+        (f64::NAN, 20.0),
+        (10.0, 20.0),
+        (10.0, 10.0),
+    ]);
+    let decided = decide(
+        &[park],
+        &[along(10, -3.0, -50.0, 90.0, Family::Asf3, ASPHALT)],
+    );
     assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
 }
