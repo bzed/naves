@@ -3100,13 +3100,17 @@ fn a_through_road_keeps_its_ceiling_where_the_lot_slopes_too_much() {
         .max_by(|a, b| a.height_difference_m.total_cmp(&b.height_difference_m))
         .expect("a conflict inside the lot");
     assert!(worst.height_difference_m > 0.3, "{worst:?}");
-    // it lies where the road's height and the lot's target part by that much
+    // it lies where the road's height and the lot's target part by that much. The rule takes the road's height at
+    // the centre-line point nearest the terrain vertex, while the point tested here is the road's edge point, up to
+    // half the road's width along the road from it; at the road's grade ceiling that is 0.27 m per metre, so the two
+    // can differ by up to `grade_ceiling * half width` (0.95 m for City) and not more.
     let (_, road) = road_at(&p.strips[0], worst.at);
     let ground = f64::from(hm.sample(worst.at.0, worst.at.1).height);
     let surface = patch.surface.target(worst.at, ground);
+    let along = grade_ceiling(Family::City) * p.strips[0].half_width;
     assert!(
-        (road - surface).abs() - worst.height_difference_m < 1e-6,
-        "{road} vs {surface}: {worst:?}"
+        ((road - surface).abs() - worst.height_difference_m).abs() <= along + 1e-6,
+        "{road} vs {surface} (at most {along} apart): {worst:?}"
     );
     // the control: no lot, no conflict inside the lot's area
     let control = conform_areas(&hm, &p.strips, &[], &[], &[]).unwrap();
@@ -3348,9 +3352,15 @@ fn an_access_road_ending_on_a_cross_sloping_lot_is_no_conflict() {
 }
 
 #[test]
-fn a_dead_end_two_and_a_half_metres_inside_the_lot_takes_the_surface() {
+fn a_dead_end_two_and_a_half_metres_inside_the_lot_keeps_a_step() {
     // the road ends 2.5 m inside the lot: shorter than LOT_ENTRY_M, so the lot step cuts nothing and there is no
     // entry junction. The end joint is free and only the soft ground target pulls it up towards the surface.
+    //
+    // **Pinned limitation, not the wanted behaviour.** The end keeps a step of about half the difference between
+    // the surface and the ground. It is not reported either: the road's core covers the vertex at the end, so the
+    // shaping has no ground between the road and the lot there to see the face. The wanted end would be held to the
+    // surface, which needs a datum the lot step does not report today for a dead end it does not cut. Whoever adds
+    // that datum must make this test fail and replace it with one that asserts no step.
     let hm = terrain(128, 6.25, |_, _| 100.0);
     let net = network(vec![pieces(
         "a",
@@ -3375,10 +3385,9 @@ fn a_dead_end_two_and_a_half_metres_inside_the_lot_takes_the_surface() {
     );
     let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
     let end = p.strips[0].joints.last().unwrap();
-    // the soft target lifts the free end joint about half a metre towards the surface (today 100.53), not to it
+    // pinned: the soft target lifts the free end joint about half a metre towards the surface (today 100.53), not
+    // to it
     assert!(end.2 > 100.4 && end.2 < 101.0, "{end:?}");
-    assert!(
-        (end.2 - 101.0).abs() > 0.3,
-        "the end reached the surface: {end:?}"
-    );
+    let step = 101.0 - end.2;
+    assert!(step > 0.3, "the end reached the surface: {end:?}");
 }

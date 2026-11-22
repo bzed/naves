@@ -1136,7 +1136,8 @@ fn claim_cores(
                 };
                 let place = grid.position(vertex);
                 // an area candidate survives only where no road has the vertex inside its width, so the road's
-                // ring distance and its distance beyond the width are both positive here
+                // ring distance and its distance beyond the width are both positive here (a strip with a negative
+                // or non-finite width gives no finite edge point and is skipped below)
                 let shrink = road.edge / road.distance;
                 let at = (
                     place.0 - road.toward.0 * shrink,
