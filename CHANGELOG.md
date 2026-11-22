@@ -72,6 +72,10 @@ All notable changes to this project are documented here. The format follows
   keyed by them survive); an edit on a stretch that went is orphaned. The `road-analysis` example lists every point that was
   merged away, the components after each step and the drivable length.
 
+### Security
+
+- The `url` crate is raised from 2.5.8 to 2.5.9 (RUSTSEC-2026-0592).
+
 ### Fixed
 
 - A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
