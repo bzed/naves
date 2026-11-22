@@ -21,11 +21,12 @@ use crate::heightmap::Heightmap;
 use crate::reroute::band::{Band, arrive, drawn_grade, ground_at, leg_limit, relaxed_limits};
 use crate::reroute::field::Field;
 use crate::reroute::raster::{
-    Clearance, Obstacles, Wall, WallKind, cross_point, crossings_away, exempt_samples,
-    samples_with_arc,
+    CROSS_EPS, Clearance, Obstacles, Wall, WallKind, crossings_away, crossings_where,
+    exempt_samples, samples_with_arc,
 };
 use crate::reroute::search::{
-    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed, self_clearance,
+    LegInput, LegOutcome, Route, Weights, check_route, search_leg, search_leg_relaxed,
+    self_clearance,
 };
 use crate::roadnet::{RoadGraph, Stretch, crossings_of};
 use crate::smooth::{ChainPlan, Link, WaterTest, plan_chains, radius_at, resample, tight_runs};
@@ -499,31 +500,6 @@ fn poly_length(points: &[(f64, f64)]) -> f64 {
             _ => None,
         })
         .sum()
-}
-
-/// The distance of a point from a polyline (infinite for an empty line).
-fn poly_dist(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
-    let one = |a: (f64, f64), b: (f64, f64)| {
-        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-        let l2 = dx * dx + dy * dy;
-        let t = if l2 > 0.0 {
-            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
-    };
-    match line {
-        [] => f64::INFINITY,
-        [only] => dist(p, *only),
-        _ => line
-            .windows(2)
-            .filter_map(|w| match w {
-                [a, b] => Some(one(*a, *b)),
-                _ => None,
-            })
-            .fold(f64::INFINITY, f64::min),
-    }
 }
 
 /// Whether any segment of `line` has a bounding box that overlaps `lo`..`hi`.
@@ -1419,7 +1395,6 @@ fn plan_leg(
         edge_margin,
         extent,
         stray_cap,
-        check_radius: wanted * params.reached_fraction,
     };
     let band = Band::from_params(params, limit, cell);
     let scenario = setup.scenario(
@@ -1450,6 +1425,26 @@ fn plan_leg(
     match search_leg_relaxed(&input, &limits) {
         Ok(LegOutcome::Found(route)) => {
             let rband = Band::from_params(params, route.grade_limit, cell);
+            // The search returned a route, and only a try that did not run out returns one: `budget_exhausted` is
+            // what the search says, not a default. A route the check from scratch rejects is a bug (the search's own
+            // drops on the way are routine and nothing is reported for them).
+            if !check_route(
+                &input,
+                &rband,
+                wanted * params.reached_fraction,
+                &route.points,
+            ) {
+                return kept_leg(
+                    job,
+                    KeptReason::NoRoute,
+                    "check_failed",
+                    route.states,
+                    false,
+                    limit,
+                    drawn.mean,
+                    original_feasible,
+                );
+            }
             let planned_grade = arrive(&route.points, &ground_fn, &rband)
                 .map_or(route.planned_grade, |p| p.max_grade());
             LegPlan {
@@ -1472,22 +1467,8 @@ fn plan_leg(
         Ok(LegOutcome::NoRoute {
             budget_exhausted,
             states,
-            checked,
             ..
         }) => {
-            if checked > 0 {
-                // a route the check from scratch rejects is a bug, not a leg without a route
-                return kept_leg(
-                    job,
-                    KeptReason::NoRoute,
-                    "check_failed",
-                    states,
-                    false,
-                    limit,
-                    drawn.mean,
-                    original_feasible,
-                );
-            }
             // A search that fails at a pose that never moves is `held` (the spec's first reason): a diagnostic
             // search would only say what the fixed pose already takes away.
             let lead = params.lead * wanted;
@@ -1626,8 +1607,6 @@ struct LegSetup<'a> {
     edge_margin: f64,
     extent: f64,
     stray_cap: f64,
-    /// The tightest three-point radius a returned route may have on its 2 m samples.
-    check_radius: f64,
 }
 
 impl LegSetup<'_> {
@@ -1673,16 +1652,16 @@ impl LegSetup<'_> {
                 }
                 let reach_other = core_reach_m(s.family.width_m() / 2.0, cell);
                 if s.bridge || s.tunnel {
-                    // a deck or tunnel is never exempt, except one within PLAN_DECK_ANCHOR_M of a fixed anchor:
-                    // that one is part of the anchor and is not stamped. A crossing of the drawn line with it
-                    // anywhere but at the anchor is `crosses_deck`.
-                    let near_fixed = self
-                        .fixed
+                    // A deck or tunnel is never exempt, except the part that belongs to a fixed anchor: the part
+                    // within PLAN_DECK_ANCHOR_M of it, and the part whose earthwork and clearance could reach that
+                    // place (the reach and the clearance threshold along the deck, as PLAN_SELF_FREE does for the
+                    // own road). Everything further along the deck stays an obstacle.
+                    let owned = params.deck_anchor_m + reach_other + obstacles.threshold(clearance);
+                    let flags: Vec<bool> = samples_with_arc(&s.points)
                         .iter()
-                        .any(|p| poly_dist(*p, &s.points) <= params.deck_anchor_m);
-                    if !near_fixed {
-                        obstacles.stamp_road(&s.points, reach_other, &[]);
-                    }
+                        .map(|&(p, _)| self.fixed.iter().any(|&a| dist(a, p) <= owned))
+                        .collect();
+                    obstacles.stamp_road(&s.points, reach_other, &flags);
                     if deck_crossings(
                         orig,
                         &s.points,
@@ -1799,7 +1778,6 @@ impl LegSetup<'_> {
             self_along_m: self_along,
             self_clear_m: self_clear,
             original: self.orig,
-            check_radius_m: self.check_radius,
             budgets: params.budgets.as_slice(),
         }
     }
@@ -1807,10 +1785,6 @@ impl LegSetup<'_> {
 
 /// How often the drawn line crosses a deck's line farther than `end_m` from the leg's anchors and farther than
 /// `deck_anchor_m` from every fixed anchor: a crossing at a fixed anchor is part of that anchor.
-#[expect(
-    clippy::many_single_char_names,
-    reason = "the ends of the two segments, as in the geometry"
-)]
 fn deck_crossings(
     orig: &[(f64, f64)],
     deck: &[(f64, f64)],
@@ -1819,27 +1793,15 @@ fn deck_crossings(
     fixed: &[(f64, f64)],
     deck_anchor_m: f64,
 ) -> usize {
-    let mut n = 0;
-    for a in orig.windows(2) {
-        for b in deck.windows(2) {
-            let ([p, q], [r, s]) = (a, b) else {
-                continue;
-            };
-            let Some(x) = cross_point(*p, *q, *r, *s) else {
-                continue;
-            };
-            let away = anchors
-                .iter()
-                .all(|e| (e.0 - x.0).hypot(e.1 - x.1) > end_m + ARC_EPS);
-            let at_anchor = fixed
-                .iter()
-                .any(|e| (e.0 - x.0).hypot(e.1 - x.1) <= deck_anchor_m);
-            if away && !at_anchor {
-                n += 1;
-            }
-        }
-    }
-    n
+    crossings_where(orig, deck, &|x| {
+        let away = anchors
+            .iter()
+            .all(|e| (e.0 - x.0).hypot(e.1 - x.1) > end_m + CROSS_EPS);
+        let at_anchor = fixed
+            .iter()
+            .any(|e| (e.0 - x.0).hypot(e.1 - x.1) <= deck_anchor_m);
+        away && !at_anchor
+    })
 }
 
 /// Which samples of the own chain outside a leg are exempt: the first `self_free` metres **along the line** from
@@ -2031,21 +1993,6 @@ fn line_bounds(line: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
     )
 }
 
-/// Whether two polylines come within `near_m` of each other, by the true distance of a point of one to the other.
-/// The samples are at most [`SAMPLE_M`] apart, so two lines that cross measure as at most a metre apart.
-fn lines_near(a: &[(f64, f64)], b: &[(f64, f64)], near_m: f64) -> bool {
-    let (alo, ahi) = line_bounds(a);
-    let (blo, bhi) = line_bounds(b);
-    if !(alo.0 - near_m <= bhi.0
-        && blo.0 - near_m <= ahi.0
-        && alo.1 - near_m <= bhi.1
-        && blo.1 - near_m <= ahi.1)
-    {
-        return false;
-    }
-    a.iter().any(|&p| poly_dist(p, b) < near_m) || b.iter().any(|&p| poly_dist(p, a) < near_m)
-}
-
 /// A planned route that the check of the routes against each other accepted.
 struct AcceptedRoute {
     /// The index of the leg's result.
@@ -2060,11 +2007,47 @@ struct AcceptedRoute {
     b: usize,
 }
 
-/// The routes against each other, in zone order: a route that comes within the road clearance of a route accepted
-/// before it, where the two drawn lines did not, is reverted; its leg keeps its line with reason
-/// [`KeptReason::BlockedByRoad`] and detail `route_of <zone id>`. The road clearance is the true distance at which
-/// the two roads' earthwork touches: the earlier route's reach and this leg's clearance (its own reach and one
-/// terrain cell). Returns how many routes were reverted.
+/// Whether the two legs' drawn lines were already within `near_m` of each other at the place of the two route
+/// points `p` (of the later route) and `q` (the nearest point of the accepted route): there is a sample of one drawn
+/// line within `near_m` of `p` and a sample of the other within `near_m` of `q` that are themselves nearer than
+/// `near_m`. This is the per-place exemption of the cross-check: only where the drawn lines already ran that close
+/// may the route come that close.
+fn drawn_was_near(
+    orig: &[(f64, f64)],
+    other_orig: &[(f64, f64)],
+    p: (f64, f64),
+    q: (f64, f64),
+    near_m: f64,
+) -> bool {
+    let here: Vec<(f64, f64)> = orig
+        .iter()
+        .copied()
+        .filter(|o| dist(*o, p) <= near_m)
+        .collect();
+    let there: Vec<(f64, f64)> = other_orig
+        .iter()
+        .copied()
+        .filter(|o| dist(*o, q) <= near_m)
+        .collect();
+    here.iter()
+        .any(|a| there.iter().any(|b| dist(*a, *b) < near_m))
+}
+
+/// The point of `line` nearest to `p`, and its distance.
+fn nearest_point(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
+    line.iter()
+        .map(|&q| (q, dist(p, q)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// The routes against each other, in zone order, place by place: a point of a later route that comes within the road
+/// clearance threshold of a route accepted before it, where the two drawn lines were not already that near at that
+/// place, reverts the later route; its leg keeps its line with reason [`KeptReason::BlockedByRoad`] and detail
+/// `route_of <zone id>`. The threshold is the true distance at which the two roads' earthwork touches: the earlier
+/// route's reach plus this leg's clearance (its own reach and one terrain cell), about 26 m for two City stretches.
+/// Two zones that meet at a junction share the junction, where their drawn lines touch: only the places near it are
+/// exempt, and a route that bulges into the other one further away is still reverted. Returns how many routes were
+/// reverted.
 fn check_routes(
     results: &mut [LegPlan],
     jobs: &[LegJob],
@@ -2105,12 +2088,26 @@ fn check_routes(
                 continue;
             };
             let threshold = other.reach + own + cell;
-            if !lines_near(&route.points, &other_route.points, threshold)
-                || lines_near(orig, other_orig, threshold)
+            let ((lo, hi), (olo, ohi)) =
+                (line_bounds(&route.points), line_bounds(&other_route.points));
+            if lo.0 - threshold > ohi.0
+                || olo.0 - threshold > hi.0
+                || lo.1 - threshold > ohi.1
+                || olo.1 - threshold > hi.1
             {
                 continue;
             }
-            conflict = works.get(other.zone).map(|work| work.id.clone());
+            // the first place of this route that is too near the accepted one and where the drawn lines were not
+            for &p in &route.points {
+                let Some((q, near)) = nearest_point(p, &other_route.points) else {
+                    continue;
+                };
+                if near >= threshold || drawn_was_near(orig, other_orig, p, q, threshold) {
+                    continue;
+                }
+                conflict = works.get(other.zone).map(|work| work.id.clone());
+                break;
+            }
             if conflict.is_some() {
                 break;
             }
@@ -2610,6 +2607,42 @@ mod tests {
         let from_end = self_free_flags(&line, true, 32.0);
         assert_eq!(from_end.last(), Some(&true));
         assert_eq!(from_end.first(), Some(&false));
+    }
+
+    #[test]
+    fn the_cross_check_exempts_only_the_places_the_drawn_lines_were_near() {
+        // the drawn lines of the legs are their chain samples, every 2 m
+        let dense = |line: &[(f64, f64)]| crate::smooth::resample(line, SAMPLE_M);
+        let near = 26.0;
+        // two drawn lines that meet at (0, 0) and are 60 m apart at their far ends
+        let orig = dense(&[(0.0, 0.0), (60.0, 0.0)]);
+        let other = dense(&[(0.0, 0.0), (60.0, 60.0)]);
+        // at the shared place the drawn lines touched: a route point there is exempt
+        assert!(drawn_was_near(&orig, &other, (1.0, 0.0), (0.0, 0.0), near));
+        // at the far ends the drawn lines are 60 m apart, far more than the threshold: not exempt
+        assert!(!drawn_was_near(
+            &orig,
+            &other,
+            (60.0, 0.0),
+            (60.0, 60.0),
+            near
+        ));
+        // a drawn line that comes near in the middle exempts the middle, not its far end
+        let bent = dense(&[(0.0, 50.0), (30.0, 20.0), (60.0, 50.0)]);
+        assert!(drawn_was_near(
+            &orig,
+            &bent,
+            (30.0, 0.0),
+            (30.0, 20.0),
+            near
+        ));
+        assert!(!drawn_was_near(
+            &orig,
+            &bent,
+            (60.0, 0.0),
+            (60.0, 50.0),
+            near
+        ));
     }
 
     #[test]

@@ -34,7 +34,7 @@ const CHAMFER_MAX_CELLS: usize = 1 << 28;
 /// The most samples of one line.
 const MAX_SAMPLES: f64 = 1.0e7;
 /// A proper crossing is at least this far from the ends of both segments, as a fraction of their length.
-const CROSS_EPS: f64 = 1e-9;
+pub(crate) const CROSS_EPS: f64 = 1e-9;
 
 /// What blocked a segment. The order is the order of the checks of a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -929,12 +929,23 @@ pub fn crossings_away(
     anchors: [(f64, f64); 2],
     end_m: f64,
 ) -> usize {
+    crossings_where(route, line, &|x| away_from(x, anchors, end_m))
+}
+
+/// How often `route` crosses `line` at a point `keep` accepts: the one crossing count of the walls, the exemption
+/// and the decks, so that two counts of the same line cannot drift apart.
+#[must_use]
+pub fn crossings_where(
+    route: &[(f64, f64)],
+    line: &[(f64, f64)],
+    keep: &dyn Fn((f64, f64)) -> bool,
+) -> usize {
     let mut n = 0;
     for a in route.windows(2) {
         for b in line.windows(2) {
             if let ([p, q], [r, s]) = (a, b)
                 && let Some(x) = cross_point(*p, *q, *r, *s)
-                && away_from(x, anchors, end_m)
+                && keep(x)
             {
                 n += 1;
             }

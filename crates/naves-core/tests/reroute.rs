@@ -1956,8 +1956,6 @@ impl Setup {
             self_along_m: self.self_along,
             self_clear_m: self.self_clear.unwrap_or_else(|| self.clear.road_m()),
             original: &self.original,
-            check_radius_m: RHO * naves_core::reroute::PLAN_REACHED_FRACTION
-                / naves_core::reroute::PLAN_RADIUS_MARGIN,
             budgets: &self.budgets,
         };
         edit(&mut input);
@@ -4008,8 +4006,9 @@ fn plan_a_corner_too_near_a_bridge_is_held() {
     let (out, report) = plan_graph(&g, &flat_map());
     assert_eq!(out, g);
     let zone = only_zone(&report);
-    let (reason, _) = kept(zone);
+    let (reason, detail) = kept(zone);
     assert_eq!(reason, KeptReason::Held, "{zone:?}");
+    assert_eq!(detail, "tight_run_held", "{zone:?}");
     assert_eq!(zone.candidate, Some(Candidate::Plate));
     assert_eq!(zone.legs, 0, "the hold leaves no leg: {zone:?}");
 }
@@ -5397,6 +5396,71 @@ fn plan_a_drawn_line_in_a_deck_earthwork_is_kept_for_a_road() {
     assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
 }
 
+#[test]
+fn plan_a_leg_that_crosses_a_stream_gets_its_diagnostic_reason() {
+    // A stream across the west leg of the hairpin 11 m above its start anchor, and water from y = 460 on. The drawn
+    // line crosses the stream once (so a route must cross it once) and the water blocks the loop; the candidates
+    // that avoid the stream are dropped by the search (the crossing count must equal the drawn line's: routine,
+    // nothing is reported for them), the leg ends without a route, and the diagnostic without water (areas and
+    // streams) finds the loop. The reason is `blocked_by_water`, not `check_failed`.
+    let g = edge_hairpin(500.0);
+    let stream = vec![(470.0, 450.0), (540.0, 450.0)];
+    let params = RerouteParams::default();
+    let water = |p: (f64, f64)| p.1 >= 455.0;
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &water,
+        std::slice::from_ref(&stream),
+        &params,
+    );
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::BlockedByWater, "{zone:?}");
+    assert_eq!(detail, "blocked_by_water");
+    assert_eq!(zone.candidate, Some(Candidate::CurvedBridge));
+    // the same bend under the same water without the stream: also `blocked_by_water`, so the fixture's failure is
+    // the water in both runs
+    let (_out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &water,
+        &[],
+        &params,
+    );
+    let (reason, _) = kept(only_zone(&report));
+    assert_eq!(reason, KeptReason::BlockedByWater);
+}
+
+#[test]
+fn plan_a_leg_whose_search_drops_candidates_keeps_its_ordinary_reason() {
+    // A cap of 1 m holds the route to within a metre of the drawn line, and the 120 degree corner's fillet needs
+    // 1.4 m: the search builds arrivals and drops them all (the stray cap), and the leg has no route at any limit.
+    // That is routine: the leg is `no_route`, not `check_failed` (the drops are not a failed acceptance check).
+    let g = corner_120(400.0);
+    let params = RerouteParams {
+        stray_max: 0.1,
+        ..RerouteParams::default()
+    };
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(out, g);
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
+    assert_eq!(detail, "no_route", "{zone:?}");
+    assert!(zone.states > 0, "{zone:?}");
+}
+
 /// The Task 5 hairpin as a chain, its legs 12 m apart from y = 400 to 460, with an apex 12 m wide and 4 m high.
 fn facing_hairpin(way: i64, left: f64) -> Feature {
     let mut nodes: Vec<i64> = vec![way * 100 + 1, way * 100 + 2];
@@ -5458,11 +5522,30 @@ fn plan_two_routes_that_run_into_each_other_are_checked() {
     assert_eq!(points_of(&out, &second_id), points_of(&g, &second_id));
     assert_ne!(out, g, "the first zone is planned");
     assert_eq!(report.kept(KeptReason::BlockedByRoad), 1);
-    // swapped stretches give the same graph and report
-    let mut reversed = features.clone();
-    reversed.reverse();
+    // A different input: the order of the ways reversed and every way's points and nodes reversed as well (legal:
+    // a way has no direction). The graph is the same because `build_graph` canonicalises its stretches by id and
+    // point order, and the chains follow that order, so this checks the planner's own order and not the graph's.
+    let reversed: Vec<Feature> = features
+        .iter()
+        .rev()
+        .map(|f| {
+            let mut points = f.points.clone();
+            points.reverse();
+            let mut nodes = f.nodes.clone();
+            nodes.reverse();
+            Feature {
+                points,
+                nodes,
+                ..f.clone()
+            }
+        })
+        .collect();
+    assert_ne!(reversed, features, "the reversed input is the same input");
     let g_rev = build_graph(&reversed);
-    assert_eq!(g_rev, g);
+    assert_eq!(
+        g_rev, g,
+        "the graph of a reversed input is the same graph (its stretches are canonical)"
+    );
     let (out_rev, report_rev) = plan(&g_rev);
     assert_eq!(out_rev, out);
     assert_eq!(report_rev, report);
@@ -5512,8 +5595,8 @@ fn corner_120(x0: f64) -> RoadGraph {
 fn plan_a_leg_only_at_a_relaxed_limit_is_counted_steeper() {
     let g = corner_120(400.0);
     let map = map_with(|_, y| 100.0 + 0.33 * (y - 500.0));
-    // the cap keeps the route in a corridor along the drawn line: the 120 degree fillet is 27.6 m long and the
-    // drawn line needs 6.0 m of climb over its 42 m
+    // the cap keeps the route in a corridor along the drawn line: the route the search finds is 23.8 m long and
+    // the drawn line needs 6.0 m of climb over its 42 m
     let params = RerouteParams {
         stray_max: 0.6,
         ..RerouteParams::default()
@@ -5567,9 +5650,9 @@ fn small_hairpin(way: i64, left: f64, bottom: f64) -> Feature {
 
 #[test]
 fn plan_fifty_bends_with_a_tiny_budget_report_the_same() {
-    // A town corner is found in 37 states, so a budget of 50 does not exhaust it; the loop of a hairpin needs 619.
-    // Fifty hairpins with a 50-state budget therefore all keep their line with the budget exhausted, and the work
-    // stays within the four limits and the two diagnostic searches of 50 states each.
+    // A town corner is found in 37 states, so a 50-state first try does not exhaust it; the loop of a hairpin needs
+    // 619. Fifty hairpins with these two budget pairs therefore all keep their line with the budget exhausted, and
+    // the work stays within the four limits and the two diagnostic searches of the last pair only.
     let features: Vec<Feature> = (0..50_i64)
         .map(|k| {
             let x = 150.0 + 240.0 * f64::from(i32::try_from(k % 8).unwrap_or(0));
@@ -5578,8 +5661,9 @@ fn plan_fifty_bends_with_a_tiny_budget_report_the_same() {
         })
         .collect();
     let g = build_graph(&features);
+    // two pairs: the main search tries both (60 states per limit), the two diagnostics the last one only (10)
     let params = RerouteParams {
-        budgets: vec![(1.0, 50)],
+        budgets: vec![(1.0, 50), (1.0, 10)],
         ..RerouteParams::default()
     };
     let plan = |graph: &RoadGraph| {
@@ -5601,8 +5685,15 @@ fn plan_fifty_bends_with_a_tiny_budget_report_the_same() {
         assert!(zone.budget_exhausted, "{zone:?}");
     }
     assert_eq!(report.kept(KeptReason::NoRoute), 50);
-    // the main search tries the four limits, the two diagnostics the last budget pair only
-    assert!(report.states <= 50 * (4 * 50 + 2 * 50), "{}", report.states);
+    // the main search tries the four limits with both budget pairs, the two diagnostics the last pair only:
+    // with the pairs in the diagnostics as well, this would be 50 * (4 * 60 + 2 * 60) = 18 000
+    let all: usize = params.budgets.iter().map(|b| b.1).sum();
+    let last = params.budgets.last().map_or(0, |b| b.1);
+    assert!(
+        report.states <= 50 * (4 * all + 2 * last),
+        "{}",
+        report.states
+    );
     let (_out, again) = plan(&g);
     assert_eq!(again, report, "the same report on a second run");
 }
@@ -5610,26 +5701,41 @@ fn plan_fifty_bends_with_a_tiny_budget_report_the_same() {
 #[test]
 fn plan_a_route_the_check_rejects_is_no_route_with_check_failed() {
     let g = town_corner();
-    // a check radius above the planning radius: every route the search finds fails the check from scratch
-    let params = RerouteParams {
-        reached_fraction: 4.0,
-        budgets: vec![(1.0, 2_000)],
-        ..RerouteParams::default()
+    let plan = |fraction: f64| {
+        let params = RerouteParams {
+            reached_fraction: fraction,
+            ..RerouteParams::default()
+        };
+        plan_with(
+            &g,
+            &flat_map(),
+            &|_: &Stretch| CITY_MIN_R,
+            &|_: (f64, f64)| false,
+            &[],
+            &params,
+        )
     };
-    let (out, report) = plan_with(
-        &g,
-        &flat_map(),
-        &|_: &Stretch| CITY_MIN_R,
-        &|_: (f64, f64)| false,
-        &[],
-        &params,
-    );
+    // the search's own radius check is unchanged (0.99 of the family's tightest arc): with the default fraction the
+    // same corner is planned, so the only difference below is the caller's check of the returned route
+    let (out, report) = plan(0.99);
+    assert_ne!(out, g);
+    assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
+    // a check radius above the planning radius: the search still returns its route, the caller's check rejects it
+    let (out, report) = plan(4.0);
     assert_eq!(out, g);
     let zone = only_zone(&report);
     let (reason, detail) = kept(zone);
     assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
     assert_eq!(detail, "check_failed");
     assert_eq!(zone.candidate, Some(Candidate::Plate));
+    // the route was found by the search (its own radius check is 0.99 of the family's tightest arc): the zone's
+    // states are a few hundred, not the four budgets of the four limits (280 000) that dropping every candidate
+    // costs. The check that rejected it is the caller's, and its `budget_exhausted` is the search's answer: a
+    // returned route is only returned by a try that did not run out, so false — not a default
+    assert!(zone.states > 0, "{zone:?}");
+    assert!(zone.states < 10_000, "{zone:?}");
+    assert!(!zone.budget_exhausted, "{zone:?}");
+    assert_eq!(zone.weight, None, "{zone:?}");
 }
 
 /// One zone of the report, for the summary's fixture.
@@ -5702,8 +5808,9 @@ fn plan_the_summary_of_a_report() {
 }
 
 #[test]
-fn plan_the_lines_of_the_summary_are_the_reports_own_numbers() {
-    // a real report: one planned corner and one held bend, and the counts the words speak of
+fn plan_the_summary_counts_a_real_report() {
+    // The wording is pinned exactly by `plan_the_summary_of_a_report`; this one checks that the numbers in the line
+    // are the report's own (its zone count and reasons, its tight lengths and its largest move), on a real graph.
     let g = build_graph(&[
         city_way(
             1,
@@ -5762,6 +5869,8 @@ fn plan_the_lines_of_the_summary_are_the_reports_own_numbers() {
     );
     assert_eq!(report.summary(), want);
     assert_eq!(report.kept(KeptReason::Held), 1);
+    // the planned corner on flat ground is not steeper than its drawn line: the count leaves it out
+    assert_eq!(report.steeper_than_drawn, 0, "{:?}", report.zones);
     assert_ne!(out, g);
 }
 
@@ -5822,6 +5931,8 @@ fn plan_a_partly_planned_zone_is_kept_and_writes_its_planned_leg() {
     assert!(zone.radius_after_m >= CITY_MIN_R - 0.01, "{zone:?}");
     assert_ne!(zone.length_after_m, zone.length_before_m, "{zone:?}");
     assert!(zone.weight.is_some(), "{zone:?}");
+    // the grade limit is the first *planned* leg's (flat ground: the City aim, 0.14); the kept leg has no limit
+    assert!((zone.grade_limit - 0.14).abs() < 1e-9, "{zone:?}");
     // the planned leg is written: the corner at (490, 500) is replaced by a fillet
     let written = points_of(&out, "1:1-40");
     assert!(
@@ -5889,7 +6000,8 @@ fn plan_a_deck_near_a_junction_crossed_elsewhere_is_held() {
     assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
 }
 
-/// A chain with a vertex 5 cm before the end anchor's sample, after off-grid 90 degree corners.
+/// A chain with a vertex 3 cm before the end anchor's sample as the chord measure of Task 6's first version placed
+/// it (its sample at y = 521.824), after off-grid 90 degree corners.
 fn vertex_a_hand_span_before_the_end() -> RoadGraph {
     build_graph(&[
         city_way(
@@ -5902,7 +6014,7 @@ fn vertex_a_hand_span_before_the_end() -> RoadGraph {
                 (482.9, 503.3),
                 (482.9, 500.0),
                 (560.0, 500.0),
-                (560.0, 519.80),
+                (560.0, 521.79),
                 (560.0, 600.0),
             ],
         ),
@@ -5926,13 +6038,179 @@ fn plan_a_vertex_a_hand_span_before_the_end_anchor_is_not_written_after_it() {
     let zone = zone_matching(&report, |z| z.at.0 > 540.0 && z.at.1 < 520.0);
     assert!(is_planned(zone), "{zone:?}");
     let written = points_of(&out, "1:1-8");
+    // The vertex is inside the leg when the anchor's sample is taken by the true arc (it is dropped) and beyond the
+    // anchor when a measure puts the anchor earlier (it is kept after it, still in order). What must never happen is
+    // a doubling back, which the chord measure of Task 6's first version produced: it kept a vertex that lay behind
+    // the route's end and wrote it after it.
     assert_no_reversal(&written);
     assert!(
-        !written.iter().any(|&p| same_bits(p, (560.0, 519.80))),
-        "the vertex 2 cm before the anchor sample is written after the route"
+        written.iter().any(|&p| (p.1 - 520.0).abs() <= 2.0),
+        "the end anchor is not on the written line: {written:?}"
     );
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Fix round 1: the reason of a kept bend follows the rules' order, planned routes are compared place by place.
+// ----------------------------------------------------------------------------------------------------------
+
+#[test]
+fn plan_a_hairpin_in_a_bottle_stream_is_a_curved_bridge() {
+    // A stream that encloses the hairpin and keeps more than 10 m from both anchors: its room is 33 m wide but its
+    // ceiling is 10 m above the anchors (a turn of radius 10.5 needs 10.5) and the only way up is an 18 m neck. The
+    // drawn line is crossed 0 times. Without the stream the free loop is planned: the fixture can fail.
+    let g = edge_hairpin(500.0);
+    let bottle = vec![
+        (489.5, 380.0),
+        (489.5, 450.0),
+        (497.0, 450.5),
+        (497.0, 466.0),
+        (515.0, 466.0),
+        (515.0, 450.5),
+        (522.5, 450.0),
+        (522.5, 380.0),
+    ];
+    let params = RerouteParams::default();
+    let (_out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert!(is_planned(only_zone(&report)), "{:?}", report.zones);
+    // with the stream: no route, because the stream is in the way (the diagnostic without water and streams finds
+    // the loop: if the streams stayed in, the leg would keep `no_route` instead)
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        std::slice::from_ref(&bottle),
+        &params,
+    );
+    assert_eq!(out, g, "a kept zone keeps its line bit for bit");
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::BlockedByWater, "{zone:?}");
+    assert_eq!(detail, "blocked_by_water");
+    assert_eq!(zone.candidate, Some(Candidate::CurvedBridge));
+}
+
+/// Two hairpins whose loops bulge toward each other, joined at a junction: A's last leg runs into J = (512, 380),
+/// where B's chain starts (east along y = 380) and a spur leaves to the south. Their drawn lines touch only at J
+/// and are 32 m apart elsewhere.
+fn two_hairpins_at_a_junction() -> RoadGraph {
+    let mut nodes_a: Vec<i64> = vec![1, 2];
+    let mut points_a: Vec<(f64, f64)> = vec![(500.0, 400.0), (500.0, 460.0)];
+    let mut next = 3_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points_a.push((506.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes_a.push(next);
+        next += 1;
+    }
+    for p in [(512.0, 460.0), (512.0, 380.0)] {
+        points_a.push(p);
+        nodes_a.push(next);
+        next += 1;
+    }
+    let junction = next - 1;
+    let mut points_b: Vec<(f64, f64)> = vec![(512.0, 380.0), (544.0, 380.0), (544.0, 460.0)];
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points_b.push((550.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+    }
+    points_b.push((556.0, 460.0));
+    points_b.push((556.0, 380.0));
+    let nodes_b: Vec<i64> = std::iter::once(junction)
+        .chain((200_i64..).take(points_b.len() - 1))
+        .collect();
+    build_graph(&[
+        city_way(1, &nodes_a, &points_a),
+        city_way(2, &nodes_b, &points_b),
+        city_way(3, &[junction, 900], &[(512.0, 380.0), (512.0, 360.0)]),
+    ])
+}
+
+#[test]
+fn plan_two_zones_that_meet_at_a_junction_are_checked_away_from_it() {
+    // A and B share the junction J: their drawn lines touch there and are 32 m apart at their loops, whose routes
+    // come 23 m apart. The comparison is per place, so only the places near J (where the drawn lines already ran
+    // that near) are exempt, and the later zone is reverted for the loops. B's corner at (544, 380) is a zone of its
+    // own (a fillet far from both loops), so the chain of B has two.
+    let g = two_hairpins_at_a_junction();
+    let params = RerouteParams::default();
+    let plan = |graph: &RoadGraph| {
+        plan_with(
+            graph,
+            &flat_map(),
+            &|_: &Stretch| CITY_MIN_R,
+            &|_: (f64, f64)| false,
+            &[],
+            &params,
+        )
+    };
+    let (out, report) = plan(&g);
+    assert_eq!(report.zones.len(), 3, "{:?}", report.zones);
+    assert_eq!(report.reverted, 1, "{:?}", report.zones);
+    let loop_a = zone_matching(&report, |z| z.at.0 < 520.0 && z.at.1 > 450.0);
+    let loop_b = zone_matching(&report, |z| z.at.0 > 540.0 && z.at.1 > 450.0);
     assert!(
-        written.iter().any(|&p| (p.1 - 520.0).abs() <= 1.0),
-        "the end anchor is not on the written line"
+        is_planned(loop_a),
+        "the lower chain id is planned: {loop_a:?}"
     );
+    let (reason, detail) = kept(loop_b);
+    assert_eq!(reason, KeptReason::BlockedByRoad, "{loop_b:?}");
+    assert_eq!(detail, format!("route_of {}", loop_a.id));
+    assert_eq!(report.kept(KeptReason::BlockedByRoad), 1);
+    assert_ne!(out, g, "the first zone is planned");
+}
+
+#[test]
+fn plan_a_long_deck_near_a_junction_is_an_obstacle_beyond_the_anchor() {
+    // A junction with a bridge deck whose near end is 11 m away, running east parallel to the leg's first arm; the
+    // leg needs a 30 m radius, so it spans 120 m and its route runs alongside the deck. Only the deck's part that
+    // belongs to the anchor is exempt (within PLAN_DECK_ANCHOR_M, and as far along the deck as its earthwork and the
+    // leg's clearance could reach that place, about 44 m): the route leaves the junction past a short deck, and a
+    // deck that runs on past that is an obstacle it may not cross.
+    let deck = |end: f64| {
+        build_graph(&[
+            city_way(
+                1,
+                &[1, 2, 3],
+                &[(500.0, 500.0), (560.0, 500.0), (560.0, 620.0)],
+            ),
+            city_way(
+                2,
+                &[10, 1, 11],
+                &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+            ),
+            bridge_way(3, &[20, 21], &[(505.0, 510.0), (end, 510.0)]),
+        ])
+    };
+    let params = RerouteParams::default();
+    let plan = |graph: &RoadGraph| {
+        plan_with(
+            graph,
+            &flat_map(),
+            &|_: &Stretch| 30.0,
+            &|_: (f64, f64)| false,
+            &[],
+            &params,
+        )
+    };
+    let short = deck(535.0);
+    let (out, report) = plan(&short);
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "the short deck: {zone:?}");
+    assert_ne!(out, short);
+    let long = deck(555.0);
+    let (out, report) = plan(&long);
+    assert_eq!(out, long, "the deck's far part must be an obstacle");
+    let zone = only_zone(&report);
+    // kept: the route cannot reach its fillet past the deck's far part. The reason is `held`, the spec's first, not
+    // `blocked_by_road`: the leg's tight run lies within the lead of its junction anchor.
+    let (reason, _) = kept(zone);
+    assert_eq!(reason, KeptReason::Held, "{zone:?}");
 }

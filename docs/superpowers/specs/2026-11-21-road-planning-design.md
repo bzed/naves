@@ -581,32 +581,47 @@ them.
 
 **As built** (`reroute.rs`, plan Task 7):
 
-- **The threshold of the cross-check** is the true distance at which the two roads' earthwork touches, the same
-  quantity the raster test keeps from a stamped road: the earlier route's reach (`core_reach_m` of its own half
-  width) plus this leg's clearance (its own reach plus one terrain cell), about 26 m for two City stretches. The
-  samples of the routes and of the drawn lines are compared by their true distance ([`lines_near`], a point of one
-  to the other; the samples are at most 2 m apart, so two lines that cross measure as at most a metre apart). A
-  pair whose drawn lines already come that near is not checked, which also covers the two legs of one bend, which
-  share an anchor.
+- **The threshold of the cross-check** is the true distance at which the two roads' earthwork touches: the
+  earlier route's reach (`core_reach_m` of its own half width) plus this leg's clearance (its own reach plus one
+  terrain cell), about 26 m for two City stretches. It is not the raster's `thr(c)` (in chamfer metres, about 32 m
+  centre to centre for two City roads), which is the measure the *search* keeps from a stamped road.
+- **The exemption is per place.** A point `p` of the later route is exempt when the nearest point `q` of the
+  accepted route is within the threshold of it **and** the two drawn lines were already that near at that place:
+  a sample of the later leg's drawn line within the threshold of `p` and a sample of the accepted leg's drawn line
+  within the threshold of `q` that are themselves nearer than the threshold (`drawn_was_near`). Two zones that
+  meet at a junction therefore share the junction, where their drawn lines touch, and only the places near it are
+  exempt: a route that bulges into the other route 60 m away from the junction is still reverted. A pair of legs is
+  never exempted as a whole. The samples of the routes and of the drawn lines are compared by their true distance;
+  the drawn lines are the chains' 2 m samples.
 - **The diagnostic searches** of a leg without a route run at the ceiling grade with the last budget pair only:
   first without the water areas and the stream walls, then without the other roads (their earthwork, their walls
   and the decks and tunnels). A route found there gives `blocked_by_water` or `blocked_by_road` with the reason's
   own id as the detail; the states of both are added to the leg's. The own chain outside the leg is not "other
   roads" and stays an obstacle in both.
-- **`check_failed`**: the search counts the arrival candidates whose whole route was built and dropped by the check
-  from scratch (`LegOutcome::NoRoute.checked`). A leg whose search ended without a route and with at least one such
-  candidate keeps its line with reason `no_route`, detail `check_failed`, and no diagnostic search runs for it.
-  The check's radius is `RerouteParams::reached_fraction` times the family's tightest arc
-  (`LegInput::check_radius_m`, 0.99 of it by default), so a test can force the check to reject every route.
+- **`check_failed` is the caller's check of a route the search returned**, not the search's routine drops.
+  Candidates the search drops on the way (a wall crossed the wrong number of times, a profile that does not arrive)
+  are expected and nothing is reported for them. A leg whose search ends without a route goes through the ordinary
+  order of reasons: `held` (detail `fixed_anchor`) first where the tight run lies within the lead of a fixed pose,
+  then the diagnostic searches, else `no_route`. A route the search *returns* is checked again by the caller
+  (`search::check_route`: the ends, the radius on a 2 m resample, the segments, the stray cap, every wall's count,
+  the self-clearance over all pairs and the profile at the limit it was found at) with a radius of
+  `RerouteParams::reached_fraction` times the family's tightest arc (0.99 by default); a failure is a bug and the
+  leg keeps its line with reason `no_route`, detail `check_failed`. Its `budget_exhausted` is the search's answer:
+  a returned route is only returned by a try that did not run out, so it is false — not a default.
 - **`RerouteReport`**: `kept(reason)` counts the zones that kept their line for a reason and `summary()` is the
   build's one line (`Road planning: <n> zones, ...`, whole metres for the tight lengths, one decimal for the largest
   move). `skipped` is only what was not planned at all (a tunnel chain, a roundabout, a zone longer than
   `PLAN_MAX_ZONE_M`, a zone whose tight run is held, a chain that is not finite or too long); a zone that was
   searched and kept its line is in `kept_zones` with its detail, and `reverted` counts the cross-check's routes.
-- **A deck near a fixed anchor** is exempt as a whole (it is not stamped), because that is what makes the
-  clean-up's junction 8 m from a bridge end plannable; the crossing check is the one that is per place: a crossing
-  of the drawn line with the deck farther than `PLAN_CROSSING_END_M` from the leg's anchors and farther than
-  `PLAN_DECK_ANCHOR_M` from every fixed anchor is `crosses_deck` (review M8).
+- **A deck near a fixed anchor is exempt per place, and the rest of it is an obstacle.** The exempt part is the
+  deck within `PLAN_DECK_ANCHOR_M` of the fixed anchor together with the part whose earthwork and clearance could
+  reach that place (`reach + threshold(clearance)` along the deck, the same measure `PLAN_SELF_FREE` uses for the
+  own road, about 44 m in all for City); everything further along the deck is stamped like another road. Without
+  the second part the anchor's own neighbourhood would be stamped (a deck that begins 8 m from a junction stamps
+  cells 1 m from it, far inside the 21 m the segment test keeps), and the spec's own case of a junction 8 m from a
+  bridge end could not be planned at all. A crossing of the drawn line with the deck farther than
+  `PLAN_CROSSING_END_M` from the leg's anchors and farther than `PLAN_DECK_ANCHOR_M` from every fixed anchor is
+  `crosses_deck` (review M8).
 - **A bridge hold's bridge end** is the nearest bridge end within the hold on the anchor's side (plus one sample),
   not only the one that lies exactly at `bridge_end + hold`: the leg starts at the first sample outside the hold,
   which is up to 2 m further (review N2').
