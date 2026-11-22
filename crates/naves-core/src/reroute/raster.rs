@@ -730,7 +730,7 @@ fn poly_dist(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
 
 /// The points of `line` every [`SAMPLE_M`] metres from its start, then its end, each with its distance along
 /// the line. A line with a coordinate that is not a number, or longer than 20 000 km, has none.
-fn samples_with_arc(line: &[(f64, f64)]) -> Vec<((f64, f64), f64)> {
+pub(crate) fn samples_with_arc(line: &[(f64, f64)]) -> Vec<((f64, f64), f64)> {
     if !line.iter().all(|&p| finite(p)) {
         return Vec::new();
     }

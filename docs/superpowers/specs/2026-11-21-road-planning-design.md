@@ -553,8 +553,23 @@ the limit it was found at. A route that fails is a bug: the leg keeps its line w
   rule as the smoothing (`tight_lengths`), before the write-back and on the written graph.
 - A bend across a junction is paired when exactly two zones have an anchor at that junction; each names the other in
   `partner`. More than two zones at one junction are not paired (a junction piece's arms are not resolved yet).
+- Every chain sample carries the **true arc** of the drawn polyline (the resampling step's position, not the chord
+  length of the resampled points). The holds, the zone growth, the leg anchors and the write-back all use that one
+  measure, so an original vertex maps to the same point from either stretch, no vertex is written after the route's
+  end or before its start, and a held approach is kept bit for bit.
+- The grown zones are merged in sample space after rounding down/up to the 2 m samples, so two grown zones that
+  would share a sample are one zone and no two legs overlap.
+- A ring is closed for the cut: the radius at the cut is measured over the last segment and the first. A tight bend
+  there is `kept` with reason `held` and detail `ring_cut`, anchored at `RingCut`; the route cannot change the angle
+  of a fixed cut.
+- `PLAN_SELF_FREE` is the first stretch of the own chain **along the chain** from each anchor, measured on its 2 m
+  samples, not the straight-line distance from the anchor.
+- A bridge or tunnel stretch at the chain end of a `BridgeHold`/`TunnelHold` is within `PLAN_DECK_ANCHOR_M` of the
+  anchor that holds it (the hold's other end) and is exempt per place there, not stamped as an obstacle beside it.
 - The write-back replaces the planned part of each stretch and keeps every other point bit for bit; a node inside a
   leg is the same route point in both stretches because both compute it from the same fraction of the leg's length.
+  A zone with one planned and one kept leg is reported as `kept` (the first kept leg's reason) and its planned leg is
+  still written; `grade_limit` and `weight` are those of the first planned leg.
 
 **Routes against each other (controller).** Legs are searched independently against the original graph, in parallel.
 Then, in zone order (by the chain's first stretch id, then along the chain, then leg order), each planned route is

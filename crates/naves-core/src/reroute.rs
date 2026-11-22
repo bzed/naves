@@ -10,9 +10,24 @@
 //! feasibility band, the profile and the grade limit of a leg, [`field`] the cost-to-go field of a leg, [`dubins`]
 //! the Dubins paths the search arrives with and [`search`] the arc search of one leg.
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::f64::consts::PI;
+
+use rayon::prelude::*;
+
+use crate::catalog::Family;
+use crate::conform::core_reach_m;
 use crate::heightmap::Heightmap;
-use crate::roadnet::{RoadGraph, Stretch};
-use crate::smooth::WaterTest;
+use crate::reroute::band::{Band, arrive, drawn_grade, ground_at, leg_limit, relaxed_limits};
+use crate::reroute::field::Field;
+use crate::reroute::raster::{
+    Clearance, Obstacles, Wall, WallKind, crossings_away, exempt_samples, samples_with_arc,
+};
+use crate::reroute::search::{
+    LegInput, LegOutcome, Route, Weights, search_leg_relaxed, self_clearance,
+};
+use crate::roadnet::{RoadGraph, Stretch, crossings_of};
+use crate::smooth::{ChainPlan, Link, WaterTest, plan_chains, radius_at, resample, tight_runs};
 
 pub mod band;
 pub mod dubins;
@@ -253,8 +268,9 @@ impl KeptReason {
 pub enum ZoneOutcome {
     /// Every leg of the zone was planned and written into the graph.
     Planned,
-    /// The zone kept its drawn line, with the reason and a detail for the report (`anchors_close`,
-    /// `crosses_deck`, `tight_run_held`, ...).
+    /// At least one leg of the zone kept its drawn line, with the reason and a detail for the report
+    /// (`anchors_close`, `crosses_deck`, `tight_run_held`, ...). The zone's planned legs are still written into
+    /// the graph; the kept legs keep their drawn line.
     Kept {
         /// Why it kept its line.
         reason: KeptReason,
@@ -395,31 +411,12 @@ pub fn reroute_graph(
     streams: &[Vec<(f64, f64)>],
     params: &RerouteParams,
 ) -> (RoadGraph, RerouteReport) {
-    let _ = (ground, min_radius, in_water, streams, params);
     plan_graph_impl(graph, ground, min_radius, in_water, streams, params)
 }
 
 // ---------------------------------------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------------------------------------
-
-use std::collections::{BTreeMap, BTreeSet};
-use std::f64::consts::PI;
-
-use rayon::prelude::*;
-
-use crate::catalog::Family;
-use crate::conform::core_reach_m;
-use crate::reroute::band::{Band, arrive, drawn_grade, ground_at, leg_limit, relaxed_limits};
-use crate::reroute::field::Field;
-use crate::reroute::raster::{
-    Clearance, Obstacles, Wall, WallKind, crossings_away, exempt_samples, samples,
-};
-use crate::reroute::search::{
-    LegInput, LegOutcome, Route, Weights, search_leg_relaxed, self_clearance,
-};
-use crate::roadnet::crossings_of;
-use crate::smooth::{ChainPlan, Link, plan_chains, radius_at, resample, tight_runs};
 
 /// Tolerance of the positions and arcs, in metres.
 const ARC_EPS: f64 = 1e-9;
@@ -524,8 +521,19 @@ fn heading_at(points: &[(f64, f64)], i: usize) -> f64 {
     (b.1 - a.1).atan2(b.0 - a.0)
 }
 
-/// The three-point radius at sample `i` of a chain line.
+/// The three-point radius at sample `i` of a chain line; at the cut of a ring the line is closed, so its
+/// neighbours are the last sample before the cut and the first one after it.
 fn radius_at_index(chain: &ChainLine, i: usize) -> f64 {
+    if chain.ring && (i == 0 || i + 1 == chain.pts.len()) {
+        let n = chain.pts.len();
+        if let (Some(&a), Some(&b), Some(&c)) = (
+            n.checked_sub(2).and_then(|k| chain.pts.get(k)),
+            chain.pts.first(),
+            chain.pts.get(1),
+        ) {
+            return radius_at(a, b, c);
+        }
+    }
     match (
         i.checked_sub(1).and_then(|k| chain.pts.get(k)),
         chain.pts.get(i),
@@ -533,6 +541,23 @@ fn radius_at_index(chain: &ChainLine, i: usize) -> f64 {
     ) {
         (Some(&a), Some(&b), Some(&c)) => radius_at(a, b, c),
         _ => f64::INFINITY,
+    }
+}
+
+/// Whether the drawn line is tighter than its minimum at the cut of a ring (the closed line's bend).
+fn cut_tight(chain: &ChainLine) -> bool {
+    let n = chain.pts.len();
+    if n < 3 {
+        return false;
+    }
+    let minimum = chain.minr.first().copied().unwrap_or(f64::INFINITY);
+    match (
+        n.checked_sub(2).and_then(|k| chain.pts.get(k)),
+        chain.pts.first(),
+        chain.pts.get(1),
+    ) {
+        (Some(&a), Some(&b), Some(&c)) => usable(minimum) && radius_at(a, b, c) < minimum,
+        _ => false,
     }
 }
 
@@ -610,18 +635,43 @@ struct ChainLine {
     /// What fixes the two ends of the chain.
     start_kind: EndKind,
     end_kind: EndKind,
+    /// Whether the chain is a ring, cut at its first and last sample.
+    ring: bool,
     /// The length of the chain, in metres.
     total: f64,
 }
 
-/// The nodes of the graph and how many stretch arms meet there.
-fn degree_map(graph: &RoadGraph) -> BTreeMap<i64, usize> {
-    let mut degree: BTreeMap<i64, usize> = BTreeMap::new();
-    for s in &graph.stretches {
-        *degree.entry(s.start).or_insert(0) += 1;
-        *degree.entry(s.end).or_insert(0) += 1;
+/// What every chain of one graph needs of the graph: the arms at each node and the tunnel flags, built once.
+struct GraphContext {
+    arms_at: BTreeMap<i64, Vec<usize>>,
+    tunnel: Vec<bool>,
+}
+
+impl GraphContext {
+    fn new(graph: &RoadGraph) -> GraphContext {
+        let mut arms_at: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+        let mut tunnel = Vec::with_capacity(graph.stretches.len());
+        for (i, s) in graph.stretches.iter().enumerate() {
+            arms_at.entry(s.start).or_default().push(i);
+            arms_at.entry(s.end).or_default().push(i);
+            tunnel.push(s.tunnel);
+        }
+        GraphContext { arms_at, tunnel }
     }
-    degree
+
+    /// The number of stretch arms at a node (a loop counts twice).
+    fn degree(&self, node: i64) -> usize {
+        self.arms_at.get(&node).map_or(1, Vec::len)
+    }
+
+    /// Whether a stretch at the node other than `stretch` has a different tunnel flag.
+    fn other_tunnel(&self, node: i64, stretch: usize) -> bool {
+        let current = self.tunnel.get(stretch).copied().unwrap_or(false);
+        self.arms_at.get(&node).is_some_and(|arms| {
+            arms.iter()
+                .any(|&i| i != stretch && self.tunnel.get(i).copied().unwrap_or(false) != current)
+        })
+    }
 }
 
 /// The node a link enters and the node it leaves.
@@ -639,13 +689,16 @@ fn exit_node(graph: &RoadGraph, link: &Link) -> i64 {
         .map_or(0, |s| if link.reversed { s.start } else { s.end })
 }
 
-/// The line of a chain, or `None` with the reason in `skipped`.
+/// The line of a chain, or `None` with the reason in `skipped`. Every sample carries the **true** arc of the
+/// drawn line at that point, not the chord length of the resampled points: the write-back places the original
+/// vertices by the same measure, so a node inside a leg is one point and no vertex is written after the route.
 #[expect(
     clippy::too_many_lines,
     reason = "the chain and its per-sample tables are built in one pass over the same state"
 )]
 fn build_chain_line(
     graph: &RoadGraph,
+    ctx: &GraphContext,
     plan: &ChainPlan,
     min_of: &[f64],
     half_of: &[f64],
@@ -676,7 +729,9 @@ fn build_chain_line(
         return None;
     }
     let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut arc: Vec<f64> = Vec::new();
     let mut bounds: Vec<usize> = Vec::new();
+    let mut total = 0.0_f64;
     for link in &plan.links {
         let s = graph.stretches.get(link.stretch)?;
         let mut line = s.points.clone();
@@ -684,13 +739,29 @@ fn build_chain_line(
             line.reverse();
         }
         let sampled = resample(&line, SAMPLE_M);
-        let skip = usize::from(!pts.is_empty());
-        pts.extend(sampled.into_iter().skip(skip));
+        let segments = sampled.len().saturating_sub(1);
+        let link_len = poly_length(&line);
+        if pts.is_empty()
+            && let Some(&p) = sampled.first()
+        {
+            pts.push(p);
+            arc.push(0.0);
+        }
+        for k in 1..=segments {
+            if let Some(&p) = sampled.get(k) {
+                pts.push(p);
+            }
+            let at = if segments > 0 {
+                total + link_len * fl(k) / fl(segments)
+            } else {
+                total
+            };
+            arc.push(at);
+        }
+        total += link_len;
         bounds.push(pts.len().saturating_sub(1));
     }
     let count = pts.len();
-    let arc = cumulative(&pts);
-    let total = arc.last().copied().unwrap_or(0.0);
     let mut stretch_of = vec![0_usize; count];
     let mut minr = vec![f64::INFINITY; count];
     let mut half = vec![0.0_f64; count];
@@ -733,22 +804,15 @@ fn build_chain_line(
     let start_node = entry_node(graph, &first);
     let end_node = exit_node(graph, plan.links.last()?);
     let ring = start_node == end_node;
-    let degree = degree_map(graph);
     let kind_at_node = |node: i64, link: &Link| -> EndKind {
         if ring {
             return EndKind::RingCut(node);
         }
-        match degree.get(&node).copied().unwrap_or(1) {
+        match ctx.degree(node) {
             1 => EndKind::DeadEnd(node),
             n if n >= 3 => EndKind::Junction(node),
             _ => {
-                let current_tunnel = graph.stretches.get(link.stretch).is_some_and(|s| s.tunnel);
-                let other_tunnel = graph.stretches.iter().enumerate().any(|(i, s)| {
-                    i != link.stretch
-                        && (s.start == node || s.end == node)
-                        && s.tunnel != current_tunnel
-                });
-                if other_tunnel {
+                if ctx.other_tunnel(node, link.stretch) {
                     EndKind::TunnelHold
                 } else {
                     EndKind::Sharp
@@ -786,6 +850,7 @@ fn build_chain_line(
         held,
         start_kind,
         end_kind,
+        ring,
         total,
     })
 }
@@ -854,13 +919,19 @@ struct LegSeed {
     end: EndKind,
 }
 
-/// A zone under construction: its arc range and the tight runs that were merged into it.
-type MergedZone = (f64, f64, Vec<(usize, usize)>);
+/// A zone under construction: its sample range and the tight runs that were merged into it.
+type MergedZone = (usize, usize, Vec<(usize, usize)>);
 
-/// The tight runs of a chain, each grown by the lead and merged where they touch.
+/// The tight runs of a chain, each grown by the lead and merged in sample space, so that two grown zones that
+/// would share a sample are one zone.
 fn find_zones(chain: &ChainLine, lead: f64) -> Vec<(usize, usize, Vec<usize>, usize)> {
-    let runs = tight_runs(&chain.pts, &chain.minr);
+    let mut runs = tight_runs(&chain.pts, &chain.minr);
+    // a ring is closed: the bend at its cut is between the last segment and the first
+    if chain.ring && cut_tight(chain) {
+        runs.insert(0, (0, 0));
+    }
     let total = chain.total;
+    let last_index = chain.pts.len().saturating_sub(1);
     let mut merged: Vec<MergedZone> = Vec::new();
     for (a, b) in runs {
         let (Some(&ma), Some(&mb)) = (chain.minr.get(a), chain.minr.get(b)) else {
@@ -871,24 +942,24 @@ fn find_zones(chain: &ChainLine, lead: f64) -> Vec<(usize, usize, Vec<usize>, us
         }
         let za = (chain.arc.get(a).copied().unwrap_or(0.0) - lead * ma).max(0.0);
         let zb = (chain.arc.get(b).copied().unwrap_or(0.0) + lead * mb).min(total);
+        let s = index_of_arc(&chain.arc, za);
+        let mut e = index_of_arc(&chain.arc, zb);
+        if chain.arc.get(e).copied().unwrap_or(0.0) < zb - ARC_EPS {
+            e += 1;
+        }
+        let e = e.min(last_index);
         match merged.last_mut() {
-            Some(last) if za <= last.1 + ARC_EPS => {
-                last.1 = last.1.max(zb);
+            // the rounding can make two grown zones share a sample: then they are one zone
+            Some(last) if s <= last.1 => {
+                last.1 = last.1.max(e);
                 last.2.push((a, b));
             }
-            _ => merged.push((za, zb, vec![(a, b)])),
+            _ => merged.push((s, e, vec![(a, b)])),
         }
     }
-    let last_index = chain.pts.len().saturating_sub(1);
     merged
         .into_iter()
-        .map(|(za, zb, runs)| {
-            let s = index_of_arc(&chain.arc, za);
-            let mut e = index_of_arc(&chain.arc, zb);
-            if chain.arc.get(e).copied().unwrap_or(0.0) < zb - ARC_EPS {
-                e += 1;
-            }
-            let e = e.min(last_index);
+        .map(|(s, e, runs)| {
             let tight: Vec<usize> = runs
                 .into_iter()
                 .flat_map(|(a, b)| a..=b)
@@ -935,6 +1006,10 @@ fn make_zone_work(
     }
     let length =
         chain.arc.get(e).copied().unwrap_or(0.0) - chain.arc.get(s).copied().unwrap_or(0.0);
+    if fixed.is_none() && chain.ring && tight.contains(&0) {
+        // the bend is at the fixed ring cut: the route cannot change the angle there
+        fixed = Some((KeptReason::Held, "ring_cut".to_string()));
+    }
     if fixed.is_none() && length > params.max_zone_m {
         fixed = Some((KeptReason::NoRoute, "too_long".to_string()));
     }
@@ -1167,7 +1242,10 @@ fn plan_leg(
         return held_leg(job, KeptReason::Held, "anchors_close", 0.0, drawn_mean);
     }
     let families = leg_families(graph, chain, job.a, job.b);
-    let Some((limit, ceiling)) = drawn.as_ref().and_then(|d| leg_limit(&families, d)) else {
+    let Some(drawn) = drawn else {
+        return held_leg(job, KeptReason::NoRoute, "no_ground", 0.0, drawn_mean);
+    };
+    let Some((limit, ceiling)) = leg_limit(&families, &drawn) else {
         return held_leg(job, KeptReason::Held, "no_family", 0.0, drawn_mean);
     };
     let Some(limits) = relaxed_limits(limit, ceiling, params.grade_relax_steps) else {
@@ -1207,11 +1285,23 @@ fn plan_leg(
     );
     obstacles.stamp_water(in_water);
     let own: BTreeSet<usize> = chain.links.iter().map(|l| l.stretch).collect();
-    let fixed_anchors: Vec<(f64, f64)> = [job.start, job.end]
+    let mut fixed_anchors: Vec<(f64, f64)> = [job.start, job.end]
         .iter()
         .zip([start_anchor.at, end_anchor.at])
         .filter_map(|(&kind, at)| kind.fixed().then_some(at))
         .collect();
+    // A bridge or tunnel hold ends at the chain's end node; a deck or tunnel there is part of the anchor, not an
+    // obstacle beside it (the tunnel of a TunnelHold is a chain of its own and would otherwise block the start).
+    if matches!(job.start, EndKind::TunnelHold | EndKind::BridgeHold)
+        && let Some(&p) = chain.pts.first()
+    {
+        fixed_anchors.push(p);
+    }
+    if matches!(job.end, EndKind::TunnelHold | EndKind::BridgeHold)
+        && let Some(&p) = chain.pts.last()
+    {
+        fixed_anchors.push(p);
+    }
     let mut walls: Vec<Wall> = Vec::new();
     let mut deck_crossed = false;
     let filter = (box_min.0 - clearance, box_min.1 - clearance);
@@ -1225,9 +1315,10 @@ fn plan_leg(
         let near_fixed = fixed_anchors
             .iter()
             .any(|p| poly_dist(*p, &s.points) <= params.deck_anchor_m);
+        let cross = crossings_away(orig, &s.points, anchors, end_m);
         if deck && !near_fixed {
             obstacles.stamp_road(&s.points, reach_other, &[]);
-            if crossings_away(orig, &s.points, anchors, end_m) > 0 {
+            if cross > 0 {
                 deck_crossed = true;
             }
         } else {
@@ -1235,10 +1326,9 @@ fn plan_leg(
             let flags = exempt_samples(&s.points, orig, near, params.exempt_extend_m);
             obstacles.stamp_road(&s.points, reach_other, &flags);
             if flags.iter().any(|&f| f) {
-                let allowed = crossings_away(orig, &s.points, anchors, end_m);
                 walls.push(Wall {
                     line: s.points.clone(),
-                    allowed,
+                    allowed: cross,
                     kind: WallKind::Road,
                     anchors,
                     end_m,
@@ -1246,23 +1336,19 @@ fn plan_leg(
             }
         }
     }
+    // the road the leg continues into: the first `PLAN_SELF_FREE` along the chain from each anchor is not an
+    // obstacle. The distance is measured along the chain (the arc of its 2 m samples), not as the crow flies.
     let self_free = obstacles.threshold(clearance) + reach_own;
     if let Some(before) = chain.pts.get(..=job.a)
         && before.len() >= 2
     {
-        let flags: Vec<bool> = samples(before)
-            .iter()
-            .map(|p| dist(*p, start_anchor.at) <= self_free)
-            .collect();
+        let flags = self_free_flags(before, true, self_free);
         obstacles.stamp_road(before, reach_own, &flags);
     }
     if let Some(after) = chain.pts.get(job.b..)
         && after.len() >= 2
     {
-        let flags: Vec<bool> = samples(after)
-            .iter()
-            .map(|p| dist(*p, end_anchor.at) <= self_free)
-            .collect();
+        let flags = self_free_flags(after, false, self_free);
         obstacles.stamp_road(after, reach_own, &flags);
     }
     for stream in streams {
@@ -1295,18 +1381,6 @@ fn plan_leg(
             original_feasible,
         );
     }
-    let Some(drawn) = drawn else {
-        return kept_leg(
-            job,
-            KeptReason::NoRoute,
-            "no_ground",
-            0,
-            false,
-            limit,
-            drawn_mean,
-            original_feasible,
-        );
-    };
     let band = Band::from_params(params, limit, cell);
     let field = Field::build(
         box_min,
@@ -1406,17 +1480,36 @@ fn plan_leg(
     }
 }
 
+/// Which samples of the own chain outside a leg are exempt: the first `self_free` metres **along the line** from
+/// its end (`from_end`, the part before a start anchor) or from its start (the part after an end anchor), on the
+/// line's 2 m samples. The road a leg continues into is free for that length along the chain, not by straight-line
+/// distance from the anchor.
+fn self_free_flags(line: &[(f64, f64)], from_end: bool, self_free: f64) -> Vec<bool> {
+    let samples = samples_with_arc(line);
+    let total = samples.last().map_or(0.0, |&(_, arc)| arc);
+    samples
+        .iter()
+        .map(|&(_, arc)| {
+            if from_end {
+                total - arc <= self_free
+            } else {
+                arc <= self_free
+            }
+        })
+        .collect()
+}
+
 /// The tight length of a chain, in the smoothing's measure: half of every segment next to a tight sample.
 fn chain_tight_length(chain: &ChainLine) -> f64 {
     let n = chain.pts.len();
     let mut total = 0.0;
     for k in 0..n.saturating_sub(1) {
-        let (Some(&a), Some(&b)) = (chain.pts.get(k), chain.pts.get(k + 1)) else {
+        let (Some(&from), Some(&to)) = (chain.arc.get(k), chain.arc.get(k + 1)) else {
             continue;
         };
-        let half = dist(a, b) / 2.0;
+        let half = (to - from) / 2.0;
         for e in [k, k + 1] {
-            if e == 0 || e + 1 >= n {
+            if !chain.ring && (e == 0 || e + 1 >= n) {
                 continue;
             }
             let minimum = chain.minr.get(e).copied().unwrap_or(f64::INFINITY);
@@ -1571,12 +1664,20 @@ fn plan_graph_impl(
         .iter()
         .map(|s| s.family.width_m() / 2.0)
         .collect();
+    let context = GraphContext::new(graph);
     let plans = plan_chains(graph);
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut chains: Vec<ChainLine> = Vec::new();
     for plan in &plans {
-        if let Some(chain) = build_chain_line(graph, plan, &min_of, &half_of, params, &mut skipped)
-        {
+        if let Some(chain) = build_chain_line(
+            graph,
+            &context,
+            plan,
+            &min_of,
+            &half_of,
+            params,
+            &mut skipped,
+        ) {
             chains.push(chain);
         }
     }
@@ -1707,9 +1808,15 @@ fn plan_graph_impl(
     let mut after_skipped: Vec<(String, String)> = Vec::new();
     let mut tight_after = 0.0;
     for plan in &after_plans {
-        if let Some(chain) =
-            build_chain_line(&result, plan, &min_of, &half_of, params, &mut after_skipped)
-        {
+        if let Some(chain) = build_chain_line(
+            &result,
+            &context,
+            plan,
+            &min_of,
+            &half_of,
+            params,
+            &mut after_skipped,
+        ) {
             tight_after += chain_tight_length(&chain);
         }
     }
@@ -1806,7 +1913,8 @@ fn build_zone(
         chain.arc.get(e).copied().unwrap_or(0.0) - chain.arc.get(s).copied().unwrap_or(0.0);
     let mut max_stray = 0.0_f64;
     let mut planned_grade = 0.0_f64;
-    let mut grade_limit = zone_grade_limit(chain, work, graph, ground, params);
+    let fallback_limit = zone_grade_limit(chain, work, graph, ground, params);
+    let mut grade_limit: Option<f64> = None;
     let mut relax_steps = 0;
     let (mut climb, mut earth, mut cut, mut fill) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
     for r in &planned {
@@ -1816,7 +1924,8 @@ fn build_zone(
             length_after += route.length_m - original;
             max_stray = max_stray.max(route.max_move_m);
             planned_grade = planned_grade.max(r.planned_grade);
-            grade_limit = r.grade_limit;
+            // the limit of the first planned leg, as `weight` is its weight
+            grade_limit = grade_limit.or(Some(r.grade_limit));
             relax_steps = relax_steps.max(r.relax_steps);
             climb += route.climb_m;
             earth += route.earthwork_m2;
@@ -1872,7 +1981,7 @@ fn build_zone(
         drawn_grade: drawn_mean,
         drawn_grade_window: drawn_window,
         planned_grade,
-        grade_limit,
+        grade_limit: grade_limit.unwrap_or(fallback_limit),
         relax_steps,
         climb_m: climb,
         earthwork_m2: earth,
@@ -1954,5 +2063,27 @@ fn pair_partners(zones: &mut [PlannedZone]) {
         if let Some(zone) = zones.get_mut(b) {
             zone.partner = Some(ida);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_self_free_part_of_the_own_chain_is_measured_along_it() {
+        // 100 m out, then back to a point 10 m from the start: the end is 10 m away as the crow flies but 120 m
+        // along the line, so it is not in the first 32 m of the road the leg continues into
+        let line = [(0.0, 0.0), (100.0, 0.0), (100.0, 10.0), (0.0, 10.0)];
+        let flags = self_free_flags(&line, false, 32.0);
+        assert_eq!(flags.first(), Some(&true));
+        assert_eq!(
+            flags.last(),
+            Some(&false),
+            "the far end was exempt by its straight-line distance"
+        );
+        let from_end = self_free_flags(&line, true, 32.0);
+        assert_eq!(from_end.last(), Some(&true));
+        assert_eq!(from_end.first(), Some(&false));
     }
 }
