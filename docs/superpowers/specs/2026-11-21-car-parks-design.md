@@ -411,10 +411,13 @@ and reported (`lot_steep`). On the example 44: 42 car parks, the caravan site P2
 - beyond the shoulder the earthworks flood from it with the hillside cut and fill slopes, capped at
   `MAX_EARTHWORK_M`, as from a road: the lot blends into the terrain as a road's edge does;
 - a hole keeps its own ground beyond the shoulder of its edge;
-- a road that runs over or beside the lot's claimed ground and whose height there differs from the lot's target by
-  more than `CONFLICT_M` is reported: one `RoadConflict` per road and lot, at the ring vertex where the difference is
-  worst (Task 7 fix round 1). Inside a lot the road's core touches the lot's cores directly, so no flooded vertex lies
-  between them and `clamp_flooded` cannot see the face; this rule reports it. A `LevelPatch` keeps its old behaviour.
+- a road that runs over or beside the lot's claimed ground and differs from the lot's target **at the road's edge** by
+  more than `CONFLICT_M` is reported: the road's height at the nearest centre-line point against the lot's target at
+  the point half the road's width towards the vertex, so a cross slope of the lot does not count. One `RoadConflict`
+  per road, lot and 50 m square (`CONFLICT_REGION_M`), at the point on the road's edge where the difference is worst
+  in that square, in a deterministic order (Task 7 fix round 1 and 2). Inside a lot the road's core touches the lot's
+  cores directly, so no flooded vertex lies between them and `clamp_flooded` cannot see the face; this rule reports
+  it. A `LevelPatch` keeps its old behaviour.
 
 **Access roads.** Each entry becomes a `Junction` of a new kind `JunctionKind::LotEntry` at the access road's placed
 end, with the access stretch in its `stretches`, `patch_m` half the road's width, and the height of the lot's target

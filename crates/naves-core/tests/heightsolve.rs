@@ -2948,7 +2948,10 @@ fn a_free_access_road_of_a_hundred_metres_ends_at_the_lots_surface() {
     for j in joints.iter().filter(|j| j.0 >= 279.0) {
         assert!((j.2 - 101.0).abs() < 1e-6, "{j:?}");
     }
-    // the joints over the lot that only the soft target pulls follow it within the conflict tolerance
+    // The joints over the lot that only the soft target pulls follow it within the conflict tolerance. The bound is
+    // the design's `CONFLICT_M` (0.3 m: the largest difference between a road and a lot that is not a step, see the
+    // spec), not a measured value; the joint at the lot's edge is about 0.28 m below the surface with a soft
+    // target. A change of the solve's weights needs a deliberate decision here.
     for j in joints.iter().filter(|j| j.0 >= 250.0) {
         assert!((j.2 - 101.0).abs() <= 0.3, "{j:?}");
     }
@@ -3119,9 +3122,9 @@ fn a_through_road_keeps_its_ceiling_where_the_lot_slopes_too_much() {
 
 #[test]
 fn a_dead_end_that_ends_at_the_lots_edge_is_not_cut_and_its_ground_target_stays() {
-    // the real uncovered case: the road ends half a metre outside the lot, so the lot step cuts nothing (the inside
-    // part is shorter than LOT_ENTRY_M); there is no entry junction and the end joint keeps the original ground,
-    // while the terrain beside it is shaped to the surface. The difference is reported by the lot rule (I3).
+    // a road that ends 2.5 m outside the lot, so the lot step cuts nothing (the inside part is shorter than
+    // LOT_ENTRY_M); there is no entry junction and the end joint keeps the original ground, while the terrain
+    // beside it is shaped to the surface. The difference is reported by the lot rule (I3).
     let hm = terrain(128, 6.25, |_, _| 100.0);
     let net = network(vec![pieces(
         "a",
@@ -3291,4 +3294,91 @@ fn an_entry_follows_the_ground_it_gets_when_the_surface_is_scaled() {
             .expect("a joint");
         assert!((joint.2 - target).abs() <= 0.05, "{joint:?} vs {target}");
     }
+}
+
+#[test]
+fn an_access_road_ending_on_a_cross_sloping_lot_is_no_conflict() {
+    // the ground and the lot rise 8 % across the road: at the road's edge the lot is 0.28 m above it (under the
+    // tolerance), at the outer edge of the end ring it is 1 m. The cross slope must not count.
+    let hm = terrain(128, 6.25, |_, y| 100.0 + 0.08 * (y - 300.0));
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (190.0, 300.0),
+        (290.0, 300.0),
+        10.0,
+    )]);
+    let lot = LotSurface {
+        group: 0,
+        members: vec!["osm/way/1".to_string()],
+        polygons: vec![(rectangle(250.0, 250.0, 400.0, 350.0), Vec::new())],
+        surface: Surface {
+            at: (330.0, 300.0),
+            coeffs: [100.0, 0.0, 0.08, 0.0, 0.0, 0.0],
+            form: Form::Plane,
+            lambda: 1.0,
+        },
+    };
+    let entry = CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (290.0, 300.0),
+        node: 9,
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[entry],
+        &hm,
+    );
+    let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let patch = AreaPatch {
+        surface: lot,
+        rank: 0,
+    };
+    let out = conform_areas(&hm, &p.strips, &[], std::slice::from_ref(&patch), &[]).unwrap();
+    assert!(
+        out.conflicts.is_empty(),
+        "the cross slope reports: {:?}",
+        out.conflicts
+    );
+}
+
+#[test]
+fn a_dead_end_two_and_a_half_metres_inside_the_lot_takes_the_surface() {
+    // the road ends 2.5 m inside the lot: shorter than LOT_ENTRY_M, so the lot step cuts nothing and there is no
+    // entry junction. The end joint is free and only the soft ground target pulls it up towards the surface.
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (192.5, 300.0),
+        (242.5, 300.0),
+        10.0,
+    )]);
+    let lot = lot_surface(
+        "osm/way/1",
+        rectangle(240.0, 250.0, 400.0, 350.0),
+        (325.0, 300.0),
+        101.0,
+    );
+    let mut junctions = Junctions::default();
+    add_lot_entries(&mut junctions, &net, std::slice::from_ref(&lot), &[], &hm);
+    assert!(
+        junctions
+            .points
+            .iter()
+            .all(|j| j.kind != JunctionKind::LotEntry)
+    );
+    let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let end = p.strips[0].joints.last().unwrap();
+    // the soft target lifts the free end joint about half a metre towards the surface (today 100.53), not to it
+    assert!(end.2 > 100.4 && end.2 < 101.0, "{end:?}");
+    assert!(
+        (end.2 - 101.0).abs() > 0.3,
+        "the end reached the surface: {end:?}"
+    );
 }

@@ -1417,3 +1417,130 @@ fn a_vertex_without_ground_under_a_lot_is_not_claimed() {
     assert!(f64::from(out.heightmap.at(35, 35)).is_nan());
     assert!((shaped(&out, 104.0, 104.0) - 101.0).abs() < 1e-4);
 }
+
+#[test]
+fn a_road_lying_on_a_cross_sloping_lot_is_no_conflict() {
+    // an 8 % cross slope: the lot's target at the road's edge is 0.28 m above the level road, under the tolerance,
+    // although it is 1.03 m at the outer edge of the road's ring. The cross slope of the ground must not count.
+    let base = terrain(64, 4.0, |_, y| 100.0 + 0.08 * (y - 140.0));
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        100.0,
+        (0.0, 0.08),
+        1.0,
+    );
+    let on = road((100.0, 140.0), (180.0, 140.0), 100.0, 100.0, 3.5, 2);
+    let out = conform_areas(&base, &[on], &[], std::slice::from_ref(&lot), &[]).unwrap();
+    assert!(
+        out.conflicts.is_empty(),
+        "a road on the lot reports: {:?}",
+        out.conflicts
+    );
+    // half a metre below the surface: the step at the road's edge is 0.78 m and is reported
+    let low = road((100.0, 140.0), (180.0, 140.0), 99.5, 99.5, 3.5, 2);
+    let out = conform_areas(&base, &[low], &[], std::slice::from_ref(&lot), &[]).unwrap();
+    assert!(
+        out.conflicts.iter().any(|conflict| {
+            conflict.height_difference_m > 0.3 && (conflict.at.1 - 140.0).abs() >= 3.5 - 1e-6
+        }),
+        "{:?}",
+        out.conflicts
+    );
+}
+
+#[test]
+fn a_road_that_parts_from_a_lot_in_two_places_gives_two_records() {
+    // one group of two members, 300 m apart; a straight road at 100 over their surface at 100.5. The conflict is
+    // counted by place: one record where each member is crossed, and one for the vertices within a member.
+    let base = terrain(160, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![
+            (ring(110.0, 250.0, 140.0, 350.0), Vec::new()),
+            (ring(460.0, 250.0, 490.0, 350.0), Vec::new()),
+        ],
+        (300.0, 300.0),
+        100.5,
+        (0.0, 0.0),
+        1.0,
+    );
+    let road = road((0.0, 310.0), (600.0, 310.0), 100.0, 100.0, 3.5, 2);
+    let out = conform_areas(&base, &[road], &[], std::slice::from_ref(&lot), &[]).unwrap();
+    assert_eq!(out.conflicts.len(), 2, "{:?}", out.conflicts);
+    assert!(out.conflicts.iter().all(|c| c.height_difference_m > 0.3));
+    let first = out
+        .conflicts
+        .iter()
+        .filter(|c| (100.0..150.0).contains(&c.at.0))
+        .count();
+    let second = out
+        .conflicts
+        .iter()
+        .filter(|c| (450.0..500.0).contains(&c.at.0))
+        .count();
+    assert_eq!((first, second), (1, 1), "{:?}", out.conflicts);
+}
+
+#[test]
+fn a_road_lot_edge_point_without_ground_is_skipped() {
+    // the ground is missing at a vertex between the road and the ring vertex: the edge point there has no height and
+    // the pair is not compared, but the rest of the road and lot are (the test is that this does not panic)
+    let base = terrain(64, 4.0, |x, y| {
+        if (x - 140.0).abs() < 1e-9 && (y - 144.0).abs() < 1e-9 {
+            f64::NAN
+        } else {
+            100.0
+        }
+    });
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        100.5,
+        (0.0, 0.0),
+        1.0,
+    );
+    let road = road((100.0, 140.0), (180.0, 140.0), 100.0, 100.0, 3.5, 2);
+    let out = conform_areas(&base, &[road], &[], std::slice::from_ref(&lot), &[]).unwrap();
+    assert!(!out.conflicts.is_empty(), "{:?}", out.conflicts);
+    assert!(
+        out.conflicts
+            .iter()
+            .all(|c| c.at.0.is_finite() && c.at.1.is_finite())
+    );
+}
+
+#[test]
+fn two_level_patches_at_different_heights_report_the_worst_place() {
+    // two level patches that overlap with opposite tilts: their difference grows across the overlap, so the clash
+    // is recorded at the vertex where it is worst (not at the first one)
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let patches = [
+        LevelPatch {
+            at: (140.0, 140.0),
+            radius: 24.0,
+            height: 100.0,
+            gradient: (0.05, 0.0),
+            inner_radius: 0.0,
+            rank: 2,
+        },
+        LevelPatch {
+            at: (140.0, 140.0),
+            radius: 24.0,
+            height: 100.0,
+            gradient: (-0.05, 0.0),
+            inner_radius: 0.0,
+            rank: 3,
+        },
+    ];
+    let out = conform(&base, &[], &patches).unwrap();
+    assert_eq!(out.conflicts.len(), 1, "{:?}", out.conflicts);
+    let worst = &out.conflicts[0];
+    assert!(
+        (worst.at.0 - 140.0).abs() >= 16.0,
+        "not at the edge of the overlap: {worst:?}"
+    );
+    assert!(
+        (worst.height_difference_m - 2.0 * 0.05 * (worst.at.0 - 140.0).abs()).abs() < 0.3,
+        "{worst:?}"
+    );
+}

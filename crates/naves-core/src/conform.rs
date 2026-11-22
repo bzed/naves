@@ -272,6 +272,8 @@ struct Hit {
     distance: f64,
     /// The height of the centre line at the closest point.
     height: f64,
+    /// The vector from the closest point of the centre line to the vertex (as long as `distance`).
+    toward: (f64, f64),
     /// The segment of the strip that is closest.
     segment: usize,
 }
@@ -318,6 +320,7 @@ fn core_vertices(strip: &RoadStrip, grid: Grid, reach: f64) -> BTreeMap<usize, V
                     let hit = Hit {
                         distance,
                         height: from.2 + along * (to.2 - from.2),
+                        toward: (px - from.0 - along * dx, py - from.1 - along * dy),
                         segment,
                     };
                     let hits = found.entry(row * grid.size + col).or_default();
@@ -747,6 +750,8 @@ struct Candidate {
     /// Distance from the vertex to the edge of the road (to the centre line less half the width), or of the
     /// patch (to its point less its radius); not positive within the width.
     edge: f64,
+    /// For a road, the vector from the nearest centre-line point to the vertex; `(0, 0)` for a patch.
+    toward: (f64, f64),
     cut: f32,
     fill: f32,
 }
@@ -825,6 +830,7 @@ fn candidates(
                     height,
                     distance: hit.distance,
                     edge: hit.distance - strip.half_width,
+                    toward: hit.toward,
                     cut: if steep { narrow(FACE_SLOPE) } else { cut },
                     fill,
                 });
@@ -896,6 +902,7 @@ fn patch_candidates(
                     height: narrow(plane),
                     distance,
                     edge: distance - patch.radius,
+                    toward: (0.0, 0.0),
                     cut,
                     fill,
                 });
@@ -971,6 +978,7 @@ fn area_candidates(
                     height: narrow(height),
                     distance,
                     edge: if inside { -distance } else { distance },
+                    toward: (0.0, 0.0),
                     cut,
                     fill,
                 });
@@ -1059,15 +1067,28 @@ fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
     contested
 }
 
+/// The worst difference per pair of owners, at the place where it is worst.
+type Clashes = BTreeMap<(usize, usize), (f64, (f64, f64))>;
+/// The worst road-versus-lot difference per road and lot and [`CONFLICT_REGION_M`] square, at the place of the
+/// conflict (the point on the road's edge).
+type LotClashes = BTreeMap<(usize, usize, i64, i64), (f64, (f64, f64))>;
+
+/// The number of the [`CONFLICT_REGION_M`] square a place lies in, as the flooded-ground conflicts are bucketed.
+fn region(metres: f64) -> i64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a region number of a map position"
+    )]
+    let number = (metres / CONFLICT_REGION_M).floor() as i64;
+    number
+}
+
 /// Gives every vertex near a road or a patch the height of what claims it. Where two want different heights
 /// the vertex goes to the one whose edge is nearer (so to the one that has it inside its own width), an exact
 /// tie to the higher rank; the height difference becomes a face between them. It is a clash only where the
 /// vertex is within the width of both.
-/// Returns the cores and, per pair of owners, the worst clash and where it is.
-#[expect(
-    clippy::type_complexity,
-    reason = "a map from a pair of owners to (difference, place)"
-)]
+/// Returns the cores, per pair of owners the worst clash and where it is, and the road-versus-lot differences per
+/// place (see [`LotClashes`]).
 fn claim_cores(
     strips: &[RoadStrip],
     patches: &[LevelPatch],
@@ -1076,12 +1097,10 @@ fn claim_cores(
     base: &Heightmap,
     under: &[Option<Under>],
     own: &[Vec<usize>],
-) -> (
-    Vec<Option<Core>>,
-    BTreeMap<(usize, usize), (f64, (f64, f64))>,
-) {
+) -> (Vec<Option<Core>>, Clashes, LotClashes) {
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
-    let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
+    let mut clashes: Clashes = BTreeMap::new();
+    let mut lot_clashes: LotClashes = BTreeMap::new();
     let area_start = strips.len() + patches.len();
     // the worst difference per pair of owners, at the place where it is worst
     let mut record = |a: usize, b: usize, difference: f64, at: (f64, f64)| {
@@ -1103,8 +1122,9 @@ fn claim_cores(
             }
         }
         // a road that parts from a lot's claimed ground: inside a lot the road's core touches the lot's cores
-        // directly, so no flooded vertex lies between them and `clamp_flooded` cannot report the face. The ring
-        // vertex where the road's height and the lot's target differ most is the report.
+        // directly, so no flooded vertex lies between them and `clamp_flooded` cannot report the face. Compare the
+        // road's height with the lot's target **at the road's edge**, where the road meets the lot, not at the ring
+        // vertex (a cross slope would otherwise count), and report one conflict per 50 m square of that place.
         for (i, a) in wanting.iter().enumerate() {
             for b in wanting.iter().skip(i + 1) {
                 let (road, area) = if !a.patch && b.owner >= area_start {
@@ -1114,9 +1134,36 @@ fn claim_cores(
                 } else {
                     continue;
                 };
-                let difference = f64::from((road.height - area.height).abs());
-                if difference > CONFLICT_M {
-                    record(road.owner, area.owner, difference, grid.position(vertex));
+                let place = grid.position(vertex);
+                // an area candidate survives only where no road has the vertex inside its width, so the road's
+                // ring distance and its distance beyond the width are both positive here
+                let shrink = road.edge / road.distance;
+                let at = (
+                    place.0 - road.toward.0 * shrink,
+                    place.1 - road.toward.1 * shrink,
+                );
+                let number = area.owner - area_start;
+                let Some(surface) = areas.get(number) else {
+                    continue;
+                };
+                let ground = f64::from(base.sample(at.0, at.1).height);
+                let target = surface.surface.target(at, ground);
+                if !(ground.is_finite() && target.is_finite()) {
+                    continue;
+                }
+                let difference = (f64::from(road.height) - target).abs();
+                if difference <= CONFLICT_M {
+                    continue;
+                }
+                let key = (
+                    road.owner.min(area.owner),
+                    road.owner.max(area.owner),
+                    region(at.0),
+                    region(at.1),
+                );
+                let worst = lot_clashes.entry(key).or_insert((difference, at));
+                if difference > worst.0 {
+                    *worst = (difference, at);
                 }
             }
         }
@@ -1138,7 +1185,7 @@ fn claim_cores(
             });
         }
     }
-    (cores, clashes)
+    (cores, clashes, lot_clashes)
 }
 
 /// The vertices connected to a core, or to ground under a deck, through ground that breaks the limits, and the
@@ -1221,8 +1268,9 @@ pub fn conform(
 
 /// Shapes `base` to fit `strips`, the level `patches`, the lot `areas` and the decks of `bridges`; `base` itself is
 /// not changed. [`conform_bridges`] is the same without lots. A road that runs over or beside a lot's claimed ground
-/// and parts from the lot's target there by more than the conflict tolerance (0.3 m) is reported in
-/// [`Conformed::conflicts`], at the ring vertex where the difference is worst for that road and lot.
+/// and, at the road's edge, differs from the lot's target there by more than the conflict tolerance (0.3 m) is
+/// reported in [`Conformed::conflicts`]: one record per road, lot and 50 m square, at the place on the road's edge
+/// where the difference is worst in that square.
 ///
 /// # Errors
 /// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.
@@ -1257,7 +1305,8 @@ pub fn conform_areas(
     };
     let under = bridge_ceilings(bridges, grid);
     let own = own_strips(bridges, strips);
-    let (cores, clashes) = claim_cores(strips, patches, areas, grid, base, &under, &own);
+    let (cores, clashes, lot_clashes) =
+        claim_cores(strips, patches, areas, grid, base, &under, &own);
     if cores.iter().all(Option::is_none) && under.iter().all(Option::is_none) {
         return Ok(Conformed {
             heightmap: base.clone(),
@@ -1302,6 +1351,15 @@ pub fn conform_areas(
             bridge: false,
         })
         .collect();
+    conflicts.extend(
+        lot_clashes
+            .into_values()
+            .map(|(difference, at)| RoadConflict {
+                at,
+                height_difference_m: difference,
+                bridge: false,
+            }),
+    );
     conflicts.extend(impossible);
     let buried = buried_under(bridges, patches, strips.len(), &cores, &heights, grid);
     let shaped = Heightmap {
@@ -1491,14 +1549,6 @@ fn clamp_flooded(
             ground.clamp(lower, upper)
         } else {
             let at = grid.position(vertex);
-            let region = |metres: f64| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "a region number of a map position"
-                )]
-                let number = (metres / CONFLICT_REGION_M).floor() as i64;
-                number
-            };
             let difference = f64::from(lower - upper);
             // the nearest source of the limits is the cut under a deck, not a road
             let bridge = fields.nearest.get(vertex) == Some(&u32::MAX);
