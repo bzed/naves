@@ -72,7 +72,13 @@ empty numbers and no violations, not an error. `validation_list` takes an option
 the tools are missing, the error starts with "Roads need dayzmake" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the
-progress lines the build printed, `smoothing`, the one-line summary of the road smoothing, and `lots`, the one-line summary of the lot stage (both `null` while their stage is off, as they are in this release; with the smoothing on: chains, largest move, tight length before and after, zones reached, the numbers in `roads.smoothing` of `build/report.json`; with the lot stage on: the lots by kind, the smoothed ones by form and surface, steep and move-limited ones, and the removed and cut roads, the numbers in `roads.lots`). If a tool is missing, the error names it and the variable to set.
+progress lines the build printed, `smoothing`, the one-line summary of the road smoothing, and `lots`, the one-line
+summary of the lot stage. `smoothing` is `null` while its stage is off, as it is in this release; `lots` is left out of
+the result altogether while the lot stage is off, so such a build answers with the keys it had before the stage
+existed. With the smoothing on, `smoothing` has the chains, largest move, tight length before and after and the zones
+reached, the numbers in `roads.smoothing` of `build/report.json`; with the lot stage on, `lots` has the lots by kind,
+the smoothed ones by form and surface, the steep and move-limited ones, and the removed and cut roads, the numbers in
+`roads.lots`. If a tool is missing, the error names it and the variable to set.
 
 Errors are returned as tool errors with a message (the `isError` flag of the MCP result); the server keeps
 running. The heightmap needs DEM files in `sources.dem`; without them `heightmap_stats` and `render_topdown`

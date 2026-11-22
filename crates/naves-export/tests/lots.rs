@@ -21,7 +21,7 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::{Heightmap, MapGeo};
 use naves_core::lot::{LOTS_ENABLED, LotArea, LotKind, Outcome, Placement};
-use naves_core::netclean::{self, surviving_entries};
+use naves_core::netclean::{self, CutAccess, lost_entries, surviving_entries};
 use naves_core::project::Project;
 use naves_core::roadnet::{build_graph, collapse_small_rings, drop_duplicates};
 use naves_core::smooth::SMOOTH_ENABLED;
@@ -118,6 +118,8 @@ fn with_the_stage_off_a_lot_changes_nothing_and_no_report_is_made() {
     assert_eq!(with_lot.duplicates, without.duplicates);
     assert_eq!(with_lot.bridges, without.bridges);
     assert!(with_lot.lots.is_none());
+    // the stage's time is zero when it is off (and, when on, it is the lot work only: see `FittedGraph::lots_time`)
+    assert_eq!(with_lot.lots_time, std::time::Duration::ZERO);
     // and the graph is today's: the cleaned graph with the bridges fitted
     let (flat_graph, _) =
         collapse_small_rings(&build_graph(&features), &|f| catalog.tightest_arc(f));
@@ -226,7 +228,7 @@ fn the_components_are_counted_per_step_with_the_lot_step_first() {
 }
 
 #[test]
-fn an_entry_whose_node_the_clean_up_took_gets_no_junction_and_is_counted() {
+fn surviving_entries_keeps_the_cuts_whose_node_the_graph_has() {
     let catalog = synthetic_catalog();
     let base = flat();
     let fitted = fitted_graph_with(
@@ -251,6 +253,26 @@ fn an_entry_whose_node_the_clean_up_took_gets_no_junction_and_is_counted() {
     let mut gone = entry;
     gone.node = 123_456;
     assert_eq!(surviving_entries(&fitted.built, &[gone]), Vec::new());
+}
+
+#[test]
+fn the_entries_whose_node_is_gone_are_counted() {
+    // the clean-up reports `CleanReport::lot_entries_lost` as `lost_entries` of its final graph and its cuts
+    let graph = build_graph(&[way(1, &[1, 2], &[(0.0, 0.0), (10.0, 0.0)])]);
+    let cut = |node: i64| CutAccess {
+        stretch: "1:1-2".to_string(),
+        lot: "osm/way/100".to_string(),
+        cut_m: 4.0,
+        entry: (10.0, 0.0),
+        node,
+    };
+    let kept = cut(2);
+    let gone = cut(9);
+    assert_eq!(lost_entries(&graph, &[]), 0);
+    assert_eq!(lost_entries(&graph, std::slice::from_ref(&kept)), 0);
+    assert_eq!(lost_entries(&graph, &[kept.clone(), gone]), 1);
+    // and the count is the complement of the filter it is made of
+    assert_eq!(lost_entries(&graph, &[kept.clone(), cut(8), cut(7)]), 2);
 }
 
 // --- a project with a lot, through the build ----------------------------------------------------------------------
@@ -547,14 +569,47 @@ fn with_the_stage_on_the_ground_is_the_lots_target_and_its_surface_is_painted() 
                 (shaped - target).abs() <= 1e-3,
                 "({at:?}): {shaped} vs {target}"
             );
+            // the grid is rasterised: only cells at least two of its own cells inside the edge are sure to be
+            // painted (a cell that straddles the edge may take its centre from outside)
+            if naves_core::lot::edge_distance(&report.assessed[0].area, at)
+                >= 2.0 * generated.surfaces.cell_m
+            {
+                assert_eq!(
+                    generated.surfaces.at(at.0, at.1),
+                    SurfaceClass::Tarmac,
+                    "({at:?})"
+                );
+            }
         }
     }
     assert!(inside > 100, "{inside} vertices inside the lot");
     // the lot was shaped: the hollow is filled where the lot's plane lies above it
     assert_ne!(generated.heightmap.h, generated.base.h);
-    // paved by its own `surface=asphalt` tag, and the surface grid says so
+    // paved by its own `surface=asphalt` tag, and the surface grid says so everywhere in the lot, not only at its
+    // middle (the road bed is soil)
     assert_eq!(report.class_of("osm/way/100"), Some(SurfaceClass::Tarmac));
-    assert_eq!(generated.surfaces.at(500.0, 500.0), SurfaceClass::Tarmac);
+    let area = &report.assessed[0].area;
+    let middle = naves_core::lot::centre(area);
+    assert_eq!(
+        generated.surfaces.at(middle.0, middle.1),
+        SurfaceClass::Tarmac,
+        "{middle:?}"
+    );
+    let high = area
+        .outer
+        .iter()
+        .fold((0.0_f64, 0.0_f64), |(x, y), p| (x.max(p.0), y.max(p.1)));
+    for share in [0.25, 0.5, 0.75] {
+        let at = (
+            middle.0 + share * (high.0 - middle.0),
+            middle.1 + share * (high.1 - middle.1),
+        );
+        assert_eq!(
+            generated.surfaces.at(at.0, at.1),
+            SurfaceClass::Tarmac,
+            "{at:?}"
+        );
+    }
     // the service road ends inside the lot: it is cut there
     assert_eq!(generated.clean.lot_access.len(), 1);
     assert!(
@@ -691,4 +746,23 @@ fn a_lot_ring_the_extract_cannot_make_an_area_of_is_reported() {
     );
     // the good lot is still there
     assert_eq!(generated.lots.as_ref().expect("a report").counts().total, 1);
+}
+
+#[test]
+fn with_the_stage_on_a_project_without_roads_or_lots_says_so() {
+    // the stage is on and there is nothing for it: it reports that, it does not look switched off
+    let (_dir, env, proj) = setup();
+    let p = project(&proj, false, false, false);
+    let generated = generate_with(&proj, &p, &env.tools(), stages(true), &quiet).unwrap();
+    let report = generated.lots.as_ref().expect("the stage is on");
+    assert_eq!(report.counts().total, 0);
+    assert_eq!(report.summary(&generated.clean), "Lots: none");
+    let out = build_with(&proj, &env.tools(), stages(true), &quiet).unwrap();
+    assert_eq!(out.lots.as_deref(), Some("Lots: none"));
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["roads"]["lots"]["enabled"], true);
+    assert_eq!(json["roads"]["lots"]["smoothed"], 0);
+    assert_eq!(json["roads"]["lots"]["lots"].as_array().unwrap().len(), 0);
 }

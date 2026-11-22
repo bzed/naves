@@ -25,6 +25,7 @@ use naves_core::render::{
 };
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_core::validate::Rule;
+use naves_export::build::BuildOutput;
 use naves_export::generate::{Generated, generate};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
@@ -600,18 +601,28 @@ impl NavesMcp {
         })
         .await;
         Ok(match result.and_then(|r| r) {
-            Ok((out, progress)) => json_text(&json!({
-                "mod_dir": out.mod_dir,
-                "mission_dir": out.mission_dir,
-                "warnings": out.warnings,
-                "bridges": out.bridges,
-                "smoothing": out.smoothing,
-                "lots": out.lots,
-                "progress": progress,
-            })),
+            Ok((out, progress)) => json_text(&build_json(&out, &progress)),
             Err(e) => failure(e),
         })
     }
+}
+
+/// What the `build` tool returns: the folders, the warnings and the progress lines, and the one-line summaries of
+/// the stages. `lots` is left out while the lot stage is off (its switch is `LOTS_ENABLED`), so a build of this release
+/// answers exactly like one before the stage existed.
+fn build_json(out: &BuildOutput, progress: &[String]) -> serde_json::Value {
+    let mut value = json!({
+        "mod_dir": out.mod_dir,
+        "mission_dir": out.mission_dir,
+        "warnings": out.warnings,
+        "bridges": out.bridges,
+        "smoothing": out.smoothing,
+        "progress": progress,
+    });
+    if let (Some(lots), Some(object)) = (&out.lots, value.as_object_mut()) {
+        object.insert("lots".to_string(), serde_json::Value::from(lots.clone()));
+    }
+    value
 }
 
 #[expect(
@@ -635,4 +646,49 @@ pub async fn serve(dir: &Path) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("cannot start the MCP server: {e}"))?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(lots: Option<&str>) -> BuildOutput {
+        BuildOutput {
+            mod_dir: PathBuf::from("/mod"),
+            mission_dir: PathBuf::from("/mission"),
+            warnings: vec!["a warning".to_string()],
+            bridges: vec!["a bridge".to_string()],
+            smoothing: None,
+            lots: lots.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_build_result_has_no_lot_key_while_the_stage_is_off() {
+        let value = build_json(&output(None), &["a progress line".to_string()]);
+        assert!(value.get("lots").is_none(), "{value}");
+        // exactly the keys a build had before the lot stage existed
+        let keys: Vec<&String> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "bridges",
+                "mission_dir",
+                "mod_dir",
+                "progress",
+                "smoothing",
+                "warnings"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_build_result_has_the_lot_line_when_the_stage_ran() {
+        let value = build_json(&output(Some("Lots: none")), &[]);
+        assert_eq!(value["lots"], "Lots: none");
+    }
 }

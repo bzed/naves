@@ -250,8 +250,7 @@ fn the_report_finds_the_group_surface_and_the_class_of_a_lot() {
     assert!(report.source_of("osm/way/9").is_none());
 }
 
-#[test]
-fn every_outcome_has_a_finding_at_the_lots_centre_with_its_numbers() {
+fn rules_fixture() -> (LotReport, CleanReport) {
     let assessed = vec![
         smoothed("osm/way/1", LotKind::CarPark, 0.0, Form::Plane, 0),
         {
@@ -310,53 +309,97 @@ fn every_outcome_has_a_finding_at_the_lots_centre_with_its_numbers() {
         }],
         ..CleanReport::default()
     };
+    (report, clean)
+}
+
+#[test]
+fn the_smoothed_lots_have_their_whole_findings() {
+    let (report, clean) = rules_fixture();
     let found = lot_violations(&report, &clean);
+
     let of = |rule: Rule| -> Vec<&Violation> { found.iter().filter(|v| v.rule == rule).collect() };
-    // one smoothed finding per smoothed lot, at its centre
+    let messages = |rule: Rule| -> Vec<String> {
+        of(rule)
+            .iter()
+            .map(|violation| violation.message.clone())
+            .collect()
+    };
+    // one smoothed finding per smoothed lot, at its centre, each message whole
     let smoothed = of(Rule::LotSmoothed);
     assert_eq!(smoothed.len(), 3);
     for (finding, lot) in smoothed.iter().zip(&report.assessed) {
         assert_eq!(finding.at, centre(&lot.area));
     }
-    assert!(smoothed[0].message.contains("plane"), "{:?}", smoothed[0]);
-    assert!(smoothed[0].message.contains("paved"), "{:?}", smoothed[0]);
-    assert!(smoothed[0].message.contains("1.00 m"), "{:?}", smoothed[0]);
-    assert!(
-        smoothed[1].message.contains("quadratic"),
-        "{:?}",
-        smoothed[1]
+    assert_eq!(
+        messages(Rule::LotSmoothed),
+        [
+            "Lot osm/way/1 (car park) is smoothed: plane, paved, the ground moves by up to 1.00 m",
+            "Lot osm/way/2 (camp site) is smoothed: quadratic, grass, the ground moves by up to 1.00 m",
+            "Lot osm/way/3 (caravan site) is smoothed: plane, paved, the ground moves by up to 1.00 m",
+        ]
     );
-    assert!(smoothed[1].message.contains("grass"), "{:?}", smoothed[1]);
     // steep: its slope against the 20 % a vehicle can take
     let steep = of(Rule::LotSteep);
     assert_eq!(steep.len(), 1, "{found:?}");
     assert_eq!(steep[0].at, centre(&report.assessed[1].area));
-    assert!(steep[0].message.contains("33 %"), "{:?}", steep[0]);
-    assert!(steep[0].message.contains("20 %"), "{:?}", steep[0]);
-    // move limited: the move it would have needed (3 / 0.75 = 4 m) against the 3 m
+    assert_eq!(
+        messages(Rule::LotSteep),
+        [
+            "Lot osm/way/2 (camp site) keeps a slope of 33 % (95th percentile), more than the 20 % a vehicle can take across a road"
+        ]
+    );
+    // move limited: the group's move it would have needed (3 / 0.75 = 4 m) against the 3 m
     let limited = of(Rule::LotMoveLimited);
     assert_eq!(limited.len(), 1, "{found:?}");
-    assert!(limited[0].message.contains("4.00 m"), "{:?}", limited[0]);
-    assert!(limited[0].message.contains("3.0 m"), "{:?}", limited[0]);
-    assert!(limited[0].message.contains("0.75"), "{:?}", limited[0]);
+    assert_eq!(limited[0].at, centre(&report.assessed[2].area));
+    assert_eq!(
+        messages(Rule::LotMoveLimited),
+        [
+            "Lot osm/way/3 (caravan site): its group's surface would move the ground by 4.00 m, more than the 3.0 m a lot may move it; the change is scaled by lambda 0.75"
+        ]
+    );
+}
+
+#[test]
+fn the_other_lots_and_the_roads_have_their_whole_findings() {
+    let (report, clean) = rules_fixture();
+    let found = lot_violations(&report, &clean);
+    let of = |rule: Rule| -> Vec<&Violation> { found.iter().filter(|v| v.rule == rule).collect() };
+    let messages = |rule: Rule| -> Vec<String> {
+        of(rule)
+            .iter()
+            .map(|violation| violation.message.clone())
+            .collect()
+    };
     // surface only and excluded carry their reason
     let only = of(Rule::LotSurfaceOnly);
     assert_eq!(only.len(), 1);
     assert_eq!(only[0].at, centre(&report.assessed[3].area));
-    assert!(only[0].message.contains("street_side"), "{:?}", only[0]);
+    assert_eq!(
+        messages(Rule::LotSurfaceOnly),
+        [
+            "Lot osm/way/4 (car park) gets a paved surface only (street_side), its ground is not shaped"
+        ]
+    );
     let excluded = of(Rule::LotExcluded);
     assert_eq!(excluded.len(), 1);
-    assert!(
-        excluded[0].message.contains("not_at_ground"),
-        "{excluded:?}"
+    assert_eq!(excluded[0].at, centre(&report.assessed[4].area));
+    assert_eq!(
+        messages(Rule::LotExcluded),
+        ["Lot osm/way/5 (coach park) is left alone (not_at_ground): no surface, no shaping"]
     );
     // the removed stretch is a finding at its middle, the cut access road at its new end
     let roads = of(Rule::RoadInLotDropped);
     assert_eq!(roads.len(), 2, "{found:?}");
     assert_eq!(roads[0].at, (123.0, 456.0));
-    assert!(roads[0].message.contains("1:1-2"), "{:?}", roads[0]);
     assert_eq!(roads[1].at, (12.0, 34.0));
-    assert!(roads[1].message.contains("access road"), "{:?}", roads[1]);
+    assert_eq!(
+        messages(Rule::RoadInLotDropped),
+        [
+            "Road 1:1-2 inside lot osm/way/1 is not built (42 m)",
+            "The access road 2:2-3 of lot osm/way/2 is cut 6 m inside the lot",
+        ]
+    );
 }
 
 #[test]

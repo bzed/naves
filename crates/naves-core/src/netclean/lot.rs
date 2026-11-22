@@ -954,9 +954,9 @@ pub(super) fn junctions_removed(
 }
 
 /// The cut access roads whose new node the graph still has, in the order of `entries`: a later clean-up step (a
-/// junction merge, a bridge approach) can take the node away that the lot step put at a lot's edge, and an entry whose
-/// node is gone gets no junction (see [`add_lot_entries`](crate::junctions::add_lot_entries)). The count of the ones
-/// that are gone is [`CleanReport::lot_entries_lost`](crate::netclean::CleanReport::lot_entries_lost).
+/// junction merge, a bridge approach) can take the node away that the lot step put at a lot's edge, and an entry
+/// whose node is gone gets no junction (see [`add_lot_entries`](crate::junctions::add_lot_entries)). The ones that
+/// are gone are counted by [`lost_entries`].
 #[must_use]
 pub fn surviving_entries(graph: &RoadGraph, entries: &[CutAccess]) -> Vec<CutAccess> {
     let nodes: BTreeSet<i64> = graph
@@ -969,6 +969,13 @@ pub fn surviving_entries(graph: &RoadGraph, entries: &[CutAccess]) -> Vec<CutAcc
         .filter(|entry| nodes.contains(&entry.node))
         .cloned()
         .collect()
+}
+
+/// How many cut access roads of `entries` the graph has no end for: [`surviving_entries`]'s complement. The clean-up
+/// reports it as [`CleanReport::lot_entries_lost`](crate::netclean::CleanReport::lot_entries_lost).
+#[must_use]
+pub fn lost_entries(graph: &RoadGraph, entries: &[CutAccess]) -> usize {
+    entries.len() - surviving_entries(graph, entries).len()
 }
 
 #[cfg(test)]

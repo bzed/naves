@@ -413,7 +413,16 @@ pub(crate) fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f
 #[must_use]
 pub fn centre(area: &LotArea) -> (f64, f64) {
     let mut points = area.outer.as_slice();
-    if points.len() > 1 && points.first() == points.last() {
+    // a closing point is the first point again, bit for bit; comparing the bits keeps `clippy::float_cmp` out of it
+    let closed = points.len() > 1 && {
+        match (points.first(), points.last()) {
+            (Some(first), Some(last)) => {
+                first.0.to_bits() == last.0.to_bits() && first.1.to_bits() == last.1.to_bits()
+            }
+            _ => false,
+        }
+    };
+    if closed {
         points = points.get(..points.len() - 1).unwrap_or(points);
     }
     if points.is_empty() {

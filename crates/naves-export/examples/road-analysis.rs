@@ -199,8 +199,14 @@ fn main() {
         .osm
         .as_ref()
         .map_or((Vec::new(), 0), |land| naves_core::lot::areas(land, &frame));
+    // what `lot::areas` skipped and the rings the extract reader could not make an area of: the build's warning sums
+    // the same two counts
+    let skipped_rings = sources
+        .osm
+        .as_ref()
+        .map_or(0, |land| land.skipped_lot_rings);
+    println!("LOT_SKIPPED {}", skipped_lots + skipped_rings);
     let holes_dropped: usize = lot_areas.iter().map(|area| area.holes_dropped).sum();
-    println!("LOT_SKIPPED {skipped_lots}");
     println!("LOT_HOLES {holes_dropped}");
     let FittedGraph {
         graph: widened,
@@ -217,6 +223,8 @@ fn main() {
         println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
     }
     if lots_on {
+        // the lot stage's own work (the assessment, the groups and the surface decision), not the clean-up, the
+        // shaping or the painting: see `FittedGraph::lots_time`
         println!("TIMING lots {:.1} s", lots_time.as_secs_f64());
     }
     if let Some(report) = &smooth {

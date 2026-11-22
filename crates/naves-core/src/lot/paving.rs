@@ -434,7 +434,6 @@ pub fn surfaces_with_sources(
         }
     }
     let removed: BTreeSet<&str> = clean.lot_roads.iter().map(|d| d.stretch.as_str()).collect();
-    // a group without roads of its own decides by the streets beside all its members, once
     // a group without roads of its own decides by the streets beside all its members, once; a group with no street
     // either is grass
     let mut group_beside: BTreeMap<usize, (SurfaceClass, bool)> = BTreeMap::new();

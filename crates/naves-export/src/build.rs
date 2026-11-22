@@ -65,7 +65,8 @@ pub struct BuildOutput {
     pub bridges: Vec<String>,
     /// One line on what the smoothing of the road graph did; `None` when the stage is off or there are no roads.
     pub smoothing: Option<String>,
-    /// One line on what the lot stage did; `None` when the stage is off or the project has no lot.
+    /// One line on what the lot stage did; `None` when the stage is off, `Some` with its own line ("Lots: none"
+    /// included) whenever the stage is on.
     pub lots: Option<String>,
 }
 
@@ -1256,6 +1257,24 @@ mod tests {
             json["lots"][2]["range_after"],
             serde_json::json!([null, null])
         );
+    }
+
+    #[test]
+    fn the_lot_section_has_the_through_chains_and_the_lost_entries() {
+        let clean = CleanReport {
+            lot_through_kept: 2,
+            lot_through: vec!["1:1-2".to_string(), "2:2-3".to_string()],
+            lot_entries_lost: 1,
+            ..CleanReport::default()
+        };
+        let json = lots_json(Some(&LotReport::default()), &clean);
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["through"], 2);
+        assert_eq!(
+            json["through_stretches"],
+            serde_json::json!(["1:1-2", "2:2-3"])
+        );
+        assert_eq!(json["entries_lost"], 1);
     }
 
     #[test]

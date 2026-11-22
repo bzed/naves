@@ -272,8 +272,10 @@ pub struct FittedGraph {
     pub smooth_time: std::time::Duration,
     /// What the lot stage found and decided; `None` when the stage is off ([`LOTS_ENABLED`]).
     pub lots: Option<LotReport>,
-    /// How long the lot stage took (zero when it is off); a measurement, not part of any output. The clean-up's lot
-    /// step is not in it, it belongs to the clean-up.
+    /// How long the lot stage's own work took (zero when the stage is off): the assessment of the lots (the surface
+    /// fits and the water share), their groups and the surface decision. The clean-up is not in it (it runs its own
+    /// lot step as its first of five steps), and neither is the terrain shaping or the painting, which are one pass
+    /// each with the roads and with the ground. A measurement, not part of any output.
     pub lots_time: std::time::Duration,
     /// What every OpenStreetMap bridge was built from, and why.
     pub bridges: Vec<BridgeFit>,
@@ -329,14 +331,22 @@ pub fn fitted_graph_with(
     } else {
         Vec::new()
     };
+    // the clean-up runs between the lot work and is timed out of it: its lot step is its first, but it is one run
+    // with the other four steps and cannot be separated from them
+    let started_clean = std::time::Instant::now();
     let (built, mut clean) = netclean::clean_with(&deduplicated, &|f| f.width_m(), cell_m, &groups);
+    let clean_time = started_clean.elapsed();
     clean.roundabouts = roundabouts;
     let decided = if stages.lots {
         naves_core::lot::surfaces_with_sources(&assessed, &deduplicated, &clean, cell_m, features)
     } else {
         Vec::new()
     };
-    let lots_time = started_lots.elapsed();
+    let lots_time = if stages.lots {
+        started_lots.elapsed().saturating_sub(clean_time)
+    } else {
+        std::time::Duration::ZERO
+    };
     let (classes, sources): (Vec<(String, SurfaceClass)>, Vec<SurfaceSource>) = decided
         .into_iter()
         .map(|(id, class, source)| ((id, class), source))
@@ -479,7 +489,9 @@ pub fn plan_roads_with(
             lots_time.as_secs_f64()
         ));
     }
-    // an entry whose node a later clean-up step took away gets no junction (the count is in the clean-up's report)
+    // an entry whose node a later clean-up step took away gets no junction (the count is in the clean-up's report).
+    // The filter runs on the graph the placement gets: the smoothing and the bridge fitting come after the clean-up,
+    // and an entry they dropped would be filtered here but not counted there.
     let surfaces: &[LotSurface] = lot_report
         .as_ref()
         .map_or(&[], |report| report.surfaces.as_slice());
@@ -554,7 +566,8 @@ fn place_roads(
         .iter()
         .any(|f| matches!(f.kind, FeatureKind::Road { .. }));
     if !has_roads {
-        if stages.lots && !lots.is_empty() {
+        // the stage is on: the lots (or their absence) are reported like any other build, never as "off"
+        if stages.lots {
             return lots_only(lots, features, lakes, base, frame, progress);
         }
         return Ok(empty_roads());

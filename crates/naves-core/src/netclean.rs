@@ -16,7 +16,8 @@ mod sidepath;
 
 use lot::components_each;
 pub use lot::{
-    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads, surviving_entries,
+    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads, lost_entries,
+    surviving_entries,
 };
 
 use std::cmp::Ordering;
@@ -927,7 +928,7 @@ pub fn clean_with(
         lot_roads: step.dropped.clone(),
         lot_access: step.access.clone(),
         lots_split: step.unchanged.clone(),
-        lot_entries_lost: step.access.len() - surviving_entries(&graph4, &step.access).len(),
+        lot_entries_lost: lost_entries(&graph4, &step.access),
         components_before: components_before.unwrap_or_default(),
         components_after: components_after.unwrap_or_default(),
         components_by_step: counted.iter().skip(2).copied().collect(),
