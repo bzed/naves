@@ -34,18 +34,22 @@ pub enum SurfaceClass {
     Forest,
     /// Soil: fields, built-up areas, water beds (slot 3, blue).
     Soil,
+    /// Tarmac: the ground of a paved lot (slot 4, selected by alpha 128 in the mask).
+    Tarmac,
 }
 
 impl SurfaceClass {
     /// Every class, in slot order.
-    pub const ALL: [SurfaceClass; 4] = [
+    pub const ALL: [SurfaceClass; 5] = [
         SurfaceClass::Grass,
         SurfaceClass::Rock,
         SurfaceClass::Forest,
         SurfaceClass::Soil,
+        SurfaceClass::Tarmac,
     ];
 
-    /// The colour the class has on the satellite image and in the surface overlay.
+    /// The colour the class has on the satellite image and in the surface overlay. Tarmac has the average colour of
+    /// its texture (`en_tarmac_old_ca`, the `AVGC` tag of the PAA).
     #[must_use]
     pub const fn rgb(self) -> [u8; 3] {
         match self {
@@ -53,6 +57,7 @@ impl SurfaceClass {
             SurfaceClass::Rock => [0x8a, 0x87, 0x80],
             SurfaceClass::Forest => [0x2e, 0x4d, 0x2a],
             SurfaceClass::Soil => [0x7a, 0x68, 0x4e],
+            SurfaceClass::Tarmac => [66, 68, 70],
         }
     }
 
@@ -64,10 +69,11 @@ impl SurfaceClass {
             SurfaceClass::Rock => "Rock",
             SurfaceClass::Forest => "Forest",
             SurfaceClass::Soil => "Soil",
+            SurfaceClass::Tarmac => "Tarmac",
         }
     }
 
-    /// The layer slot, 0 to 3.
+    /// The layer slot, 0 to 4.
     #[must_use]
     pub fn slot(self) -> usize {
         match self {
@@ -75,6 +81,7 @@ impl SurfaceClass {
             SurfaceClass::Rock => 1,
             SurfaceClass::Forest => 2,
             SurfaceClass::Soil => 3,
+            SurfaceClass::Tarmac => 4,
         }
     }
 }
@@ -141,6 +148,69 @@ impl SurfaceGrid {
 }
 
 impl SurfaceGrid {
+    /// Paints `class` on every cell whose centre lies inside the polygon: inside the `outer` ring and in none of the
+    /// `holes` (even-odd, so a ring that crosses itself fills each of its loops). Rings are closed implicitly. Parts
+    /// off the map are clipped; a ring with a coordinate that is not finite paints nothing at all.
+    pub fn fill_polygon(
+        &mut self,
+        outer: &[(f64, f64)],
+        holes: &[Vec<(f64, f64)>],
+        class: SurfaceClass,
+    ) {
+        let rings = std::iter::once(outer).chain(holes.iter().map(Vec::as_slice));
+        let mut edges: Vec<Edge> = Vec::new();
+        for ring in rings {
+            if ring.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()) {
+                return;
+            }
+            for pair in ring.windows(2) {
+                if let [a, b] = pair {
+                    edges.push((*a, *b));
+                }
+            }
+            // an open ring is closed
+            if let (Some(first), Some(last)) = (ring.first(), ring.last())
+                && first != last
+            {
+                edges.push((*last, *first));
+            }
+        }
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &((_, ya), (_, yb)) in &edges {
+            low = low.min(ya.min(yb));
+            high = high.max(ya.max(yb));
+        }
+        if !(low.is_finite() && high.is_finite()) {
+            return;
+        }
+        let side = usize::try_from(self.size).unwrap_or(0);
+        let cell_m = self.cell_m;
+        let first_row = clamp_to((low / cell_m - 0.5).ceil(), side);
+        let end_row = clamp_to((high / cell_m - 0.5).ceil(), side);
+        let mut crossings: Vec<f64> = Vec::new();
+        for row in first_row..end_row {
+            #[expect(clippy::cast_precision_loss, reason = "row indices are below 2^13")]
+            let y = (row as f64 + 0.5) * cell_m;
+            crossings.clear();
+            for &((xa, ya), (xb, yb)) in &edges {
+                if (ya <= y) != (yb <= y) {
+                    crossings.push(xa + (y - ya) / (yb - ya) * (xb - xa));
+                }
+            }
+            crossings.sort_by(f64::total_cmp);
+            for pair in crossings.as_chunks::<2>().0 {
+                let [x0, x1] = *pair;
+                let first_col = clamp_to((x0 / cell_m - 0.5).ceil(), side);
+                let end_col = clamp_to((x1 / cell_m - 0.5).ceil(), side);
+                for col in first_col..end_col {
+                    if let Some(cell) = self.cells.get_mut(row * side + col) {
+                        *cell = class;
+                    }
+                }
+            }
+        }
+    }
+
     /// Paints `class` on every cell whose centre lies within half of `width_m` of the polyline `line`
     /// (map metres). A line thinner than a cell paints a trace one cell wide. Parts outside the map are
     /// clipped; a line with fewer than two points, or a number that is not finite, paints nothing.

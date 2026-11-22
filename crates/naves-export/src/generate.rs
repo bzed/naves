@@ -23,6 +23,7 @@ use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
+use naves_core::lot::{LOT_INSIDE_TOL_M, LotArea, contains, edge_distance};
 use naves_core::netclean::{self, CleanReport};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
@@ -573,8 +574,55 @@ fn narrow(v: f64) -> f32 {
 
 /// Paints the paths on the ground, along their OpenStreetMap lines.
 fn paint_paths(surfaces: &mut SurfaceGrid, features: &[Feature]) {
+    paint_paths_with(surfaces, features, &[]);
+}
+
+/// Paints the lots on the ground: every lot of `areas` that has a class in `decided` (the outer ring less its holes,
+/// even-odd, one `SurfaceGrid::fill_polygon` each), the largest first and in the order of the ids among equals, so
+/// that a car park inside a camp site shows on top of it. The order of `areas` and `decided` does not matter. A lot
+/// without a decision is not painted and a decision without a lot is ignored.
+pub fn paint_lots(
+    surfaces: &mut SurfaceGrid,
+    areas: &[LotArea],
+    decided: &[(String, SurfaceClass)],
+) {
+    let mut lots: Vec<(&LotArea, SurfaceClass)> = areas
+        .iter()
+        .filter_map(|area| {
+            decided
+                .iter()
+                .find(|(id, _)| *id == area.id)
+                .map(|(_, class)| (area, *class))
+        })
+        .collect();
+    lots.sort_by(|a, b| {
+        b.0.area_m2
+            .total_cmp(&a.0.area_m2)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    for (area, class) in lots {
+        surfaces.fill_polygon(&area.outer, &area.holes, class);
+    }
+}
+
+/// Whether every point of a path lies in a lot or within [`LOT_INSIDE_TOL_M`] of its edge.
+fn path_in_lot(points: &[(f64, f64)], lots: &[LotArea]) -> bool {
+    !points.is_empty()
+        && points.iter().all(|&p| {
+            lots.iter()
+                .any(|lot| contains(lot, p) || edge_distance(lot, p) <= LOT_INSIDE_TOL_M)
+        })
+}
+
+/// Paints the paths with lots: a path that is a street of a lot (`street: true`: a driveway or a parking aisle) and lies
+/// wholly in one of `lots` is not painted, the lot's own surface is the ground there. Every other path, a footway
+/// through a lot included, is painted as before. Paint the lots first.
+pub fn paint_paths_with(surfaces: &mut SurfaceGrid, features: &[Feature], lots: &[LotArea]) {
     for feature in features {
-        if let FeatureKind::Path { width_m, .. } = feature.kind {
+        if let FeatureKind::Path { width_m, street } = feature.kind {
+            if street && path_in_lot(&feature.points, lots) {
+                continue;
+            }
             surfaces.stroke(&feature.points, width_m, SurfaceClass::Soil);
         }
     }

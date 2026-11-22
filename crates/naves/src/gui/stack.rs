@@ -98,9 +98,9 @@ impl LayerPanel {
 
 /// The share of the map each ground class covers, in the order of [`SurfaceClass::ALL`], sampled on a fixed grid.
 #[must_use]
-pub fn ground_shares(surfaces: &SurfaceGrid, map_size_m: f64) -> [f64; 4] {
+pub fn ground_shares(surfaces: &SurfaceGrid, map_size_m: f64) -> [f64; SurfaceClass::ALL.len()] {
     const SAMPLES: u32 = 256;
-    let mut counts = [0u32; 4];
+    let mut counts = [0u32; SurfaceClass::ALL.len()];
     for row in 0..SAMPLES {
         for col in 0..SAMPLES {
             let x = (f64::from(col) + 0.5) / f64::from(SAMPLES) * map_size_m;

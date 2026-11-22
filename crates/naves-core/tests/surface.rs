@@ -459,3 +459,120 @@ mod stroke {
         assert_eq!(g, before);
     }
 }
+
+mod fill_polygon {
+    use naves_core::surface::{SurfaceClass, SurfaceGrid};
+
+    type Ring = Vec<(f64, f64)>;
+
+    fn grass(size: u32, cell: f64) -> SurfaceGrid {
+        SurfaceGrid::from_fn(size, cell, |_, _| SurfaceClass::Grass)
+    }
+
+    fn square(x0: f64, y0: f64, x1: f64, y1: f64) -> Ring {
+        vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+    }
+
+    /// The cells of class `class`, counted at their centres.
+    fn count(g: &SurfaceGrid, class: SurfaceClass) -> usize {
+        let mut n = 0;
+        for row in 0..g.size {
+            for col in 0..g.size {
+                let x = (f64::from(col) + 0.5) * g.cell_m;
+                let y = (f64::from(row) + 0.5) * g.cell_m;
+                if g.at(x, y) == class {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn tarmac_is_slot_four() {
+        assert_eq!(SurfaceClass::Tarmac.slot(), 4);
+        assert_eq!(SurfaceClass::Tarmac.name(), "Tarmac");
+        assert_eq!(SurfaceClass::ALL.len(), 5);
+        assert_eq!(SurfaceClass::ALL.get(4), Some(&SurfaceClass::Tarmac));
+        // the average colour of the texture en_tarmac_old_ca: a dark, slightly blue grey
+        assert_eq!(SurfaceClass::Tarmac.rgb(), [66, 68, 70]);
+        let slots: Vec<usize> = SurfaceClass::ALL.iter().map(|c| c.slot()).collect();
+        assert_eq!(slots, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_square_of_ten_metres_fills_a_hundred_cells() {
+        let mut g = grass(40, 1.0);
+        g.fill_polygon(&square(10.0, 10.0, 20.0, 20.0), &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 100);
+        assert_eq!(g.at(10.5, 10.5), SurfaceClass::Tarmac);
+        assert_eq!(g.at(19.5, 19.5), SurfaceClass::Tarmac);
+        assert_eq!(g.at(20.5, 15.0), SurfaceClass::Grass);
+        assert_eq!(g.at(9.5, 15.0), SurfaceClass::Grass);
+    }
+
+    #[test]
+    fn a_hole_is_left_out() {
+        let mut g = grass(40, 1.0);
+        let hole = square(13.0, 13.0, 17.0, 17.0);
+        g.fill_polygon(
+            &square(10.0, 10.0, 20.0, 20.0),
+            &[hole],
+            SurfaceClass::Tarmac,
+        );
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 84);
+        assert_eq!(g.at(15.0, 15.0), SurfaceClass::Grass);
+    }
+
+    #[test]
+    fn a_bow_tie_fills_both_triangles() {
+        let mut g = grass(40, 1.0);
+        let bow = vec![
+            (10.0, 10.0),
+            (30.0, 30.0),
+            (30.0, 10.0),
+            (10.0, 30.0),
+            (10.0, 10.0),
+        ];
+        g.fill_polygon(&bow, &[], SurfaceClass::Tarmac);
+        // the two triangles are left and right of the crossing in the middle
+        assert_eq!(g.at(12.5, 20.5), SurfaceClass::Tarmac, "left triangle");
+        assert_eq!(g.at(27.5, 20.5), SurfaceClass::Tarmac, "right triangle");
+        assert_eq!(g.at(20.5, 12.5), SurfaceClass::Grass, "below the crossing");
+        assert_eq!(g.at(20.5, 27.5), SurfaceClass::Grass, "above the crossing");
+    }
+
+    #[test]
+    fn a_polygon_half_off_the_map_fills_only_the_cells_on_it() {
+        let mut g = grass(20, 1.0);
+        g.fill_polygon(&square(-10.0, 5.0, 10.0, 15.0), &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 100);
+        let mut g = grass(20, 1.0);
+        g.fill_polygon(&square(15.0, 15.0, 40.0, 40.0), &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 25);
+    }
+
+    #[test]
+    fn a_polygon_that_is_not_a_number_fills_nothing() {
+        let mut g = grass(20, 1.0);
+        let mut ring = square(5.0, 5.0, 15.0, 15.0);
+        ring[2].0 = f64::NAN;
+        g.fill_polygon(&ring, &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 0);
+        let mut hole = square(8.0, 8.0, 12.0, 12.0);
+        hole[1].1 = f64::INFINITY;
+        g.fill_polygon(&square(5.0, 5.0, 15.0, 15.0), &[hole], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 0);
+        g.fill_polygon(&[], &[], SurfaceClass::Tarmac);
+        g.fill_polygon(&[(1.0, 1.0), (2.0, 2.0)], &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 0);
+    }
+
+    #[test]
+    fn cells_of_a_coarser_grid_are_taken_by_their_centre() {
+        // 4 m cells: centres at 2, 6, 10, ...; the square 4..12 holds the centres 6 and 10 in each direction
+        let mut g = grass(10, 4.0);
+        g.fill_polygon(&square(4.0, 4.0, 12.0, 12.0), &[], SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 4);
+    }
+}

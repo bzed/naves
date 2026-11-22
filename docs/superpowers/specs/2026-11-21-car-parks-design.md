@@ -230,7 +230,11 @@ ones:
 **Paved or grass (controller).** Decided by the roads that serve the lot, by length:
 
 - An explicit `surface=*` on the lot wins **(controller)**: a paved value gives paved, an unpaved value grass.
-- Otherwise the serving roads: the stretches removed from inside it and its access roads (the part inside before the
+- **Camp sites are grass (maintainer's ruling, Task 6).** A `tourism=camp_site` is grass unless the camp site itself is
+  tagged with a paved `surface`; its roads and the streets beside it do not make it paved. A car park mapped inside it
+  is a lot of its own and is decided like every car park. Car parks, coach parking, rest areas and caravan sites follow
+  the tag, then the roads, then the family rule below.
+- Otherwise (not a camp site) the serving roads: the stretches removed from inside it and its access roads (the part inside before the
   cut). Each metre counts by its way's `surface` tag where it has one; where the tag is missing or unknown, by its
   family (`Asf1`, `Asf2`, `Asf3`, `City` paved; `Grav`, `Mud` grass).
 - A lot with neither takes the roads whose earthwork touches it (every stretch with a sample within
@@ -238,6 +242,13 @@ ones:
   it is reached from (an extension of the controller's rule, see *Departures*).
 - Paved if the paved metres are at least the grass metres (a tie goes to paved); grass otherwise; no road at all:
   grass. A group member without serving roads of its own takes its group's decision.
+  The group's decision is that of the roads of all its members pooled (`lot::groups`, lots that touch), and it comes
+  before the roads beside; a lot that is in no group and has no roads of its own takes the roads beside. The streets
+  beside are the stretches of the graph before the lot step, without those removed in a lot, bridges and tunnels, counted
+  by the metres inside the lot or within the reach of its edge. Implemented as `lot::surfaces(assessed, graph, clean,
+  cell_m)` and `lot::surfaces_with(.., features)`: the second clips the metres per way from the road features, the first
+  counts a stretch by its own shares (exact for a stretch removed whole, an average for the part of an access road
+  inside the lot).
 - Paved values: `asphalt`, `paved`, `concrete`, `concrete:plates`, `concrete:lanes`, `paving_stones`, `sett`,
   `cobblestone`, `unhewn_cobblestone`, `chipseal`, `bricks`, `metal`, `wood`. Unpaved values: `unpaved`, `gravel`,
   `fine_gravel`, `compacted`, `dirt`, `earth`, `ground`, `grass`, `grass_paver`, `mud`, `sand`, `pebblestone`, `rock`,
@@ -277,6 +288,9 @@ building" **(maintainer)**: this is what the game uses for them.
   `en_tarmac_old.rvmat` in the Livonia surface pack.
 - The texture file names follow the pattern of the four layers (`dz\surfaces_bliss\data\terrain\<name>_nopx.paa`,
   `_ca.paa`); the exact names are read from the install in the plan's Task 1, not assumed.
+- **Painting API (Task 6):** `SurfaceGrid::fill_polygon`, `generate::paint_lots` (largest first, then id) and
+  `generate::paint_paths_with` (a path with `street: true` that lies wholly in a lot is not painted); nothing calls
+  them until the pipeline is wired.
 - The fifth layer is selected by mask alpha 128 (RGB free; the value to write is (0, 0, 0, 128)); slot 5 would be
   alpha 0; slots 0 to 3 stay black, red, green, blue at alpha 255. Evidence: 71 Livonia masks fitted against their
   material variants with no violation in 3840 cells; not yet seen in the game, the game check confirms it. If the game
@@ -566,9 +580,9 @@ judged there.
   6, 127 m), `landuse=military` (3, 68, 3980 m: the Jägerkaserne barracks and the Silberg training ground),
   `tourism=attraction` (Eisarena Königssee, 21, 861 m), `amenity=social_facility` (1, 7, 371 m), `tourism=museum` (1,
   12, 265 m). They hold real internal roads and buildings; the assistant would leave them out.
-- **Paved camp sites.** By the serving-roads rule three of the four camp sites are paved, because their roads are
-  asphalt or untagged `City`. A camp site paved from edge to edge may read wrong; a camp site could be grass unless it
-  is tagged paved, and only its car park (if mapped) paved. For the maintainer.
+- **Paved camp sites.** Decided (maintainer's ruling): a camp site is grass unless it is tagged paved itself, and only a
+  car park mapped inside it is paved (see *The surface*). The counts above that call three of the four camp sites paved
+  are from before the ruling.
 - **Facets for large lots.** Two camp sites (Simonhof 9902 m², Allweglehen 15 962 m²) and the caravan site P2 Königssee (1615 m²) need more than
   3 m of move for one surface and are scaled down. A few large facets, each a capped quadratic, joined without a step along their
   shared edges, would fit them. Needed where the largest move of one surface is above 3 m (three lots on this example); not in v1.

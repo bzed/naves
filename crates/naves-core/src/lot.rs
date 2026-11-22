@@ -9,8 +9,10 @@
 //! rejected, and its area is the number of samples on a 1 m grid for which [`contains`] is true, counted
 //! on the part of the lot that lies on the map. The grid is fixed at 1 m.
 
+mod paving;
 mod surface;
 
+pub use paving::{surfaces, surfaces_with};
 pub(crate) use surface::touches;
 pub use surface::{
     Assessed, Form, LotSurface, NO_GROUP, Outcome, Polygon, Surface, assess, local_relief,
