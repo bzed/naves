@@ -1656,7 +1656,7 @@ fn more_samples_than_the_band_takes_are_clamped_like_the_band() {
 
 use naves_core::reroute::dubins::{DubinsPath, Turn, dubins_paths};
 use naves_core::reroute::search::{
-    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed,
+    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed, self_clearance,
 };
 use naves_core::reroute::{Anchor, PLAN_BUDGETS, Pose, RerouteError};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -1839,6 +1839,7 @@ struct Setup {
     budgets: Vec<(f64, usize)>,
     self_along: f64,
     band_override: Option<Band>,
+    self_clear: Option<f64>,
 }
 
 type Ground = Box<dyn Fn((f64, f64)) -> Option<f64> + Send + Sync>;
@@ -1886,6 +1887,7 @@ impl Setup {
             budgets: PLAN_BUDGETS.to_vec(),
             self_along: PI * RHO + 25.0,
             band_override: None,
+            self_clear: None,
         }
     }
 
@@ -1947,6 +1949,8 @@ impl Setup {
             stray_cap_m: self.cap,
             arrive_reach_m: (3.0_f64 * 6.0).max(4.0 * RHO),
             self_along_m: self.self_along,
+            self_clear_m: self.self_clear.unwrap_or_else(|| self.clear.road_m()),
+            original: &self.original,
             budgets: &self.budgets,
         };
         edit(&mut input);
@@ -2002,6 +2006,30 @@ fn a_straight_leg_is_a_straight_route() {
     assert!(r.weight >= 1.0 && r.cost >= r.length_m - 1e-6);
 }
 
+/// The independent cost of a route in the search's own measure: length, the turn, the stray (the stored distance of
+/// the raster, as a trapezoid along the points); flat ground, so no slope or earthwork.
+fn flat_cost(points: &[(f64, f64)], turn: f64, o: &Obstacles) -> f64 {
+    let wt = Weights::from_params(&RerouteParams::default());
+    let mut cost = wt.curve * turn * RHO;
+    for w in points.windows(2) {
+        let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        cost += l + wt.stray * l * f64::midpoint(o.stray_m(w[0]), o.stray_m(w[1]));
+    }
+    cost
+}
+
+/// The distance of a point from a polyline.
+fn dist_to_line(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
+    line.windows(2)
+        .map(|w| {
+            let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+            let l2 = dx * dx + dy * dy;
+            let t = (((p.0 - w[0].0) * dx + (p.1 - w[0].1) * dy) / l2).clamp(0.0, 1.0);
+            (p.0 - w[0].0 - t * dx).hypot(p.1 - w[0].1 - t * dy)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
 #[test]
 fn a_right_angle_is_rounded_at_the_radius() {
     let corner = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
@@ -2017,13 +2045,37 @@ fn a_right_angle_is_rounded_at_the_radius() {
     let n = r.points.len();
     let (prev, last) = (r.points[n - 2], r.points[n - 1]);
     assert!(heading_gap((last.1 - prev.1).atan2(last.0 - prev.0), FRAC_PI_2) < 0.02);
-    assert!(r.max_stray_m <= 6.0, "{}", r.max_stray_m);
-    // No route is shorter than the shortest Dubins path between the poses (61.1 m); the cost keeps it near the
-    // corner: the rounded corner itself is 79.5 m, and a route whose last leg lies a little inside the original
-    // leg is 78.1 m (the brief's 79.0 was the corner-tangent path only).
-    let shortest = shortest(pose(18.0, 0.0, 0.0), pose(60.0, 42.0, FRAC_PI_2)).length();
-    assert!(r.length_m >= shortest - 0.05, "{} {shortest}", r.length_m);
-    assert!((77.0..=84.0).contains(&r.length_m), "length {}", r.length_m);
+    // the true largest move, and the same measure computed here
+    let moved = r
+        .points
+        .iter()
+        .map(|p| dist_to_line(*p, &s.original))
+        .fold(0.0, f64::max);
+    assert!(close(r.max_move_m, moved, 1e-9), "{} {moved}", r.max_move_m);
+    assert!(r.max_move_m <= 6.0, "{}", r.max_move_m);
+    // Derived bound. A tangent arc of radius r between the two legs is 84 - (2 - pi/2) r long, and its midpoint is
+    // r (1 - 1/sqrt 2) from the legs; a largest move of 6 m allows r <= 20.5, so the route is at least 75.2 m long.
+    // (The brief's 79.0 was the arc of radius 10.5 only.)
+    assert!(
+        r.length_m >= 84.0 - (2.0 - FRAC_PI_2) * 20.5 - 0.1,
+        "length {}",
+        r.length_m
+    );
+    assert!(r.length_m <= 84.0, "{}", r.length_m);
+    // The search must find something at least as cheap as the obvious candidate: the corner-tangent route
+    // (straight 31.5 m, a quarter circle of radius 10.5, straight 31.5 m), evaluated with the same weights.
+    let mut tangent = vec![at(18.0, 0.0)];
+    for k in 0..=12 {
+        let a = FRAC_PI_2 * f64::from(k) / 12.0;
+        tangent.push(at(49.5 + RHO * a.sin(), RHO - RHO * a.cos()));
+    }
+    tangent.push(at(60.0, 42.0));
+    assert!(
+        r.cost <= flat_cost(&tangent, FRAC_PI_2, &s.obstacles()) + 1e-6,
+        "{} against {}",
+        r.cost,
+        flat_cost(&tangent, FRAC_PI_2, &s.obstacles())
+    );
 }
 
 /// The hairpin of the examples: legs x = 0 and x = 8 from y = 0 to 60, an apex of radius 4 above, anchors at
@@ -2050,16 +2102,22 @@ fn hairpin() -> Setup {
 fn a_hairpin_gets_a_loop_of_the_radius() {
     let r = hairpin().route();
     assert!(tightest(&r.points) >= 9.9, "{}", tightest(&r.points));
-    assert!(r.max_stray_m <= 31.5, "{}", r.max_stray_m);
-    // Not the brief's 92.6 m: on flat ground the cheapest loop is the compact one next to the anchors (66.9 m,
-    // 25.7 m deep, the widest stray 6 m); the longer loop out at the drawn apex costs the same stray and 40 m
-    // more road. No route is shorter than the shortest Dubins path.
-    let shortest = shortest(pose(0.0, 20.0, FRAC_PI_2), pose(8.0, 20.0, -FRAC_PI_2)).length();
-    assert!(r.length_m >= shortest - 0.05, "{} {shortest}", r.length_m);
+    // On flat, free ground nothing is cheaper than the shortest Dubins path: an LRL "bulb" of arcs of 46.3, 272.6 and
+    // 46.3 degrees at R 10.5, 10.5 (4 * 0.808 + pi) = 66.93 m, 25.7 m deep (top at y = 20 + 15.19 + 10.5 = 45.7),
+    // widest stray 6.5 m. The brief's 92.6 m assumed a loop out at the drawn apex, which costs the same stray and
+    // 40 m more road.
+    assert!(close(r.length_m, 66.93, 0.5), "{}", r.length_m);
+    let top = r
+        .points
+        .iter()
+        .map(|p| p.1 - SHIFT.1)
+        .fold(f64::MIN, f64::max);
+    assert!(close(top, 45.7, 1.0), "{top}");
     assert!(
-        r.length_m > 2.0 * PI * RHO / 2.0,
-        "a loop of the radius: {}",
-        r.length_m
+        r.max_stray_m <= 31.5 && r.max_move_m <= 7.0,
+        "{} {}",
+        r.max_stray_m,
+        r.max_move_m
     );
     assert!(is_close(r.points[0], at(0.0, 20.0), 1e-9));
     assert!(is_close(*r.points.last().unwrap(), at(8.0, 20.0), 1e-9));
@@ -2238,24 +2296,44 @@ fn pinned(rise: f64, cap: f64) -> Setup {
 
 #[test]
 fn pinned_anchors_cannot_shorten_a_climb() {
-    // 12 m in 40 m at 0.27: every route is at least (12 - 1) / 0.27 = 40.7 m
-    if let LegOutcome::Found(r) = pinned(12.0, 31.5).run().unwrap() {
-        assert!(r.length_m >= (12.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    // 12 m in 40 m at 0.27: every route is at least (12 - 1) / 0.27 = 40.74 m, and the cap of 31.5 m lets one wiggle
+    // that much: a route exists.
+    let LegOutcome::Found(r) = pinned(12.0, 31.5).run().unwrap() else {
+        panic!("a wiggling route exists");
+    };
+    assert!(r.length_m >= (12.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    // With a cap of 0.5 m (the true distance, the cap is below two cells) a wiggle of amplitude 0.5 m and radius >= R
+    // gains a fraction 0.5 / (4 R) = 1.2 % of 40 m: 40.5 m < 40.74 m. No route, as the brief says; the 4 m strip
+    // of stored distance 0 does not count.
+    match pinned(12.0, 0.5).run().unwrap() {
+        LegOutcome::NoRoute {
+            budget_exhausted, ..
+        } => assert!(!budget_exhausted),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
     }
-    // With a cap of 0.5 m the route can only wiggle inside the raster's 4 m strip of cells that the line touches
-    // (stored distance 0), and it lengthens by 0.9 m that way: 40.9 m is a route. So the brief's "NoRoute" is not
-    // true at 12 m; a route is at least 40.7 m long, or there is none.
-    if let LegOutcome::Found(r) = pinned(12.0, 0.5).run().unwrap() {
-        assert!(r.length_m >= (12.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
-    }
-    // At 15 m (37.5 %) the 52 m that the climb needs cannot be wiggled in, and the spike's anchors, free by 6 m,
-    // would have passed.
+    // 15 m (37.5 %) needs 52 m: the spike's anchors, free by 6 m, would have passed.
     match pinned(15.0, 0.5).run().unwrap() {
         LegOutcome::NoRoute {
             budget_exhausted, ..
         } => assert!(!budget_exhausted),
         other @ LegOutcome::Found(_) => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_route_is_pinned_to_the_terrain_at_both_anchors() {
+    let LegOutcome::Found(r) = pinned(12.0, 31.5).run().unwrap() else {
+        panic!("a route exists");
+    };
+    let s = pinned(12.0, 31.5);
+    let profile = arrive(&r.points, &*s.ground, &s.band()).unwrap();
+    let (z0, z1) = (
+        (s.ground)(s.start.at).unwrap(),
+        (s.ground)(s.end.at).unwrap(),
+    );
+    assert!((profile.heights()[0] - z0).abs() <= 0.5 + 1e-9);
+    assert!((profile.heights().last().unwrap() - z1).abs() <= 0.5 + 1e-9);
+    assert!(close(r.planned_grade, (z1 - z0).abs() / r.length_m, 1e-12));
 }
 
 #[test]
@@ -2271,7 +2349,9 @@ fn a_leg_that_is_too_steep_is_relaxed_to_the_limit_that_fits() {
 }
 
 #[test]
-fn a_steep_slope_gives_a_long_route_or_none() {
+fn a_steep_slope_needs_a_winding_route() {
+    // 30 m of rise in 40 m at 0.27: (30 - 1) / 0.27 = 107.4 m of road are needed at least. The cap of 31.5 m is room
+    // enough to wind; the 0.5 m cap is not (the open set runs empty).
     let mut s = Setup::new(
         anchor(0.0, 0.0, 0.0),
         anchor(40.0, 0.0, 0.0),
@@ -2279,9 +2359,10 @@ fn a_steep_slope_gives_a_long_route_or_none() {
     );
     s.ground = local(|x, _| 100.0 + 0.75 * x);
     s.grade = 0.27;
-    if let LegOutcome::Found(r) = s.run().unwrap() {
-        assert!(r.length_m >= (30.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
-    }
+    let r = s.route();
+    assert!(r.length_m >= (30.0 - 1.0) / 0.27 - 1e-9, "{}", r.length_m);
+    let profile = arrive(&r.points, &*s.ground, &s.band()).unwrap();
+    assert!(profile.max_grade() <= 0.27 + 1e-9);
     s.cap = 0.5;
     match s.run().unwrap() {
         LegOutcome::NoRoute {
@@ -2321,7 +2402,9 @@ fn self_gaps(points: &[(f64, f64)], along: f64) -> f64 {
 
 #[test]
 fn a_route_does_not_loop_back_across_itself() {
-    // a turn of 300 degrees between anchors 12 m apart
+    // A turn of 300 degrees between anchors 12 m apart. The shortest route is the Dubins path RSL of 76.8 m, longer
+    // than the 58 m of `self_along`, so the two anchors, 12 m apart, are samples of one route that the rule keeps
+    // 12.5 m apart: every route breaks it, and the leg has none.
     let heading_end = -PI / 3.0;
     let mut s = Setup::new(
         anchor(0.0, 0.0, 0.0),
@@ -2329,16 +2412,13 @@ fn a_route_does_not_loop_back_across_itself() {
         &[(0.0, 0.0), (12.0, 0.0)],
     );
     s.clear = Clearance::new(0.0, 12.5).unwrap();
-    let outcome = s.run().unwrap();
-    if let LegOutcome::Found(r) = &outcome {
-        let least = self_gaps(&r.points, s.self_along);
-        assert!(
-            least >= 12.5 - 1.5,
-            "samples {least} m apart along a route of {} m",
-            r.length_m
-        );
+    let direct = shortest(pose(0.0, 0.0, 0.0), pose(12.0, 0.0, heading_end)).length();
+    assert!(close(direct, 76.78, 0.01) && direct > s.self_along);
+    match s.run().unwrap() {
+        LegOutcome::NoRoute { states, .. } => assert!(states > 0),
+        other @ LegOutcome::Found(_) => panic!("{other:?}"),
     }
-    // without the rule the cheapest route is a loop across its own start, so the rule is what holds it back
+    // Without the rule the leg has a route, the loop of the shortest path, which does break it.
     let mut free = Setup::new(
         anchor(0.0, 0.0, 0.0),
         anchor(12.0, 0.0, heading_end),
@@ -2349,10 +2429,11 @@ fn a_route_does_not_loop_back_across_itself() {
         panic!("the loop is a route without the rule");
     };
     assert!(
-        self_gaps(&loose.points, PI * RHO + 25.0) < 11.0,
-        "{}",
-        self_gaps(&loose.points, PI * RHO + 25.0)
+        loose.length_m >= direct - 0.05,
+        "{} {direct}",
+        loose.length_m
     );
+    assert!(self_gaps(&loose.points, PI * RHO + 25.0) < 12.5);
 }
 
 #[test]
@@ -2456,6 +2537,14 @@ fn the_switchback_terrain_needs_the_ceiling_and_real_earthwork() {
     s.grade = 0.36;
     let r = s.route();
     let p = arrive(&r.points, &*s.ground, &s.band()).unwrap();
+    // an independent two-pass profile of the route's own points, the same rules written out in the test
+    let (earth, cut, fill) = independent_profile(&r.points, &*s.ground, 0.36, 6.0, 6.0, 0.5, 2.0);
+    assert!(
+        close(r.earthwork_m2, earth, 1e-6 * earth),
+        "{} {earth}",
+        r.earthwork_m2
+    );
+    assert!(close(r.cut_max_m, cut, 1e-6) && close(r.fill_max_m, fill, 1e-6));
     // The measured earthwork of the straight line is 67.6 m2 (cut 3.62 m); the route may wiggle by 1.7 m inside the
     // strip of cells the line touches and does so to save earthwork (63.8 m2).
     assert!(r.earthwork_m2 > 10.0, "{}", r.earthwork_m2);
@@ -2508,12 +2597,10 @@ fn is_none(outcome: &LegOutcome) -> Option<(bool, usize)> {
     }
 }
 
-/// A wall at x = 30.37 (local) between two y values. Not at 30: a crossing exactly at a vertex of a route is not
-/// counted by `cross_point` (it wants both crossings inside their segments), and a route of 2 m samples along the
-/// line has a vertex at every even metre.
+/// A wall at x = 30 (local) between two y values; a route of 2 m samples along the line has a vertex there.
 fn stream_between(y0: f64, y1: f64, allowed: usize, anchors: [(f64, f64); 2]) -> Wall {
     Wall {
-        line: line_at(&[(30.37, y0), (30.37, y1)]),
+        line: line_at(&[(30.0, y0), (30.0, y1)]),
         allowed,
         kind: WallKind::Stream,
         anchors,
@@ -2671,7 +2758,7 @@ fn a_later_budget_runs_when_the_first_runs_out() {
 }
 
 #[test]
-fn a_dead_end_behind_the_start_is_reached_by_a_loop_or_not_at_all() {
+fn a_dead_end_behind_the_start_is_reached_by_a_loop() {
     let line = [(0.0, 0.0), (-30.0, 10.0)];
     let end = Anchor {
         at: at(-30.0, 10.0),
@@ -2679,10 +2766,11 @@ fn a_dead_end_behind_the_start_is_reached_by_a_loop_or_not_at_all() {
         straight_m: 0.0,
     };
     let s = Setup::new(anchor(0.0, 0.0, 0.0), end, &line);
-    if let LegOutcome::Found(r) = s.run().unwrap() {
-        assert!(tightest(&r.points) >= 9.9);
-        assert!(is_close(*r.points.last().unwrap(), at(-30.0, 10.0), 1e-9));
-    }
+    let r = s.route();
+    assert!(tightest(&r.points) >= 9.9);
+    assert!(is_close(*r.points.last().unwrap(), at(-30.0, 10.0), 1e-9));
+    // a point 30 m behind and 10 m beside needs a U-turn: more than the half circle of the radius
+    assert!(r.length_m > PI * RHO, "{}", r.length_m);
     // straight ahead: the arc through the point is a straight
     let end = Anchor {
         at: at(50.0, 0.0),
@@ -2715,6 +2803,14 @@ fn random_leg(seed: u64) -> Setup {
     if pick(0.0, 1.0) < 0.25 {
         end.straight_m = 0.0;
     }
+    if pick(0.0, 1.0) < 0.3 {
+        // close anchors: the end 25 to 60 m from the start
+        end.at = (
+            start.at.0 + pick(25.0, 55.0),
+            start.at.1 + pick(-30.0, 30.0),
+        );
+    }
+    let wall_wanted = pick(0.0, 1.0) < 0.4;
     let (sx, sy) = (pick(-0.3, 0.3), pick(-0.3, 0.3));
     let line = [
         (start.at.0 - SHIFT.0, start.at.1 - SHIFT.1),
@@ -2729,6 +2825,29 @@ fn random_leg(seed: u64) -> Setup {
     let size = pick(0.0, 18.0);
     LAKE.with(|l| l.set((lake_at.0, lake_at.1, size)));
     s.water = lake_of_the_thread;
+    if wall_wanted {
+        // a stream across the middle of the leg that the original line crosses once
+        let mid = (
+            f64::midpoint(line[0].0, line[1].0),
+            f64::midpoint(line[0].1, line[1].1),
+        );
+        let (dx, dy) = (line[1].0 - line[0].0, line[1].1 - line[0].1);
+        let len = dx.hypot(dy);
+        let perp = (-dy / len * 40.0, dx / len * 40.0);
+        let stream = line_at(&[
+            (mid.0 - perp.0, mid.1 - perp.1),
+            (mid.0 + perp.0, mid.1 + perp.1),
+        ]);
+        let anchors = [s.start.at, s.end.at];
+        let allowed = crossings_away(&s.original, &stream, anchors, 10.0);
+        s.walls = vec![Wall {
+            line: stream,
+            allowed,
+            kind: WallKind::Stream,
+            anchors,
+            end_m: 10.0,
+        }];
+    }
     s
 }
 
@@ -2755,6 +2874,14 @@ fn check_leg(seed: u64) -> Result<bool, TestCaseError> {
         prop_assert!(o.segment(w[0], w[1], s.clear).is_ok(), "{w:?}");
     }
     prop_assert!(r.points.iter().all(|p| o.stray_m(*p) <= s.cap));
+    for w in &s.walls {
+        prop_assert!(
+            w.crossings(&r.points) == w.allowed,
+            "wall {} of {}",
+            w.crossings(&r.points),
+            w.allowed
+        );
+    }
     let profile = arrive(&r.points, &*s.ground, &s.band())
         .map_err(|e| TestCaseError::fail(format!("profile: {e}")))?;
     prop_assert!(profile.max_grade() <= s.grade + 1e-9);
@@ -2796,8 +2923,319 @@ proptest! {
 
 #[test]
 fn the_route_property_is_not_vacuous() {
-    let found = (1..=24_u64)
-        .filter(|&k| check_leg(k.wrapping_mul(0x9e37_79b9_7f4a_7c15)).unwrap())
-        .count();
-    assert!(found >= 8, "{found} of 24");
+    let (mut found, mut walled, mut close) = (0, 0, 0);
+    for k in 1..=40_u64 {
+        let seed = k.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let s = random_leg(seed);
+        if check_leg(seed).unwrap() {
+            found += 1;
+            walled += usize::from(!s.walls.is_empty());
+            close += usize::from(dist_between(s.start.at, s.end.at) < 70.0);
+        }
+    }
+    // measured: see the assertion messages when they fail; the families must be there, or the property says nothing
+    assert!(
+        found >= 10 && walled >= 2 && close >= 2,
+        "{found} found, {walled} with a wall, {close} close"
+    );
+}
+
+fn dist_between(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// The two-pass profile of notes 5.1 written out again: samples equally spaced along the polyline (at most `spacing`
+/// apart), the road pinned to the terrain within `tol` at both ends, forward and backward passes of the reachable
+/// interval, then the profile closest to the terrain. Returns the earthwork, the deepest cut and the highest fill.
+fn independent_profile(
+    points: &[(f64, f64)],
+    ground: &dyn Fn((f64, f64)) -> Option<f64>,
+    grade: f64,
+    cut: f64,
+    fill: f64,
+    tol: f64,
+    spacing: f64,
+) -> (f64, f64, f64) {
+    let total = length_of(points);
+    let parts = (total / spacing - 1e-9).ceil().max(1.0);
+    let count = naves_core::reroute::dubins::segments(0.0, total, total / parts);
+    let ds = total / f64::from(u32::try_from(count).unwrap());
+    let last_segment = points.len() - 2;
+    let at_arc = |target: f64| {
+        let mut done = 0.0;
+        for (k, w) in points.windows(2).enumerate() {
+            let l = (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+            if done + l >= target || k == last_segment {
+                let t = if l > 0.0 {
+                    ((target - done) / l).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                return (
+                    w[0].0 + (w[1].0 - w[0].0) * t,
+                    w[0].1 + (w[1].1 - w[0].1) * t,
+                );
+            }
+            done += l;
+        }
+        points[0]
+    };
+    let terrain: Vec<f64> = (0..=count)
+        .map(|k| ground(at_arc(f64::from(u32::try_from(k).unwrap()) * ds)).unwrap())
+        .collect();
+    let (mut low, mut high): (Vec<f64>, Vec<f64>) =
+        terrain.iter().map(|t| (t - cut, t + fill)).unzip();
+    low[0] = low[0].max(terrain[0] - tol);
+    high[0] = high[0].min(terrain[0] + tol);
+    for i in 1..terrain.len() {
+        low[i] = low[i].max(low[i - 1] - grade * ds);
+        high[i] = high[i].min(high[i - 1] + grade * ds);
+    }
+    let last = terrain.len() - 1;
+    low[last] = low[last].max(terrain[last] - tol);
+    high[last] = high[last].min(terrain[last] + tol);
+    for i in (0..last).rev() {
+        low[i] = low[i].max(low[i + 1] - grade * ds);
+        high[i] = high[i].min(high[i + 1] + grade * ds);
+    }
+    let mut road = vec![terrain[0].clamp(low[0], high[0])];
+    for i in 1..terrain.len() {
+        let (lo, hi) = (
+            low[i].max(road[i - 1] - grade * ds),
+            high[i].min(road[i - 1] + grade * ds),
+        );
+        road.push(terrain[i].clamp(lo, hi));
+    }
+    let earth: f64 = (1..terrain.len())
+        .map(|i| (road[i] - terrain[i]).abs() * ds)
+        .sum();
+    let cut_max = terrain
+        .iter()
+        .zip(&road)
+        .map(|(t, r)| t - r)
+        .fold(0.0, f64::max);
+    let fill_max = terrain
+        .iter()
+        .zip(&road)
+        .map(|(t, r)| r - t)
+        .fold(0.0, f64::max);
+    (earth, cut_max, fill_max)
+}
+
+// ---- fix round 1: the arrival, the walls, the hairpin's own measure ----
+
+#[test]
+fn a_route_round_the_end_of_a_stream_does_not_block_the_valid_one() {
+    // The original bends over the end of a stream and crosses it once. With no stray cost the cheapest route is the
+    // straight line below the stream's end: it crosses nothing, so the check refuses it (the count must equal what the
+    // original did). That refusal must not end the search: the S-curve over the end is a route.
+    let line = [(0.0, 0.0), (30.0, 6.0), (60.0, 0.0)];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    let anchors = [at(0.0, 0.0), at(60.0, 0.0)];
+    let mut wall = Wall {
+        line: line_at(&[(30.4, 3.0), (30.4, 40.0)]),
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors,
+        end_m: 10.0,
+    };
+    wall.allowed = crossings_away(&s.original, &wall.line, anchors, 10.0);
+    assert_eq!(wall.allowed, 1);
+    s.walls = vec![wall];
+    let LegOutcome::Found(r) = s.run_edited(None, |i| i.weights.stray = 0.0).unwrap() else {
+        panic!("a route over the end of the stream exists");
+    };
+    assert_eq!(s.walls[0].crossings(&r.points), 1);
+    assert!(r.length_m > 60.0 && r.length_m < 70.0, "{}", r.length_m);
+}
+
+#[test]
+fn a_wall_is_counted_wall_by_wall() {
+    // Two streams, each crossed once by the original. The sum of the crossings of a route that crosses the first
+    // twice and the second not at all is the same as the original's, and is no route.
+    let line = [(0.0, 0.0), (80.0, 0.0)];
+    let mut s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(80.0, 0.0, 0.0), &line);
+    let anchors = [at(0.0, 0.0), at(80.0, 0.0)];
+    let wall = |x: f64| Wall {
+        line: line_at(&[(x, -40.0), (x, 40.0)]),
+        allowed: 1,
+        kind: WallKind::Stream,
+        anchors,
+        end_m: 10.0,
+    };
+    s.walls = vec![wall(30.4), wall(50.4)];
+    let r = s.route();
+    for w in &s.walls {
+        assert_eq!(w.crossings(&r.points), 1);
+    }
+}
+
+#[test]
+fn a_wall_through_a_vertex_is_counted_once() {
+    // a wall at integer coordinates through the 2 m vertices of a straight route
+    let route = [
+        (0.0, 0.0),
+        (28.0, 0.0),
+        (30.0, 0.0),
+        (32.0, 0.0),
+        (60.0, 0.0),
+    ];
+    let wall = [(30.0, -5.0), (30.0, 5.0)];
+    assert_eq!(
+        crossings_away(&route, &wall, [(0.0, 0.0), (60.0, 0.0)], 10.0),
+        1
+    );
+    assert_eq!(
+        crossings_away(&route, &wall, [(0.0, 0.0), (60.0, 0.0)], 10.0),
+        1
+    );
+    // through a vertex of the wall as well
+    let bent = [(30.0, -5.0), (30.0, 0.0), (30.0, 5.0)];
+    assert_eq!(
+        crossings_away(&route, &bent, [(0.0, 0.0), (60.0, 0.0)], 10.0),
+        1
+    );
+    // blocked as a segment test
+    let w = Wall {
+        line: wall.to_vec(),
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors: [(0.0, 0.0), (60.0, 0.0)],
+        end_m: 10.0,
+    };
+    assert_ne!(
+        w.blocks((28.0, 0.0), (30.0, 0.0)),
+        w.blocks((30.0, 0.0), (32.0, 0.0))
+    );
+}
+
+#[test]
+fn the_hairpin_clears_itself_by_the_original_measure() {
+    // Production clearances: own reach 9 m, road clearance 13 m, a road 6 m wide. The anchors are 8 m apart, so the
+    // original legs are 8 m apart, and `self_clearance` gives 8 m (not 13).
+    let along = PI * RHO + 26.0;
+    let original = line_at(&hairpin_line());
+    let own = self_clearance(&original, along, 13.0, 6.0);
+    assert!(close(own, 8.0, 0.1), "{own}");
+    let mut s = hairpin();
+    s.clear = Clearance::new(9.0, 13.0).unwrap();
+    s.self_along = along;
+    s.self_clear = Some(own);
+    let r = s.route();
+    assert!(close(r.length_m, 66.93, 0.5), "{}", r.length_m);
+    // no two samples more than `self_along` apart along the route are nearer than `self_clear`, within the
+    // spacing of the samples
+    let least = self_gaps(&r.points, along);
+    assert!(least >= own - 1.5, "{least}");
+    // with the road clearance as the measure the hairpin has no route at all: that was the defect
+    s.self_clear = Some(13.0);
+    assert!(matches!(s.run().unwrap(), LegOutcome::NoRoute { .. }));
+}
+
+#[test]
+fn the_self_clearance_of_an_original_line() {
+    let along = 59.0;
+    // two legs 8 m apart: 8
+    let hairpin = line_at(&hairpin_line());
+    assert!(close(self_clearance(&hairpin, along, 13.0, 6.0), 8.0, 0.1));
+    // never below the road's width
+    assert!(close(
+        self_clearance(&hairpin, along, 13.0, 9.0),
+        9.0,
+        1e-12
+    ));
+    // legs further apart than the threshold: the threshold
+    let wide = line_at(&[(0.0, 0.0), (0.0, 80.0), (40.0, 80.0), (40.0, 0.0)]);
+    assert!(close(self_clearance(&wide, along, 13.0, 6.0), 13.0, 1e-12));
+    // a straight line has no pair that far apart and not near: the threshold
+    let straight = line_at(&[(0.0, 0.0), (200.0, 0.0)]);
+    assert!(close(
+        self_clearance(&straight, along, 13.0, 6.0),
+        13.0,
+        1e-12
+    ));
+    // a line too short to have a pair more than `along` apart
+    let short = line_at(&[(0.0, 0.0), (20.0, 0.0), (20.0, 8.0), (0.0, 8.0)]);
+    assert!(close(self_clearance(&short, along, 13.0, 6.0), 13.0, 1e-12));
+    // a threshold below the width gives the width; nothing that is not a number is used
+    assert!(close(
+        self_clearance(&straight, along, 4.0, 6.0),
+        6.0,
+        1e-12
+    ));
+    assert!(close(
+        self_clearance(&[(f64::NAN, 0.0), (1.0, 1.0)], along, 13.0, 6.0),
+        13.0,
+        1e-12
+    ));
+    assert!(close(
+        self_clearance(&straight, f64::NAN, 13.0, 6.0),
+        13.0,
+        1e-12
+    ));
+}
+
+/// A corridor 7 m wide and 30 m long in front of the end anchor, between water.
+fn corridor_water(p: (f64, f64)) -> bool {
+    let (x, y) = (p.0 - SHIFT.0, p.1 - SHIFT.1);
+    (70.0..=101.0).contains(&x) && y.abs() > 3.5
+}
+
+#[test]
+fn a_dearer_state_that_climbs_further_is_kept() {
+    // 24 m of rise in 100 m at 0.18, anchors pinned: the road needs (24 - 1) / 0.18 = 127.8 m, and it can only gain
+    // 0.18 * 30 = 5.4 m in the corridor, so it must enter it at 18.1 m or more above its start (terrain there: 16.8 m)
+    // after winding 100 m in the open. A short route is cheaper and enters the same cells of the corridor at the
+    // same headings with a lower reachable interval: it cannot arrive. Keeping only the cheapest state of a cell and
+    // heading (the old rule) drops every winding route at the corridor's entrance and the open set runs empty.
+    let mut s = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(100.0, 0.0, 0.0),
+        &[(0.0, 0.0), (100.0, 0.0)],
+    );
+    s.ground = local(|x, _| 100.0 + 0.24 * x);
+    s.grade = 0.18;
+    s.cap = 12.0;
+    s.water = corridor_water;
+    let r = s.route();
+    assert!(r.length_m >= (24.0 - 1.0) / 0.18 - 1e-9, "{}", r.length_m);
+    let profile = arrive(&r.points, &*s.ground, &s.band()).unwrap();
+    assert!(profile.max_grade() <= 0.18 + 1e-9);
+    // the same leg without the water at the entrance is found as well, and the corridor route is no shorter
+    let mut open = Setup::new(
+        anchor(0.0, 0.0, 0.0),
+        anchor(100.0, 0.0, 0.0),
+        &[(0.0, 0.0), (100.0, 0.0)],
+    );
+    open.ground = local(|x, _| 100.0 + 0.24 * x);
+    open.grade = 0.18;
+    open.cap = 12.0;
+    assert!(open.route().length_m <= r.length_m + 1e-9);
+}
+
+#[test]
+fn sizes_that_would_blow_up_the_search_are_refused() {
+    let line = [(0.0, 0.0), (60.0, 0.0)];
+    let s = Setup::new(anchor(0.0, 0.0, 0.0), anchor(60.0, 0.0, 0.0), &line);
+    let bad: [fn(&mut LegInput<'_>); 3] = [
+        |i| i.radius = 1.0e15,
+        |i| i.step_m = 1.0e4,
+        |i| i.arrive_reach_m = 1.0e5,
+    ];
+    for (k, edit) in bad.into_iter().enumerate() {
+        assert_eq!(
+            s.run_edited(None, edit).unwrap_err(),
+            RerouteError::Degenerate,
+            "{k}"
+        );
+    }
+    assert_eq!(
+        s.run_edited(None, |i| i.self_clear_m = f64::NAN)
+            .unwrap_err(),
+        RerouteError::NotFinite
+    );
+    assert_eq!(
+        s.run_edited(None, |i| i.self_clear_m = -1.0).unwrap_err(),
+        RerouteError::Degenerate
+    );
 }

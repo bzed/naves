@@ -837,7 +837,13 @@ pub fn exempt_samples(
     out
 }
 
-/// The point where the segments `a1`-`a2` and `b1`-`b2` cross, if each is crossed in its interior.
+/// The point where the segments `a1`-`a2` and `b1`-`b2` cross, if they cross. A crossing is a change of side: of
+/// the ends of each segment against the line of the other. An end that lies exactly on that line counts as on the
+/// positive side, the same way for every segment that shares it, so a route that passes through a vertex of its own
+/// polyline, or of the wall, is counted once (by the one of its two segments that changes the side), not never and
+/// not twice. A route that only touches the line from the positive side is counted twice, from the other side not at
+/// all, and a route that ends on the line from the positive side once: that needs coordinates that agree exactly and
+/// does not happen on measured data.
 fn cross_point(
     a1: (f64, f64),
     a2: (f64, f64),
@@ -849,10 +855,15 @@ fn cross_point(
     if den.is_nan() || den.abs() < 1e-12 {
         return None;
     }
-    let along_a = ((b1.0 - a1.0) * db.1 - (b1.1 - a1.1) * db.0) / den;
-    let along_b = ((b1.0 - a1.0) * da.1 - (b1.1 - a1.1) * da.0) / den;
-    let inner = |v: f64| v > CROSS_EPS && v < 1.0 - CROSS_EPS;
-    (inner(along_a) && inner(along_b)).then_some((a1.0 + along_a * da.0, a1.1 + along_a * da.1))
+    // the side of a point of one segment against the line of the other, written the same way for every use of the point
+    let side = |origin: (f64, f64), d: (f64, f64), p: (f64, f64)| {
+        d.0 * (p.1 - origin.1) - d.1 * (p.0 - origin.0) > 0.0
+    };
+    if side(a1, da, b1) == side(a1, da, b2) || side(b1, db, a1) == side(b1, db, a2) {
+        return None;
+    }
+    let along_a = (((b1.0 - a1.0) * db.1 - (b1.1 - a1.1) * db.0) / den).clamp(0.0, 1.0);
+    Some((a1.0 + along_a * da.0, a1.1 + along_a * da.1))
 }
 
 /// What kind of line a [`Wall`] is.

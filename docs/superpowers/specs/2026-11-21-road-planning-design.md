@@ -258,9 +258,15 @@ cells.
   for this purpose, never exempt, except its first `PLAN_SELF_FREE` (the road clearance threshold plus its own reach,
   about 26 m for a town street) along the chain from each anchor, which is the road the leg continues into. Inside the
   route: two samples more than `PLAN_SELF_ALONG = π · R + 2 · road clearance` apart along the route must be at least
-  the road clearance apart (the bend itself and the spread of its legs are one road; a loop that comes back onto
-  itself is not). The spike had no self-clearance at all: the own chain outside the leg touches the leg at its
-  anchors, so its per-road exemption always exempted it.
+  `self_clear_m` apart (the bend itself and the spread of its legs are one road; a loop that comes back onto itself
+  is not). **`self_clear_m` is not the road clearance (controller, review of Task 5):** with the road clearance a
+  hairpin whose legs are 8 m apart has no route at all, because the first and the last samples of every route are more
+  than `PLAN_SELF_ALONG` apart along it and 8 m apart on the ground. The caller gives it as a field of the leg's input,
+  `min(road clearance threshold, the smallest distance between two samples of the original line, every 2 m, that are
+  more than PLAN_SELF_ALONG apart along it)`, but not less than the road's width, which `search::self_clearance` computes
+  (no such pair: the threshold). A route is thereby asked to keep apart what the original line kept apart, as the
+  per-place exemption does for other roads. The spike had no self-clearance at all: the own chain outside the leg touches
+  the leg at its anchors, so its per-road exemption always exempted it.
 - **Bridge decks and tunnels:** stamped like other roads and never exempt, except a deck or tunnel within
   `PLAN_DECK_ANCHOR_M` (12 m) of a fixed anchor (junction, dead end, held part), which is part of that anchor and is
   exempt per place. Reason: the clean-up puts a junction 8 m from a bridge end, so the deck stamped its own anchor;
@@ -431,19 +437,42 @@ is not taken. The spike: cap 2 loses 3 of 34 town corners, caps 4 to 6 find none
 28.5 m, p95 16.6 m. The grade rule makes switchbacks longer, so the cap may now bite there; the re-check measures it
 (plan Task 5 for the two switchbacks, Task 7b for the map).
 
-**Heuristic** (0 for an arrived state): the larger of the field estimate and the notes' analytic bound,
-`max(distance, Δ / g_leg) + W_SLOPE · Δ` with `Δ = max(0, |z_end − z_here| − PLAN_CUT_M − PLAN_FILL_M)`.
+**Heuristic** (0 for an arrived state): the larger of the field estimate and the analytic bound
+`max(distance, Δ / g_leg) + W_SLOPE · Δ`, where `Δ` is the gap between the state's reachable interval and the end
+anchor's heights (`[z_end − PLAN_ANCHOR_TOL_M, z_end + PLAN_ANCHOR_TOL_M]`): 0 where they meet. This replaces the notes'
+`Δ = max(0, |z_end − z_here| − PLAN_CUT_M − PLAN_FILL_M)`, which throws away the 12 m of the band at every state (at the
+start of switchback-1 it gave 52 m of road to go against 113 m). It is a lower bound: the road at the state is inside
+its interval, the road at the end within the tolerance of the terrain, the grade limit bounds the length, and the
+nominal height (the terrain clamped into the interval) is in the interval at the state and within the tolerance of the
+terrain at the end, so its climb is at least `Δ`.
 
-**Duplicates:** the state key is (arrived, position in cells of `s / 2`, heading bin); bins `⌈2π / (θ / 4)⌉`, clamped to
-32 to 180. A new state is dropped if a stored state with the same key costs no more; otherwise it replaces it. A popped
-state whose priority is above its cost plus the weighted heuristic is stale and skipped.
+**Duplicates:** the state key is (position in cells of `s / 2`, heading bin); bins `⌈2π / (θ / 4)⌉`, clamped to 32 to
+180. Arrivals have no key: each is its own candidate (see End). A state is dropped if a stored state with the same key
+costs no more **and** reaches as far towards the end anchor's height: its reachable interval is not lower at the top
+(where the state is below the end's heights), not higher at the bottom (above them), and not narrower at either end
+(where it meets them), each within `DOMINANCE_TOL_M` (2 m). Otherwise it lives beside the stored ones, and it removes
+those it dominates itself. At most 4 states live per key (`PER_KEY`): the dearest goes, ties by insertion order. A
+state that left its key is stale and skipped when popped. The reason: two states of a cell come from different paths;
+in a leg bound by the grade the cheaper is the shorter, and its interval is lower, and the dearer one, which climbed
+more, is the one that can still arrive; keeping only the cheapest cuts it off (a corridor in front of the end anchor
+is enough: test `a_dearer_state_that_climbs_further_is_kept`). Comparing the whole interval exactly kept so many
+states that switchback-1 needed 58 000 to 112 000 states instead of 9 000; comparing only the end that matters, within 2 m,
+costs about nothing there. Because of the bound, and because the estimate is not admissible, an empty open set is
+**not** a proof that there is no route.
 
-**End:** the first arrived state that is popped ends the search; its path is the route. There is one leg per search,
-so the notes' arrivals per heading sector and their stop rules are not needed.
+**End:** an arrival is a Dubins path from a state to the end pose (or the arc through a dead end). It passes the tests of
+a step and the band's end tolerance and goes into the open set as a candidate with its lower-bound cost; a path is not
+tried where the state's cost plus its length reaches the cost of an arrival that was already checked, nor where the
+state's heights cannot reach the end anchor's within the grade over its length. The route of a candidate is built and
+checked from scratch when it is popped (see below). A route that fails is dropped and the next Dubins path of that state
+is tried: a failed check never keeps a later arrival out. A route that passes but costs more than the next entry of the
+open set (its real earthwork is above the lower bound) is put back with its real cost. The first checked route popped
+ends the search; its path is the route. There is one leg per search, so the notes' arrivals per heading sector and
+their stop rules are not needed.
 
 **Budgets:** each try is the sequence `PLAN_BUDGETS` of (heuristic weight, expanded states): (1.0, 10 000),
-(1.5, 20 000), (3.0, 40 000). The next pair runs only when the budget ran out; an empty open set proves there is no
-route and ends the try. The spike: four times the largest count to the first arrival on the six sites (1745); on the
+(1.5, 20 000), (3.0, 40 000). The next pair runs only when the budget ran out; an empty open set ends the try
+(it does not prove that there is no route, see Duplicates). The spike: four times the largest count to the first arrival on the six sites (1745); on the
 map, the same 2046 legs are planned with these budgets, with twice them and with one try of 400 000; 9 legs needed
 weight 1.5; the largest count to a first arrival anywhere was 27 315, median 155. Budgets are counts of states, never
 wall time.
@@ -453,25 +482,33 @@ wall time.
 - The Dubins paths are the classical closed forms written in `dubins.rs` (the crate `dubins_paths` was reviewed and
   not used; the commit says why). A path is returned only if its closed form ends at the target within 10⁻⁹ m and
   radians; two equal poses have one path of length 0.
-- A step and an arrival candidate pass, in this order: the stray cap at every point of the polyline (the raster's
-  stored measure, as the field), the walls (a wall that allows no crossing blocks; the crossings of the others are
-  summed over the route and may not exceed what the walls allow in all), the band (`band_step`, which also tests every
-  segment against the obstacles), the self-clearance (samples every `SAMPLE_M` of the step against the earlier samples of
-  the route more than `PLAN_SELF_ALONG` back along it, and against each other). An arrival candidate then needs
-  `arrives` and `arrive` over the whole route from the start anchor, at the same grade limit; an `Err` drops the
-  candidate and the next Dubins path is tried.
-- A popped arrived state is checked once more before it is accepted: the points, the start and the end, the radius on
-  a 2 m resample, every segment, the stray cap, the walls (the crossings equal what the original line made), the
+- A step and an arrival candidate pass, in this order: the stray cap at every point and every middle of a chord (the
+  raster's stored measure, as the field; by the true distance to the original line when the cap is below two raster
+  cells, where the stored measure is 0 across the cells the line touches), the walls (a wall that allows no crossing
+  blocks; **each** wall that allows some counts its own crossings along the route and may not exceed what it allows),
+  the self-clearance (samples every `SAMPLE_M` of the step against the earlier samples of the route more than
+  `PLAN_SELF_ALONG` back along it, and against each other, by `self_clear_m`), the band (`band_step`, which also tests
+  every segment against the obstacles). The polylines inside the search are sampled by length only (3 chords of 2 m per
+  step; a chord of 2 m at R 10.5 is 5 cm off the arc). The route that is returned has a point about every 2° of an arc.
+  An arrival candidate also needs `arrives`.
+- A popped arrival candidate is built on the fine points and checked from scratch: the points, the start and the end, the
+  radius on a 2 m resample, every segment, the stray cap, **every wall** (the crossings equal what the original line
+  made, wall by wall: a sum would let a route that crosses one wall twice and another not at all pass), the
   self-clearance over all pairs of the route's samples, and `arrive` at the limit the route was found at. A route that
-  fails is dropped and the search goes on; nothing is reported for it. The reported cut, fill and earthwork are the
-  profile's, the planned grade is the net rise over the length, the stray is the largest stored distance.
+  fails is dropped, the next Dubins path of its state is tried, and nothing is reported for it. The reported cut,
+  fill and earthwork are the profile's, the planned grade is the net rise of the terrain between the anchors over the
+  length (the road is pinned only within the tolerance, so the road's own grade differs by up to `2 · tolerance /
+  length`), the stray is the largest stored distance, and `max_move_m` the largest true distance from the original line.
 - `search_leg_relaxed` runs `search_leg` at each limit in turn on the same raster, walls and field; the states of the
   limits that failed count in `Route::states`.
 - The end heading of a route is exact in the closed form (and tested in the Dubins paths); the polyline of an arc is
   sampled every 2°, so its last chord differs from the heading by up to 1°. A junction end's straight is exact.
-- Crossings of a wall exactly at a vertex of the route are counted by neither the search nor the check (`cross_point`
-  wants both crossings inside their segments); that needs coordinates that agree to 10⁻⁹ and does not happen on
-  measured data.
+- A crossing is a change of side of a segment's ends against the line of the other, an end exactly on the line counting
+  as on the non-positive side, the same for every segment that shares it: a route that passes through a vertex of its
+  own polyline or of the wall is counted once. (It was counted never, in the first version.) A route that only touches a
+  wall from its positive side is counted twice; that needs coordinates that agree exactly.
+- A hard bound on every allocation: a try expands at most 200 000 states whatever the budget says, and a radius or a
+  step above 1000 m, or an arrival reach above 10 000 m, is refused.
 
 **Tie-breaking:** the open set is ordered by priority, then cost, then the state key, then the order of insertion, all
 floats compared with `total_cmp`. States live in an arena indexed by insertion order. The key table is a sorted map,
@@ -515,7 +552,7 @@ Reasons **(controller)**:
 - `blocked_by_water`: no route was found, and a diagnostic search without water (areas and streams) finds one.
 - `blocked_by_road`: no route was found, and a diagnostic search without other roads finds one; or the route was
   reverted against an earlier accepted route.
-- `no_route`: none of the above, with `budget_exhausted` or proven.
+- `no_route`: none of the above, with `budget_exhausted` or with the open set empty (never called proven: see Duplicates).
 
 The diagnostic searches run only for failed legs, at the ceiling grade, with the last budget pair only.
 
@@ -596,7 +633,9 @@ re-check with the grade rule (plan Task 7b) must confirm before they are frozen.
 | `PLAN_MAX_ZONE_M` | 400 m | a longer zone is not planned | at lead 2 only 2 zones are longer; 1000 m plans 2 more | |
 | `PLAN_EXEMPT_EXTEND_M` | 10.0 m | exempt part of a road beyond where the original comes near | assistant (per-place exemption) | yes |
 | `PLAN_SELF_FREE` | road clearance threshold + own reach | own road beyond an anchor that is not an obstacle | assistant (self-clearance) | yes |
-| `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep the clearance | assistant (self-clearance) | yes |
+| `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep `self_clear_m` | assistant (self-clearance) | yes |
+| `self_clear_m` | `max(width, min(road clearance threshold, smallest distance of two samples of the original line more than PLAN_SELF_ALONG apart))` | what the own road's samples keep from each other; `search::self_clearance` | controller (review of Task 5) | yes |
+| `DOMINANCE_TOL_M`, `PER_KEY` | 2 m, 4 | states of a cell and heading that stay alive | switchback-1 and the corridor test | yes |
 | `PLAN_CROSSING_END_M` | 10.0 m | wall crossings this near an anchor are not counted | spike: 7 check failures to 1 | |
 | raster resolution | half the terrain cell, 1 to 2.5 m | obstacle raster | notes 3.2 | |
 | `PLAN_RASTER_MAX_CELLS` | 4 000 000 | per leg; grows by 1.25 | assistant | |

@@ -108,6 +108,18 @@ impl DubinsPath {
     /// about every [`ARC_SAMPLE_DEG`] degrees; the end last. A move of no length adds nothing.
     #[must_use]
     pub fn points(&self, from: Pose, radius: f64, step_m: f64) -> Vec<(f64, f64)> {
+        self.sampled(from, radius, step_m, true)
+    }
+
+    /// The same, sampled by length only: no two points are more than `step_m` apart and an arc has no extra points.
+    /// For the search's tests, where a chord of 2 m on a radius of 10 m is 5 cm off the arc; the written route uses
+    /// [`DubinsPath::points`].
+    #[must_use]
+    pub fn points_coarse(&self, from: Pose, radius: f64, step_m: f64) -> Vec<(f64, f64)> {
+        self.sampled(from, radius, step_m, false)
+    }
+
+    fn sampled(&self, from: Pose, radius: f64, step_m: f64, by_angle: bool) -> Vec<(f64, f64)> {
         let mut out = vec![from.at];
         let mut pose = from;
         for (t, &l) in self.word.iter().zip(&self.lengths) {
@@ -115,7 +127,8 @@ impl DubinsPath {
                 continue;
             }
             let curvature = t.sign() / radius;
-            let n = segments(curvature * l, l, step_m);
+            let angle = if by_angle { curvature * l } else { 0.0 };
+            let n = segments(angle, l, step_m);
             out.extend(arc_points(pose, curvature, l, n).into_iter().skip(1));
             pose = follow(pose, curvature, l);
         }

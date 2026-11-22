@@ -37,10 +37,8 @@ mod reroute_search_case {
         odd
     }
 
-    /// Runs the case; the number of routes found (0 to 2).
-    pub fn run(data: &[u8]) -> usize {
-        let (head, rest) = data.split_at_checked(57).unwrap_or((data, &[]));
-        let flags = head.get(56).copied().unwrap_or(0);
+    /// The records: the original line, the water polygon and the wall.
+    fn decode(rest: &[u8]) -> [Vec<(f64, f64)>; 3] {
         let [mut original, mut polygon, mut wall] = <[Vec<(f64, f64)>; 3]>::default();
         for c in rest.as_chunks::<17>().0 {
             let (Some(x), Some(y), Some(&kind)) = (c.get(0..8), c.get(8..16), c.get(16)) else {
@@ -56,6 +54,14 @@ mod reroute_search_case {
                 _ => wall.push(p),
             }
         }
+        [original, polygon, wall]
+    }
+
+    /// Runs the case; the number of routes found (0 to 2).
+    pub fn run(data: &[u8]) -> usize {
+        let (head, rest) = data.split_at_checked(57).unwrap_or((data, &[]));
+        let flags = head.get(56).copied().unwrap_or(0);
+        let [original, polygon, wall] = decode(rest);
         let anchor = |at: (f64, f64), heading: f64, none: bool, straight: bool| Anchor {
             at,
             heading: (!none).then_some(heading),
@@ -121,6 +127,8 @@ mod reroute_search_case {
             stray_cap_m: 31.5,
             arrive_reach_m: 42.0,
             self_along_m: 58.0,
+            self_clear_m: 12.0,
+            original: &original,
             budgets: &[(1.0, 40), (1.5, 40)],
         };
         let outcomes = [

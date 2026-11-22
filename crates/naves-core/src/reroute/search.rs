@@ -6,21 +6,34 @@
 //!
 //! A state is a pose with the cost so far and the interval of road heights reachable there. Five arcs of one step
 //! leave every state; from every state within [`LegInput::arrive_reach_m`] of the end anchor the Dubins paths of
-//! the planning radius to the end pose are tried, and the first that passes every test is an *arrived* state. The
-//! forward band only prunes: a route is accepted only through [`arrive`], the two-pass profile of the whole
-//! route, whose earthwork replaces the lower bound in the cost of the arrived state. The search is deterministic:
-//! its open set is ordered by priority, cost, state key and insertion order with `total_cmp`, and the table of
-//! state keys is only looked up, never iterated.
+//! the planning radius to the end pose are tried, and the first that passes the cheap tests becomes an *arrival
+//! candidate* in the open set with its lower-bound cost. An arrival is never merged with another (each is its own
+//! candidate). When a candidate is popped the whole route is built and checked from scratch: [`arrive`], the
+//! two-pass profile of the whole route, whose real earthwork replaces the lower bound in the cost, the radius, every
+//! segment, the stray cap, the crossings of every wall (each wall's count must equal what the original line made)
+//! and the self-clearance. A route that fails is dropped and the next Dubins path of the same state is tried, so a
+//! failed check never keeps a later arrival out. A route whose real cost rose above the next entry of the open set is
+//! put back with its real cost.
 //!
-//! The estimate of the cost to go is the larger of the cost-to-go [`Field`] and an analytic bound. The field is
-//! not strictly admissible (see its module), so the search at weight 1 is not exact either; it is as good as the
-//! field. Budgets are counts of expanded states, never time.
+//! The search is deterministic: its open set is ordered by priority, cost, state key and insertion order with
+//! `total_cmp`, and the table of state keys is only looked up, never iterated. Two states of a cell and a heading
+//! bin are both kept when the dearer one can reach heights the cheaper cannot (its reachable interval is not inside
+//! the cheaper one's), up to [`PER_KEY`] of them.
+//!
+//! The estimate of the cost to go is the larger of the cost-to-go [`Field`] and an analytic bound from the distance
+//! and from the gap between the state's reachable heights and the end anchor's. The field is not strictly
+//! admissible (see its module), so the search at weight 1 is not exact either, and an empty open set is not a proof
+//! that there is no route. Budgets are counts of expanded states, never time.
+//!
+//! The tests inside the search sample an arc by length only (chords of 2 m, which are 5 cm off the arc at a radius of
+//! 10 m); the route that is returned has a point about every 2° of an arc, and is checked on those points.
 //!
 //! All input is untrusted: nothing here panics, and every allocation is bounded by a budget.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::f64::consts::TAU;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::smooth::radius_at;
 
@@ -34,7 +47,14 @@ use super::{
 };
 
 /// The most states one try may expand, whatever its budget says.
-const MAX_STATES: usize = 1_000_000;
+const MAX_STATES: usize = 200_000;
+/// The largest radius, step and arrival reach a leg may have, in metres (a bigger one is a mistake of the caller and
+/// would give polylines of millions of points).
+const MAX_RADIUS_M: f64 = 1_000.0;
+const MAX_STEP_M: f64 = 1_000.0;
+const MAX_REACH_M: f64 = 10_000.0;
+/// States kept per cell and heading bin: the cheapest of those whose reachable heights are not inside another's.
+pub const PER_KEY: usize = 4;
 /// The estimate of the cost to go is never above this (a leg whose heights cannot be met has no finite bound).
 const HEURISTIC_CAP: f64 = 1.0e12;
 /// Fewest and most heading bins of the state key.
@@ -48,6 +68,17 @@ const SAME_ANCHOR_M: f64 = 1e-9;
 const GRADE_SLACK: f64 = 1e-9;
 /// Slack of the end of a route, in metres.
 const END_SLACK_M: f64 = 1e-6;
+/// How much wider than a cheaper state's reachable interval a dearer state's must be, at an end, to be kept, in metres.
+const DOMINANCE_TOL_M: f64 = 2.0;
+/// Slack of the comparison of two reachable intervals, and of two costs, in their own units.
+const SLACK: f64 = 1e-9;
+/// Samples this near (metres) to each other count as nearer than the self-clearance only if they are nearer by
+/// more than this: the two ends of a hairpin whose legs are exactly the clearance apart are not a violation.
+const SELF_SLACK_M: f64 = 1e-6;
+/// The cap of the stray is tested by the true distance to the original line when it is below this many raster cells.
+const TRUE_CAP_CELLS: f64 = 2.0;
+/// The most samples of an original line that [`self_clearance`] compares.
+const SELF_MAX_SAMPLES: f64 = 2_000.0;
 
 /// The weights of the cost of a step, in metres of road.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,9 +113,9 @@ pub struct LegInput<'a> {
     pub start: Anchor,
     /// Where the leg ends.
     pub end: Anchor,
-    /// The planning radius: no arc is tighter, in metres.
+    /// The planning radius: no arc is tighter, in metres (at most 1000).
     pub radius: f64,
-    /// The length of a search step, in metres.
+    /// The length of a search step, in metres (at most 1000).
     pub step_m: f64,
     /// The band, with the grade limit of [`search_leg`]. [`search_leg_relaxed`] changes its grade only.
     pub band: &'a Band,
@@ -95,19 +126,29 @@ pub struct LegInput<'a> {
     /// The lines the route may cross only as often as the original line did: the same values for blocking a step
     /// and for counting a route, each built once from the original line.
     pub walls: &'a [Wall],
-    /// The clearances of the segment test. `clear.road_m()` is also the self-clearance.
+    /// The clearances of the segment test (other roads and water).
     pub clear: Clearance,
     /// The cost-to-go field of the leg (built for the end anchor).
     pub field: &'a Field,
     /// The weights of the cost.
     pub weights: Weights,
-    /// The furthest a route may be from the original line, in the raster's stored measure, in metres.
+    /// The furthest a route may be from the original line, in metres. In the raster's stored measure (which is 0
+    /// inside the cells the original line touches), or by the true distance to [`LegInput::original`] when it is
+    /// below two raster cells.
     pub stray_cap_m: f64,
-    /// Dubins arrivals are tried from states this near the end anchor, in metres.
+    /// Dubins arrivals are tried from states this near the end anchor, in metres (at most 10 000).
     pub arrive_reach_m: f64,
-    /// Two samples of the route more than this far apart along it must keep the road clearance from each other,
-    /// in metres.
+    /// Two samples of the route more than this far apart along it must keep [`LegInput::self_clear_m`] from each
+    /// other, in metres.
     pub self_along_m: f64,
+    /// The distance that such samples must keep, in metres: given by the caller, who sets it to the smallest
+    /// distance that the original line itself kept between two such samples, but no more than the road clearance and
+    /// no less than the road's width (see [`self_clearance`]). A hairpin whose legs are 8 m apart clears itself by
+    /// 8 m, not by the road clearance. 0 turns the rule off.
+    pub self_clear_m: f64,
+    /// The original line of the leg, for the true distance of a route from it ([`Route::max_move_m`], and the stray
+    /// cap when it is below two raster cells).
+    pub original: &'a [(f64, f64)],
     /// The heuristic weight and the number of states to expand of each try; the next try runs only when the
     /// budget ran out.
     pub budgets: &'a [(f64, usize)],
@@ -128,9 +169,14 @@ pub struct Route {
     pub cut_max_m: f64,
     /// The highest fill of the profile, in metres.
     pub fill_max_m: f64,
-    /// The largest distance of a route point from the original line, in the raster's stored measure, in metres.
+    /// The largest distance of a route point from the original line in the raster's stored measure (0 inside the
+    /// cells the line touches), in metres: the measure of the stray cost and of the cap.
     pub max_stray_m: f64,
-    /// The net rise between the anchors over the length: `|Δz| / length`, never the summed climb.
+    /// The largest true distance of a route point from the original line ([`LegInput::original`]), in metres.
+    pub max_move_m: f64,
+    /// The net rise of the terrain between the two anchors over the length of the route: `|Δz| / length`, never the
+    /// summed climb. The road is pinned to the terrain at the anchors only within the band's tolerance, so the grade
+    /// of the road can be up to `2 · tolerance / length` less or more than this.
     pub planned_grade: f64,
     /// The grade limit the route was found at.
     pub grade_limit: f64,
@@ -149,11 +195,12 @@ pub struct Route {
 pub enum LegOutcome {
     /// A route.
     Found(Route),
-    /// No route. `budget_exhausted` is true when the last try ran out of states, false when its open set ran
-    /// empty (there is none, up to the discretisation). `closest_m` is the nearest an expanded state came to the
-    /// end anchor.
+    /// No route found. `budget_exhausted` is true when the last try ran out of states. It is false when its open set
+    /// ran empty: that is **not** a proof that there is no route, because the estimate is not strictly admissible
+    /// and a cell and heading keep a bounded number of states. `closest_m` is the nearest an expanded state came
+    /// to the end anchor.
     NoRoute {
-        /// The last budget ran out before the search ended.
+        /// The last budget ran out before the open set did.
         budget_exhausted: bool,
         /// States expanded by the whole call.
         states: usize,
@@ -169,8 +216,9 @@ enum Via {
     Start,
     /// An arc (a straight for a heading change of 0) of the given heading change and length.
     Arc { delta: f64, length: f64 },
-    /// A Dubins path to the end pose, then the end anchor's straight (if it has one).
-    Dubins(DubinsPath),
+    /// A Dubins path to the end pose (the `rank` of the path among the paths between the two poses, shortest first),
+    /// then the end anchor's straight (if it has one).
+    Dubins { path: DubinsPath, rank: u8 },
 }
 
 /// A state of the search, in an arena.
@@ -178,19 +226,22 @@ enum Via {
 struct Node {
     at: (f64, f64),
     heading: f64,
-    /// The cost so far.
+    /// The cost so far (for an arrival candidate the lower bound; for a verified arrival the real cost).
     g: f64,
     /// The lower bound of the earthwork so far, in m² (inside `g`, weighted).
     earth_low: f64,
     reach: Reach,
     parent: u32,
     via: Via,
+    /// An arrival candidate: its route is not built or checked until it is popped.
     arrived: bool,
+    /// An arrival whose whole route was checked and whose `g` is the real cost.
+    verified: bool,
     key: u64,
     /// The route length at this state, in metres.
     along: f64,
-    /// Crossings of the walls that allow some, so far.
-    crossed: usize,
+    /// The crossings of each wall that allows some, so far: the first in the counts arena.
+    counts: usize,
     /// The samples of the step that made it: the first and how many, in the sample arena.
     samples: (usize, usize),
 }
@@ -233,6 +284,40 @@ impl Ord for Item {
     }
 }
 
+/// A hasher for the table of state keys: a multiplicative mix of the 64-bit key. The table is only looked up, never
+/// iterated, so the order of its entries cannot reach a result.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(u64::from(*b));
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+/// The states of a cell and heading bin that are alive: at most [`PER_KEY`].
+#[derive(Debug, Clone, Copy, Default)]
+struct Slot {
+    ids: [u32; PER_KEY],
+    n: usize,
+}
+
+impl Slot {
+    fn ids(&self) -> &[u32] {
+        self.ids.get(..self.n).unwrap_or(&[])
+    }
+}
+
 /// The bounding box of a wall, to skip the walls a step is far from.
 #[derive(Debug, Clone, Copy)]
 struct WallBox {
@@ -240,25 +325,31 @@ struct WallBox {
     hi: (f64, f64),
 }
 
+/// The lowest and the highest coordinate of a polyline; a point that is not a number makes the box overlap nothing.
+fn bounds(line: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    let fold = |f: fn(f64, f64) -> f64, init: f64, pick: fn(&(f64, f64)) -> f64| {
+        line.iter().map(pick).fold(init, f)
+    };
+    (
+        (
+            fold(f64::min, f64::INFINITY, |p| p.0),
+            fold(f64::min, f64::INFINITY, |p| p.1),
+        ),
+        (
+            fold(f64::max, f64::NEG_INFINITY, |p| p.0),
+            fold(f64::max, f64::NEG_INFINITY, |p| p.1),
+        ),
+    )
+}
+
 impl WallBox {
     fn of(line: &[(f64, f64)]) -> WallBox {
-        let fold = |f: fn(f64, f64) -> f64, init: f64, pick: fn(&(f64, f64)) -> f64| {
-            line.iter().map(pick).fold(init, f)
-        };
-        WallBox {
-            lo: (
-                fold(f64::min, f64::INFINITY, |p| p.0),
-                fold(f64::min, f64::INFINITY, |p| p.1),
-            ),
-            hi: (
-                fold(f64::max, f64::NEG_INFINITY, |p| p.0),
-                fold(f64::max, f64::NEG_INFINITY, |p| p.1),
-            ),
-        }
+        let (lo, hi) = bounds(line);
+        WallBox { lo, hi }
     }
 
-    /// Whether a polyline's box overlaps this one. A box with a NaN overlaps nothing, and so does a wall
-    /// with a coordinate that is not a number: `crossings` finds no crossing with it either.
+    /// Whether a polyline's box overlaps this one. A wall with a coordinate that is not a number overlaps
+    /// nothing: `crossings` finds no crossing with it either.
     fn near(&self, lo: (f64, f64), hi: (f64, f64)) -> bool {
         lo.0 <= self.hi.0 && hi.0 >= self.lo.0 && lo.1 <= self.hi.1 && hi.1 >= self.lo.1
     }
@@ -267,6 +358,31 @@ impl WallBox {
 /// The distance between two points.
 fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// The distance of a point from a polyline (infinite for no segment).
+fn poly_dist(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
+    let one = |a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 > 0.0 {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+    };
+    match line {
+        [] => f64::INFINITY,
+        [only] => dist(p, *only),
+        _ => line
+            .windows(2)
+            .map(|w| match w {
+                [a, b] => one(*a, *b),
+                _ => f64::INFINITY,
+            })
+            .fold(f64::INFINITY, f64::min),
+    }
 }
 
 fn unit(heading: f64) -> (f64, f64) {
@@ -309,6 +425,13 @@ fn cell_of(v: f64) -> u64 {
     u64::try_from(c.saturating_add(CELL_OFFSET).clamp(0, CELL_LIMIT)).unwrap_or(0)
 }
 
+/// A wall that the route may cross a number of times, with its box.
+struct Counted {
+    wall: usize,
+    wbox: WallBox,
+    allowed: usize,
+}
+
 /// The inputs of a leg after they were checked, with what the search derives from them once.
 struct Leg<'a> {
     input: &'a LegInput<'a>,
@@ -323,11 +446,14 @@ struct Leg<'a> {
     /// The origin and the size of the cells of the state key.
     origin: (f64, f64),
     cell: f64,
-    walls: Vec<WallBox>,
-    /// How many crossings of the walls that allow some a route may have in all.
-    allowed: usize,
+    /// The walls that allow no crossing, with their boxes.
+    blockers: Vec<(usize, WallBox)>,
+    /// The walls that allow some.
+    counted: Vec<Counted>,
     /// The tightest three-point radius a route may have.
     min_radius: f64,
+    /// The cap is tested by the true distance to the original line.
+    true_cap: bool,
 }
 
 /// The inputs must be numbers.
@@ -343,6 +469,7 @@ fn validate(input: &LegInput<'_>) -> Result<(), RerouteError> {
         input.stray_cap_m,
         input.arrive_reach_m,
         input.self_along_m,
+        input.self_clear_m,
         w.slope,
         w.curve,
         w.earth,
@@ -360,13 +487,16 @@ fn validate(input: &LegInput<'_>) -> Result<(), RerouteError> {
     {
         return Err(RerouteError::NotFinite);
     }
-    let negative = numbers.iter().take(9).any(|v| *v < 0.0)
+    let negative = numbers.iter().take(10).any(|v| *v < 0.0)
         || input.start.straight_m < 0.0
         || input.end.straight_m < 0.0
         || input.budgets.iter().any(|b| b.0 < 0.0);
     if negative
         || input.radius <= 0.0
         || input.step_m <= 0.0
+        || input.radius > MAX_RADIUS_M
+        || input.step_m > MAX_STEP_M
+        || input.arrive_reach_m > MAX_REACH_M
         || band.spacing_m <= 0.0
         || input.budgets.is_empty()
         || check_band(band).is_err()
@@ -392,12 +522,19 @@ impl<'a> Leg<'a> {
                 heading: h,
             }
         });
-        let allowed = input
-            .walls
-            .iter()
-            .filter(|w| w.allowed > 0)
-            .map(|w| w.allowed)
-            .fold(0_usize, usize::saturating_add);
+        let mut blockers = Vec::new();
+        let mut counted = Vec::new();
+        for (i, w) in input.walls.iter().enumerate() {
+            if w.allowed == 0 {
+                blockers.push((i, WallBox::of(&w.line)));
+            } else {
+                counted.push(Counted {
+                    wall: i,
+                    wbox: WallBox::of(&w.line),
+                    allowed: w.allowed,
+                });
+            }
+        }
         Some(Leg {
             input,
             band,
@@ -407,43 +544,93 @@ impl<'a> Leg<'a> {
             bins: bin_count((TAU / (theta / 4.0)).ceil()),
             origin: input.start.at,
             cell: input.step_m / 2.0,
-            walls: input.walls.iter().map(|w| WallBox::of(&w.line)).collect(),
-            allowed,
+            blockers,
+            counted,
             min_radius: PLAN_REACHED_FRACTION * input.radius / PLAN_RADIUS_MARGIN,
+            true_cap: input.stray_cap_m < TRUE_CAP_CELLS * input.obstacles.resolution_m(),
         })
     }
 
-    /// The key of a state: arrived, its cell and its heading bin.
-    fn key(&self, at: (f64, f64), heading: f64, arrived: bool) -> u64 {
+    /// The key of a state: its cell and its heading bin.
+    fn key(&self, at: (f64, f64), heading: f64) -> u64 {
         let bin = (norm(heading) / TAU * to_f64(self.bins)).round();
         let bin = u64::try_from(bin_index(bin, self.bins)).unwrap_or(0);
         let cx = cell_of((at.0 - self.origin.0) / self.cell);
         let cy = cell_of((at.1 - self.origin.1) / self.cell);
-        (u64::from(arrived) << 62) | (bin << 54) | (cx << 27) | cy
+        (bin << 54) | (cx << 27) | cy
     }
 
-    /// The estimate of the cost to go from a point: the larger of the field and the analytic bound.
-    fn heuristic(&self, at: (f64, f64)) -> f64 {
+    /// Whether a point is within the stray cap: by the stored distance of the raster (`stored`), or, when the cap is
+    /// below two raster cells, by the true distance to the original line.
+    fn within_cap(&self, p: (f64, f64), stored: f64) -> bool {
+        if self.true_cap {
+            poly_dist(p, self.input.original) <= self.input.stray_cap_m
+        } else {
+            stored <= self.input.stray_cap_m
+        }
+    }
+
+    /// The gap between the reachable heights and the end anchor's heights (within the tolerance), in metres: the
+    /// road at the state is somewhere in `reach`, the road at the end within `tolerance` of the terrain there.
+    fn height_gap(&self, reach: Reach) -> f64 {
+        let tol = self.band.anchor_tol_m;
+        (reach.lo() - (self.z_end + tol))
+            .max((self.z_end - tol) - reach.hi())
+            .max(0.0)
+    }
+
+    /// The estimate of the cost to go from a state: the larger of the field and the analytic bound. The bound is the
+    /// larger of the distance and `gap / grade` in length, plus `W_SLOPE · gap` in climb, `gap` being the distance
+    /// between the state's reachable heights and the end anchor's. It is a lower bound: the road at the state is
+    /// within `reach`, the road at the end is within the tolerance of the terrain there, the grade limit bounds the
+    /// length, and the nominal height of the band (the terrain clamped into the reach) at the end is within the
+    /// tolerance of the terrain too, and at the state inside the reach, so its climb is at least the gap.
+    fn heuristic(&self, at: (f64, f64), reach: Reach) -> f64 {
         let d = dist(at, self.input.end.at);
-        let dz = (self.input.ground)(at)
-            .filter(|z| z.is_finite())
-            .map_or(0.0, |z| {
-                ((self.z_end - z).abs() - self.band.cut_m - self.band.fill_m).max(0.0)
-            });
-        let climb = if dz <= 0.0 {
+        let gap = self.height_gap(reach);
+        let climb = if gap <= 0.0 {
             0.0
         } else if self.band.grade > 0.0 {
-            dz / self.band.grade
+            gap / self.band.grade
         } else {
             f64::INFINITY
         };
-        let analytic = d.max(climb) + self.input.weights.slope * dz;
+        let analytic = d.max(climb) + self.input.weights.slope * gap;
         let h = analytic.max(self.input.field.estimate(at));
         if h.is_nan() {
             0.0
         } else {
             h.min(HEURISTIC_CAP)
         }
+    }
+
+    /// Whether a state with the reachable heights `a` is at least as good for the climb still to make as one with `b`:
+    /// towards the end anchor's height it reaches as far (within [`DOMINANCE_TOL_M`]). Where `b` is below the end
+    /// anchor's heights only the top of the interval matters, where above only the bottom, and where `b` already
+    /// meets them the whole interval does.
+    fn covers(&self, a: Reach, b: Reach) -> bool {
+        let tol = self.band.anchor_tol_m;
+        let up = a.hi() >= b.hi() - DOMINANCE_TOL_M;
+        let down = a.lo() <= b.lo() + DOMINANCE_TOL_M;
+        if b.hi() < self.z_end - tol {
+            up
+        } else if b.lo() > self.z_end + tol {
+            down
+        } else {
+            up && down
+        }
+    }
+
+    /// Whether a path of `length` metres from a state with these reachable heights can end at the end anchor's
+    /// height: the grade limit moves the interval by at most `grade · length`.
+    fn height_ok(&self, reach: Reach, length: f64) -> bool {
+        let grade = self.band.grade;
+        if !grade.is_finite() {
+            return true;
+        }
+        let tol = self.band.anchor_tol_m;
+        let rise = grade * length + SLACK;
+        reach.lo() - rise <= self.z_end + tol && reach.hi() + rise >= self.z_end - tol
     }
 }
 
@@ -463,15 +650,23 @@ struct Eval {
     cost: f64,
     earth_low: f64,
     length: f64,
-    crossed: usize,
+    /// The crossings of each wall that allows some, from the start of the route.
+    counts: Vec<u32>,
     samples: Vec<(f64, f64, f64)>,
 }
 
 /// How one try ended.
 enum Tried {
-    Found(Route),
-    Proven,
+    Found(Box<Route>),
+    /// The open set ran empty.
+    Emptied,
     Exhausted,
+}
+
+/// How a popped arrival candidate ended.
+enum Settled {
+    Found(Box<Route>),
+    Dropped,
 }
 
 struct Search<'a, 'b> {
@@ -479,11 +674,14 @@ struct Search<'a, 'b> {
     weight: f64,
     nodes: Vec<Node>,
     samples: Vec<(f64, f64, f64)>,
-    best: HashMap<u64, u32>,
+    counts: Vec<u32>,
+    best: HashMap<u64, Slot, BuildHasherDefault<KeyHasher>>,
     heap: BinaryHeap<Item>,
     seq: u64,
     expanded: usize,
     closest: f64,
+    /// The lowest real cost of an arrival whose whole route was checked and that waits in the open set.
+    verified_g: f64,
 }
 
 /// The samples of a step: every `SAMPLE_M` along it and its end, with their distance along the route, not the
@@ -499,16 +697,28 @@ fn step_samples(along: f64, poly: &[(f64, f64)]) -> Vec<(f64, f64, f64)> {
         .collect()
 }
 
-/// The polyline of an arc (straight for a heading change of 0) that starts at `from`.
-fn arc_polyline(from: Pose, delta: f64, length: f64) -> Vec<(f64, f64)> {
+/// The polyline of an arc (straight for a heading change of 0) that starts at `from`: chords of at most `SAMPLE_M`,
+/// and when `fine`, a point about every 2° as well.
+fn arc_polyline(from: Pose, delta: f64, length: f64, fine: bool) -> Vec<(f64, f64)> {
     let curvature = if length > 0.0 { delta / length } else { 0.0 };
-    arc_points(from, curvature, length, segments(delta, length, SAMPLE_M))
+    let angle = if fine { delta } else { 0.0 };
+    arc_points(from, curvature, length, segments(angle, length, SAMPLE_M))
 }
 
 /// The polyline of a Dubins arrival from `from`: the path, then the end anchor's straight, or the path's end
 /// moved onto the anchor.
-fn dubins_polyline(path: &DubinsPath, from: Pose, radius: f64, end: &Anchor) -> Vec<(f64, f64)> {
-    let mut poly = path.points(from, radius, SAMPLE_M);
+fn dubins_polyline(
+    path: &DubinsPath,
+    from: Pose,
+    radius: f64,
+    end: &Anchor,
+    fine: bool,
+) -> Vec<(f64, f64)> {
+    let mut poly = if fine {
+        path.points(from, radius, SAMPLE_M)
+    } else {
+        path.points_coarse(from, radius, SAMPLE_M)
+    };
     if end.straight_m > 0.0 {
         poly.push(end.at);
     } else if let Some(last) = poly.last_mut() {
@@ -525,11 +735,13 @@ impl<'a, 'b> Search<'a, 'b> {
             weight,
             nodes: Vec::new(),
             samples: Vec::new(),
-            best: HashMap::new(),
+            counts: Vec::new(),
+            best: HashMap::default(),
             heap: BinaryHeap::new(),
             seq: 0,
             expanded: 0,
             closest: dist(leg.input.start.at, leg.input.end.at),
+            verified_g: f64::INFINITY,
         }
     }
 
@@ -544,22 +756,10 @@ impl<'a, 'b> Search<'a, 'b> {
         }
     }
 
-    /// Adds a state to the arena and, if no cheaper state has its key, to the open set.
-    fn push(&mut self, node: Node) -> Option<u32> {
-        if let Some(&b) = self.best.get(&node.key)
-            && self.node(b).is_some_and(|o| o.g <= node.g)
-        {
-            return None;
-        }
+    fn put(&mut self, node: Node, prio: f64) -> Option<u32> {
         let idx = u32::try_from(self.nodes.len()).ok()?;
-        let h = if node.arrived {
-            0.0
-        } else {
-            self.leg.heuristic(node.at)
-        };
-        self.best.insert(node.key, idx);
         self.heap.push(Item {
-            prio: node.g + self.weight * h,
+            prio,
             g: node.g,
             key: node.key,
             seq: self.seq,
@@ -570,6 +770,67 @@ impl<'a, 'b> Search<'a, 'b> {
         Some(idx)
     }
 
+    /// Adds a state to the arena and to the open set unless the stored states of its cell and heading dominate it:
+    /// one with no higher cost whose reachable heights contain this one's. An arrival candidate is never merged.
+    /// A new state removes the stored ones it dominates; at most [`PER_KEY`] stay, the dearest goes.
+    fn push(&mut self, node: Node) -> Option<u32> {
+        if node.arrived {
+            let prio = node.g;
+            return self.put(node, prio);
+        }
+        let slot = self.best.get(&node.key).copied().unwrap_or_default();
+        let stored = |i: u32| self.node(i).map(|s| (s.g, s.reach));
+        if slot
+            .ids()
+            .iter()
+            .filter_map(|&i| stored(i))
+            .any(|(g, reach)| g <= node.g && self.leg.covers(reach, node.reach))
+        {
+            return None;
+        }
+        let mut kept: Vec<(u32, f64)> = slot
+            .ids()
+            .iter()
+            .filter_map(|&i| stored(i).map(|(g, reach)| (i, g, reach)))
+            .filter(|&(_, g, reach)| !(node.g <= g && self.leg.covers(node.reach, reach)))
+            .map(|(i, g, _)| (i, g))
+            .collect();
+        if kept.len() >= PER_KEY {
+            // the dearest of the stored goes, if this one is cheaper; else this one is dropped
+            let worst = kept
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.1.total_cmp(&b.1.1).then(a.1.0.cmp(&b.1.0)))
+                .map(|(k, &(_, g))| (k, g));
+            match worst {
+                Some((k, g)) if node.g < g => {
+                    kept.remove(k);
+                }
+                _ => return None,
+            }
+        }
+        let h = self.leg.heuristic(node.at, node.reach);
+        let prio = node.g + self.weight * h;
+        let key = node.key;
+        let idx = self.put(node, prio)?;
+        let mut next = Slot::default();
+        for (i, _) in kept.iter().chain(std::iter::once(&(idx, 0.0))) {
+            if let Some(cell) = next.ids.get_mut(next.n) {
+                *cell = *i;
+                next.n += 1;
+            }
+        }
+        self.best.insert(key, next);
+        Some(idx)
+    }
+
+    /// Whether a state is still stored for its cell and heading (a dominated one is stale).
+    fn alive(&self, node: &Node, idx: u32) -> bool {
+        self.best
+            .get(&node.key)
+            .is_some_and(|slot| slot.ids().contains(&idx))
+    }
+
     /// The root states: one at the start anchor, or one per heading at a dead end.
     fn start(&mut self) -> bool {
         let leg = self.leg;
@@ -578,6 +839,9 @@ impl<'a, 'b> Search<'a, 'b> {
             return false;
         };
         let reach = Reach::at_anchor(z, &leg.band);
+        self.samples.push((input.start.at.0, input.start.at.1, 0.0));
+        self.counts
+            .extend(std::iter::repeat_n(0, leg.counted.len()));
         let root = |heading: f64| Node {
             at: input.start.at,
             heading: norm(heading),
@@ -587,12 +851,12 @@ impl<'a, 'b> Search<'a, 'b> {
             parent: NONE,
             via: Via::Start,
             arrived: false,
-            key: leg.key(input.start.at, heading, false),
+            verified: false,
+            key: leg.key(input.start.at, heading),
             along: 0.0,
-            crossed: 0,
+            counts: 0,
             samples: (0, 1),
         };
-        self.samples.push((input.start.at.0, input.start.at.1, 0.0));
         let Some(h) = input.start.heading else {
             // a dead end: every heading is a first state
             return (0..leg.bins).all(|j| {
@@ -605,26 +869,20 @@ impl<'a, 'b> Search<'a, 'b> {
             return self.push(node).is_some();
         }
         // the arm of the junction first, as a fixed straight
-        let Some(parent) = self.push_root_only(node) else {
+        let Some(parent) = u32::try_from(self.nodes.len()).ok() else {
             return false;
         };
+        self.nodes.push(node);
         let from = Pose {
             at: input.start.at,
             heading: norm(h),
         };
         let length = input.start.straight_m;
-        let poly = arc_polyline(from, 0.0, length);
+        let poly = arc_polyline(from, 0.0, length, false);
         let Some(ev) = self.evaluate(parent, &poly, 0.0) else {
             return false;
         };
         self.add_arc(parent, from, 0.0, length, ev)
-    }
-
-    /// A root that only anchors a chain: in the arena, not in the open set.
-    fn push_root_only(&mut self, node: Node) -> Option<u32> {
-        let idx = u32::try_from(self.nodes.len()).ok()?;
-        self.nodes.push(node);
-        Some(idx)
     }
 
     /// The new child of `parent` that follows an arc of the given heading change and length.
@@ -635,11 +893,11 @@ impl<'a, 'b> Search<'a, 'b> {
             .is_some()
     }
 
-    /// A state after a step or an arrival.
+    /// A state after a step, or an arrival candidate.
     fn add(&mut self, parent: u32, end: Pose, via: Via, ev: Eval, arrived: bool) -> Option<u32> {
         let p = *self.node(parent)?;
-        let first = self.samples.len();
-        let count = ev.samples.len();
+        let (first, count) = (self.samples.len(), ev.samples.len());
+        let counts = self.counts.len();
         let heading = norm(end.heading);
         let node = Node {
             at: end.at,
@@ -650,64 +908,89 @@ impl<'a, 'b> Search<'a, 'b> {
             parent,
             via,
             arrived,
-            key: self.leg.key(end.at, heading, arrived),
+            verified: false,
+            key: if arrived {
+                0
+            } else {
+                self.leg.key(end.at, heading)
+            },
             along: p.along + ev.length,
-            crossed: p.crossed.saturating_add(ev.crossed),
+            counts,
             samples: (first, count),
         };
         let idx = self.push(node);
         if idx.is_some() {
             self.samples.extend(ev.samples);
+            self.counts.extend(ev.counts);
         }
         idx
     }
 
-    /// The crossings of the walls by a polyline: `None` where a wall that allows none is crossed.
-    fn wall_crossings(&self, poly: &[(f64, f64)]) -> Option<usize> {
+    /// The crossings of every wall by a polyline, added to those of the parent's route: `None` where a wall that
+    /// allows no crossing is crossed or a wall that allows some is crossed more often than it allows.
+    fn wall_counts(&self, parent: &Node, poly: &[(f64, f64)]) -> Option<Vec<u32>> {
         let leg = self.leg;
-        let fold = |f: fn(f64, f64) -> f64, init: f64, pick: fn(&(f64, f64)) -> f64| {
-            poly.iter().map(pick).fold(init, f)
-        };
-        let lo = (
-            fold(f64::min, f64::INFINITY, |p| p.0),
-            fold(f64::min, f64::INFINITY, |p| p.1),
-        );
-        let hi = (
-            fold(f64::max, f64::NEG_INFINITY, |p| p.0),
-            fold(f64::max, f64::NEG_INFINITY, |p| p.1),
-        );
-        let mut crossed = 0_usize;
-        for (wall, wbox) in leg.input.walls.iter().zip(&leg.walls) {
-            if !wbox.near(lo, hi) {
-                continue;
-            }
-            let n = wall.crossings(poly);
-            if n > 0 && wall.allowed == 0 {
+        let (lo, hi) = bounds(poly);
+        let walls = leg.input.walls;
+        for (i, wbox) in &leg.blockers {
+            if wbox.near(lo, hi) && walls.get(*i).is_some_and(|w| w.crossings(poly) > 0) {
                 return None;
             }
-            if wall.allowed > 0 {
-                crossed = crossed.saturating_add(n);
-            }
         }
-        Some(crossed)
+        let before = self
+            .counts
+            .get(parent.counts..parent.counts.saturating_add(leg.counted.len()))
+            .unwrap_or(&[]);
+        let mut out = Vec::with_capacity(leg.counted.len());
+        for (k, c) in leg.counted.iter().enumerate() {
+            let n = if c.wbox.near(lo, hi) {
+                walls.get(c.wall).map_or(0, |w| w.crossings(poly))
+            } else {
+                0
+            };
+            let total = before
+                .get(k)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(u32::try_from(n).unwrap_or(u32::MAX));
+            if usize::try_from(total).unwrap_or(usize::MAX) > c.allowed {
+                return None;
+            }
+            out.push(total);
+        }
+        Some(out)
     }
 
-    /// Every test of a step or an arrival, and its cost: the stray cap, the walls, the band (which also tests every
-    /// segment against the obstacles), the self-clearance. `turn` is the heading change, in radians.
+    /// Every test of a step or an arrival, and its cost: the stray cap, the walls, the self-clearance, the band
+    /// (which also tests every segment against the obstacles). `turn` is the heading change, in radians. The polyline
+    /// is sampled by length only.
     fn evaluate(&self, parent: u32, poly: &[(f64, f64)], turn: f64) -> Option<Eval> {
         let leg = self.leg;
         let input = leg.input;
         let p = self.node(parent)?;
-        let cap = input.stray_cap_m;
-        if poly.iter().any(|q| {
-            !finite2(*q)
-                || input.obstacles.stray_m(*q).is_nan()
-                || input.obstacles.stray_m(*q) > cap
-        }) {
-            return None;
+        let obstacles = input.obstacles;
+        // the stray cap at every point and every middle, and the stray of the cost
+        let (mut length, mut stray) = (0.0, 0.0);
+        let mut prev: Option<((f64, f64), f64)> = None;
+        for &q in poly {
+            let here = obstacles.stray_m(q);
+            if !finite2(q) || here.is_nan() || !leg.within_cap(q, here) {
+                return None;
+            }
+            if let Some((a, before)) = prev {
+                let mid = (f64::midpoint(a.0, q.0), f64::midpoint(a.1, q.1));
+                if !leg.within_cap(mid, obstacles.stray_m(mid)) {
+                    return None;
+                }
+                let l = dist(a, q);
+                length += l;
+                stray += l * f64::midpoint(before, here);
+            }
+            prev = Some((q, here));
         }
-        let crossed = self.wall_crossings(poly)?;
-        if p.crossed.saturating_add(crossed) > leg.allowed {
+        let counts = self.wall_counts(p, poly)?;
+        let samples = step_samples(p.along, poly);
+        if !self.self_clear(parent, &samples) {
             return None;
         }
         let step = band_step(
@@ -715,23 +998,10 @@ impl<'a, 'b> Search<'a, 'b> {
             input.ground,
             &leg.band,
             p.reach,
-            input.obstacles,
+            obstacles,
             input.clear,
         )
         .ok()?;
-        let mut length = 0.0;
-        let mut stray = 0.0;
-        for w in poly.windows(2) {
-            if let [a, b] = *w {
-                let l = dist(a, b);
-                length += l;
-                stray += l * f64::midpoint(input.obstacles.stray_m(a), input.obstacles.stray_m(b));
-            }
-        }
-        let samples = step_samples(p.along, poly);
-        if !self.self_clear(parent, &samples) {
-            return None;
-        }
         let wt = input.weights;
         let cost = length
             + wt.slope * step.climb_m
@@ -743,20 +1013,25 @@ impl<'a, 'b> Search<'a, 'b> {
             cost,
             earth_low: step.earthwork_low_m2,
             length,
-            crossed,
+            counts,
             samples,
         })
     }
 
-    /// Whether the new samples keep the road clearance from the earlier samples of the route (and from each
+    /// The squared distance below which two samples that far apart along the route are too near.
+    fn self_limit2(&self) -> f64 {
+        let c = (self.leg.input.self_clear_m - SELF_SLACK_M).max(0.0);
+        c * c
+    }
+
+    /// Whether the new samples keep the self-clearance from the earlier samples of the route (and from each
     /// other) that are more than `self_along_m` back along it.
     fn self_clear(&self, parent: u32, new: &[(f64, f64, f64)]) -> bool {
-        let c = self.leg.input.clear.road_m();
-        let along = self.leg.input.self_along_m;
-        if c <= 0.0 {
+        let c2 = self.self_limit2();
+        if c2 <= 0.0 {
             return true;
         }
-        let c2 = c * c;
+        let along = self.leg.input.self_along_m;
         let near = |a: &(f64, f64, f64), b: &(f64, f64, f64)| {
             (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) < c2
         };
@@ -793,43 +1068,66 @@ impl<'a, 'b> Search<'a, 'b> {
         let d = dist(node.at, self.leg.input.end.at);
         self.closest = self.closest.min(d);
         if d <= self.leg.input.arrive_reach_m {
-            self.arrival(idx, &node);
+            self.try_arrivals(idx, 0);
         }
         let from = Self::pose_of(&node);
         for delta in self.leg.deltas {
             let length = self.leg.input.step_m;
-            let poly = arc_polyline(from, delta, length);
+            let poly = arc_polyline(from, delta, length, false);
             if let Some(ev) = self.evaluate(idx, &poly, delta) {
                 self.add_arc(idx, from, delta, length, ev);
             }
         }
     }
 
-    /// The first Dubins path (or the arc through a dead end) from a state to the end pose that passes every test
-    /// and the profile of the whole route becomes an arrived state.
-    fn arrival(&mut self, idx: u32, node: &Node) {
+    /// The first Dubins path of a state, from the path of rank `first_rank` on (shortest first), that passes the
+    /// cheap tests becomes an arrival candidate. A path whose length alone, added to the cost of the state, reaches the
+    /// cost of an arrival that was already checked is not tried (the cost of a path is at least its length), nor is
+    /// one whose length cannot change the reachable heights as far as the end anchor needs.
+    fn try_arrivals(&mut self, idx: u32, first_rank: usize) {
         let leg = self.leg;
-        let from = Self::pose_of(node);
-        let end = leg.input.end;
-        let Some(target) = leg.arrive_at else {
-            self.arrive_at_dead_end(idx, from, &end);
+        let Some(node) = self.node(idx).copied() else {
             return;
         };
-        for path in dubins_paths(from, target, leg.input.radius) {
-            let poly = dubins_polyline(&path, from, leg.input.radius, &end);
+        let from = Self::pose_of(&node);
+        let end = leg.input.end;
+        let Some(target) = leg.arrive_at else {
+            if first_rank == 0 {
+                self.arrive_at_dead_end(idx, &node, from, &end);
+            }
+            return;
+        };
+        for (rank, path) in dubins_paths(from, target, leg.input.radius)
+            .into_iter()
+            .enumerate()
+            .skip(first_rank)
+        {
+            let length = path.length() + end.straight_m;
+            if node.g + length >= self.verified_g {
+                // the paths are sorted by length: none of the next is cheaper
+                break;
+            }
+            if !leg.height_ok(node.reach, length) {
+                continue;
+            }
+            let poly = dubins_polyline(&path, from, leg.input.radius, &end, false);
             let turn = path.turning(leg.input.radius);
             let end_pose = Pose {
                 at: end.at,
                 heading: target.heading,
             };
-            if self.arrived(idx, &poly, turn, Via::Dubins(path), end_pose) {
+            let via = Via::Dubins {
+                path,
+                rank: u8::try_from(rank).unwrap_or(u8::MAX),
+            };
+            if self.candidate(idx, &poly, turn, via, end_pose) {
                 return;
             }
         }
     }
 
     /// The single arc through a dead end whose radius is not under the planning radius.
-    fn arrive_at_dead_end(&mut self, idx: u32, from: Pose, end: &Anchor) {
+    fn arrive_at_dead_end(&mut self, idx: u32, node: &Node, from: Pose, end: &Anchor) {
         let radius = self.leg.input.radius;
         let dir = (end.at.0 - from.at.0, end.at.1 - from.at.1);
         let c = dir.0.hypot(dir.1);
@@ -846,50 +1144,38 @@ impl<'a, 'b> Search<'a, 'b> {
             }
             (2.0 * alpha, r * 2.0 * alpha.abs())
         };
-        let mut poly = arc_polyline(from, delta, length);
+        if node.g + length >= self.verified_g || !self.leg.height_ok(node.reach, length) {
+            return;
+        }
+        let mut poly = arc_polyline(from, delta, length, false);
         if let Some(last) = poly.last_mut() {
             *last = end.at;
         }
-        let heading = from.heading + delta;
         let end_pose = Pose {
             at: end.at,
-            heading,
+            heading: from.heading + delta,
         };
-        self.arrived(idx, &poly, delta, Via::Arc { delta, length }, end_pose);
+        self.candidate(idx, &poly, delta, Via::Arc { delta, length }, end_pose);
     }
 
-    /// An arrival candidate: it passes the tests of a step, the band's end tolerance, and the profile of the whole
-    /// route from the first anchor to the last, at the same grade limit. The cost of the state is the step's cost
-    /// with the real earthwork instead of the lower bound, where that is higher.
-    fn arrived(&mut self, idx: u32, poly: &[(f64, f64)], turn: f64, via: Via, end: Pose) -> bool {
+    /// An arrival candidate: it passes the tests of a step and the band's end tolerance. It goes into the open set with
+    /// its lower-bound cost; its whole route is built and checked when it is popped.
+    fn candidate(&mut self, idx: u32, poly: &[(f64, f64)], turn: f64, via: Via, end: Pose) -> bool {
         let leg = self.leg;
         if poly.len() < 2 {
             return false;
         }
-        let Some(mut ev) = self.evaluate(idx, poly, turn) else {
+        let Some(ev) = self.evaluate(idx, poly, turn) else {
             return false;
         };
         if !arrives(ev.reach, leg.z_end, leg.band.anchor_tol_m) {
             return false;
         }
-        let mut points = self.route_to(idx);
-        points.extend(poly.iter().skip(1).copied());
-        let Ok(profile) = arrive(&points, leg.input.ground, &leg.band) else {
-            return false;
-        };
-        let Some(p) = self.node(idx) else {
-            return false;
-        };
-        // the lower bound of the whole route never exceeds the real earthwork; where the steps' own sampling made
-        // it higher, the higher counts
-        let low = p.earth_low + ev.earth_low;
-        let extra = (profile.earthwork_m2() - low).max(0.0);
-        ev.cost += leg.input.weights.earth * extra;
         self.add(idx, end, via, ev, true).is_some()
     }
 
-    /// The points of the route to a state, the start anchor first.
-    fn route_to(&self, idx: u32) -> Vec<(f64, f64)> {
+    /// The points of the route to a state, the start anchor first; `fine` samples an arc about every 2°.
+    fn route_to(&self, idx: u32, fine: bool) -> Vec<(f64, f64)> {
         let mut chain = Vec::new();
         let mut cur = idx;
         while let Some(n) = self.node(cur) {
@@ -913,7 +1199,7 @@ impl<'a, 'b> Search<'a, 'b> {
             let poly = match n.via {
                 Via::Start => Vec::new(),
                 Via::Arc { delta, length } => {
-                    let mut poly = arc_polyline(from, delta, length);
+                    let mut poly = arc_polyline(from, delta, length, fine);
                     if n.arrived
                         && let Some(last) = poly.last_mut()
                     {
@@ -921,23 +1207,28 @@ impl<'a, 'b> Search<'a, 'b> {
                     }
                     poly
                 }
-                Via::Dubins(path) => {
-                    dubins_polyline(&path, from, self.leg.input.radius, &self.leg.input.end)
-                }
+                Via::Dubins { path, .. } => dubins_polyline(
+                    &path,
+                    from,
+                    self.leg.input.radius,
+                    &self.leg.input.end,
+                    fine,
+                ),
             };
             points.extend(poly.into_iter().skip(1));
         }
         points
     }
 
-    /// The route of a popped arrived state, checked once more from scratch: the points, the end, the radius, every
-    /// segment, the stray cap, the walls, the self-clearance over all pairs and the profile at the limit the route
-    /// was found at.
+    /// The route of a popped arrival, built on the fine points and checked from scratch: the points, the end, the
+    /// radius, every segment, the stray cap, the crossings of every wall (each must equal what the original line
+    /// made), the self-clearance over all pairs and the profile at the limit the route was found at. Returns the route
+    /// with its real cost.
     fn finish(&self, idx: u32) -> Option<Route> {
         let leg = self.leg;
         let input = leg.input;
         let node = self.node(idx)?;
-        let points = self.route_to(idx);
+        let points = self.route_to(idx, true);
         let (first, last) = (points.first()?, points.last()?);
         if dist(*first, input.start.at) > END_SLACK_M
             || dist(*last, input.end.at) > END_SLACK_M
@@ -957,7 +1248,7 @@ impl<'a, 'b> Search<'a, 'b> {
             .any(|w| !matches!(w, [a, b] if input.obstacles.segment(*a, *b, input.clear).is_ok()))
             || points
                 .iter()
-                .any(|p| input.obstacles.stray_m(*p) > input.stray_cap_m)
+                .any(|p| !leg.within_cap(*p, input.obstacles.stray_m(*p)))
             || input
                 .walls
                 .iter()
@@ -990,29 +1281,41 @@ impl<'a, 'b> Search<'a, 'b> {
             .iter()
             .map(|p| input.obstacles.stray_m(*p))
             .fold(0.0, f64::max);
-        let route = Route {
+        let max_move = points
+            .iter()
+            .map(|p| poly_dist(*p, input.original))
+            .filter(|d| d.is_finite())
+            .fold(0.0, f64::max);
+        // the lower bound of the whole route never exceeds the real earthwork; where the steps' own sampling made it
+        // higher, the higher counts
+        let cost = if node.verified {
+            node.g
+        } else {
+            node.g + input.weights.earth * (profile.earthwork_m2() - node.earth_low).max(0.0)
+        };
+        Some(Route {
             length_m: length,
             climb_m: climb,
             earthwork_m2: profile.earthwork_m2(),
             cut_max_m: profile.cut_max_m(),
             fill_max_m: profile.fill_max_m(),
             max_stray_m: max_stray,
+            max_move_m: max_move,
             planned_grade: (z1 - z0).abs() / length,
             grade_limit: leg.band.grade,
             relax_steps: 0,
-            cost: node.g,
+            cost,
             weight: self.weight,
             states: 0,
             points,
-        };
-        Some(route)
+        })
     }
 
-    /// All pairs of the route's samples more than `self_along_m` apart along it keep the road clearance.
+    /// All pairs of the route's samples more than `self_along_m` apart along it keep the self-clearance.
     fn route_self_clear(&self, idx: u32) -> bool {
-        let c = self.leg.input.clear.road_m();
+        let c2 = self.self_limit2();
         let along = self.leg.input.self_along_m;
-        if c <= 0.0 {
+        if c2 <= 0.0 {
             return true;
         }
         let mut chain = Vec::new();
@@ -1031,7 +1334,7 @@ impl<'a, 'b> Search<'a, 'b> {
             .collect();
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {
-                if b.2 - a.2 > along && (a.0 - b.0).hypot(a.1 - b.1) < c {
+                if b.2 - a.2 > along && (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) < c2 {
                     return false;
                 }
             }
@@ -1039,24 +1342,45 @@ impl<'a, 'b> Search<'a, 'b> {
         true
     }
 
+    /// An arrival candidate that was popped: its whole route is checked. A route that fails is dropped, and the
+    /// next Dubins path of the state it came from is tried. A route whose real cost is above the next entry of the
+    /// open set is put back with its real cost, to be popped in its turn.
+    fn settle(&mut self, idx: u32, node: &Node) -> Settled {
+        let Some(route) = self.finish(idx) else {
+            if let Via::Dubins { rank, .. } = node.via {
+                self.try_arrivals(node.parent, usize::from(rank) + 1);
+            }
+            return Settled::Dropped;
+        };
+        let next = self.heap.peek().map(|top| top.prio);
+        if node.verified || next.is_none_or(|n| route.cost <= n + SLACK) {
+            return Settled::Found(Box::new(route));
+        }
+        let mut again = *node;
+        again.g = route.cost;
+        again.verified = true;
+        self.verified_g = self.verified_g.min(route.cost);
+        self.push(again);
+        Settled::Dropped
+    }
+
     /// One try of the search within a budget of expanded states.
     fn run(&mut self, budget: usize) -> Tried {
         if !self.start() {
-            return Tried::Proven;
+            return Tried::Emptied;
         }
         while let Some(item) = self.heap.pop() {
             let Some(node) = self.node(item.idx).copied() else {
                 continue;
             };
-            // a state that a cheaper one with its key replaced is stale
-            if self.best.get(&node.key) != Some(&item.idx) {
-                continue;
-            }
             if node.arrived {
-                if let Some(route) = self.finish(item.idx) {
-                    return Tried::Found(route);
+                match self.settle(item.idx, &node) {
+                    Settled::Found(route) => return Tried::Found(route),
+                    Settled::Dropped => continue,
                 }
-                // a route that fails its check is dropped, the search goes on
+            }
+            // a state that another dominated is stale
+            if !self.alive(&node, item.idx) {
                 continue;
             }
             if self.expanded >= budget {
@@ -1065,7 +1389,7 @@ impl<'a, 'b> Search<'a, 'b> {
             self.expanded += 1;
             self.expand(item.idx);
         }
-        Tried::Proven
+        Tried::Emptied
     }
 }
 
@@ -1102,13 +1426,57 @@ fn search_at(
             Tried::Found(mut route) => {
                 route.relax_steps = relax_steps;
                 route.states = states;
-                return Ok(LegOutcome::Found(route));
+                return Ok(LegOutcome::Found(*route));
             }
-            Tried::Proven => return none(false, states, closest),
+            Tried::Emptied => return none(false, states, closest),
             Tried::Exhausted => {}
         }
     }
     none(true, states, closest)
+}
+
+/// The distance that the own road's samples that are more than `self_along_m` apart along it must keep from each other
+/// (the `self_clear_m` of [`LegInput`]), set from the original line of the leg: the smallest distance between two
+/// samples of the original line (every 2 m) that are more than `self_along_m` apart along it, but no more than
+/// `road_threshold_m` (the road clearance threshold) and no less than `width_m` (the road's width). A hairpin whose
+/// legs are 8 m apart gets 8 m, not the road clearance: a bend and the spread of its legs are one road. A line with no
+/// two such samples, or with a coordinate that is not a number, gets the threshold (but not less than the width).
+#[must_use]
+pub fn self_clearance(
+    original: &[(f64, f64)],
+    self_along_m: f64,
+    road_threshold_m: f64,
+    width_m: f64,
+) -> f64 {
+    let positive = |v: f64| if v.is_finite() { v.max(0.0) } else { 0.0 };
+    let (threshold, width) = (positive(road_threshold_m), positive(width_m));
+    if !self_along_m.is_finite() || original.iter().any(|p| !finite2(*p)) {
+        return threshold.max(width);
+    }
+    let total: f64 = original
+        .windows(2)
+        .map(|w| match w {
+            [a, b] => dist(*a, *b),
+            _ => 0.0,
+        })
+        .sum();
+    let spacing = SAMPLE_M.max(total / SELF_MAX_SAMPLES);
+    let mut s = 0.0;
+    let samples: Vec<(f64, f64, f64)> = line_samples(original, spacing)
+        .map(|at| {
+            s += at.ds;
+            (at.p.0, at.p.1, s)
+        })
+        .collect();
+    let mut least = threshold;
+    for (i, a) in samples.iter().enumerate() {
+        for b in samples.iter().skip(i + 1) {
+            if b.2 - a.2 > self_along_m {
+                least = least.min(dist((a.0, a.1), (b.0, b.1)));
+            }
+        }
+    }
+    least.max(width)
 }
 
 /// Searches one leg at the grade limit of `input.band`: a hybrid A* over poses between the two anchors, in the
@@ -1116,9 +1484,10 @@ fn search_at(
 ///
 /// # Errors
 ///
-/// [`RerouteError::NotFinite`] for an anchor, a radius, a step, a weight, a cap or a band value that is not a
-/// finite number (the grade may be infinite); [`RerouteError::Degenerate`] for anchors at one point, a radius or step
-/// that is not positive, a negative weight, cap or straight, or no budget.
+/// [`RerouteError::NotFinite`] for an anchor, a radius, a step, a weight, a cap, a clearance or a band value that is
+/// not a finite number (the grade may be infinite); [`RerouteError::Degenerate`] for anchors at one point, a radius
+/// or step that is not positive or above 1000 m, an arrival reach above 10 000 m, a negative weight, cap, clearance or
+/// straight, or no budget.
 pub fn search_leg(input: &LegInput<'_>) -> Result<LegOutcome, RerouteError> {
     validate(input)?;
     search_at(input, *input.band, 0)
