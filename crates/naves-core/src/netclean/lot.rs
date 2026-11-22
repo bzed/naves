@@ -685,7 +685,7 @@ fn apply(graph: &RoadGraph, plans: &[&Plan], first: i64) -> LotStep {
     through.sort();
     through.dedup();
     dropped.sort_by(|a, b| a.stretch.cmp(&b.stretch));
-    // the cut stretches in the order of their ids (the graph's order), a stretch's start before its end
+    // the cut stretches in the order of their ids, a stretch's start before its end
     let mut access: Vec<CutAccess> = Vec::new();
     let mut at: BTreeMap<usize, (NewNodes, f64)> = BTreeMap::new();
     let mut node = first;

@@ -287,7 +287,7 @@ change).
   Vec<DroppedInLot>, access: Vec<CutAccess>, unchanged: Vec<usize> (groups left unchanged, `would_split`), through:
   Vec<String> (inside stretches kept as roads through a lot), entries: BTreeSet<i64> (every node the step leaves with
   one stretch: the stub step leaves them alone) }`. `LotGroup` also has `areas_m2: Vec<f64>` (parallel to `members`).
-  `CleanReport::lot_through_kept` counts `through`.
+  `CleanReport::lot_through` holds `through` (sorted ids), `lot_through_kept` counts it.
 - `netclean::components_with(graph: &RoadGraph, groups: &[LotGroup]) -> usize`.
 - `netclean::clean_with(graph, widths, cell_m, groups: &[LotGroup]) -> (RoadGraph, CleanReport)`; `clean` calls it with
   `&[]`, unchanged in behaviour. The lot step runs first; the stub step leaves every node in `LotStep::entries` alone (every node the

@@ -197,6 +197,8 @@ pub struct CleanReport {
     /// Stretches inside a lot that stay because they are part of a road through it (between two nodes that roads
     /// leave the lot from).
     pub lot_through_kept: usize,
+    /// The ids of those stretches, sorted.
+    pub lot_through: Vec<String>,
     /// The groups whose removal would have split a component and that were left as they are.
     pub lots_split: Vec<usize>,
     /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
@@ -916,6 +918,7 @@ pub fn clean_with(
         roundabouts: Vec::new(),
         junctions_in_lots: lot::junctions_removed(graph, graph0, &step.dropped),
         lot_through_kept: step.through.len(),
+        lot_through: step.through.clone(),
         lot_roads: step.dropped.clone(),
         lot_access: step.access.clone(),
         lots_split: step.unchanged.clone(),

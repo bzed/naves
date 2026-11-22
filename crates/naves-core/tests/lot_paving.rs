@@ -436,3 +436,246 @@ fn degenerate_input_decides_grass_and_does_not_panic() {
     let decided = surfaces(&lots, &graph, &report, f64::NAN);
     assert_eq!(decided.len(), 1);
 }
+
+// ---- fix round 1 ----
+
+#[test]
+fn a_stretch_with_a_share_that_is_not_a_number_does_not_panic() {
+    let lots = [small()];
+    let features = [along(10, -3.0, -50.0, 90.0, Family::Asf3, ASPHALT)];
+    let mut graph = build_graph(&features);
+    for stretch in &mut graph.stretches {
+        stretch.paved_m = f64::NAN;
+        stretch.unpaved_m = f64::INFINITY;
+    }
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    assert_eq!(surfaces(&lots, &graph, &report, CELL).len(), 1);
+}
+
+#[test]
+fn a_lot_that_is_not_a_number_is_grass() {
+    let mut nan = car_park("osm/way/1", square(0.0, 0.0, 40.0, 40.0));
+    nan.area.outer[1].0 = f64::NAN;
+    let decided = decide(
+        &[nan],
+        &[along(10, -3.0, -50.0, 90.0, Family::Asf3, ASPHALT)],
+    );
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
+}
+
+#[test]
+fn a_piece_with_no_road_feature_counts_by_the_stretchs_shares() {
+    // a dirt-track family tagged asphalt, features that do not hold the way: the stretch's own shares say paved
+    let street = along(10, -30.0, -60.0, 100.0, Family::Asf3, ASPHALT);
+    let access = road(11, &[(20.0, -30.0), (20.0, 20.0)], Family::Mud, ASPHALT);
+    let lots = [small()];
+    let graph = build_graph(&[street, access]);
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    let elsewhere = [along(99, 900.0, 800.0, 900.0, Family::Mud, GRAVEL)];
+    assert_eq!(
+        class_of(
+            &surfaces_with(&lots, &graph, &report, CELL, &elsewhere),
+            "osm/way/1"
+        ),
+        Some(PAVED)
+    );
+}
+
+#[test]
+fn own_roads_come_before_the_streets_beside() {
+    // a 20 m track inside, a long paved street along the edge: the track serves the lot
+    let features = [
+        along(10, 20.0, 10.0, 30.0, Family::Mud, GRAVEL),
+        along(11, -3.0, -50.0, 90.0, Family::Asf3, ASPHALT),
+    ];
+    let decided = decide(&[small()], &features);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
+}
+
+#[test]
+fn the_group_comes_before_the_streets_beside() {
+    let a = car_park("osm/way/1", square(0.0, 0.0, 100.0, 100.0));
+    let b = car_park("osm/way/2", square(100.0, 0.0, 140.0, 100.0));
+    let features = [
+        along(10, 50.0, 10.0, 60.0, Family::Asf3, ASPHALT),
+        along(11, -3.0, 110.0, 140.0, Family::Mud, GRAVEL),
+    ];
+    let decided = decide(&[a, b], &features);
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(PAVED));
+}
+
+#[test]
+fn tagged_and_untagged_metres_count_each_by_their_own_kind() {
+    // 30 m tagged gravel and 100 m of untagged City: the City metres are paved by their family
+    let features = [
+        along(10, 100.0, 10.0, 40.0, Family::Grav, GRAVEL),
+        along(11, 200.0, 10.0, 110.0, Family::City, None),
+    ];
+    let decided = decide(&[big("osm/way/1")], &features);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
+}
+
+#[test]
+fn a_through_road_kept_over_the_lot_counts_as_a_road_that_serves_it() {
+    // an asphalt road crosses the lot from west to east (80 m of it inside), and a 20 m gravel stub inside is removed
+    let features = [
+        joined(
+            1,
+            &[1, 2],
+            &[(-50.0, 50.0), (10.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+        joined(
+            2,
+            &[2, 3],
+            &[(10.0, 50.0), (90.0, 50.0)],
+            Family::Asf3,
+            ASPHALT,
+        ),
+        joined(
+            3,
+            &[3, 4],
+            &[(90.0, 50.0), (150.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+        joined(
+            4,
+            &[5, 6],
+            &[(20.0, 80.0), (40.0, 80.0)],
+            Family::Mud,
+            GRAVEL,
+        ),
+    ];
+    let lots = [car_park("osm/way/1", square(0.0, 0.0, 100.0, 100.0))];
+    let graph = build_graph(&features);
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    assert_eq!(report.lot_through, ["2:2-3"], "{:?}", report.lot_roads);
+    assert_eq!(report.lot_roads.len(), 1);
+    assert_eq!(
+        class_of(&surfaces(&lots, &graph, &report, CELL), "osm/way/1"),
+        Some(PAVED)
+    );
+}
+
+#[test]
+fn a_group_without_roads_decides_by_the_streets_beside_all_its_members() {
+    // a street beside the first car park only; the second is 30 m from it
+    let a = car_park("osm/way/1", square(0.0, 0.0, 40.0, 40.0));
+    let b = car_park("osm/way/2", square(40.0, 0.0, 80.0, 40.0));
+    let street = along(10, -3.0, -50.0, 10.0, Family::Asf3, None);
+    let decided = decide(&[a.clone(), b.clone()], std::slice::from_ref(&street));
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(PAVED), "same group");
+    // alone, the second one is grass: nothing reaches it
+    assert_eq!(
+        class_of(
+            &decide(std::slice::from_ref(&b), std::slice::from_ref(&street)),
+            "osm/way/2"
+        ),
+        Some(GRASS)
+    );
+    // a member with a tag of its own follows its tag
+    let mut tagged = b;
+    tagged.area.surface_tag = Some(Paving::Unpaved);
+    let decided = decide(&[a, tagged], &[street]);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(GRASS), "its own tag");
+}
+
+#[test]
+fn with_the_road_features_a_way_counts_by_its_own_tag_or_by_its_family() {
+    let street = along(10, -30.0, -60.0, 100.0, Family::Asf3, ASPHALT);
+    let lots = [small()];
+    let class_with = |access: Feature| {
+        let features = [street.clone(), access];
+        let graph = build_graph(&features);
+        let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+        class_of(
+            &surfaces_with(&lots, &graph, &report, CELL, &features),
+            "osm/way/1",
+        )
+    };
+    let into = [(20.0, -30.0), (20.0, 20.0)];
+    assert_eq!(
+        class_with(road(11, &into, Family::Mud, ASPHALT)),
+        Some(PAVED),
+        "tagged paved on a track"
+    );
+    assert_eq!(
+        class_with(road(11, &into, Family::City, None)),
+        Some(PAVED),
+        "untagged City"
+    );
+    assert_eq!(
+        class_with(road(11, &into, Family::Mud, None)),
+        Some(GRASS),
+        "untagged Mud"
+    );
+}
+
+#[test]
+fn stretches_that_cannot_be_measured_count_nothing() {
+    let features = [
+        along(10, -3.0, -50.0, 90.0, Family::Asf3, None),
+        along(11, -5.0, -50.0, 90.0, Family::Asf3, None),
+    ];
+    let mut graph = build_graph(&features);
+    // one stretch with a point that is not a number, one of no length
+    graph.stretches[0].points[0].0 = f64::NAN;
+    graph.stretches[1].points = vec![(10.0, -5.0), (10.0, -5.0)];
+    let lots = [small()];
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    let decided = surfaces(&lots, &graph, &report, CELL);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
+}
+
+#[test]
+fn a_through_road_of_nested_lots_belongs_to_the_smallest_and_unknown_ids_are_ignored() {
+    let features = [
+        joined(
+            1,
+            &[1, 2],
+            &[(-50.0, 50.0), (10.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+        joined(
+            2,
+            &[2, 3],
+            &[(10.0, 50.0), (90.0, 50.0)],
+            Family::Asf3,
+            ASPHALT,
+        ),
+        joined(
+            3,
+            &[3, 4],
+            &[(90.0, 50.0), (150.0, 50.0)],
+            Family::Asf2,
+            ASPHALT,
+        ),
+    ];
+    let lots = [
+        car_park("osm/way/1", square(0.0, 0.0, 100.0, 100.0)),
+        car_park("osm/way/2", square(-20.0, -20.0, 140.0, 140.0)),
+    ];
+    let graph = build_graph(&features);
+    let (_, mut report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    report.lot_through.push("no/such/stretch".to_string());
+    let decided = surfaces(&lots, &graph, &report, CELL);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(PAVED));
+    assert_eq!(class_of(&decided, "osm/way/2"), Some(PAVED), "same group");
+}
+
+#[test]
+fn a_feature_with_one_point_is_no_way_of_a_stretch() {
+    let street = along(10, -30.0, -60.0, 100.0, Family::Asf3, ASPHALT);
+    let access = road(11, &[(20.0, -30.0), (20.0, 20.0)], Family::Mud, GRAVEL);
+    let stray = road(12, &[(20.0, 0.0)], Family::Mud, ASPHALT);
+    let lots = [small()];
+    let graph = build_graph(&[street.clone(), access.clone()]);
+    let (_, report) = clean_with(&graph, &|f: Family| f.width_m(), CELL, &groups(&lots));
+    let decided = surfaces_with(&lots, &graph, &report, CELL, &[street, access, stray]);
+    assert_eq!(class_of(&decided, "osm/way/1"), Some(GRASS));
+}

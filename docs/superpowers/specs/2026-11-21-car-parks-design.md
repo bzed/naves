@@ -194,7 +194,7 @@ ones:
   inside stretches between them (by length, ties by the order of the stretch ids) is kept; everything else inside
   (aisles, dead ends, loops, longer chains) is removed. So a road with aisles off it keeps all its stretches, and two
   access roads joined by an inside driveway keep the driveway. A kept stretch is not reported as removed (it is counted
-  in `CleanReport::lot_through_kept`), and the outside parts it joins are not dead ends, so they are not cut.
+  in `CleanReport::lot_through`, counted in `lot_through_kept`), and the outside parts it joins are not dead ends, so they are not cut.
 - **Access roads.** After the removal, a node inside a member by more than the tolerance that has exactly one
   stretch left, and is not a map-edge cut end, is a dead end inside the lot. Its stretch is cut where its line last
   enters the group, and kept to `LOT_ENTRY_M` (4 m, one terrain cell, `limits::RAMP_JOINT_MIN_M`) beyond that
@@ -230,7 +230,7 @@ ones:
 **Paved or grass (controller).** Decided by the roads that serve the lot, by length:
 
 - An explicit `surface=*` on the lot wins **(controller)**: a paved value gives paved, an unpaved value grass.
-- **Camp sites are grass (maintainer's ruling, Task 6).** A `tourism=camp_site` is grass unless the camp site itself is
+- **Camp sites are grass (controller's ruling of 2026-11-21, reported to the maintainer as reversible).** A `tourism=camp_site` is grass unless the camp site itself is
   tagged with a paved `surface`; its roads and the streets beside it do not make it paved. A car park mapped inside it
   is a lot of its own and is decided like every car park. Car parks, coach parking, rest areas and caravan sites follow
   the tag, then the roads, then the family rule below.
@@ -242,6 +242,14 @@ ones:
   it is reached from (an extension of the controller's rule, see *Departures*).
 - Paved if the paved metres are at least the grass metres (a tie goes to paved); grass otherwise; no road at all:
   grass. A group member without serving roads of its own takes its group's decision.
+  **Through roads count (controller's ruling, Task 6 fix round 1).** A road that stays over a lot as a through road
+  (Task 5's through chains, `CleanReport::lot_through`) is a road that serves it: its metres go into the paved and
+  unpaved tally like those of a removed road, to the smallest lot that holds its middle. A long asphalt through road
+  and a short removed gravel stub make a paved lot.
+  **A group decides as one (controller's ruling, Task 6 fix round 1).** When no member of a group has roads of its own,
+  the streets beside *all* its members are pooled (each metre once) and every member gets the same class, so two
+  touching car parks never differ for that reason; a member with its own `surface` tag still follows its tag. A lot
+  with a coordinate that is not a finite number is grass.
   The group's decision is that of the roads of all its members pooled (`lot::groups`, lots that touch), and it comes
   before the roads beside; a lot that is in no group and has no roads of its own takes the roads beside. The streets
   beside are the stretches of the graph before the lot step, without those removed in a lot, bridges and tunnels, counted
@@ -580,7 +588,7 @@ judged there.
   6, 127 m), `landuse=military` (3, 68, 3980 m: the Jägerkaserne barracks and the Silberg training ground),
   `tourism=attraction` (Eisarena Königssee, 21, 861 m), `amenity=social_facility` (1, 7, 371 m), `tourism=museum` (1,
   12, 265 m). They hold real internal roads and buildings; the assistant would leave them out.
-- **Paved camp sites.** Decided (maintainer's ruling): a camp site is grass unless it is tagged paved itself, and only a
+- **Paved camp sites.** Decided (controller's ruling of 2026-11-21, reported to the maintainer as reversible): a camp site is grass unless it is tagged paved itself, and only a
   car park mapped inside it is paved (see *The surface*). The counts above that call three of the four camp sites paved
   are from before the ruling.
 - **Facets for large lots.** Two camp sites (Simonhof 9902 m², Allweglehen 15 962 m²) and the caravan site P2 Königssee (1615 m²) need more than

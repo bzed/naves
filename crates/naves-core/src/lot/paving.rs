@@ -6,24 +6,29 @@
 //! For every lot that is not excluded, in the order of the ids ([`surfaces`]):
 //!
 //! 1. A paved or unpaved `surface` tag on the lot itself wins ([`LotArea::surface_tag`]).
-//! 2. A camp site (`tourism=camp_site`) is grass, unless its own tag says paved (the maintainer's ruling: a camp site is
-//!    meadow with pitches, and a paved car park inside it is a lot of its own).
+//! 2. A camp site (`tourism=camp_site`) is grass, unless its own tag says paved (the controller's ruling of 2026-11-21,
+//!    reported to the maintainer as reversible: a camp site is meadow with pitches, and a paved car park inside it is a
+//!    lot of its own).
 //! 3. Any other lot (car park, coach parking, rest area, caravan site) is decided by the roads that serve it. These are
-//!    the stretches the lot step removed from inside it ([`CleanReport::lot_roads`]) and the part inside it of the
-//!    access roads it cut ([`CleanReport::lot_access`]), each metre counted by its way's `surface` tag, and by its
+//!    the stretches the lot step removed from inside it ([`CleanReport::lot_roads`]), the part inside it of the
+//!    access roads it cut ([`CleanReport::lot_access`]) and the roads that stay over it as through roads
+//!    ([`CleanReport::lot_through`], to the smallest lot that holds their middle), each metre counted by its way's `surface` tag, and by its
 //!    family where the way has none or an unknown one (`Asf1`, `Asf2`, `Asf3` and `City` paved, `Grav` and `Mud` grass).
 //!    Paved if the paved metres are at least the grass metres, a tie goes to paved.
 //! 4. A lot without roads of its own that is in a group (lots that touch, [`crate::netclean::lot::groups`]) takes the
 //!    decision of the group: the roads of all its members, pooled.
 //! 5. A lot still without roads takes the roads whose earthwork touches it: every stretch of the graph before the lot
 //!    step, except those removed in a lot, bridges and tunnels, counted by the metres that lie in the lot or within
-//!    `core_reach_m(half the family's width, cell) + cell` of its edge.
-//! 6. Nothing at all: grass.
+//!    `core_reach_m(half the family's width, cell) + cell` of its edge. When no member of a group has roads of its own
+//!    the streets beside *all* its members are pooled (each metre once) and every member gets the same class, so two
+//!    touching car parks never differ for that reason; a member with a tag of its own still follows its tag.
+//! 6. Nothing at all: grass. So is a lot with a coordinate that is not a finite number.
 //!
 //! The metres inside a lot are those of the road's ways, not the stretch's average, when the road features are given
 //! ([`surfaces_with`]): a stretch can be made of ways with different tags. Without them each metre of a stretch counts
 //! by the stretch's own shares ([`Stretch::paved_m`], [`Stretch::unpaved_m`]), which is exact for a stretch that was
-//! removed whole and an average for the part of an access road that lies in the lot.
+//! removed whole and an average for the part of an access road that lies in the lot. A metre for which no road feature
+//! is found counts by the stretch's shares too.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,7 +38,7 @@ use crate::features::{Feature, FeatureKind};
 use crate::lot::{LotArea, LotKind, Outcome, Paving, contains, edge_distance, segment_distance};
 use crate::netclean::CleanReport;
 use crate::netclean::lot::groups;
-use crate::roadnet::{EPS_M, RoadGraph, Stretch, bounds, polyline_length};
+use crate::roadnet::{EPS_M, RoadGraph, Stretch, bounds, point_along, polyline_length};
 use crate::surface::SurfaceClass;
 
 use super::Assessed;
@@ -81,6 +86,15 @@ fn family_paved(family: Family) -> bool {
         family,
         Family::Asf1 | Family::Asf2 | Family::Asf3 | Family::City
     )
+}
+
+/// A share of a length: 0 to 1, and 0 for a value that is not a finite number.
+fn finite_share(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 /// The road features that can be the ways of `stretch`: same family, some point near its bounds.
@@ -150,8 +164,8 @@ fn tally_line(
     }
     let total = polyline_length(&stretch.points);
     let (share_paved, share_grass) = if total > EPS_M {
-        let paved = (stretch.paved_m / total).clamp(0.0, 1.0);
-        let grass = (stretch.unpaved_m / total).clamp(0.0, 1.0 - paved);
+        let paved = finite_share(stretch.paved_m / total);
+        let grass = finite_share(stretch.unpaved_m / total).min(1.0 - paved);
         (paved, grass)
     } else {
         (0.0, 0.0)
@@ -182,18 +196,24 @@ fn tally_line(
             } else {
                 (0.0, piece)
             };
-            let (paved, grass) = if features.is_empty() {
+            // the stretch's shares, the rest by family
+            let by_shares = {
                 let rest = 1.0 - share_paved - share_grass;
                 (
                     piece * share_paved + by_family.0 * rest,
                     piece * share_grass + by_family.1 * rest,
                 )
+            };
+            let tag = if features.is_empty() {
+                Tag::NoWay
             } else {
-                match paving_at(at, &ways) {
-                    Tag::Tagged(Paving::Paved) => (piece, 0.0),
-                    Tag::Tagged(Paving::Unpaved) => (0.0, piece),
-                    Tag::NoWay | Tag::Untagged => by_family,
-                }
+                paving_at(at, &ways)
+            };
+            let (paved, grass) = match tag {
+                Tag::Tagged(Paving::Paved) => (piece, 0.0),
+                Tag::Tagged(Paving::Unpaved) => (0.0, piece),
+                Tag::Untagged => by_family,
+                Tag::NoWay => by_shares,
             };
             tally.paved += paved;
             tally.grass += grass;
@@ -208,10 +228,10 @@ fn lot_bounds(area: &LotArea, by: f64) -> (Point, Point) {
     ((min.0 - by, min.1 - by), (max.0 + by, max.1 + by))
 }
 
-/// The roads whose earthwork touches `area`: every stretch of `graph` that is not in `removed`, a bridge or a tunnel,
-/// counted where it lies in the lot or within the reach of its edge.
+/// The roads whose earthwork touches any of `areas`: every stretch of `graph` that is not in `removed`, a bridge or a
+/// tunnel, counted where it lies in a lot or within the reach of its edge (a metre near two lots counts once).
 fn beside(
-    area: &LotArea,
+    areas: &[&LotArea],
     graph: &RoadGraph,
     removed: &BTreeSet<&str>,
     cell_m: f64,
@@ -223,21 +243,80 @@ fn beside(
             continue;
         }
         let reach = core_reach_m(stretch.family.width_m() / 2.0, cell_m) + cell_m;
-        let (low, high) = lot_bounds(area, reach);
         let (min, max) = bounds(&stretch.points);
-        if !(min.0 <= high.0 && max.0 >= low.0 && min.1 <= high.1 && max.1 >= low.1) {
+        let near: Vec<(&LotArea, (Point, Point))> = areas
+            .iter()
+            .map(|&area| (area, lot_bounds(area, reach)))
+            .filter(|(_, (low, high))| {
+                min.0 <= high.0 && max.0 >= low.0 && min.1 <= high.1 && max.1 >= low.1
+            })
+            .collect();
+        if near.is_empty() {
             continue;
         }
         tally.add(tally_line(&stretch.points, stretch, features, &|p| {
-            (p.0 >= low.0 && p.0 <= high.0 && p.1 >= low.1 && p.1 <= high.1)
-                && (contains(area, p) || edge_distance(area, p) <= reach)
+            near.iter().any(|&(area, (low, high))| {
+                (p.0 >= low.0 && p.0 <= high.0 && p.1 >= low.1 && p.1 <= high.1)
+                    && (contains(area, p) || edge_distance(area, p) <= reach)
+            })
         }));
     }
     tally
 }
 
+/// The roads of every lot: what was removed inside it, the part of an access road that lay inside it, and the roads that
+/// stay over it as through roads (to the smallest lot that holds their middle).
+fn own_roads<'a>(
+    lots: &[&'a Assessed],
+    by_stretch: &BTreeMap<&str, &Stretch>,
+    areas: &BTreeMap<&str, &LotArea>,
+    clean: &'a CleanReport,
+    features: &[Feature],
+) -> BTreeMap<&'a str, Tally> {
+    // the roads of a lot: what was removed inside it, and the part of an access road that lay inside it
+    let mut own: BTreeMap<&str, Tally> = BTreeMap::new();
+    for dropped in &clean.lot_roads {
+        if let Some(stretch) = by_stretch.get(dropped.stretch.as_str()) {
+            let tally = tally_line(&stretch.points, stretch, features, &|_| true);
+            own.entry(dropped.lot.as_str()).or_default().add(tally);
+        }
+    }
+    for cut in &clean.lot_access {
+        if let (Some(stretch), Some(area)) = (
+            by_stretch.get(cut.stretch.as_str()),
+            areas.get(cut.lot.as_str()),
+        ) {
+            let tally = tally_line(&stretch.points, stretch, features, &|p| contains(area, p));
+            own.entry(cut.lot.as_str()).or_default().add(tally);
+        }
+    }
+    for id in &clean.lot_through {
+        let Some(stretch) = by_stretch.get(id.as_str()) else {
+            continue;
+        };
+        let middle = point_along(&stretch.points, polyline_length(&stretch.points) / 2.0);
+        let owner = lots
+            .iter()
+            .filter(|lot| contains(&lot.area, middle))
+            .min_by(|a, b| {
+                a.area
+                    .area_m2
+                    .total_cmp(&b.area.area_m2)
+                    .then_with(|| a.area.id.cmp(&b.area.id))
+            });
+        if let Some(owner) = owner {
+            let tally = tally_line(&stretch.points, stretch, features, &|_| true);
+            own.entry(owner.area.id.as_str()).or_default().add(tally);
+        }
+    }
+    own
+}
+
 /// [`surfaces_with`] without the road features: each metre of a stretch counts by the stretch's own shares of paved,
-/// unpaved and untagged metres.
+/// unpaved and untagged metres. This is the averaging variant: it is exact for a stretch that was removed whole, but
+/// for the part of an access road inside a lot it takes the share of the whole stretch, which may be made of ways with
+/// different tags. The pipeline (the later tasks that wire the lots in) calls [`surfaces_with`] with the road features
+/// the graph was built from.
 #[must_use]
 pub fn surfaces(
     assessed: &[Assessed],
@@ -279,23 +358,7 @@ pub fn surfaces_with(
         .iter()
         .map(|a| (a.area.id.as_str(), &a.area))
         .collect();
-    // the roads of a lot: what was removed inside it, and the part of an access road that lay inside it
-    let mut own: BTreeMap<&str, Tally> = BTreeMap::new();
-    for dropped in &clean.lot_roads {
-        if let Some(stretch) = by_stretch.get(dropped.stretch.as_str()) {
-            let tally = tally_line(&stretch.points, stretch, features, &|_| true);
-            own.entry(dropped.lot.as_str()).or_default().add(tally);
-        }
-    }
-    for cut in &clean.lot_access {
-        if let (Some(stretch), Some(area)) = (
-            by_stretch.get(cut.stretch.as_str()),
-            areas.get(cut.lot.as_str()),
-        ) {
-            let tally = tally_line(&stretch.points, stretch, features, &|p| contains(area, p));
-            own.entry(cut.lot.as_str()).or_default().add(tally);
-        }
-    }
+    let own = own_roads(&lots, &by_stretch, &areas, clean, features);
     // the roads of the groups, pooled
     let mut group_of: BTreeMap<&str, usize> = BTreeMap::new();
     let found = groups(assessed);
@@ -311,10 +374,30 @@ pub fn surfaces_with(
         }
     }
     let removed: BTreeSet<&str> = clean.lot_roads.iter().map(|d| d.stretch.as_str()).collect();
+    // a group without roads of its own decides by the streets beside all its members, once
+    let mut group_beside: BTreeMap<usize, SurfaceClass> = BTreeMap::new();
+    for group in &found {
+        if pooled.get(group.group).is_some_and(Tally::is_empty) {
+            let members: Vec<&LotArea> = group
+                .members
+                .iter()
+                .filter_map(|m| areas.get(m.as_str()).copied())
+                .collect();
+            let class = beside(&members, graph, &removed, cell_m, features).class();
+            group_beside.insert(group.group, class);
+        }
+    }
     lots.into_iter()
         .map(|lot| {
             let id = lot.area.id.as_str();
-            let class = if let Some(tag) = lot.area.surface_tag {
+            let class = if lot
+                .area
+                .outer
+                .iter()
+                .any(|p| !p.0.is_finite() || !p.1.is_finite())
+            {
+                SurfaceClass::Grass
+            } else if let Some(tag) = lot.area.surface_tag {
                 match tag {
                     Paving::Paved => SurfaceClass::Tarmac,
                     Paving::Unpaved => SurfaceClass::Grass,
@@ -323,14 +406,16 @@ pub fn surfaces_with(
                 SurfaceClass::Grass
             } else if let Some(tally) = own.get(id).filter(|t| !t.is_empty()) {
                 tally.class()
-            } else if let Some(tally) = group_of
-                .get(id)
-                .and_then(|g| pooled.get(*g))
-                .filter(|t| !t.is_empty())
-            {
-                tally.class()
+            } else if let Some(group) = group_of.get(id).copied() {
+                match pooled.get(group).filter(|t| !t.is_empty()) {
+                    Some(tally) => tally.class(),
+                    None => group_beside
+                        .get(&group)
+                        .copied()
+                        .unwrap_or(SurfaceClass::Grass),
+                }
             } else {
-                beside(&lot.area, graph, &removed, cell_m, features).class()
+                beside(&[&lot.area], graph, &removed, cell_m, features).class()
             };
             (id.to_string(), class)
         })

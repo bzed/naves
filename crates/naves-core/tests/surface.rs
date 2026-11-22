@@ -569,10 +569,177 @@ mod fill_polygon {
     }
 
     #[test]
+    fn a_hole_that_sticks_out_of_the_outer_ring_paints_nothing_outside_it() {
+        let mut g = grass(40, 1.0);
+        // the hole covers x 15..30, the outer ring only x 10..20
+        let hole = square(15.0, 12.0, 30.0, 18.0);
+        g.fill_polygon(
+            &square(10.0, 10.0, 20.0, 20.0),
+            &[hole],
+            SurfaceClass::Tarmac,
+        );
+        assert_eq!(g.at(25.5, 15.5), SurfaceClass::Grass, "outside the lot");
+        assert_eq!(g.at(17.5, 15.5), SurfaceClass::Grass, "in the hole");
+        assert_eq!(g.at(12.5, 15.5), SurfaceClass::Tarmac);
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 100 - 5 * 6);
+    }
+
+    #[test]
+    fn where_two_holes_overlap_nothing_is_painted() {
+        let mut g = grass(40, 1.0);
+        let one = square(12.0, 12.0, 18.0, 18.0);
+        let two = square(15.0, 15.0, 24.0, 24.0);
+        g.fill_polygon(
+            &square(10.0, 10.0, 30.0, 30.0),
+            &[one, two],
+            SurfaceClass::Tarmac,
+        );
+        assert_eq!(g.at(16.5, 16.5), SurfaceClass::Grass, "in both holes");
+        assert_eq!(g.at(13.5, 13.5), SurfaceClass::Grass, "in the first");
+        assert_eq!(g.at(22.5, 22.5), SurfaceClass::Grass, "in the second");
+        assert_eq!(g.at(11.5, 11.5), SurfaceClass::Tarmac);
+        assert_eq!(g.at(27.5, 27.5), SurfaceClass::Tarmac);
+        // 400 cells less the union of the holes: 36 + 81 - 9
+        assert_eq!(count(&g, SurfaceClass::Tarmac), 400 - 108);
+    }
+
+    use naves_core::lot::{LotArea, LotKind, Placement, contains};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, RngSeed};
+
+    fn ring_of(points: &[(f64, f64)]) -> Ring {
+        let mut ring = points.to_vec();
+        ring.extend(points.first().copied());
+        ring
+    }
+
+    proptest! {
+        #![proptest_config(Config {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(0x46_49_4C_4C),
+            ..Config::default()
+        })]
+
+        /// The cells that are painted are those whose centre `lot::contains` says is inside: bow-ties, holes outside
+        /// the ring and holes that overlap included.
+        #[test]
+        fn the_painted_cells_are_the_cells_that_the_lot_contains(
+            outer in proptest::collection::vec((-10.0_f64..70.0, -10.0_f64..70.0), 3..9),
+            holes in proptest::collection::vec(
+                proptest::collection::vec((-10.0_f64..70.0, -10.0_f64..70.0), 3..7),
+                0..4,
+            ),
+            cell in 0.6_f64..1.8,
+        ) {
+            let outer = ring_of(&outer);
+            let holes: Vec<Ring> = holes.iter().map(|h| ring_of(h)).collect();
+            let size = 64_u32;
+            let mut g = grass(size, cell);
+            g.fill_polygon(&outer, &holes, SurfaceClass::Tarmac);
+            let area = LotArea {
+                id: "osm/way/1".to_string(),
+                kind: LotKind::CarPark,
+                placement: Placement::Ground,
+                outer,
+                holes,
+                area_m2: 0.0,
+                surface_tag: None,
+                holes_dropped: 0,
+            };
+            for row in 0..size {
+                for col in 0..size {
+                    let at = ((f64::from(col) + 0.5) * cell, (f64::from(row) + 0.5) * cell);
+                    prop_assert_eq!(
+                        g.at(at.0, at.1) == SurfaceClass::Tarmac,
+                        contains(&area, at),
+                        "cell ({}, {})", col, row
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cells_of_a_coarser_grid_are_taken_by_their_centre() {
         // 4 m cells: centres at 2, 6, 10, ...; the square 4..12 holds the centres 6 and 10 in each direction
         let mut g = grass(10, 4.0);
         g.fill_polygon(&square(4.0, 4.0, 12.0, 12.0), &[], SurfaceClass::Tarmac);
         assert_eq!(count(&g, SurfaceClass::Tarmac), 4);
     }
+}
+
+/// A polygon from map points (closed by the caller).
+fn polygon_of(
+    p: &Project,
+    points: &[(f64, f64)],
+    holes: &[Vec<(f64, f64)>],
+    class: SurfaceClass,
+    priority: u8,
+) -> LandPolygon {
+    let geo = MapGeo::new(p).unwrap();
+    let ring = |r: &[(f64, f64)]| -> Vec<(f64, f64)> {
+        r.iter().map(|&(x, y)| geo.to_geo(x, y).unwrap()).collect()
+    };
+    LandPolygon {
+        class,
+        priority,
+        outer: ring(points),
+        holes: holes.iter().map(|h| ring(h)).collect(),
+    }
+}
+
+fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<(f64, f64)> {
+    vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+}
+
+#[test]
+fn the_osm_layer_is_painted_as_before_the_shared_scanline() {
+    // Guard written before the scanline was shared with `SurfaceGrid::fill_polygon`: land cover keeps its own
+    // even-odd union of all rings (a hole that sticks out is painted, overlapping holes cancel).
+    let p = project();
+    let land = osm(vec![
+        polygon_of(
+            &p,
+            &rect(100.0, 100.0, 400.0, 400.0),
+            &[
+                rect(150.0, 150.0, 250.0, 250.0),
+                rect(200.0, 200.0, 300.0, 300.0),
+                rect(380.0, 300.0, 460.0, 340.0),
+            ],
+            SurfaceClass::Soil,
+            3,
+        ),
+        polygon_of(
+            &p,
+            &[
+                (500.0, 100.0),
+                (700.0, 300.0),
+                (700.0, 100.0),
+                (500.0, 300.0),
+                (500.0, 100.0),
+            ],
+            &[],
+            SurfaceClass::Rock,
+            2,
+        ),
+        polygon_of(
+            &p,
+            &rect(900.0, 800.0, 1100.0, 1100.0),
+            &[],
+            SurfaceClass::Forest,
+            1,
+        ),
+    ]);
+    let lc = land_cover(|_, _| 30);
+    let built = build_surfaces(&p, &flat_map(), &sources(Some(&lc), Some(&land))).unwrap();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for row in 0..built.grid.size {
+        for col in 0..built.grid.size {
+            let x = (f64::from(col) + 0.5) * built.grid.cell_m;
+            let y = (f64::from(row) + 0.5) * built.grid.cell_m;
+            hash ^= built.grid.at(x, y).slot() as u64;
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    assert_eq!(hash, 17_612_173_703_899_406_751);
 }

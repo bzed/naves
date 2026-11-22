@@ -289,3 +289,46 @@ fn paths_are_painted_as_before_without_lots() {
     paint_paths_with(&mut surfaces, &[aisle], &[]);
     assert_eq!(surfaces.at(200.0, 150.0), SurfaceClass::Soil);
 }
+
+#[test]
+fn a_street_path_is_skipped_only_if_the_whole_line_lies_in_one_lot() {
+    // an L-shaped lot: x 100..300, y 100..150 and x 100..150, y 100..300; the inner corner is open ground
+    let l_shape = LotArea {
+        outer: vec![
+            (100.0, 100.0),
+            (300.0, 100.0),
+            (300.0, 150.0),
+            (150.0, 150.0),
+            (150.0, 300.0),
+            (100.0, 300.0),
+            (100.0, 100.0),
+        ],
+        ..area("osm/way/1", LotKind::CarPark, square(0.0, 0.0, 1.0, 1.0))
+    };
+    // the ends are inside the lot, the line cuts across the open inner corner
+    let cutting = path(10, &[(280.0, 120.0), (120.0, 280.0)], true);
+    // a line inside the lot all the way
+    let inside = path(11, &[(110.0, 110.0), (290.0, 110.0)], true);
+    let mut surfaces = grass();
+    paint_paths_with(&mut surfaces, &[cutting, inside], &[l_shape]);
+    assert_eq!(surfaces.at(198.0, 202.0), SurfaceClass::Soil, "the corner");
+    assert_eq!(surfaces.at(200.0, 110.0), SurfaceClass::Grass, "inside");
+}
+
+#[test]
+fn a_street_path_between_two_lots_is_painted() {
+    let one = area(
+        "osm/way/1",
+        LotKind::CarPark,
+        square(100.0, 100.0, 150.0, 150.0),
+    );
+    let two = area(
+        "osm/way/2",
+        LotKind::CarPark,
+        square(250.0, 100.0, 300.0, 150.0),
+    );
+    let across = path(10, &[(125.0, 125.0), (275.0, 125.0)], true);
+    let mut surfaces = grass();
+    paint_paths_with(&mut surfaces, &[across], &[one, two]);
+    assert_eq!(surfaces.at(200.0, 125.0), SurfaceClass::Soil);
+}
