@@ -353,8 +353,9 @@ a saddle or outside the lot.
 - `Assessed.relief_before_m` and `relief_after_m` are the largest local relief, not the 95th percentile: only a
   subadditive measure gives "at most `(1 − λ)` of before plus 0.12 m". `local_relief` returns both; the judging
   report calls it for the 95th percentile.
-- λ and the move guard are computed over the terrain vertices inside the group's members only; the shoulder outside
-  the edge is not covered.
+- λ and the move guard are computed over the terrain vertices inside the group's members only. The shaping guards
+  the shoulder as well: a vertex within the shoulder that the surface would move by more than `LOT_MAX_MOVE_M` is not
+  claimed and takes the fill slope from the claimed ground instead (Task 7).
 - The least squares is solved by normal equations in coordinates scaled to the group, Gaussian elimination with
   partial pivoting, and a ridge of 1e-12 (relative) on every term but the constant, so a lot one row of vertices
   wide gets no slope across it.
@@ -401,7 +402,9 @@ and reported (`lot_steep`). On the example 44: 42 car parks, the caravan site P2
 
 - every terrain vertex inside a member (even-odd, not in a hole), or within `SHOULDER_CELLS` (1.5) cells of a
   member's outer edge or a hole's edge, is claimed at the surface's height (the surface is evaluated there too); its
-  `edge` is its distance beyond the edge (0 or less inside);
+  `edge` is its distance beyond the edge (0 or less inside). The patch is an `AreaPatch`: the group's `LotSurface`
+  and rank 0, the claimed height `LotSurface::target(p, ground)` (Task 7). A shoulder vertex that target would move
+  by more than `LOT_MAX_MOVE_M` is not claimed (see the choices above);
 - the claim rules of `conform` stay: a road's core wins inside its own width, compatible heights go to the higher rank
   (the lot has rank 0, below every road), contested ones to the nearer edge; a vertex under a bridge span is not
   claimed;
@@ -414,15 +417,19 @@ end, with the access stretch in its `stretches`, `patch_m` half the road's width
 (and the surface's gradient there as its gradient). In the solve its height is a constant, as a junction on a
 roundabout takes the ring's plane (`Source::Constant` in `profile::model`). The hold rules `End` and `Inward` hold the
 road's end joint and the joints inward that lie over the lot to the surface's height there. So the road arrives at the
-lot's height, with no step.
+lot's height, with no step. `junctions::add_lot_entries` adds them and puts the smoothed lots into `Junctions::lots`.
+An entry whose lot has no surface (surface only or excluded) gets no junction: the lot step cuts no access road there,
+and a dead end not cut (its inside part shorter than `LOT_ENTRY_M`) is covered only by the ground target below, not by
+a held end.
 
 **Through roads.** A road that crosses a lot keeps its own earthworks, and the two must meet without a step
 (**(controller)**: "the smooth surface meets them at the road's shoulder"). Composed in two parts:
 
 - in the height solve, the ground target of every joint of a through road that lies over a smoothed lot is the lot's
-  surface there instead of the original ground (`profile::model`'s `ground_targets`; a soft target, as the ground is
-  today). The surface's curvature is at most that of the gentlest road (600 m), so a road can follow it; where its
-  slope along the road is above the road's `grade_ceiling`, the road's own hard limits win and the target only pulls;
+  surface there instead of the original ground (`profile::model`'s `ground_targets`, which reads `Junctions::lots`; a
+  soft target, as the ground is today). The surface's curvature is at most that of the gentlest road (600 m), so a
+  road can follow it; where its slope along the road is above the road's `grade_ceiling`, the road's own hard limits
+  win and the target only pulls;
 - in the shaping, the road's core and shoulder ring win as everywhere; the lot's vertices beyond the ring take the
   lot's surface. Where the road followed the surface, the two agree within `CONFLICT_M` (0.3 m) and there is no step;
   where it could not, the difference is a face, reported as `road_conflict` as today and counted by the judging within

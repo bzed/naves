@@ -13,10 +13,14 @@
 use naves_core::bridgeground::BridgeSpan;
 use naves_core::catalog::PartShape;
 use naves_core::conform::{
-    CUT_SLOPE, CUT_SLOPE_MAX, FILL_SLOPE, FILL_SLOPE_MAX, LevelPatch, MAX_EARTHWORK_M, conform,
-    conform_bridges,
+    AreaPatch, BRIDGE_AIR_M, CUT_SLOPE, CUT_SLOPE_MAX, Conformed, FILL_SLOPE, FILL_SLOPE_MAX,
+    LevelPatch, MAX_EARTHWORK_M, conform, conform_areas, conform_bridges,
 };
 use naves_core::heightmap::Heightmap;
+use naves_core::lot::{
+    Form, LOT_MAX_MOVE_M, LotArea, LotKind, LotSurface, Outcome, Placement, Polygon, Surface,
+    assess, contains, local_relief,
+};
 use naves_core::profile::RoadStrip;
 
 fn terrain(size: u32, cell: f32, f: impl Fn(f64, f64) -> f64) -> Heightmap {
@@ -937,4 +941,379 @@ fn an_annular_patch_leaves_the_inside_alone() {
             }
         }
     }
+}
+
+// ----- lots -----
+
+/// A closed rectangle.
+fn ring(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<(f64, f64)> {
+    vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+}
+
+/// A lot area on the ground.
+fn lot_area(id: &str, outer: Vec<(f64, f64)>, holes: Vec<Vec<(f64, f64)>>) -> LotArea {
+    LotArea {
+        id: id.to_string(),
+        kind: LotKind::CarPark,
+        placement: Placement::Ground,
+        outer,
+        holes,
+        area_m2: 0.0,
+        surface_tag: None,
+        holes_dropped: 0,
+    }
+}
+
+/// A lot's smooth surface as a plane through `at`, with the move guard `lambda`.
+fn plane_patch(
+    polygons: Vec<Polygon>,
+    at: (f64, f64),
+    height: f64,
+    gradient: (f64, f64),
+    lambda: f64,
+) -> AreaPatch {
+    AreaPatch {
+        surface: LotSurface {
+            group: 0,
+            members: vec!["osm/way/1".to_string()],
+            polygons,
+            surface: Surface {
+                at,
+                coeffs: [height, gradient.0, gradient.1, 0.0, 0.0, 0.0],
+                form: Form::Plane,
+                lambda,
+            },
+        },
+        rank: 0,
+    }
+}
+
+/// The shaped height at a map position, bilinear.
+fn shaped(out: &Conformed, x: f64, y: f64) -> f64 {
+    f64::from(out.heightmap.sample(x, y).height)
+}
+
+/// The shaped height at a vertex.
+fn shaped_at(out: &Conformed, col: i64, row: i64) -> Option<f64> {
+    let col = u32::try_from(col).ok()?;
+    let row = u32::try_from(row).ok()?;
+    Some(f64::from(out.heightmap.at(col, row)))
+}
+
+#[test]
+fn a_lot_is_shaped_to_its_plane_and_the_hill_falls_back_to_the_ground() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    for (x, y) in [
+        (104.0, 104.0),
+        (140.0, 140.0),
+        (176.0, 176.0),
+        (104.0, 176.0),
+    ] {
+        let got = shaped(&out, x, y);
+        assert!((got - 101.0).abs() < 1e-4, "inside ({x}, {y}): {got}");
+    }
+    // every vertex within 1.5 cells (6 m) beyond the edge
+    for (x, y) in [
+        (96.0, 140.0),
+        (184.0, 140.0),
+        (140.0, 96.0),
+        (140.0, 184.0),
+        (96.0, 96.0),
+        (184.0, 184.0),
+    ] {
+        let got = shaped(&out, x, y);
+        assert!((got - 101.0).abs() < 1e-4, "shoulder ({x}, {y}): {got}");
+    }
+    // beyond the shoulder the original ground, and never below it
+    assert!((shaped(&out, 88.0, 140.0) - 100.0).abs() < 1e-6);
+    assert!(
+        out.heightmap
+            .h
+            .iter()
+            .all(|h| f64::from(*h) >= 100.0 - 1e-6)
+    );
+}
+
+#[test]
+fn a_lot_gets_its_capped_quadratic_and_is_not_bumpy() {
+    let base = terrain(64, 4.0, |x, _| 100.0 + (x - 30.0) * (x - 30.0) / 600.0);
+    let lot = lot_area("osm/way/1", ring(50.5, 60.5, 109.5, 100.5), Vec::new());
+    let (assessed, surfaces) = assess(std::slice::from_ref(&lot), &base, &|_| false);
+    assert!(matches!(
+        assessed[0].outcome,
+        Outcome::Smoothed {
+            form: Form::Quadratic
+        }
+    ));
+    assert_eq!(surfaces.len(), 1);
+    let patch = AreaPatch {
+        surface: surfaces[0].clone(),
+        rank: 0,
+    };
+    let out = conform_areas(&base, &[], &[], &[patch], &[]).unwrap();
+    let mut inside: Vec<(i64, i64)> = Vec::new();
+    for row in 0..64_u32 {
+        for col in 0..64_u32 {
+            let p = pos(&base, col, row);
+            if !contains(&lot, p) {
+                continue;
+            }
+            inside.push((i64::from(col), i64::from(row)));
+            let ground = f64::from(base.at(col, row));
+            let want = surfaces[0].target(p, ground);
+            let got = f64::from(out.heightmap.at(col, row));
+            assert!((got - want).abs() < 1e-4, "{p:?}: {got} vs {want}");
+        }
+    }
+    assert!(inside.len() > 20);
+    let relief = local_relief(&|c, r| shaped_at(&out, c, r), &inside, 4.0).1;
+    assert!(relief <= 0.12 + 1e-6, "local relief {relief}");
+}
+
+#[test]
+fn a_road_strip_through_a_lot_takes_its_own_height() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let street = road((100.0, 140.0), (180.0, 140.0), 100.5, 100.5, 3.5, 2);
+    let out = conform_areas(&base, &[street], &[], &[lot], &[]).unwrap();
+    for x in [104.0, 120.0, 156.0, 176.0] {
+        let got = shaped(&out, x, 140.0);
+        assert!((got - 100.5).abs() < 1e-4, "{x}: {got}");
+    }
+}
+
+#[test]
+fn a_hole_keeps_its_own_ground_beyond_its_shoulder() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    // six cells across: its centre vertex is 12 m from its edge, beyond the 1.5 cell shoulder
+    let hole = ring(124.0, 124.0, 148.0, 148.0);
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), vec![hole])],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    assert!(
+        (shaped(&out, 136.0, 136.0) - 100.0).abs() < 1e-6,
+        "the hole"
+    );
+    // 2 m into the hole, in its shoulder, and the lot beside it are shaped
+    assert!((shaped(&out, 126.0, 136.0) - 101.0).abs() < 1e-4);
+    assert!((shaped(&out, 104.0, 104.0) - 101.0).abs() < 1e-4);
+}
+
+#[test]
+fn a_vertex_under_a_bridge_span_is_not_claimed_by_a_lot() {
+    let base = terrain(120, 6.25, |_, _| 100.0);
+    let mut road = strip(
+        &[
+            (300.0, 100.0, 100.0),
+            (300.0, 300.0, 100.0),
+            (300.0, 500.0, 100.0),
+            (300.0, 700.0, 100.0),
+        ],
+        3.5,
+        3,
+    );
+    road.bridge = vec![false, true, false];
+    let lot = plane_patch(
+        vec![(ring(250.0, 350.0, 350.0, 450.0), Vec::new())],
+        (300.0, 400.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[road], &[], &[lot], &[deck(300.0, 500.0)]).unwrap();
+    // under the deck the bridge's ceiling wins
+    let ceiling = shaped(&out, 300.0, 400.0);
+    assert!(
+        (ceiling - (100.0 - 0.25 - BRIDGE_AIR_M)).abs() < 1e-3,
+        "{ceiling}"
+    );
+    // beside the deck the lot's surface is shaped
+    let beside = shaped(&out, 350.0, 400.0);
+    assert!((beside - 101.0).abs() < 1e-4, "{beside}");
+}
+
+#[test]
+fn the_two_lots_of_one_group_meet_on_their_shared_edge() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![
+            (ring(100.0, 100.0, 180.0, 180.0), Vec::new()),
+            (ring(180.0, 100.0, 260.0, 180.0), Vec::new()),
+        ],
+        (180.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    for y in [104.0, 120.0, 140.0, 160.0, 176.0] {
+        let west = shaped(&out, 176.0, y);
+        let east = shaped(&out, 184.0, y);
+        assert!((west - 101.0).abs() < 1e-4, "west {y}: {west}");
+        assert!((east - 101.0).abs() < 1e-4, "east {y}: {east}");
+        assert!((west - east).abs() < 1e-4, "{y}: {west} vs {east}");
+    }
+}
+
+#[test]
+fn conforming_without_areas_is_conforming_bridges_bit_for_bit() {
+    let base = terrain(120, 6.25, |_, _| 100.0);
+    let mut road = strip(
+        &[
+            (300.0, 100.0, 100.0),
+            (300.0, 300.0, 100.0),
+            (300.0, 500.0, 100.0),
+            (300.0, 700.0, 100.0),
+        ],
+        3.5,
+        3,
+    );
+    road.bridge = vec![false, true, false];
+    let spans = [deck(300.0, 500.0)];
+    let with = conform_areas(&base, std::slice::from_ref(&road), &[], &[], &spans).unwrap();
+    let without = conform_bridges(&base, std::slice::from_ref(&road), &[], &spans).unwrap();
+    assert_eq!(with, without);
+    for (a, b) in with.heightmap.h.iter().zip(&without.heightmap.h) {
+        assert_eq!(a.to_bits(), b.to_bits());
+    }
+}
+
+#[test]
+fn no_claimed_vertex_moves_more_than_the_guard() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    // 4.5 m above the ground: more than the guard allows, and the surface's lambda is 1
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        104.5,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    assert!(out.heightmap.h.iter().all(|h| {
+        let move_m = f64::from(*h) - 100.0;
+        move_m.abs() <= LOT_MAX_MOVE_M + 1e-4
+    }));
+    // inside the lot the claim is clamped, not dropped
+    let middle = shaped(&out, 140.0, 140.0);
+    assert!((middle - (100.0 + LOT_MAX_MOVE_M)).abs() < 1e-4, "{middle}");
+    // the shoulder would need 4.5 m: it is left to the fill slope from the claimed ground, not dropped to the
+    // surface, and beyond the shoulder the ground is untouched
+    let shoulder = shaped(&out, 96.0, 140.0);
+    assert!(shoulder <= 100.0 + LOT_MAX_MOVE_M, "{shoulder}");
+    assert!(
+        shoulder < 103.5,
+        "the shoulder took the lot's height: {shoulder}"
+    );
+    assert!(
+        (shaped(&out, 92.0, 140.0) - 100.0).abs() < 1e-6,
+        "beyond the shoulder"
+    );
+}
+
+#[test]
+fn a_street_beside_a_lot_meets_it_without_a_step() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        100.5,
+        (0.0, 0.0),
+        1.0,
+    );
+    // a street one metre outside the lot's south edge
+    let street = road((100.0, 98.0), (180.0, 98.0), 100.4, 100.4, 3.5, 2);
+    let out = conform_areas(&base, &[street], &[], &[lot], &[]).unwrap();
+    // inside the street's width and on the lot's edge beside it, the street's height
+    for (x, y) in [(104.0, 96.0), (104.0, 100.0), (140.0, 96.0), (140.0, 100.0)] {
+        let got = shaped(&out, x, y);
+        assert!((got - 100.4).abs() < 1e-4, "({x}, {y}): {got}");
+    }
+    // deeper in the lot its surface
+    let inside = shaped(&out, 140.0, 112.0);
+    assert!((inside - 100.5).abs() < 1e-4, "{inside}");
+    // and no vertex jumps by more than the conflict tolerance from one cell to the next
+    for y in [100.0, 104.0, 108.0, 112.0] {
+        let here = shaped(&out, 140.0, y);
+        let next = shaped(&out, 140.0, y + 4.0);
+        assert!((next - here).abs() <= 0.3, "y {y}: {here} -> {next}");
+    }
+}
+
+#[test]
+fn lots_that_are_not_numbers_are_not_claimed() {
+    let base = terrain(64, 4.0, |_, _| 100.0);
+    let mut broken = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    broken.surface.polygons[0].0[1].0 = f64::NAN;
+    // no ring at all, a ring of one point, and a surface whose height is not a number
+    let empty = plane_patch(Vec::new(), (140.0, 140.0), 101.0, (0.0, 0.0), 1.0);
+    let one_point = plane_patch(
+        vec![(vec![(140.0, 140.0)], Vec::new())],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let not_a_height = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        f64::NAN,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(
+        &base,
+        &[],
+        &[],
+        &[broken, empty, one_point, not_a_height],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(out.heightmap.h, base.h);
+}
+
+#[test]
+fn a_vertex_without_ground_under_a_lot_is_not_claimed() {
+    let base = terrain(64, 4.0, |x, y| {
+        if (x - 140.0).abs() < 1e-9 && (y - 140.0).abs() < 1e-9 {
+            f64::NAN
+        } else {
+            100.0
+        }
+    });
+    let lot = plane_patch(
+        vec![(ring(100.0, 100.0, 180.0, 180.0), Vec::new())],
+        (140.0, 140.0),
+        101.0,
+        (0.0, 0.0),
+        1.0,
+    );
+    let out = conform_areas(&base, &[], &[], &[lot], &[]).unwrap();
+    assert!(f64::from(out.heightmap.at(35, 35)).is_nan());
+    assert!((shaped(&out, 104.0, 104.0) - 101.0).abs() < 1e-4);
 }

@@ -17,14 +17,14 @@ use naves_core::bridgeground::bridge_spans;
 use naves_core::bridgekind::{BridgeFit, choose, crossing_thickness, fit_bridges};
 use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
-use naves_core::conform::{Conformed, LevelPatch, conform_bridges};
+use naves_core::conform::{AreaPatch, Conformed, LevelPatch, conform_bridges};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
-use naves_core::lot::{LOT_INSIDE_TOL_M, LotArea, contains, edge_distance};
-use naves_core::netclean::{self, CleanReport};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, add_lot_entries, find_junctions};
+use naves_core::lot::{LOT_INSIDE_TOL_M, LotArea, LotSurface, contains, edge_distance};
+use naves_core::netclean::{self, CleanReport, CutAccess};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     panel_object_height, road_object_id, road_objects,
@@ -189,8 +189,25 @@ pub fn place_once(
     catalog: &PieceCatalog,
     base: &Heightmap,
 ) -> Result<Placed, BuildError> {
+    place_once_with(graph, catalog, base, &[], &[])
+}
+
+/// [`place_once`] with the smoothed lots and the cut access roads of the lot step: an entry becomes a
+/// [`JunctionKind::LotEntry`] at the placed end of its access road, held to the lot's surface, and the ground target
+/// of a joint over a lot is the lot's surface there (see [`add_lot_entries`]).
+///
+/// # Errors
+/// As [`place_once`].
+pub fn place_once_with(
+    graph: &RoadGraph,
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+    lots: &[LotSurface],
+    entries: &[CutAccess],
+) -> Result<Placed, BuildError> {
     let net = place_network(graph, catalog)?;
-    let junctions = find_junctions(&net, graph, base);
+    let mut junctions = find_junctions(&net, graph, base);
+    add_lot_entries(&mut junctions, &net, lots, entries, base);
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
@@ -486,6 +503,16 @@ pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
         rank: ring.rank,
     }));
     patches
+}
+
+/// The polygon patches of the smoothed lots: one per group, rank 0 (below every road), the ground shaped to the
+/// group's surface (see [`naves_core::conform::AreaPatch`]). The order is the order of `lots`.
+#[must_use]
+pub fn area_patches(lots: &[LotSurface]) -> Vec<AreaPatch> {
+    lots.iter()
+        .cloned()
+        .map(|surface| AreaPatch { surface, rank: 0 })
+        .collect()
 }
 
 /// The deck level of every bridge object: the height of the profile at its start.

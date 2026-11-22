@@ -12,8 +12,8 @@ use naves_core::catalog::Family;
 use naves_core::heightmap::Heightmap;
 use naves_core::limits::min_vertical_radius;
 use naves_core::lot::{
-    Assessed, Form, LOT_MIN_RADIUS_M, LotArea, LotKind, LotSurface, Outcome, Placement, assess,
-    contains, local_relief,
+    Assessed, Form, LOT_MIN_RADIUS_M, LotArea, LotKind, LotSurface, NO_GROUP, Outcome, Placement,
+    assess, contains, local_relief,
 };
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
@@ -704,4 +704,63 @@ proptest! {
             );
         }
     }
+}
+
+// ----- groups and numberings -----
+
+#[test]
+fn the_lots_of_one_group_share_one_surface() {
+    let base = heightmap(|_, _| 100.0);
+    let a = rect("osm/way/1", 100.5, 100.5, 40.0, 40.0);
+    let b = rect("osm/way/2", 140.5, 100.5, 40.0, 40.0);
+    let (assessed, surfaces) = assess(&[b.clone(), a.clone()], &base, &dry);
+    assert_eq!(surfaces.len(), 1, "one surface for the group");
+    assert_eq!(
+        surfaces[0].members,
+        ["osm/way/1".to_string(), "osm/way/2".to_string()]
+    );
+    assert_eq!(assessed.len(), 2);
+    for lot in &assessed {
+        assert!(matches!(lot.outcome, Outcome::Smoothed { .. }));
+        assert_eq!(lot.group, surfaces[0].group);
+    }
+}
+
+#[test]
+fn the_lot_steps_groups_and_the_surfaces_are_numbered_apart() {
+    let base = heightmap(|_, _| 100.0);
+    // a lot too small for the grid (surface only, no group of its own), and two that touch and are smoothed
+    let tiny = rect("osm/way/1", 100.5, 100.5, 6.0, 6.0);
+    let touch_a = rect("osm/way/2", 40.5, 40.5, 40.0, 40.0);
+    let touch_b = rect("osm/way/3", 80.5, 40.5, 40.0, 40.0);
+    let (assessed, surfaces) = assess(&[tiny, touch_a, touch_b], &base, &dry);
+    assert_eq!(surfaces.len(), 1);
+    let tiny = assessed
+        .iter()
+        .find(|a| a.area.id == "osm/way/1")
+        .expect("the tiny lot");
+    assert_eq!(
+        tiny.outcome,
+        Outcome::SurfaceOnly {
+            reason: "no_vertex"
+        }
+    );
+    assert_eq!(tiny.group, NO_GROUP);
+    assert_eq!(NO_GROUP, usize::MAX);
+    let smoothed = assessed
+        .iter()
+        .find(|a| a.area.id == "osm/way/2")
+        .expect("the smoothed lot");
+    assert_eq!(smoothed.group, 0, "the surface's number");
+    // the lot step's groups hold the tiny lot too, so their numbering differs: it is group 0 there, and the
+    // smoothed pair is group 1
+    let groups = naves_core::netclean::lot::groups(&assessed);
+    let group_of = |id: &str| {
+        groups
+            .iter()
+            .find(|g| g.members.iter().any(|m| m == id))
+            .map(|g| g.group)
+    };
+    assert_eq!(group_of("osm/way/1"), Some(0), "{groups:?}");
+    assert_eq!(group_of("osm/way/2"), Some(1), "{groups:?}");
 }

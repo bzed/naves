@@ -5,8 +5,15 @@
 
 use std::collections::BTreeSet;
 
+use naves_core::catalog::testing::synthetic_models;
+use naves_core::catalog::{Family, PieceCatalog};
+use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{Junction, JunctionKind, Junctions, RingPlane};
-use naves_export::generate::level_patches;
+use naves_core::lot::{Form, LotSurface, Surface};
+use naves_core::netclean::CutAccess;
+use naves_core::roadnet::build_graph;
+use naves_export::generate::{Placed, area_patches, level_patches, place_once, place_once_with};
 
 fn junction(kind: JunctionKind, at: (f64, f64), height: f64) -> Junction {
     Junction {
@@ -125,4 +132,140 @@ fn a_tilted_junction_patch_shapes_a_plane() {
         }
     }
     assert!(checked > 20);
+}
+
+// ----- lots -----
+
+fn way(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
+    Feature {
+        id: format!("osm/way/{id}/0"),
+        way_id: id,
+        source: Source::Osm,
+        kind: FeatureKind::Road {
+            family: Family::City,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+            use_sidepath: false,
+            paving: None,
+        },
+        points: points.to_vec(),
+        nodes: nodes.to_vec(),
+    }
+}
+
+fn flat() -> Heightmap {
+    Heightmap {
+        size: 250,
+        cell_m: 4.0,
+        h: vec![100.0; 250 * 250],
+    }
+}
+
+/// The bridge-over-a-road graph of `bridge_clearance.rs`.
+fn bridge_graph() -> naves_core::roadnet::RoadGraph {
+    build_graph(&[
+        way(1, &[1, 2], &[(50.0, 500.0), (550.0, 500.0)]),
+        way(3, &[3, 4], &[(300.0, 100.0), (300.0, 487.5)]),
+        way(4, &[4, 5], &[(300.0, 487.5), (300.0, 512.5)]),
+        way(5, &[5, 6], &[(300.0, 512.5), (300.0, 900.0)]),
+    ])
+}
+
+/// The heights, tilts and side slopes bit for bit, and the shapes they belong to.
+fn bits(placed: &Placed) -> Vec<u64> {
+    let mut out = Vec::new();
+    for strip in &placed.profiles.strips {
+        out.push(u64::try_from(strip.joints.len()).unwrap_or(u64::MAX));
+        for joint in &strip.joints {
+            out.push(joint.0.to_bits());
+            out.push(joint.1.to_bits());
+            out.push(joint.2.to_bits());
+        }
+    }
+    out.push(u64::try_from(placed.junctions.points.len()).unwrap_or(u64::MAX));
+    for junction in &placed.junctions.points {
+        out.push(junction.at.0.to_bits());
+        out.push(junction.at.1.to_bits());
+        out.push(junction.height.to_bits());
+        out.push(junction.gradient.0.to_bits());
+        out.push(junction.gradient.1.to_bits());
+    }
+    for slope in &placed.side {
+        out.push(slope.to_bits());
+    }
+    out
+}
+
+/// A lot's surface as a level plane at `height` through `at`.
+fn lot_surface(outer: Vec<(f64, f64)>, at: (f64, f64), height: f64) -> LotSurface {
+    LotSurface {
+        group: 0,
+        members: vec!["osm/way/1".to_string()],
+        polygons: vec![(outer, Vec::new())],
+        surface: Surface {
+            at,
+            coeffs: [height, 0.0, 0.0, 0.0, 0.0, 0.0],
+            form: Form::Plane,
+            lambda: 1.0,
+        },
+    }
+}
+
+#[test]
+fn a_lot_gives_one_area_patch_of_rank_zero() {
+    let lot = lot_surface(
+        vec![
+            (100.0, 100.0),
+            (200.0, 100.0),
+            (200.0, 200.0),
+            (100.0, 200.0),
+            (100.0, 100.0),
+        ],
+        (150.0, 150.0),
+        101.0,
+    );
+    let patches = area_patches(std::slice::from_ref(&lot));
+    assert_eq!(patches.len(), 1);
+    assert_eq!(patches[0].rank, 0);
+    assert_eq!(patches[0].surface, lot);
+}
+
+#[test]
+fn placing_without_lots_is_placing_bit_for_bit() {
+    let catalog = PieceCatalog::from_models(&synthetic_models()).unwrap();
+    let graph = bridge_graph();
+    let base = flat();
+    let plain = place_once(&graph, &catalog, &base).unwrap();
+    let with = place_once_with(&graph, &catalog, &base, &[], &[]).unwrap();
+    assert_eq!(bits(&plain), bits(&with));
+    assert_eq!(plain.junctions, with.junctions);
+    assert_eq!(plain.profiles, with.profiles);
+}
+
+#[test]
+fn an_entry_of_a_lot_without_a_surface_changes_nothing() {
+    let catalog = PieceCatalog::from_models(&synthetic_models()).unwrap();
+    let graph = bridge_graph();
+    let base = flat();
+    let stretch = graph.stretches[0].id.clone();
+    let entry = CutAccess {
+        stretch: stretch.clone(),
+        lot: "osm/way/9".to_string(),
+        cut_m: 4.0,
+        entry: (550.0, 500.0),
+        node: 900,
+    };
+    let plain = place_once(&graph, &catalog, &base).unwrap();
+    // the lot is not smoothed (it has no surface), so the entry makes no junction
+    let with = place_once_with(&graph, &catalog, &base, &[], &[entry]).unwrap();
+    assert_eq!(bits(&plain), bits(&with));
+    assert!(
+        with.junctions
+            .points
+            .iter()
+            .all(|j| j.kind != JunctionKind::LotEntry)
+    );
 }

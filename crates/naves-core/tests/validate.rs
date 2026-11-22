@@ -971,6 +971,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
     };
     let junctions = Junctions {
         rings: Vec::new(),
+        lots: Vec::new(),
         points: vec![at(100.0, 100.0), at(160.0, 112.0)],
         links: vec![Link {
             a: 0,

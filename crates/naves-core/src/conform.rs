@@ -26,6 +26,7 @@ use crate::bridgeground::BridgeSpan;
 use crate::bridgekind::samples;
 use crate::catalog::{Ceiling, SLICE_M};
 use crate::heightmap::Heightmap;
+use crate::lot::{LOT_MAX_MOVE_M, LotSurface, Polygon, segment_distance};
 use crate::profile::RoadStrip;
 
 /// Rise over run of the gentlest cutting: 45°. A cutting on a steeper hillside may be steeper, up to
@@ -88,6 +89,20 @@ pub struct LevelPatch {
     /// ground inside a roundabout keeps its height).
     pub inner_radius: f64,
     /// Rank of the most important road meeting here; wins ties against a road of a lower rank.
+    pub rank: u8,
+}
+
+/// A lot's ground: its group's smooth surface, claimed over the group's polygons.
+///
+/// Every terrain vertex inside a member (even-odd, in no hole) or within [`SHOULDER_CELLS`] cells of a member's
+/// edge is claimed at [`LotSurface::target`] there, where the ground is the height of `base` at that vertex. The
+/// shoulder of a lot is guarded by [`crate::lot::LOT_MAX_MOVE_M`]: a vertex there that the surface would move
+/// further is not claimed and takes the fill slope from the claimed ground instead.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaPatch {
+    /// The smooth surface of the group and its members' polygons (outer rings and holes, in member order).
+    pub surface: LotSurface,
+    /// Rank of the claim; a lot is 0, below every road, so a road wins a tie of compatible heights.
     pub rank: u8,
 }
 
@@ -747,10 +762,12 @@ fn hillside_slopes(base: &Heightmap, grid: Grid, vertex: usize) -> (f32, f32) {
     )
 }
 
-/// Everything that wants each vertex: the legs of the strips, and the patches that are not under a bridge span.
+/// Everything that wants each vertex: the legs of the strips, the patches that are not under a bridge span, and
+/// the lots' surfaces.
 fn candidates(
     strips: &[RoadStrip],
     patches: &[LevelPatch],
+    areas: &[AreaPatch],
     grid: Grid,
     base: &Heightmap,
     under: &[Option<Under>],
@@ -814,6 +831,27 @@ fn candidates(
             }
         }
     }
+    patch_candidates(patches, strips.len(), grid, base, under, &mut found);
+    area_candidates(
+        areas,
+        strips.len() + patches.len(),
+        grid,
+        base,
+        under,
+        &mut found,
+    );
+    found
+}
+
+/// Adds the level `patches` as candidates to `found`; `owner_base` is the first owner number (after the strips).
+fn patch_candidates(
+    patches: &[LevelPatch],
+    owner_base: usize,
+    grid: Grid,
+    base: &Heightmap,
+    under: &[Option<Under>],
+    found: &mut BTreeMap<usize, Vec<Candidate>>,
+) {
     let last = grid.size.saturating_sub(1);
     for (number, patch) in patches.iter().enumerate() {
         // a patch that is not a circle on the map claims nothing
@@ -853,7 +891,7 @@ fn candidates(
                     + patch.gradient.1 * (py - patch.at.1);
                 found.entry(vertex).or_default().push(Candidate {
                     patch: true,
-                    owner: strips.len() + number,
+                    owner: owner_base + number,
                     rank: patch.rank,
                     height: narrow(plane),
                     distance,
@@ -864,7 +902,121 @@ fn candidates(
             }
         }
     }
-    found
+}
+
+/// Adds the lot `areas` as candidates to `found`: every vertex inside a member or within the shoulder cells beyond
+/// an edge of one, at `LotSurface::target` there. `owner_base` is the first owner number (after the strips and the
+/// level patches). A vertex under a bridge span is not claimed, and a shoulder vertex that the surface would move
+/// by more than [`LOT_MAX_MOVE_M`] is left to the fill slope (the surface's `lambda` covers the inside).
+fn area_candidates(
+    areas: &[AreaPatch],
+    owner_base: usize,
+    grid: Grid,
+    base: &Heightmap,
+    under: &[Option<Under>],
+    found: &mut BTreeMap<usize, Vec<Candidate>>,
+) {
+    let last = grid.size.saturating_sub(1);
+    let shoulder = SHOULDER_CELLS * grid.cell;
+    for (number, area) in areas.iter().enumerate() {
+        if !area_is_finite(area) {
+            continue;
+        }
+        let Some((low, high)) = area_bounds(area) else {
+            continue;
+        };
+        let cols = (
+            grid.nearest(low.0 - shoulder).saturating_sub(1),
+            (grid.nearest(high.0 + shoulder) + 1).min(last),
+        );
+        let rows = (
+            grid.nearest(low.1 - shoulder).saturating_sub(1),
+            (grid.nearest(high.1 + shoulder) + 1).min(last),
+        );
+        for row in rows.0..=rows.1 {
+            for col in cols.0..=cols.1 {
+                let vertex = row * grid.size + col;
+                // the ground under a bridge span keeps the bridge's rules
+                if under.get(vertex).is_some_and(Option::is_some) {
+                    continue;
+                }
+                let p = grid.position(vertex);
+                let inside = area.surface.contains(p);
+                let distance = area_edge_distance(&area.surface.polygons, p);
+                if !distance.is_finite() || (!inside && distance > shoulder) {
+                    continue;
+                }
+                let ground = f64::from(base.h.get(vertex).copied().unwrap_or(f32::NAN));
+                if !ground.is_finite() {
+                    continue;
+                }
+                let target = area.surface.target(p, ground);
+                if !target.is_finite() {
+                    continue;
+                }
+                // the move guard covers the vertices inside the lot (the surface's lambda); a shoulder vertex that
+                // the surface would move further is left to the fill slope from the claimed ground
+                let height = if inside {
+                    target.clamp(ground - LOT_MAX_MOVE_M, ground + LOT_MAX_MOVE_M)
+                } else if (target - ground).abs() > LOT_MAX_MOVE_M {
+                    continue;
+                } else {
+                    target
+                };
+                let (cut, fill) = hillside_slopes(base, grid, vertex);
+                found.entry(vertex).or_default().push(Candidate {
+                    patch: true,
+                    owner: owner_base + number,
+                    rank: area.rank,
+                    height: narrow(height),
+                    distance,
+                    edge: if inside { -distance } else { distance },
+                    cut,
+                    fill,
+                });
+            }
+        }
+    }
+}
+
+/// Whether every point of `area`'s rings and its surface's coefficients are finite numbers.
+fn area_is_finite(area: &AreaPatch) -> bool {
+    let finite = |p: &(f64, f64)| p.0.is_finite() && p.1.is_finite();
+    let surface = &area.surface.surface;
+    area.surface.polygons.iter().all(|(outer, holes)| {
+        outer.iter().all(finite) && holes.iter().all(|h| h.iter().all(finite))
+    }) && surface.at.0.is_finite()
+        && surface.at.1.is_finite()
+        && surface.coeffs.iter().all(|c| c.is_finite())
+        && surface.lambda.is_finite()
+}
+
+/// The bounds of all the rings of `area`'s members: the low and the high corner.
+fn area_bounds(area: &AreaPatch) -> Option<((f64, f64), (f64, f64))> {
+    let (mut low, mut high) = (
+        (f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for (outer, holes) in &area.surface.polygons {
+        for &(x, y) in std::iter::once(outer).chain(holes).flatten() {
+            low = (low.0.min(x), low.1.min(y));
+            high = (high.0.max(x), high.1.max(y));
+        }
+    }
+    (low.0.is_finite() && high.0.is_finite()).then_some((low, high))
+}
+
+/// The distance from `p` to the nearest edge of `polygons`, outer rings and holes.
+fn area_edge_distance(polygons: &[Polygon], p: (f64, f64)) -> f64 {
+    polygons
+        .iter()
+        .flat_map(|(outer, holes)| std::iter::once(outer).chain(holes))
+        .flat_map(|ring| ring.windows(2))
+        .filter_map(|pair| match pair {
+            [a, b] => Some(segment_distance(p, *a, *b)),
+            _ => None,
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Rounds a distance to a millimetre, so that two that are equal but for rounding tie.
@@ -919,6 +1071,7 @@ fn order_wanting(wanting: &mut Vec<Candidate>) -> bool {
 fn claim_cores(
     strips: &[RoadStrip],
     patches: &[LevelPatch],
+    areas: &[AreaPatch],
     grid: Grid,
     base: &Heightmap,
     under: &[Option<Under>],
@@ -929,7 +1082,7 @@ fn claim_cores(
 ) {
     let mut cores: Vec<Option<Core>> = vec![None; grid.count()];
     let mut clashes: BTreeMap<(usize, usize), (f64, (f64, f64))> = BTreeMap::new();
-    for (vertex, mut wanting) in candidates(strips, patches, grid, base, under, own) {
+    for (vertex, mut wanting) in candidates(strips, patches, areas, grid, base, under, own) {
         let contested = order_wanting(&mut wanting);
         let Some(&winner) = wanting.first() else {
             continue;
@@ -1045,14 +1198,16 @@ pub fn conform(
     conform_bridges(base, strips, patches, &[])
 }
 
-/// Shapes `base` to fit `strips` and to the decks of `bridges`; `base` itself is not changed.
+/// Shapes `base` to fit `strips`, the level `patches`, the lot `areas` and the decks of `bridges`; `base` itself is
+/// not changed. [`conform_bridges`] is the same without lots.
 ///
 /// # Errors
 /// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.
-pub fn conform_bridges(
+pub fn conform_areas(
     base: &Heightmap,
     strips: &[RoadStrip],
     patches: &[LevelPatch],
+    areas: &[AreaPatch],
     bridges: &[BridgeSpan],
 ) -> Result<Conformed, ConformError> {
     let size = usize::try_from(base.size).unwrap_or(0);
@@ -1079,7 +1234,7 @@ pub fn conform_bridges(
     };
     let under = bridge_ceilings(bridges, grid);
     let own = own_strips(bridges, strips);
-    let (cores, clashes) = claim_cores(strips, patches, grid, base, &under, &own);
+    let (cores, clashes) = claim_cores(strips, patches, areas, grid, base, &under, &own);
     if cores.iter().all(Option::is_none) && under.iter().all(Option::is_none) {
         return Ok(Conformed {
             heightmap: base.clone(),
@@ -1141,6 +1296,20 @@ pub fn conform_bridges(
         buried,
         floating,
     })
+}
+
+/// Shapes `base` to fit `strips` and to the decks of `bridges`; `base` itself is not changed. Lots are not shaped:
+/// see [`conform_areas`].
+///
+/// # Errors
+/// [`ConformError::BadHeightmap`] if the heightmap is not `size * size`.
+pub fn conform_bridges(
+    base: &Heightmap,
+    strips: &[RoadStrip],
+    patches: &[LevelPatch],
+    bridges: &[BridgeSpan],
+) -> Result<Conformed, ConformError> {
+    conform_areas(base, strips, patches, &[], bridges)
 }
 
 /// One vertex of ground that is in a bridge's deck.
@@ -1211,6 +1380,8 @@ fn buried_under(
         let holder = match cores.get(hit.vertex).copied().flatten() {
             None => Holder::None,
             Some(core) if core.owner < strips => Holder::Strip(core.owner),
+            // a lot's surface (an owner beyond the level patches) never claims a vertex under a deck; if one ever
+            // did, it is named by the vertex's place
             Some(core) => Holder::Patch(
                 patches
                     .get(core.owner - strips)
