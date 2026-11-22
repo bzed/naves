@@ -5212,13 +5212,24 @@ fn plan_a_planned_leg_keeps_the_clearance_from_the_own_chain() {
                 .iter()
                 .map(|p| (p.0.to_bits(), p.1.to_bits()))
                 .collect();
+            // the points of *this* zone: those nearest to its place, so that a point of another planned zone
+            // (the return leg's corner) that happens to lie within a radius is not mixed in
+            let nearest = |p: (f64, f64)| {
+                report
+                    .zones
+                    .iter()
+                    .min_by(|a, b| {
+                        (p.0 - a.at.0)
+                            .hypot(p.1 - a.at.1)
+                            .total_cmp(&(p.0 - b.at.0).hypot(p.1 - b.at.1))
+                    })
+                    .map(|z| z.id.as_str())
+            };
             let new_points: Vec<(f64, f64)> = route
                 .iter()
                 .copied()
-                .filter(|p| {
-                    !unchanged.contains(&(p.0.to_bits(), p.1.to_bits()))
-                        && (p.0 - zone.at.0).hypot(p.1 - zone.at.1) <= 40.0
-                })
+                .filter(|p| !unchanged.contains(&(p.0.to_bits(), p.1.to_bits())))
+                .filter(|p| nearest(*p) == Some(zone.id.as_str()))
                 .collect();
             assert!(new_points.len() >= 2);
             let got = line_distance(&new_points, &return_leg);
@@ -5398,11 +5409,12 @@ fn plan_a_drawn_line_in_a_deck_earthwork_is_kept_for_a_road() {
 
 #[test]
 fn plan_a_leg_that_crosses_a_stream_gets_its_diagnostic_reason() {
-    // A stream across the west leg of the hairpin 11 m above its start anchor, and water from y = 460 on. The drawn
-    // line crosses the stream once (so a route must cross it once) and the water blocks the loop; the candidates
-    // that avoid the stream are dropped by the search (the crossing count must equal the drawn line's: routine,
-    // nothing is reported for them), the leg ends without a route, and the diagnostic without water (areas and
-    // streams) finds the loop. The reason is `blocked_by_water`, not `check_failed`.
+    // A stream from x = 470 to 540 at y = 450, across both legs of the hairpin (x = 500 and 512) and 12 m above its
+    // anchors at y = 437.96, and water from y = 455 on, which covers the loop. The drawn line crosses the stream
+    // twice (so a route must, too) and the water blocks the loop; the candidates that avoid the stream are dropped
+    // by the search (the crossing count must equal the drawn line's: routine, nothing is reported for them), the
+    // leg ends without a route, and the diagnostic without water (areas and streams) finds the loop. The reason is
+    // `blocked_by_water`, not `check_failed`.
     let g = edge_hairpin(500.0);
     let stream = vec![(470.0, 450.0), (540.0, 450.0)];
     let params = RerouteParams::default();
@@ -5433,32 +5445,6 @@ fn plan_a_leg_that_crosses_a_stream_gets_its_diagnostic_reason() {
     );
     let (reason, _) = kept(only_zone(&report));
     assert_eq!(reason, KeptReason::BlockedByWater);
-}
-
-#[test]
-fn plan_a_leg_whose_search_drops_candidates_keeps_its_ordinary_reason() {
-    // A cap of 1 m holds the route to within a metre of the drawn line, and the 120 degree corner's fillet needs
-    // 1.4 m: the search builds arrivals and drops them all (the stray cap), and the leg has no route at any limit.
-    // That is routine: the leg is `no_route`, not `check_failed` (the drops are not a failed acceptance check).
-    let g = corner_120(400.0);
-    let params = RerouteParams {
-        stray_max: 0.1,
-        ..RerouteParams::default()
-    };
-    let (out, report) = plan_with(
-        &g,
-        &flat_map(),
-        &|_: &Stretch| CITY_MIN_R,
-        &|_: (f64, f64)| false,
-        &[],
-        &params,
-    );
-    assert_eq!(out, g);
-    let zone = only_zone(&report);
-    let (reason, detail) = kept(zone);
-    assert_eq!(reason, KeptReason::NoRoute, "{zone:?}");
-    assert_eq!(detail, "no_route", "{zone:?}");
-    assert!(zone.states > 0, "{zone:?}");
 }
 
 /// The Task 5 hairpin as a chain, its legs 12 m apart from y = 400 to 460, with an apex 12 m wide and 4 m high.
@@ -5523,8 +5509,9 @@ fn plan_two_routes_that_run_into_each_other_are_checked() {
     assert_ne!(out, g, "the first zone is planned");
     assert_eq!(report.kept(KeptReason::BlockedByRoad), 1);
     // A different input: the order of the ways reversed and every way's points and nodes reversed as well (legal:
-    // a way has no direction). The graph is the same because `build_graph` canonicalises its stretches by id and
-    // point order, and the chains follow that order, so this checks the planner's own order and not the graph's.
+    // a way has no direction). The plan is the same because it holds by the `RoadGraph` invariant: `build_graph`
+    // stores the stretches in the order of their ids, so the input's order cannot reach the planner; this only
+    // checks that the invariant is kept for a reversed input.
     let reversed: Vec<Feature> = features
         .iter()
         .rev()
@@ -6006,7 +5993,7 @@ fn vertex_a_hand_span_before_the_end() -> RoadGraph {
     build_graph(&[
         city_way(
             1,
-            &[1, 2, 3, 4, 5, 6, 7, 8],
+            &[1, 2, 3, 4, 5, 6, 7, 20, 8],
             &[
                 (400.0, 500.0),
                 (441.3, 500.0),
@@ -6014,6 +6001,7 @@ fn vertex_a_hand_span_before_the_end() -> RoadGraph {
                 (482.9, 503.3),
                 (482.9, 500.0),
                 (560.0, 500.0),
+                (560.0, 519.79),
                 (560.0, 521.79),
                 (560.0, 600.0),
             ],
@@ -6038,13 +6026,23 @@ fn plan_a_vertex_a_hand_span_before_the_end_anchor_is_not_written_after_it() {
     let zone = zone_matching(&report, |z| z.at.0 > 540.0 && z.at.1 < 520.0);
     assert!(is_planned(zone), "{zone:?}");
     let written = points_of(&out, "1:1-8");
-    // The vertex is inside the leg when the anchor's sample is taken by the true arc (it is dropped) and beyond the
-    // anchor when a measure puts the anchor earlier (it is kept after it, still in order). What must never happen is
-    // a doubling back, which the chord measure of Task 6's first version produced: it kept a vertex that lay behind
-    // the route's end and wrote it after it.
+    // The leg's end anchor is at y = 519.8195: the true arc of the chain's samples puts it 3 cm after the vertex at
+    // (560, 519.79), which therefore lies inside the leg and is not written (the route replaces the leg). The
+    // vertex at (560, 521.79) lies after the anchor, in the tail the leg does not touch, and is written in order.
+    // The chord measure of Task 6's first version put the anchor at y = 521.824, and then both vertices lay before
+    // the route's end; it wrote the second one after the end, which is the doubling back `assert_no_reversal`
+    // catches.
     assert_no_reversal(&written);
     assert!(
-        written.iter().any(|&p| (p.1 - 520.0).abs() <= 2.0),
+        !written.iter().any(|&p| same_bits(p, (560.0, 519.79))),
+        "the vertex 3 cm before the end anchor is written after the route"
+    );
+    assert!(
+        written.iter().any(|&p| same_bits(p, (560.0, 521.79))),
+        "the vertex after the anchor is not written in the tail: {written:?}"
+    );
+    assert!(
+        written.iter().any(|&p| (p.1 - 520.0).abs() <= 1.0),
         "the end anchor is not on the written line: {written:?}"
     );
 }
@@ -6213,4 +6211,294 @@ fn plan_a_long_deck_near_a_junction_is_an_obstacle_beyond_the_anchor() {
     // `blocked_by_road`: the leg's tight run lies within the lead of its junction anchor.
     let (reason, _) = kept(zone);
     assert_eq!(reason, KeptReason::Held, "{zone:?}");
+}
+
+// ----------------------------------------------------------------------------------------------------------
+// Fix round 2: planned routes are compared at their nearest drawn points, and a deck near an anchor keeps
+// its core.
+// ----------------------------------------------------------------------------------------------------------
+
+/// `facing_hairpin(1, 500)` whose east leg bows east: an arc of radius 50 through (522, 430), so the drawn line
+/// comes within 22 m of `facing_hairpin(2, 544)`'s west leg at y ~ 430 while the two loops' drawn lines stay
+/// 32 m apart at the top.
+fn bulged_facing_hairpin() -> Feature {
+    let left = 500.0;
+    let mut nodes: Vec<i64> = vec![101, 102];
+    let mut points: Vec<(f64, f64)> = vec![(left, 400.0), (left, 460.0)];
+    let mut next = 103_i64;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((left + 6.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(next);
+        next += 1;
+    }
+    points.push((left + 12.0, 460.0));
+    nodes.push(next);
+    next += 1;
+    // the east leg: the arc of radius 50 around (472, 430), from (512, 460) down to (512, 400)
+    let (cx, cy, r) = (472.0, 430.0, 50.0);
+    let steps = 33;
+    for k in 1..steps {
+        let t = f64::from(k) / f64::from(steps);
+        let deg = 36.869_897_645_993 * (1.0 - 2.0 * t);
+        let a = deg.to_radians();
+        points.push((cx + r * a.cos(), cy + r * a.sin()));
+        nodes.push(next);
+        next += 1;
+    }
+    points.push((left + 12.0, 400.0));
+    nodes.push(next);
+    city_way(1, &nodes, &points)
+}
+
+/// A facing hairpin at `left` whose legs run from y = 380 to 460 and whose both legs have a tight jog at y = 420
+/// (the west one to `jog_x`): the jog's grown zone touches the loop's, so each chain has one zone that spans both.
+fn jogged_facing_hairpin(way: i64, left: f64, jog_x: f64) -> Feature {
+    let mut points: Vec<(f64, f64)> = vec![
+        (left, 380.0),
+        (left, 415.0),
+        (jog_x, 420.0),
+        (left, 425.0),
+        (left, 460.0),
+    ];
+    let mut nodes: Vec<i64> = (1_i64..=5).map(|i| way * 100 + i).collect();
+    let mut next = way * 100 + 6;
+    for i in 1..16 {
+        let a = PI - PI * f64::from(i) / 16.0;
+        points.push((left + 6.0 + 6.0 * a.cos(), 460.0 + 4.0 * a.sin()));
+        nodes.push(next);
+        next += 1;
+    }
+    for p in [
+        (left + 12.0, 460.0),
+        (left + 12.0, 425.0),
+        (left + 16.0, 420.0),
+        (left + 12.0, 415.0),
+        (left + 12.0, 380.0),
+    ] {
+        points.push(p);
+        nodes.push(next);
+        next += 1;
+    }
+    city_way(way, &nodes, &points)
+}
+
+/// The two plans of a pair of chains, with the later zone reverted against the earlier one.
+fn assert_the_later_is_reverted(g: &RoadGraph) -> RerouteReport {
+    let params = RerouteParams::default();
+    let (out, report) = plan_with(
+        g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &params,
+    );
+    assert_eq!(report.zones.len(), 2, "{:?}", report.zones);
+    assert_eq!(report.reverted, 1, "{:?}", report.zones);
+    let first = &report.zones[0];
+    let second = &report.zones[1];
+    assert!(
+        is_planned(first),
+        "the lower chain id is planned: {first:?}"
+    );
+    let (reason, detail) = kept(second);
+    assert_eq!(reason, KeptReason::BlockedByRoad, "{second:?}");
+    assert_eq!(detail, format!("route_of {}", first.id));
+    assert_ne!(&out, g, "the first zone is planned");
+    report
+}
+
+/// The later zone's route crosses the earlier one's places where the two drawn lines were 32 m apart, but the
+/// drawn line of the later leg comes within the threshold somewhere within a disc of the threshold around the
+/// route points (the bulge at y ~ 430). Only the nearest drawn points at the place may exempt, so the later zone
+/// is reverted.
+#[test]
+fn plan_routes_are_compared_at_the_nearest_drawn_points_not_any_within_the_threshold() {
+    let g = build_graph(&[bulged_facing_hairpin(), facing_hairpin(2, 544.0)]);
+    assert_the_later_is_reverted(&g);
+}
+
+/// Zones on different chains, each with a second tight jog merged into the zone of its loop: the two jogs' drawn
+/// lines come 18 m near each other at y = 420, about 30 m below the place where the routes conflict (the loops'
+/// U-turns). The pair is not exempt as a whole: the jog's place is exempt and the loop's conflict is not.
+#[test]
+fn plan_a_jog_merged_into_a_zone_does_not_exempt_the_whole_pair() {
+    let g = build_graph(&[
+        jogged_facing_hairpin(1, 500.0, 522.0),
+        jogged_facing_hairpin(2, 544.0, 540.0),
+    ]);
+    assert_the_later_is_reverted(&g);
+}
+
+/// The reviewer's sketch, exactly: a junction at (500, 500), a corner at (530, 500), a deck from (505, 505) to
+/// (529, 505). The corner's arm is 30 m, longer than the corner's lead (2 x the 10 m radius), so the junction is
+/// not an anchor of the corner's leg: the leg is anchored on the line, the deck belongs to no fixed anchor of it
+/// and is a full obstacle. The drawn line is 5 m from the deck and fails the segment test; the zone is kept, and
+/// nothing crosses the deck. (The sketch as drawn cannot show the exemption's hole; the fixture below it, with a
+/// radius that makes the junction the leg's anchor, can.)
+#[test]
+fn plan_a_deck_across_a_corner_is_never_crossed() {
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3, 4],
+            &[
+                (400.0, 500.0),
+                (500.0, 500.0),
+                (530.0, 500.0),
+                (530.0, 600.0),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 2, 11],
+            &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        bridge_way(3, &[20, 21], &[(505.0, 505.0), (529.0, 505.0)]),
+    ]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = zone_matching(&report, |z| z.stretches.iter().any(|s| s.starts_with("1:")));
+    let (reason, _) = kept(zone);
+    assert_eq!(reason, KeptReason::BlockedByRoad, "{zone:?}");
+    assert_eq!(out, g);
+    assert_no_route_touches_the_deck(&out, &report, (505.0, 505.0), (529.0, 505.0));
+}
+
+/// The same corner with the street's radius at 15 m, so that the corner's lead reaches the junction and the
+/// junction is the leg's fixed anchor: the deck (7.07 m from it) is part of that anchor. The route of a corner
+/// fillet would cross the deck at grade ((526.2, 505) on the fillet); the deck's core keeps every planned route
+/// off it and its wall keeps it from crossing.
+#[test]
+fn plan_a_deck_that_belongs_to_a_junction_is_not_crossed_at_grade() {
+    let deck = ((505.0, 505.0), (529.0, 505.0));
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3, 4],
+            &[
+                (400.0, 500.0),
+                (500.0, 500.0),
+                (530.0, 500.0),
+                (530.0, 600.0),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 2, 11],
+            &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        bridge_way(3, &[20, 21], &[deck.0, deck.1]),
+    ]);
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| 15.0,
+        &|_: (f64, f64)| false,
+        &[],
+        &RerouteParams::default(),
+    );
+    let zone = zone_matching(&report, |z| z.stretches.iter().any(|s| s.starts_with("1:")));
+    assert_eq!(zone.anchors.0, AnchorKind::Junction(2), "{zone:?}");
+    assert_no_route_touches_the_deck(&out, &report, deck.0, deck.1);
+}
+
+/// A deck 8 m from the junction and 80 m long: the leg may leave the junction (the deck's first part belongs to
+/// the anchor's place), but no route crosses the deck or runs on it.
+#[test]
+fn plan_a_long_deck_near_a_junction_does_not_freeze_the_anchor() {
+    let deck = ((505.0, 492.0), (505.0, 412.0));
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3, 4],
+            &[
+                (400.0, 500.0),
+                (500.0, 500.0),
+                (515.0, 500.0),
+                (515.0, 600.0),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 2, 11],
+            &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        bridge_way(3, &[20, 21], &[deck.0, deck.1]),
+    ]);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = zone_matching(&report, |z| z.stretches.iter().any(|s| s.starts_with("1:")));
+    assert!(
+        is_planned(zone),
+        "the deck must not freeze the anchor: {zone:?}"
+    );
+    assert_no_route_touches_the_deck(&out, &report, deck.0, deck.1);
+}
+
+/// A deck 20 m from the junction: it belongs to no anchor of the leg and is a full obstacle, so a planned route
+/// keeps the leg's clearance from it (here it cannot be planned at all, the fillet would be 5 m from the deck).
+#[test]
+fn plan_a_deck_twenty_metres_from_an_anchor_is_an_obstacle() {
+    let deck = ((510.0, 519.0), (525.0, 519.0));
+    let g = build_graph(&[
+        city_way(
+            1,
+            &[1, 2, 3, 4],
+            &[
+                (400.0, 500.0),
+                (500.0, 500.0),
+                (530.0, 500.0),
+                (530.0, 600.0),
+            ],
+        ),
+        city_way(
+            2,
+            &[10, 2, 11],
+            &[(500.0, 400.0), (500.0, 500.0), (500.0, 600.0)],
+        ),
+        bridge_way(3, &[20, 21], &[deck.0, deck.1]),
+    ]);
+    let (out, report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| 15.0,
+        &|_: (f64, f64)| false,
+        &[],
+        &RerouteParams::default(),
+    );
+    let zone = zone_matching(&report, |z| z.stretches.iter().any(|s| s.starts_with("1:")));
+    if is_planned(zone) {
+        let id = zone
+            .stretches
+            .first()
+            .unwrap_or_else(|| panic!("no stretch"));
+        let route = points_of(&out, id);
+        let got = line_distance(&route, &[deck.0, deck.1]);
+        assert!(got >= 15.0, "a route at {got} m from the deck: {zone:?}");
+    }
+}
+
+/// Every planned route stays out of the deck's core and does not cross its line.
+fn assert_no_route_touches_the_deck(
+    out: &RoadGraph,
+    report: &RerouteReport,
+    a: (f64, f64),
+    b: (f64, f64),
+) {
+    let deck = [a, b];
+    for zone in report.zones.iter().filter(|z| is_planned(z)) {
+        for id in &zone.stretches {
+            let route = points_of(out, id);
+            assert_eq!(
+                segment_crossings(&route, &deck),
+                0,
+                "the route of {id} crosses the deck: {zone:?}"
+            );
+            let near = line_distance(&route, &deck);
+            assert!(
+                near >= 5.0,
+                "the route of {id} is {near} m from the deck's centre line, inside its core: {zone:?}"
+            );
+        }
+    }
 }

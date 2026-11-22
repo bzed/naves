@@ -271,11 +271,20 @@ cells.
   compared by their true distance. A route is thereby asked to keep apart what the original line kept apart, as the
   per-place exemption does for other roads. The spike had no self-clearance at all: the own chain outside the leg touches
   the leg at its anchors, so its per-road exemption always exempted it.
-- **Bridge decks and tunnels:** stamped like other roads and never exempt, except a deck or tunnel within
-  `PLAN_DECK_ANCHOR_M` (12 m) of a fixed anchor (junction, dead end, held part), which is part of that anchor and is
-  exempt per place. Reason: the clean-up puts a junction 8 m from a bridge end, so the deck stamped its own anchor;
-  about 75 of the 170 legs whose original line failed the test in the spike's first run were this. A leg whose
-  original line passes over or under a deck or a tunnel elsewhere is not planned (`held`, detail `crosses_deck`).
+- **Bridge decks and tunnels:** stamped like other roads and never exempt, with one exception that is gated and
+  measured along the deck. A deck or tunnel belongs to a fixed anchor (junction, dead end, held part) only when it
+  itself comes within `PLAN_DECK_ANCHOR_M` (12 m) of it; a deck 12 to 44 m away is a full obstacle. Of a qualifying
+  one, the part within `PLAN_DECK_ANCHOR_M + reach + the leg's road threshold` **along the deck or tunnel** from its
+  point nearest the anchor is not stamped (its earthwork and the leg's clearance could reach the anchor); everything
+  further is stamped in full. The exempt part keeps a hard core: the deck's own width (half width each side of its
+  centre line) blocks its cells, so that a route never runs onto the deck; only the earthwork halo is freed. A fixed
+  anchor that lies inside that core (a junction at a bridge end) frees the core within the leg's own road reach of
+  it, or the anchor itself would be blocked. Every deck's or tunnel's centre line is a wall of kind
+  `WallKind::Deck`, with the crossings of the drawn line (away from the leg's anchors) as its allowance; a route
+  crosses it no more often than the drawn road does. Reason: the clean-up puts a junction 8 m from a bridge end, so
+  the deck stamped its own anchor; about 75 of the 170 legs whose original line failed the test in the spike's first
+  run were this. A leg whose original line passes over or under a deck or a tunnel elsewhere is not planned (`held`,
+  detail `crosses_deck`).
 - **Map edge:** cells outside the map, and cells within `core_reach_m(own half width)` of the edge, are obstacle
   cells. The edge has no clearance on top of that (it is not in the road distance map). If the leg's original line
   already lies within that margin (a road that runs to the edge), only the cells outside the map are obstacles. A
@@ -497,7 +506,8 @@ wall time.
   An arrival candidate also needs `arrives`.
 - A popped arrival candidate is built on the fine points and checked from scratch: the points, the start and the end, the
   radius on a 2 m resample, every segment, the stray cap, **every wall** (the crossings equal what the original line
-  made, wall by wall: a sum would let a route that crosses one wall twice and another not at all pass), the
+  made, wall by wall: a sum would let a route that crosses one wall twice and another not at all pass; a deck's or a
+  tunnel's wall allows no more than the original line made), the
   self-clearance over all pairs of the route's samples, and `arrive` at the limit the route was found at. A route that
   fails is dropped, the next Dubins path of its state is tried, and nothing is reported for it. The reported cut,
   fill and earthwork are the profile's, the planned grade is the net rise of the terrain between the anchors over the
@@ -613,15 +623,21 @@ them.
   move). `skipped` is only what was not planned at all (a tunnel chain, a roundabout, a zone longer than
   `PLAN_MAX_ZONE_M`, a zone whose tight run is held, a chain that is not finite or too long); a zone that was
   searched and kept its line is in `kept_zones` with its detail, and `reverted` counts the cross-check's routes.
-- **A deck near a fixed anchor is exempt per place, and the rest of it is an obstacle.** The exempt part is the
-  deck within `PLAN_DECK_ANCHOR_M` of the fixed anchor together with the part whose earthwork and clearance could
-  reach that place (`reach + threshold(clearance)` along the deck, the same measure `PLAN_SELF_FREE` uses for the
-  own road, about 44 m in all for City); everything further along the deck is stamped like another road. Without
-  the second part the anchor's own neighbourhood would be stamped (a deck that begins 8 m from a junction stamps
-  cells 1 m from it, far inside the 21 m the segment test keeps), and the spec's own case of a junction 8 m from a
-  bridge end could not be planned at all. A crossing of the drawn line with the deck farther than
-  `PLAN_CROSSING_END_M` from the leg's anchors and farther than `PLAN_DECK_ANCHOR_M` from every fixed anchor is
-  `crosses_deck` (review M8).
+- **A deck near a fixed anchor is exempt per place, along the deck, and keeps its core and its wall.** The gate:
+  only a deck that comes within `PLAN_DECK_ANCHOR_M` of a fixed anchor of the leg qualifies at all (a deck 12 to
+  44 m away is a full obstacle, as before Task 7). Of a qualifying deck, the exempt part is measured **along** it,
+  from its point nearest the anchor, up to `PLAN_DECK_ANCHOR_M + reach + threshold(clearance)` (about 49 m for
+  City, the `PLAN_SELF_FREE` measure for the own road); everything beyond is stamped in full. Inside the exempt
+  part the deck's own width stays stamped as a hard core (half width each side of its centre line, `F_CORE` cells
+  that block themselves and are not in the road distance map), so only the earthwork halo is freed and no route
+  runs onto the deck; if the anchor itself lies inside the core (a junction at a bridge end), the core is freed
+  within the leg's own road reach of the anchor. Every deck's or tunnel's centre line is a wall whose allowance is
+  the drawn line's crossings away from the leg's anchors; the route may cross it no more often (`Wall::is_kept`).
+  Without the along-deck part the anchor's own neighbourhood would be stamped (a deck that begins 8 m from a
+  junction stamps cells 1 m from it, far inside the 21 m the segment test keeps), and the spec's own case of a
+  junction 8 m from a bridge end could not be planned at all. A crossing of the drawn line with the deck farther
+  than `PLAN_CROSSING_END_M` from the leg's anchors and farther than `PLAN_DECK_ANCHOR_M` from every fixed anchor
+  is `crosses_deck` (review M8).
 - **A bridge hold's bridge end** is the nearest bridge end within the hold on the anchor's side (plus one sample),
   not only the one that lies exactly at `bridge_end + hold`: the leg starts at the first sample outside the hold,
   which is up to 2 m further (review N2').

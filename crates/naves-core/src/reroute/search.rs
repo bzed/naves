@@ -1460,11 +1460,11 @@ fn search_at(
 /// The checks from scratch of a route that a search returned, for the caller that accepts it: the points finite and
 /// at the two anchors (within 10⁻⁶ m), the tightest three-point radius on a 2 m resample (no smaller than
 /// `min_radius_m`, the caller's `PLAN_REACHED_FRACTION` of the family's tightest arc), every segment against the
-/// obstacles, the
-/// stray cap (the raster's stored measure, or the true one below two cells, as [`LegInput::stray_cap_m`] says), the
-/// crossings of every wall (each must equal what the drawn line made), the self-clearance over all pairs of its
-/// samples more than [`LegInput::self_along_m`] apart, and the two-pass profile at the grade of `band` (the band the
-/// route was found at). A route that fails is a bug: the leg keeps its line with detail `check_failed`.
+/// obstacles, the stray cap (the raster's stored measure, or the true one below two cells, as
+/// [`LegInput::stray_cap_m`] says), every wall ([`Wall::is_kept`]: a road or a stream exactly as often as the
+/// drawn line, a deck or a tunnel no more often), the self-clearance over all pairs of its samples more than
+/// [`LegInput::self_along_m`] apart, and the two-pass profile at the grade of `band` (the band the route was
+/// found at). A route that fails is a bug: the leg keeps its line with detail `check_failed`.
 #[must_use]
 pub fn check_route(
     input: &LegInput<'_>,
@@ -1503,7 +1503,7 @@ pub fn check_route(
         || points
             .iter()
             .any(|p| !leg.within_cap(*p, input.obstacles.stray_m(*p)))
-        || input.walls.iter().any(|w| w.crossings(points) != w.allowed)
+        || input.walls.iter().any(|w| !w.is_kept(points))
     {
         return false;
     }

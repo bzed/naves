@@ -20,6 +20,9 @@ const F_WATER: u8 = 1;
 const F_ROAD: u8 = 2;
 const F_EDGE: u8 = 4;
 const F_ORIG: u8 = 8;
+/// A deck's or tunnel's own cells: they block the cells themselves, but they do not enter the road distance
+/// map, so the earthwork halo around them is free.
+const F_CORE: u8 = 16;
 
 /// The saturated distance value (6553.5 m, in decimetres).
 const FAR: u16 = u16::MAX;
@@ -407,6 +410,20 @@ impl Obstacles {
     /// exempt). Cells are kept by their distance to the segments of the line, so a corner whose vertex is not a
     /// sample keeps its tip.
     pub fn stamp_road(&mut self, line: &[(f64, f64)], reach_m: f64, exempt: &[bool]) {
+        self.stamp_with(line, reach_m, exempt, F_ROAD);
+    }
+
+    /// Stamps a deck's or tunnel's hard core: every cell within `reach_m` of its centre line, and every cell the
+    /// line touches, as [`stamp_road`](Self::stamp_road) does. The core blocks the cells themselves and does not
+    /// enter the road distance map: a route may come near a deck's earthwork where that is exempt, but it cannot
+    /// run onto the deck. `exempt` works as for [`stamp_road`](Self::stamp_road).
+    pub fn stamp_core(&mut self, line: &[(f64, f64)], reach_m: f64, exempt: &[bool]) {
+        self.stamp_with(line, reach_m, exempt, F_CORE);
+    }
+
+    /// Stamps `flag` on every cell within `reach_m` of `line` and on every cell the line touches, leaving out the
+    /// pieces whose samples are exempt.
+    fn stamp_with(&mut self, line: &[(f64, f64)], reach_m: f64, exempt: &[bool], flag: u8) {
         let samples = samples_with_arc(line);
         let reach = if reach_m.is_finite() {
             reach_m.max(0.0)
@@ -416,7 +433,7 @@ impl Obstacles {
         let skip = |k: usize| exempt.get(k).copied().unwrap_or(false);
         if let [(only, _)] = samples.as_slice() {
             if !skip(0) {
-                self.stamp_segment(*only, *only, reach);
+                self.stamp_segment(*only, *only, reach, flag);
             }
             return;
         }
@@ -432,16 +449,16 @@ impl Obstacles {
             let mut from = *a;
             for &(v, sv) in &vertices {
                 if sv > *sa && sv < *sb {
-                    self.stamp_segment(from, v, reach);
+                    self.stamp_segment(from, v, reach, flag);
                     from = v;
                 }
             }
-            self.stamp_segment(from, *b, reach);
+            self.stamp_segment(from, *b, reach, flag);
         }
     }
 
     /// Marks the cells whose centre is within `reach` of the segment, and the cells the segment touches.
-    fn stamp_segment(&mut self, a: (f64, f64), b: (f64, f64), reach: f64) {
+    fn stamp_segment(&mut self, a: (f64, f64), b: (f64, f64), reach: f64, flag: u8) {
         if !finite(a) || !finite(b) {
             return;
         }
@@ -467,12 +484,12 @@ impl Obstacles {
                 if seg_dist(self.centre(col, row), a, b) <= reach
                     && let Some(f) = self.flags.get_mut(row * self.cols + col)
                 {
-                    *f |= F_ROAD;
+                    *f |= flag;
                 }
             }
         }
         // a reach smaller than a cell still marks the cells the line touches
-        self.mark_segment(a, b, F_ROAD);
+        self.mark_segment(a, b, flag);
     }
 
     /// Marks the cells the leg's original line touches, for the stray distance.
@@ -557,6 +574,9 @@ impl Obstacles {
         let flags = self.flags.get(i).copied().unwrap_or(F_EDGE);
         if flags & F_EDGE != 0 {
             return Some(Blocked::Edge);
+        }
+        if flags & F_CORE != 0 {
+            return Some(Blocked::Road);
         }
         if flags & F_ROAD != 0 {
             return Some(Blocked::Road);
@@ -717,7 +737,7 @@ fn seg_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
 }
 
-fn poly_dist(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
+pub(crate) fn poly_dist(p: (f64, f64), line: &[(f64, f64)]) -> f64 {
     match line {
         [] => f64::INFINITY,
         [only] => (p.0 - only.0).hypot(p.1 - only.1),
@@ -873,6 +893,8 @@ pub enum WallKind {
     Road,
     /// A stream.
     Stream,
+    /// The centre line of a bridge deck or a tunnel.
+    Deck,
 }
 
 /// A line the route may cross only as often as the original line did.
@@ -910,6 +932,17 @@ impl Wall {
     #[must_use]
     pub fn crossings(&self, route: &[(f64, f64)]) -> usize {
         crossings_away(route, &self.line, self.anchors, self.end_m)
+    }
+
+    /// Whether `route` keeps the wall: it crosses a road or a stream exactly as often as the drawn line did, and a
+    /// deck or a tunnel no more often (a route that never drives onto the bridge is fine).
+    #[must_use]
+    pub fn is_kept(&self, route: &[(f64, f64)]) -> bool {
+        let n = self.crossings(route);
+        match self.kind {
+            WallKind::Deck => n <= self.allowed,
+            WallKind::Road | WallKind::Stream => n == self.allowed,
+        }
     }
 }
 

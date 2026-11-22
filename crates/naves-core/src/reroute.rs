@@ -22,7 +22,7 @@ use crate::reroute::band::{Band, arrive, drawn_grade, ground_at, leg_limit, rela
 use crate::reroute::field::Field;
 use crate::reroute::raster::{
     CROSS_EPS, Clearance, Obstacles, Wall, WallKind, crossings_away, crossings_where,
-    exempt_samples, samples_with_arc,
+    exempt_samples, poly_dist, samples_with_arc,
 };
 use crate::reroute::search::{
     LegInput, LegOutcome, Route, Weights, check_route, search_leg, search_leg_relaxed,
@@ -1652,16 +1652,58 @@ impl LegSetup<'_> {
                 }
                 let reach_other = core_reach_m(s.family.width_m() / 2.0, cell);
                 if s.bridge || s.tunnel {
-                    // A deck or tunnel is never exempt, except the part that belongs to a fixed anchor: the part
-                    // within PLAN_DECK_ANCHOR_M of it, and the part whose earthwork and clearance could reach that
-                    // place (the reach and the clearance threshold along the deck, as PLAN_SELF_FREE does for the
-                    // own road). Everything further along the deck stays an obstacle.
+                    // A deck or tunnel belongs to a fixed anchor only when it itself comes within
+                    // PLAN_DECK_ANCHOR_M of it. Of such a deck the part that belongs to that place is not an
+                    // obstacle, measured along the deck from its point nearest the anchor, as far as that place's
+                    // earthwork and this leg's clearance could reach it (PLAN_SELF_FREE's measure for the own
+                    // road). Everything further along the deck is stamped like another road.
+                    let half = s.family.width_m() / 2.0;
+                    let samples = samples_with_arc(&s.points);
                     let owned = params.deck_anchor_m + reach_other + obstacles.threshold(clearance);
-                    let flags: Vec<bool> = samples_with_arc(&s.points)
+                    // the arc of the sample nearest each fixed anchor that is within the gate
+                    let starts: Vec<f64> = self
+                        .fixed
                         .iter()
-                        .map(|&(p, _)| self.fixed.iter().any(|&a| dist(a, p) <= owned))
+                        .filter_map(|&a| {
+                            samples
+                                .iter()
+                                .map(|&(p, arc)| (dist(a, p), arc))
+                                .min_by(|x, y| x.0.total_cmp(&y.0))
+                                .filter(|&(d, _)| d <= params.deck_anchor_m)
+                                .map(|(_, arc)| arc)
+                        })
                         .collect();
-                    obstacles.stamp_road(&s.points, reach_other, &flags);
+                    if starts.is_empty() {
+                        obstacles.stamp_road(&s.points, reach_other, &[]);
+                    } else {
+                        let part: Vec<bool> = samples
+                            .iter()
+                            .map(|&(_, arc)| starts.iter().any(|&s0| (arc - s0).abs() <= owned))
+                            .collect();
+                        // The deck's own width stays stamped, so that no route runs on the deck; only the
+                        // earthwork halo is freed. A fixed anchor that lies inside the core (a junction at a
+                        // bridge end) frees it within the leg's own reach, or the anchor itself would be blocked.
+                        let inside: Vec<(f64, f64)> = self
+                            .fixed
+                            .iter()
+                            .copied()
+                            .filter(|&a| poly_dist(a, &s.points) <= half)
+                            .collect();
+                        let core: Vec<bool> = samples
+                            .iter()
+                            .map(|&(p, _)| inside.iter().any(|&a| dist(a, p) <= self.reach))
+                            .collect();
+                        obstacles.stamp_core(&s.points, half, &core);
+                        obstacles.stamp_road(&s.points, reach_other, &part);
+                    }
+                    // The deck's centre line is a wall: a route crosses it no more often than the drawn line did.
+                    walls.push(Wall {
+                        line: s.points.clone(),
+                        allowed: crossings_away(orig, &s.points, anchors, end_m),
+                        kind: WallKind::Deck,
+                        anchors,
+                        end_m,
+                    });
                     if deck_crossings(
                         orig,
                         &s.points,
@@ -2008,10 +2050,12 @@ struct AcceptedRoute {
 }
 
 /// Whether the two legs' drawn lines were already within `near_m` of each other at the place of the two route
-/// points `p` (of the later route) and `q` (the nearest point of the accepted route): there is a sample of one drawn
-/// line within `near_m` of `p` and a sample of the other within `near_m` of `q` that are themselves nearer than
-/// `near_m`. This is the per-place exemption of the cross-check: only where the drawn lines already ran that close
-/// may the route come that close.
+/// points `p` (of the later route) and `q` (the nearest point of the accepted route): the drawn point of the later
+/// leg nearest to `p` and the drawn point of the accepted leg nearest to `q` are themselves nearer than `near_m`.
+/// This is the per-place exemption of the cross-check: only where the drawn lines already ran that close at that
+/// place may the route come that close. A disc of `near_m` around the route points is not enough for "the place":
+/// it would exempt a conflict 24 m away from a place where the drawn lines came 20 m near each other, although the
+/// drawn lines at the conflict itself run 32 m apart.
 fn drawn_was_near(
     orig: &[(f64, f64)],
     other_orig: &[(f64, f64)],
@@ -2019,18 +2063,10 @@ fn drawn_was_near(
     q: (f64, f64),
     near_m: f64,
 ) -> bool {
-    let here: Vec<(f64, f64)> = orig
-        .iter()
-        .copied()
-        .filter(|o| dist(*o, p) <= near_m)
-        .collect();
-    let there: Vec<(f64, f64)> = other_orig
-        .iter()
-        .copied()
-        .filter(|o| dist(*o, q) <= near_m)
-        .collect();
-    here.iter()
-        .any(|a| there.iter().any(|b| dist(*a, *b) < near_m))
+    match (nearest_point(p, orig), nearest_point(q, other_orig)) {
+        (Some((a, _)), Some((b, _))) => dist(a, b) < near_m,
+        _ => false,
+    }
 }
 
 /// The point of `line` nearest to `p`, and its distance.
@@ -2042,7 +2078,8 @@ fn nearest_point(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)
 
 /// The routes against each other, in zone order, place by place: a point of a later route that comes within the road
 /// clearance threshold of a route accepted before it, where the two drawn lines were not already that near at that
-/// place, reverts the later route; its leg keeps its line with reason [`KeptReason::BlockedByRoad`] and detail
+/// place (the drawn points nearest to the two route points, [`drawn_was_near`]), reverts the later route; its leg
+/// keeps its line with reason [`KeptReason::BlockedByRoad`] and detail
 /// `route_of <zone id>`. The threshold is the true distance at which the two roads' earthwork touches: the earlier
 /// route's reach plus this leg's clearance (its own reach and one terrain cell), about 26 m for two City stretches.
 /// Two zones that meet at a junction share the junction, where their drawn lines touch: only the places near it are
@@ -2643,6 +2680,29 @@ mod tests {
             (60.0, 50.0),
             near
         ));
+        // the reviewer's trap: the two route points are 23 m apart and the drawn points nearest to them are
+        // 32 m apart at the conflict itself, but the drawn lines come 20 m near each other 24 m below both.
+        let a_drawn = dense(&[(0.0, 0.0), (0.0, 60.0)]);
+        let b_jog = dense(&[
+            (32.0, 0.0),
+            (32.0, 20.0),
+            (20.0, 22.0),
+            (32.0, 30.0),
+            (32.0, 60.0),
+        ]);
+        // the disc rule of fix round 1 exempted this: a drawn point within the threshold of each route point,
+        // 20 m apart
+        assert!(
+            b_jog
+                .iter()
+                .any(|&p| dist(p, (27.5, 46.0)) <= near && dist(p, (0.0, 22.0)) < near),
+            "the jog is the place the disc rule exempted"
+        );
+        // the nearest drawn points are 32 m apart, so this is not exempt
+        assert!(
+            !drawn_was_near(&a_drawn, &b_jog, (4.5, 46.0), (27.5, 46.0), near),
+            "the drawn points at the conflict are 32 m apart"
+        );
     }
 
     #[test]
