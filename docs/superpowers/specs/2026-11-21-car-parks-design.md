@@ -212,16 +212,20 @@ ones:
   stretch inside by the rule above: the whole access road goes and the lot has no cut access road. Its street node
   counts as the lot's connection (it is near the group), and the lot has no entry junction.
 - **Through roads.** A node inside where two or more stretches are left is not a dead end; the roads there stay.
-- **Every access road stays.** The step removes only stretches wholly inside, and the stub step of the clean-up is
-  told the entry nodes: a dead end at an entry is not a stub. The entry nodes are every node the step leaves with
-  exactly one stretch, cut or not (a short access road ending at a junction that went, or on the outline, is not cut,
-  and must not be taken for a stub either), and the new ends of the cut roads. This matters most for a surface-only
-  lot (`no_vertex`): its access road ends at the edge of ground that was not shaped, as a plain dead end with no height
-  tie, and without the protection a short access piece would be dropped as a stub and the lot would lose its access.
+- **The clean-up keeps every access road.** The step removes only stretches wholly inside, and the stub step of the
+  clean-up is told the entry nodes: a dead end at an entry is not a stub. The entry nodes are every node the step
+  leaves with exactly one stretch, cut or not (a short access road ending at a junction that went, or on the outline,
+  is not cut, and must not be taken for a stub either), and the new ends of the cut roads. This matters most for a
+  surface-only lot (`no_vertex`): its access road ends at the edge of ground that was not shaped, as a plain dead end
+  with no height tie, and without the protection a short access piece would be dropped as a stub and the lot would
+  lose its access. What the clean-up keeps, the placement can still drop: where the part the cut left is shorter than
+  half a road piece is wide, or ends under other roads, it is not placed, and the lot loses that access road. That is
+  a lost entry, counted (`lot_entries_lost`, `entries_lost`, `1 entry lost` in the build's line) and reported; it is
+  not prevented.
 - **Connections.** A group counts as one node for the connectivity check (a vehicle drives across a lot). The removal
   may not split a component counted this way; if it would (by construction it should not), nothing changes for that
   group and it is reported (`would_split`).
-- **Reported:** each removed stretch and each cut access road.
+- **Reported:** each removed stretch, each cut access road and each access road the placement dropped (a lost entry).
 
 ### The surface
 
