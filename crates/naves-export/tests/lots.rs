@@ -434,6 +434,18 @@ fn dem() -> Vec<u8> {
 /// A project of 1000 m with a car park around the middle, a service road that ends 100 m inside it (without
 /// `with_road`, no road at all) and, with `with_lot`, the car park's area in the extract.
 fn project(proj: &Path, with_lot: bool, with_road: bool, broken_lot: bool) -> Project {
+    project_with(proj, with_lot, with_road, broken_lot, &[], &[])
+}
+
+/// [`project`], with extra nodes and ways in the extract (a test's own roads).
+fn project_with(
+    proj: &Path,
+    with_lot: bool,
+    with_road: bool,
+    broken_lot: bool,
+    extra_nodes: &[(i64, f64, f64)],
+    extra_ways: &[(i64, Vec<i64>, Vec<(&str, &str)>)],
+) -> Project {
     std::fs::create_dir_all(proj.join("dem")).unwrap();
     std::fs::create_dir_all(proj.join("osm")).unwrap();
     std::fs::write(proj.join("dem/hollow.tif"), dem()).unwrap();
@@ -467,6 +479,8 @@ fn project(proj: &Path, with_lot: bool, with_road: bool, broken_lot: bool) -> Pr
         nodes.push((121, lat_of(900.0), lon_of(120.0)));
         ways.push((101, vec![120, 121, 120], vec![("amenity", "parking")]));
     }
+    nodes.extend_from_slice(extra_nodes);
+    ways.extend(extra_ways.iter().cloned());
     std::fs::write(proj.join("osm/lot.osm.pbf"), pbf(&nodes, &ways)).unwrap();
     let mut p = Project::new("Test", CENTRE.0, CENTRE.1, MAP_M);
     p.scale.horizontal = 1.0;
@@ -655,6 +669,62 @@ fn the_report_says_what_the_lot_stage_did() {
     assert!(
         line.starts_with("Lots: 1 (1 car park), 1 smoothed"),
         "{line}"
+    );
+}
+
+#[test]
+fn an_access_road_the_placement_drops_is_a_lost_entry_in_the_build() {
+    // a service road leaves the lot's west edge from a T on a tertiary road that runs 2 m outside it: the cut keeps
+    // 6 m, and the placement drops those, because what is left after the T's trim is shorter than half a piece is
+    // wide. The lot loses this access road, and the build says so.
+    let (_dir, env, proj) = setup();
+    let nodes = [
+        (60, lat_of(300.0), lon_of(298.0)),
+        (61, lat_of(700.0), lon_of(298.0)),
+        (62, lat_of(500.0), lon_of(298.0)),
+        (63, lat_of(500.0), lon_of(340.0)),
+    ];
+    let ways = [
+        (11, vec![60, 62, 61], vec![("highway", "tertiary")]),
+        (12, vec![62, 63], vec![("highway", "service")]),
+    ];
+    project_with(&proj, true, false, false, &nodes, &ways);
+    let out = build_with(&proj, &env.tools(), stages(true), &quiet).unwrap();
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.join("build/report.json")).unwrap())
+            .unwrap();
+    let lots = &report["roads"]["lots"];
+    assert_eq!(lots["smoothed"], 1);
+    // the cut happened, and it is the access road it left the placement dropped
+    assert_eq!(lots["access_cut"], 1);
+    assert!(
+        out.warnings
+            .iter()
+            .any(|warning| warning.contains("shorter than half its width and not placed")),
+        "{:?}",
+        out.warnings
+    );
+    // so the entry is lost and counted
+    assert_eq!(lots["entries_lost"], 1);
+    // the summary line the build prints names it
+    let line = out.lots.as_deref().expect("a lot summary");
+    assert!(line.contains(", 1 access road cut, 1 entry lost"), "{line}");
+    // and the finding says which access road went: one for the cut, one for the loss
+    let dropped: Vec<&str> = report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|violation| violation["rule"] == Rule::RoadInLotDropped.id())
+        .map(|violation| violation["message"].as_str().unwrap())
+        .collect();
+    let lost: Vec<&&str> = dropped
+        .iter()
+        .filter(|message| message.ends_with("is lost: the part the cut left is not placed"))
+        .collect();
+    assert_eq!(lost.len(), 1, "{dropped:?}");
+    assert!(
+        lost[0].starts_with("The access road 12:62-63 of lot osm/way/100 "),
+        "{dropped:?}"
     );
 }
 
