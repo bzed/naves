@@ -87,6 +87,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The `LOT_ENTRY` figure of the `road-analysis` example measures the step where the game shows it: the height of the
+  joint the lot entry holds (the end of the access road, on its cap's end) against the lot's surface at that same
+  joint, not against the surface at the entry junction 4 to 6 m away. On the example the figures fall from up to
+  3.28 m to at most 0.10 m, which is the step that is really there.
 - A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
   starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
   and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`

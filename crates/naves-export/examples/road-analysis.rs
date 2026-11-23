@@ -50,7 +50,9 @@ use naves_core::lot::{
 };
 use naves_core::netclean::{CleanReport, CutAccess};
 use naves_core::osm::read_ways;
-use naves_core::profile::{RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles};
+use naves_core::profile::{
+    HoldRule, RoadStrip, chain_holds, chain_holds_unchecked, solve_profiles,
+};
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
 use naves_core::roadplace::PlacedKind;
@@ -7611,8 +7613,39 @@ fn lot_near_lines(
         .collect()
 }
 
-/// The step at a cut access road's entry: the height of the road's profile joint nearest the entry junction
-/// against the lot's target there.
+/// The height of the road's profile at `at`, interpolated between the two joints of the segment it lies on, over
+/// the strips that own one of the roads for which `owns` is true.
+fn profile_height_at(
+    profiles: &naves_core::profile::Profiles,
+    owns: &dyn Fn(usize) -> bool,
+    at: (f64, f64),
+) -> Option<f64> {
+    let mut best: Option<(f64, f64)> = None;
+    for strip in &profiles.strips {
+        if !strip.slots.iter().any(|&road| owns(road)) {
+            continue;
+        }
+        for pair in strip.joints.windows(2) {
+            let [from, to] = pair else { continue };
+            let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+            let length2 = dx * dx + dy * dy;
+            let t = if length2 > 0.0 {
+                (((at.0 - from.0) * dx + (at.1 - from.1) * dy) / length2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let distance = (at.0 - from.0 - t * dx).hypot(at.1 - from.1 - t * dy);
+            if best.is_none_or(|(_, nearest)| distance < nearest) {
+                best = Some((from.2 + t * (to.2 - from.2), distance));
+            }
+        }
+    }
+    best.map(|(height, _)| height)
+}
+
+/// The step at a cut access road's entry: the road's height at the end joint the entry junction holds (the joint
+/// the `End` rule puts on the junction) against the lot's target at that same joint. Where the chain holds no end
+/// to the junction, the road's profile is interpolated at the junction's position and compared there.
 fn entry_step(
     net: &naves_core::roadplace::PlacedNetwork,
     profiles: &naves_core::profile::Profiles,
@@ -7625,35 +7658,35 @@ fn entry_step(
         .surfaces
         .iter()
         .find(|surface| surface.members.contains(&entry.lot))?;
-    let at = junctions
-        .points
-        .iter()
-        .find(|junction| {
-            junction.kind == naves_core::junctions::JunctionKind::LotEntry
-                && junction.stretches.contains(&entry.stretch)
-        })
-        .map(|junction| junction.at)?;
+    let (index, junction) = junctions.points.iter().enumerate().find(|(_, junction)| {
+        junction.kind == naves_core::junctions::JunctionKind::LotEntry
+            && junction.stretches.contains(&entry.stretch)
+    })?;
     let owns = |road: usize| {
         net.roads
             .get(road)
             .is_some_and(|road| road.slot.stretch.split('|').any(|p| p == entry.stretch))
     };
-    let mut best: Option<(f64, f64)> = None;
-    for strip in &profiles.strips {
-        if !strip.slots.iter().any(|&road| owns(road)) {
-            continue;
-        }
-        for joint in [strip.joints.first(), strip.joints.last()]
-            .into_iter()
-            .flatten()
-        {
-            let distance = (joint.0 - at.0).hypot(joint.1 - at.1);
-            if best.is_none_or(|(_, nearest)| distance < nearest) {
-                best = Some((joint.2, distance));
-            }
-        }
-    }
-    let (height, _) = best?;
+    // the joint the entry junction holds as the end of the road: the road's end that reaches into the lot
+    let held = net
+        .chains
+        .iter()
+        .filter(|chain| chain.iter().any(|&road| owns(road)))
+        .find_map(|chain| {
+            chain_holds(net, chain, f64::from(base.cell_m), junctions)
+                .into_iter()
+                .find_map(|(_, hold)| {
+                    hold.filter(|hold| hold.rule == HoldRule::End && hold.junction == index)
+                })
+        });
+    let (at, height) = match held {
+        Some(hold) => (hold.at, hold.height),
+        // no joint of the chain is held to the junction: the road's profile at the junction's position
+        None => (
+            junction.at,
+            profile_height_at(profiles, &owns, junction.at)?,
+        ),
+    };
     let ground = f64::from(base.sample(at.0, at.1).height);
     let target = surface.target(at, ground);
     (height.is_finite() && target.is_finite()).then(|| (height - target).abs())
@@ -7705,8 +7738,11 @@ fn through_gap(
 mod tests {
     //! The lines the example prints about the lots: the formatting, not the run on a map.
     use super::*;
+    use naves_core::junctions::{Junction, JunctionKind};
     use naves_core::lot::{Assessed, Form, LotSurface, NO_GROUP, Placement, Surface};
     use naves_core::netclean::{CutAccess, DroppedInLot};
+    use naves_core::roadfit::Pose;
+    use naves_core::roadplace::{PlacedNetwork, PlacedRoad, Slot};
     use naves_core::surface::SurfaceClass;
     use naves_core::validate::Violation;
 
@@ -7900,6 +7936,213 @@ mod tests {
         assert_eq!(lot_entry_line("1:1-2", 0.0), "LOT_ENTRY 1:1-2 0.00");
         assert_eq!(lot_entry_line("1:1-2", 0.284), "LOT_ENTRY 1:1-2 0.28");
         assert_eq!(lot_through_line("2:2-3", 0.31), "LOT_THROUGH 2:2-3 0.31");
+    }
+
+    /// A City road of the `stretch` from `a` to `b`.
+    fn placed_road(
+        stretch: &str,
+        index: u32,
+        kind: PlacedKind,
+        a: (f64, f64),
+        b: (f64, f64),
+    ) -> PlacedRoad {
+        let heading = (b.0 - a.0).atan2(b.1 - a.1);
+        let pose = |p: (f64, f64)| Pose {
+            x: p.0,
+            y: p.1,
+            heading,
+        };
+        PlacedRoad {
+            slot: Slot {
+                stretch: stretch.to_string(),
+                index,
+            },
+            kind,
+            family: naves_core::catalog::Family::City,
+            drivable: true,
+            model: "m".to_string(),
+            origin: pose(a),
+            start: pose(a),
+            end: pose(b),
+            width: 6.0,
+            scale: 1.0,
+            abreast: 1,
+        }
+    }
+
+    fn network(roads: Vec<PlacedRoad>) -> PlacedNetwork {
+        let mut net = PlacedNetwork::default();
+        net.chains.push((0..roads.len()).collect());
+        net.roads = roads;
+        net
+    }
+
+    /// The strip of a road of `joints` (x, y, z), one segment per pair of joints, in road order.
+    fn profiles(joints: Vec<(f64, f64, f64)>) -> naves_core::profile::Profiles {
+        naves_core::profile::Profiles {
+            clearances: Vec::new(),
+            strips: vec![RoadStrip {
+                slots: (0..joints.len().saturating_sub(1)).collect(),
+                joints,
+                bridge: Vec::new(),
+                junction: Vec::new(),
+                side_slope: Vec::new(),
+                half_width: 3.0,
+                rank: 0,
+            }],
+            excesses: Vec::new(),
+        }
+    }
+
+    /// The entry of the stretch `s` into the lot `osm/way/1`, whose surface is the plane (or quadratic)
+    /// `coeffs` about `at`.
+    fn entry_with(
+        roads: Vec<PlacedRoad>,
+        joints: Vec<(f64, f64, f64)>,
+        at: (f64, f64),
+        coeffs: [f64; 6],
+        entry_at: (f64, f64),
+    ) -> (PlacedNetwork, naves_core::profile::Profiles, Junctions) {
+        let net = network(roads);
+        let profiles = profiles(joints);
+        let mut surface = surface(1.0);
+        surface.surface.at = at;
+        surface.surface.coeffs = coeffs;
+        // the terrain is flat at 100 m everywhere
+        let ground = 100.0;
+        let height = surface.target(entry_at, ground);
+        let (gx, gy) = surface.surface.gradient_at(entry_at);
+        let mut junctions = Junctions::default();
+        junctions.points.push(Junction {
+            at: entry_at,
+            kind: JunctionKind::LotEntry,
+            ground,
+            height,
+            rank: 0,
+            patch_m: 3.0,
+            stretches: std::iter::once("s".to_string()).collect(),
+            lower: std::collections::BTreeSet::new(),
+            gradient: (gx, gy),
+            tilt_axis: None,
+            tilt_cap: 0.0,
+        });
+        junctions.lots.push(surface);
+        (net, profiles, junctions)
+    }
+
+    /// The base of a flat terrain of 100 m, for the entries below.
+    fn flat_base() -> Heightmap {
+        Heightmap {
+            size: 64,
+            cell_m: 6.25,
+            h: vec![100.0; 64 * 64],
+        }
+    }
+
+    fn entry_report(coeffs: [f64; 6]) -> LotReport {
+        let mut lot_report = report(
+            vec![smoothed("osm/way/1", LotKind::CarPark, Form::Plane, 1.0)],
+            1.0,
+        );
+        lot_report.surfaces[0].surface.at = (0.0, 10.0);
+        lot_report.surfaces[0].surface.coeffs = coeffs;
+        lot_report
+    }
+
+    fn entry(stretch: &str) -> CutAccess {
+        CutAccess {
+            stretch: stretch.to_string(),
+            lot: "osm/way/1".to_string(),
+            cut_m: 4.0,
+            entry: (0.0, 10.0),
+            node: 7,
+        }
+    }
+
+    #[test]
+    fn the_entry_step_is_measured_at_the_end_joint_the_junction_holds() {
+        // the road descends from the entry junction at (0, 10) to the far end of its end cap at (0, 16.25), on a
+        // lot whose surface climbs 50 %: the old measure compared the cap's end with the target at the junction
+        // (3.125 m, the road's climb over the cap), not at the same point (0.000 m)
+        let roads = vec![
+            placed_road("s", 0, PlacedKind::Piece, (0.0, 0.0), (0.0, 10.0)),
+            placed_road("s", 1, PlacedKind::EndCap, (0.0, 10.0), (0.0, 16.25)),
+        ];
+        let joints = vec![(0.0, 0.0, 100.0), (0.0, 10.0, 105.0), (0.0, 16.25, 108.125)];
+        // the surface is the 50 % plane `105 + 0.5·(y − 10)`; with lambda 1 the target is the surface itself
+        let (net, profiles, junctions) = entry_with(
+            roads,
+            joints,
+            (0.0, 10.0),
+            [105.0, 0.0, 0.5, 0.0, 0.0, 0.0],
+            (0.0, 10.0),
+        );
+        let lot_report = entry_report([105.0, 0.0, 0.5, 0.0, 0.0, 0.0]);
+        let step = entry_step(
+            &net,
+            &profiles,
+            &junctions,
+            &flat_base(),
+            &lot_report,
+            &entry("s"),
+        )
+        .expect("an entry");
+        assert!(step.abs() < 1e-9, "{step}");
+    }
+
+    #[test]
+    fn the_entry_step_reports_the_residual_at_the_end_joint_not_the_climb() {
+        // the same road and lot, whose surface curves by `0.008·(y − 10)²`: the joint on the cap's end is held to
+        // the junction's plane (108.125 m), the lot's surface there is 108.4375 m, so the step is 0.3125 m, not the
+        // 3.125 m from the junction's target to the cap's end
+        let roads = vec![
+            placed_road("s", 0, PlacedKind::Piece, (0.0, 0.0), (0.0, 10.0)),
+            placed_road("s", 1, PlacedKind::EndCap, (0.0, 10.0), (0.0, 16.25)),
+        ];
+        let joints = vec![(0.0, 0.0, 100.0), (0.0, 10.0, 105.0), (0.0, 16.25, 108.125)];
+        let coeffs = [105.0, 0.0, 0.5, 0.0, 0.0, 0.008];
+        let (net, profiles, junctions) =
+            entry_with(roads, joints, (0.0, 10.0), coeffs, (0.0, 10.0));
+        let lot_report = entry_report(coeffs);
+        let step = entry_step(
+            &net,
+            &profiles,
+            &junctions,
+            &flat_base(),
+            &lot_report,
+            &entry("s"),
+        )
+        .expect("an entry");
+        assert!((step - 0.3125).abs() < 1e-9, "{step}");
+    }
+
+    #[test]
+    fn an_entry_no_joint_of_which_is_held_is_measured_at_the_junctions_position() {
+        // a 40 m road whose end joints are 20 m from the entry junction: no joint lies in the junction's patch and
+        // none is near enough for an end hold, so the profile is interpolated at the junction: 110 m there against
+        // the lot's target of 109 m
+        let roads = vec![placed_road(
+            "s",
+            0,
+            PlacedKind::Piece,
+            (0.0, 0.0),
+            (0.0, 40.0),
+        )];
+        let joints = vec![(0.0, 0.0, 100.0), (0.0, 40.0, 120.0)];
+        let coeffs = [104.0, 0.0, 0.5, 0.0, 0.0, 0.0];
+        let (net, profiles, junctions) =
+            entry_with(roads, joints, (0.0, 10.0), coeffs, (0.0, 20.0));
+        let lot_report = entry_report(coeffs);
+        let step = entry_step(
+            &net,
+            &profiles,
+            &junctions,
+            &flat_base(),
+            &lot_report,
+            &entry("s"),
+        )
+        .expect("an entry");
+        assert!((step - 1.0).abs() < 1e-9, "{step}");
     }
 
     #[test]
