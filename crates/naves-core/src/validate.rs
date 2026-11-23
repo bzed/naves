@@ -1233,6 +1233,17 @@ pub fn lot_violations(report: &LotReport, clean: &CleanReport) -> Vec<Violation>
             ),
         ));
     }
+    // an access road the placement dropped behind the cut: the lot has no entry there, and the road is not built
+    for entry in &clean.lot_access_unplaced {
+        out.push(violation(
+            Rule::RoadInLotDropped,
+            entry.entry,
+            format!(
+                "The access road {} of lot {} is lost: the part the cut left is not placed",
+                entry.stretch, entry.lot
+            ),
+        ));
+    }
     out
 }
 

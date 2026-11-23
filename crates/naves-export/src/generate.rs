@@ -536,6 +536,12 @@ pub fn plan_roads_with(
         (graph, placed, left, true)
     };
     placed.net.duplicates = duplicates;
+    // an access road the placement dropped behind its cut gets no entry junction either: count it as a lost entry
+    // and keep it for the finding (`road_in_lot_dropped`), as the clean-up does for an entry whose node went
+    let unplaced = naves_core::netclean::entries_without_road(&placed.net, &entries);
+    let mut clean = clean;
+    clean.lot_entries_lost += unplaced.len();
+    clean.lot_access_unplaced = unplaced;
     placed.net.clean = clean;
     placed.net.smooth = smooth;
     placed.net.lots = lot_report;

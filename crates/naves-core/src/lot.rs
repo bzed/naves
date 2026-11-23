@@ -671,9 +671,19 @@ impl LotReport {
             .count();
         let smoothed_grass = counts.smoothed - smoothed_paved;
         let metres: f64 = clean.lot_roads.iter().map(|dropped| dropped.length_m).sum();
+        // the access roads that got no entry at all (their node went in a later step, or the placement dropped
+        // what the cut left), which the line names so that a lot without an access road is not silent
+        let lost = if clean.lot_entries_lost == 0 {
+            String::new()
+        } else {
+            format!(
+                ", {} lost",
+                plural(clean.lot_entries_lost, "entry", "entries")
+            )
+        };
         format!(
             "Lots: {} ({}), {} smoothed ({} plane, {} quadratic; {} paved, {} grass; {} steep, {} move limited), \
-             {} surface only, {} excluded; {} ({metres:.0} m) removed, {} cut",
+             {} surface only, {} excluded; {} ({metres:.0} m) removed, {} cut{lost}",
             counts.total,
             kinds.join(", "),
             counts.smoothed,

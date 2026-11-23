@@ -87,6 +87,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- An access road whose remainder behind the lot cut the placement drops (shorter than half a road piece is wide, or
+  ending under other roads) is reported: the build counts it as a lost entry (`1 entry lost` in the lot line and
+  `entries_lost` in `roads.lots`) and `road_in_lot_dropped` names it, instead of the lot silently losing the access
+  road.
 - The `LOT_ENTRY` figure of the `road-analysis` example measures the step where the game shows it: the height of the
   joint the lot entry holds (the end of the access road, on its cap's end) against the lot's surface at that same
   joint, not against the surface at the entry junction 4 to 6 m away. On the example the figures fall from up to

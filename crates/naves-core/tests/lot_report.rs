@@ -186,6 +186,36 @@ fn the_summary_of_no_lot_says_none() {
 }
 
 #[test]
+fn an_access_road_the_placement_dropped_is_a_lost_entry_and_a_finding() {
+    let (report, mut clean) = fixture();
+    clean.lot_entries_lost = 1;
+    clean.lot_access_unplaced = vec![CutAccess {
+        stretch: "5:5-6".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 6.4,
+        entry: (111.0, 222.0),
+        node: 100,
+    }];
+    assert_eq!(
+        report.summary(&clean),
+        "Lots: 5 (3 car parks, 2 camp sites), 4 smoothed (3 plane, 1 quadratic; 3 paved, 1 grass; 1 steep, 0 move \
+         limited), 1 surface only, 0 excluded; 3 roads (536 m) removed, 1 access road cut, 1 entry lost"
+    );
+    let found = lot_violations(&report, &clean);
+    let dropped: Vec<&Violation> = found
+        .iter()
+        .filter(|violation| violation.rule == Rule::RoadInLotDropped)
+        .collect();
+    assert_eq!(dropped.len(), 5, "{found:?}");
+    let lost = dropped.last().expect("the lost access road");
+    assert_eq!(lost.at, (111.0, 222.0));
+    assert_eq!(
+        lost.message,
+        "The access road 5:5-6 of lot osm/way/1 is lost: the part the cut left is not placed"
+    );
+}
+
+#[test]
 fn the_counts_name_the_kinds_the_outcomes_and_the_reasons() {
     let (report, _) = fixture();
     let counts = report.counts();

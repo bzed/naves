@@ -341,7 +341,10 @@ With it on, the lot step runs before every other step of the clean-up:
   bridge or a tunnel in a lot keeps its stretch.
 - A road that only reaches into a lot (a dead end after the removal) is cut where it enters and ends 4 m inside, so
   its last joint stands on the lot's ground; a road whose part inside is shorter than that is left as it is. A road
-  that enters, leaves and enters again is cut only at its last entry.
+  that enters, leaves and enters again is cut only at its last entry. Where the cut leaves too little of the road for
+  the placement to build (shorter than half a road piece is wide, or ending under other roads), the lot gets no entry
+  there: the build's lot line counts it (`1 entry lost`), `roads.lots` counts it in `entries_lost`, and
+  `road_in_lot_dropped` names it.
 - A road that passes through a lot stays whole: of the inside stretches, the shortest chain between two places where
   roads leave the lot stays, and aisles, dead ends and longer chains go. Those stretches are counted as through roads
   in the report.

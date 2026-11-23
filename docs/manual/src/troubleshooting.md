@@ -262,7 +262,9 @@ be. Both are places to look at in the game; nothing in the project sets heights.
 
 **`road_in_lot_dropped` (information)**
 A road stretch inside a lot is not built, or an access road is cut at the lot's edge; the message names the stretch,
-the lot and the metres. A vehicle drives across the lot instead.
+the lot and the metres. A vehicle drives across the lot instead. An access road whose remainder behind the cut the
+placement drops (shorter than half a road piece is wide, or ending under other roads) is reported as lost: the lot has
+no entry there, the road is not built, and the build's lot line counts it (`1 entry lost`).
 
 **What a lot can still show.** A road that lies on a lot reports `road_conflict` once the road's centre and the lot's
 surface at the road's edge differ by more than 0.3 m; with a flat cross-section that is a cross slope above 0.6 m

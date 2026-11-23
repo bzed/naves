@@ -16,6 +16,7 @@ use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_brid
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::dips::{Dip, DipAction, decide};
 use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::netclean::{CutAccess, entries_without_road};
 use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
 use naves_core::roadnet::{build_graph, collapse_small_rings, with_bridge_spans};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network};
@@ -1846,4 +1847,29 @@ fn a_road_that_ends_under_another_and_gets_no_piece_is_reported() {
     let net = place(&features);
     let gaps: Vec<_> = net.gaps.iter().filter(|g| g.nothing_placed).collect();
     assert_eq!(gaps.len(), 1, "{:?} / {:?}", net.gaps, net.overlays);
+}
+
+#[test]
+fn an_access_road_the_placement_has_no_road_for_is_an_unplaced_entry() {
+    let net = place(&[feature(
+        1,
+        Family::Grav,
+        &[1, 2],
+        &[(100.0, 100.0), (200.0, 100.0)],
+    )]);
+    let entry = |stretch: &str| CutAccess {
+        stretch: stretch.to_string(),
+        lot: "osm/way/100".to_string(),
+        cut_m: 4.0,
+        entry: (200.0, 100.0),
+        node: 9,
+    };
+    let placed = entry("1:1-2");
+    let gone = entry("7:1-2");
+    assert_eq!(
+        entries_without_road(&net, &[placed.clone(), gone.clone()]),
+        std::slice::from_ref(&gone)
+    );
+    assert_eq!(entries_without_road(&net, &[placed]), Vec::new());
+    assert_eq!(entries_without_road(&net, &[]), Vec::new());
 }

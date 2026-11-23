@@ -77,7 +77,7 @@ summary of the lot stage. `smoothing` is `null` while its stage is off, as it is
 the result altogether while the lot stage is off, so such a build answers with the keys it had before the stage
 existed. With the smoothing on, `smoothing` has the chains, largest move, tight length before and after and the zones
 reached, the numbers in `roads.smoothing` of `build/report.json`; with the lot stage on, `lots` has the lots by kind,
-the smoothed ones by form and surface, the steep and move-limited ones, and the removed and cut roads, the numbers in
+the smoothed ones by form and surface, the steep and move-limited ones, the removed and cut roads and the entries lost, the numbers in
 `roads.lots`. If a tool is missing, the error names it and the variable to set.
 
 Errors are returned as tool errors with a message (the `isError` flag of the MCP result); the server keeps

@@ -971,11 +971,46 @@ pub fn surviving_entries(graph: &RoadGraph, entries: &[CutAccess]) -> Vec<CutAcc
         .collect()
 }
 
+/// The cut access roads of `entries` that the graph has no end for: [`surviving_entries`]'s complement, in the order
+/// of `entries`.
+fn lost_entry_cuts(graph: &RoadGraph, entries: &[CutAccess]) -> Vec<CutAccess> {
+    let kept = surviving_entries(graph, entries);
+    entries
+        .iter()
+        .filter(|entry| !kept.contains(entry))
+        .cloned()
+        .collect()
+}
+
 /// How many cut access roads of `entries` the graph has no end for: [`surviving_entries`]'s complement. The clean-up
 /// reports it as [`CleanReport::lot_entries_lost`](crate::netclean::CleanReport::lot_entries_lost).
 #[must_use]
 pub fn lost_entries(graph: &RoadGraph, entries: &[CutAccess]) -> usize {
-    entries.len() - surviving_entries(graph, entries).len()
+    lost_entry_cuts(graph, entries).len()
+}
+
+/// The cut access roads of `entries` that got no placed road: no road of `net` has their stretch, because the
+/// placement dropped what its cut left behind (for example a remainder shorter than half a piece is wide, or one
+/// that ends under other roads). [`add_lot_entries`](crate::junctions::add_lot_entries) skips an entry without a
+/// placed road, so the lot loses this access; the build counts it as a lost entry (the build complements
+/// [`lost_entries`] with this list, which runs on the graph before the placement).
+#[must_use]
+pub fn entries_without_road(
+    net: &crate::roadplace::PlacedNetwork,
+    entries: &[CutAccess],
+) -> Vec<CutAccess> {
+    entries
+        .iter()
+        .filter(|entry| {
+            !net.roads.iter().any(|road| {
+                road.slot
+                    .stretch
+                    .split('|')
+                    .any(|part| part == entry.stretch.as_str())
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]

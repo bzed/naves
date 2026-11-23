@@ -16,8 +16,8 @@ mod sidepath;
 
 use lot::components_each;
 pub use lot::{
-    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads, lost_entries,
-    surviving_entries,
+    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads,
+    entries_without_road, lost_entries, surviving_entries,
 };
 
 use std::cmp::Ordering;
@@ -207,6 +207,10 @@ pub struct CleanReport {
     /// Access roads whose entry node a later step of the clean-up took away (a junction merge or a bridge approach
     /// moved it): they get no entry junction.
     pub lot_entries_lost: usize,
+    /// Access roads whose remainder behind the cut the placement dropped (shorter than half a piece is wide, or
+    /// ending under other roads): they get no entry junction either, so the lot loses this access road. Each is a
+    /// `road_in_lot_dropped` finding, and they are counted in [`CleanReport::lot_entries_lost`] as well.
+    pub lot_access_unplaced: Vec<CutAccess>,
     /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
     /// the lot step.
     pub junctions_in_lots: usize,
@@ -929,6 +933,7 @@ pub fn clean_with(
         lot_access: step.access.clone(),
         lots_split: step.unchanged.clone(),
         lot_entries_lost: lost_entries(&graph4, &step.access),
+        lot_access_unplaced: Vec::new(),
         components_before: components_before.unwrap_or_default(),
         components_after: components_after.unwrap_or_default(),
         components_by_step: counted.iter().skip(2).copied().collect(),
