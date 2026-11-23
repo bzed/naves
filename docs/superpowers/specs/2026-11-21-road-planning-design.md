@@ -8,10 +8,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 Status: design, 2026-11-21, amended the same day after the spike (plan Task 1,
 `.superpowers/sdd/2026-11-21-naves-road-planning/spike/answers.md`). Written by the assistant on the controller's
 brief, within the maintainer's decisions. Decisions the maintainer made are marked **(maintainer)**, rulings of the
-controller **(controller)**; everything else is the assistant's call and easy to change. The constants the spike
-measured were re-measured on the map with the grade rule and frozen (plan Task 7b, 2026-11-23); the constants table
-carries the figures. Only the three self-clearance constants, which Task 7b did not measure, still carry the
-**(re-check)** mark.
+controller **(controller)**; everything else is the assistant's call and easy to change. The constants that carried a
+**(re-check)** mark were re-measured on the map with the grade rule before they were frozen (plan Task 7b,
+2026-11-23); the constants table carries the figures. Only the three self-clearance constants, which Task 7b did not
+measure, still carry the **(re-check)** mark. The constants without a mark (the step, the arrival reach, the junction
+straight, the longest zone, the raster and field limits and the rest) were not re-measured there.
 
 The method comes from the clean-room notes `docs/research/2026-11-21-road-tools-clean-room-notes.md`, sections 3.2 to
 3.6 (obstacles, profile band, cost field, arc search, margins) and 5.1 (the two-pass profile, used here to measure
@@ -230,7 +231,8 @@ aim of 12 % and stays; the two town corners (`Δz` 1.5 m), the junction hairpin 
 25 %) and the water bend (9.3 %) are not touched by the rule. On the whole map, 239 of the 2046 legs the spike planned
 break it: half of them need less than 1.7 m more road, the worst 80 m; 15 of them are even above the ceiling on their
 mean, which the spike's band allowed (see the band). The rule may push switchbacks against the stray cap; the re-check
-(plan Task 7b) measures that before the constants are frozen.
+(plan Task 7b) measured that: the cap binds on no leg of the map (largest true move 28.47 m against the smallest cap of
+30 m), and no cap of 3, 4 or 5 plans the two switchbacks, which are kept and reported.
 
 ### Obstacles and the distance raster
 
@@ -300,8 +302,10 @@ cells.
   used `thr` but the exemption and the water cap used the bare clearance, so 170 of 1645 original lines failed their
   own test (the anchor lay in blocked space). The spike's alternative, the bare clearance plus half a cell, left 68 of
   1645 failing and planned 22 more zones (1485 against 1463, at lead 4); it lets the true distance fall about 8 %
-  short of the clearance (1.2 m at 15 m), which the one-cell gap in the road clearance absorbs. It is measured again
-  in the re-check (open points).
+  short of the clearance (1.2 m at 15 m), which the one-cell gap in the road clearance absorbs. Measured again at
+  lead 2 with the per-place exemption (open points): 28 more planned legs (1613), but the exact distance check puts two
+  routes inside another road's clearance by the stage's own exemption (0.55 and 0.70 m, base 0), so the padded
+  threshold is kept.
 - **Clearances:**
   - roads: `core_reach_m(own half width) + one terrain cell` (12.5 to 15 m); with the stamped earthwork of the other
     road this is the clean-up's "earthworks touch" test (two reaches and a cell);
@@ -448,8 +452,9 @@ not something to maximise **(controller)**. 0.05 is the alternative in open poin
 
 **Stray cap:** a step with a sample further than `PLAN_STRAY_MAX · R` (3 radii, 31.5 m) from the leg's original line
 is not taken. The spike: cap 2 loses 3 of 34 town corners, caps 4 to 6 find none more; on the map the largest move was
-28.5 m, p95 16.6 m. The grade rule makes switchbacks longer, so the cap may now bite there; the re-check measures it
-(plan Task 5 for the two switchbacks, Task 7b for the map).
+28.5 m, p95 16.6 m. The grade rule makes switchbacks longer, so the cap may now bite there; the re-check measured it:
+on the map the largest true move is 28.47 m against the smallest cap of 30 m (no leg at the cap), and no cap of 3, 4
+or 5 plans the two switchbacks (plan Task 5 measured the switchbacks, Task 7b the map).
 
 **Heuristic** (0 for an arrived state): the larger of the field estimate and the analytic bound
 `max(distance, Δ / g_leg) + W_SLOPE · Δ`, where `Δ` is the gap between the state's reachable interval and the end
@@ -703,16 +708,17 @@ Outputs:
 
 ## Constants
 
-All in `reroute.rs`, all `pub const`, collected in `RerouteParams::default()`. Everything but the three self-clearance
-constants was re-measured on the map with the grade rule (plan Task 7b, 2026-11-23); `supported by` carries the
-figures, and only the last column's **(re-check)** rows are still open.
+All in `reroute.rs`, all `pub const`, collected in `RerouteParams::default()`. Every constant that carried a
+**(re-check)** mark was re-measured on the map with the grade rule (plan Task 7b, 2026-11-23), except the three
+self-clearance ones; `supported by` carries the figures, and only those three rows are still open. The unmarked rows
+were not re-measured by Task 7b.
 
 | name | value | meaning | supported by | re-check |
 |---|---|---|---|---|
 | `REROUTE_ENABLED` | `false` until judged | the switch | controller | |
 | `SAMPLE_M` | 2.0 m | resample for zones; arcs written back | `smooth::SAMPLE_M`, reused | |
 | `CHAIN_TURN_MAX_DEG` | 150° | a two-stretch node that turns more ends a chain | `smooth`, reused | |
-| `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | spike: tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts. Map: 1585 legs, tight 5176 m; lead 3 plans 1299 legs, tight 5945 m; lead 4 1146 legs, 6626 m (the two switchbacks only at lead 3 and 4) | |
+| `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | spike: tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts. Map: 1585 legs, tight 5176 m; lead 3 plans 1299 legs, tight 5945 m; lead 4 1146 legs, 6626 m (the switchbacks: neither at lead 2, switchback #1 at lead 3, both at lead 4) | |
 | `PLAN_RADIUS_MARGIN` | 1.05 | planning radius over the tightest arc | notes 3.6; routes 10.41 to 10.50 m | |
 | `PLAN_REACHED_FRACTION` | 0.99 | a written route's tightest sample, of the tightest arc | smoothing's reached rule | |
 | `PLAN_STEP_M` | 6.0 m | search step | same legs as 4 m (1468 / 1466), a third of the CPU; 2 m loses legs | |
@@ -823,14 +829,19 @@ with a moved two-stretch node, one straight road as a control. The switchbacks a
   `W_GRADE · max(0, |Δz| − drawn grade · L)` (with `W_GRADE · drawn grade > 1`, so that lengthening the route to the
   drawn grade pays for itself).
 - **The test threshold.** The spike's alternative (bare clearance plus half a cell) plans 22 more zones and leaves 68
-  original lines failing instead of 87 (lead 4); the re-check measures it at lead 2 with the per-place exemption.
-- **Town corners between junctions.** Decided: they are planned (44 of 56 City corners of 60 to 120° between
-  junctions at the first settings, 21 of 32 at the recommended ones; no flag is needed). The smaller share at the
-  recommended settings is a selection effect of the lead, not a loss: at lead 2 only corners whose junctions are
-  within about 21 m of the bend count as "between junctions"; those with the junctions 21 to 42 m away now have line
-  anchors and are planned in another class. That is not a reason for a longer lead at junctions: a zone that reaches a
-  junction within one lead is anchored at it already, and a longer lead would only replace free line anchors by the
-  fixed junction pose and straight, which is more constrained. The re-check confirms it on the 56 corners by position.
+  original lines failing instead of 87 (lead 4). At lead 2 with the per-place exemption the re-check measured 28 more
+  planned legs (1613), but the exact distance check puts two routes inside another road's clearance by the stage's own
+  exemption (0.55 and 0.70 m, base 0), so the padded `thr(c)` is kept and the bare threshold stays the alternative if
+  the exact check is ever satisfied.
+- **Town corners between junctions.** Decided: they are planned (the spike found 44 of 56 City corners of 60 to 120°
+  between junctions planned at the first settings, 21 of 32 at the recommended ones; no flag is needed). The smaller
+  share at the recommended settings is a selection effect of the lead, not a loss: at lead 2 only corners whose
+  junctions are within about 21 m of the bend count as "between junctions"; those with the junctions 21 to 42 m away
+  now have line anchors and are planned in another class. That is not a reason for a longer lead at junctions: a zone
+  that reaches a junction within one lead is anchored at it already, and a longer lead would only replace free line
+  anchors by the fixed junction pose and straight, which is more constrained. By position the re-check planned 33 of
+  the 56 at lead 2 (33 at lead 3, 34 at lead 4), and 10 of the 56 have a leg that the search planned and the
+  cross-check reverted; the spike's 44 of 56 does not reproduce by position.
 - **Default of the switch.** The stage lands switched off and is switched on after the judging, on the maintainer's
   word.
 - **Cell-size dependence.** The step, the raster and the field follow the terrain cell where the notes do; the lead,
