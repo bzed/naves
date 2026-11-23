@@ -2882,6 +2882,70 @@ fn access_into_a_lot(
 }
 
 #[test]
+fn an_entry_holds_only_the_joints_inward_that_lie_over_the_lot() {
+    // a City road from 190 to 250 in 10 m pieces, its last joint the entry of a lot whose outline is x = 245: the
+    // joint at 240 lies 5 m outside the lot, within the 12.875 m the inwards hold reached by distance alone
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (190.0, 300.0),
+        (250.0, 300.0),
+        10.0,
+    )]);
+    let lot = lot_surface(
+        "osm/way/1",
+        rectangle(245.0, 250.0, 400.0, 350.0),
+        (320.0, 300.0),
+        101.0,
+    );
+    let entry = CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (250.0, 300.0),
+        node: 9,
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[entry],
+        &hm,
+    );
+    let holds = chain_holds(&net, &net.chains[0], f64::from(hm.cell_m), &junctions);
+    let hold_at = |x: f64| {
+        holds
+            .iter()
+            .find(|(at, _)| (at.0 - x).abs() < 1e-9)
+            .map(|(_, hold)| *hold)
+    };
+    // the end joint is held, the joint 5 m outside the lot is not
+    assert!(
+        hold_at(250.0).is_some_and(|hold| hold.is_some()),
+        "{holds:?}"
+    );
+    assert!(
+        hold_at(240.0).is_some_and(|hold| hold.is_none()),
+        "{holds:?}"
+    );
+    // so the joint follows the ground and ramps up to the entry 10 m on (the 10 % a joint may break by), instead of
+    // lying on the lot's 101 m there as it did when the hold reached by distance
+    let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let joint = |x: f64| {
+        p.strips[0]
+            .joints
+            .iter()
+            .find(|j| (j.0 - x).abs() < 1e-9)
+            .copied()
+            .expect("a joint")
+    };
+    assert!((joint(250.0).2 - 101.0).abs() < 1e-6, "{:?}", joint(250.0));
+    assert!(joint(240.0).2 < 100.9, "{:?}", joint(240.0));
+}
+
+#[test]
 fn an_access_road_ends_at_the_lots_surface_and_holds_the_joints_inward() {
     let (net, hm, mut junctions, lots, entries) = access_into_a_lot(101.0);
     add_lot_entries(&mut junctions, &net, &lots, &entries, &hm);

@@ -87,6 +87,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A lot entry holds the access road's end and the joints inward that lie over the lot, to the lot's surface; a joint
+  outside the lot keeps the ground's height. Before, the inwards hold reached by distance only (the entry's patch plus
+  1.5 terrain cells), so it also held a joint outside the lot to the lot's steep surface, which pinned the road there
+  to the lot's grade (53 % on the steep car park of the example, and three of its `road_grade` findings).
 - An access road whose remainder behind the lot cut the placement drops (shorter than half a road piece is wide, or
   ending under other roads) is reported: the build counts it as a lost entry (`1 entry lost` in the lot line and
   `entries_lost` in `roads.lots`) and `road_in_lot_dropped` names it, instead of the lot silently losing the access

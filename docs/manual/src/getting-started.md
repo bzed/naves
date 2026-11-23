@@ -345,6 +345,9 @@ With it on, the lot step runs before every other step of the clean-up:
   the placement to build (shorter than half a road piece is wide, or ending under other roads), the lot gets no entry
   there: the build's lot line counts it (`1 entry lost`), `roads.lots` counts it in `entries_lost`, and
   `road_in_lot_dropped` names it.
+- The entry holds the road's end and the joints inward that lie over the lot, to the lot's height there; a joint
+  outside the lot keeps the ground's height, so the road up to the lot is as steep as the ground there is, not as
+  steep as the lot's surface.
 - A road that passes through a lot stays whole: of the inside stretches, the shortest chain between two places where
   roads leave the lot stays, and aisles, dead ends and longer chains go. Those stretches are counted as through roads
   in the report.
