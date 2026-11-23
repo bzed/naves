@@ -239,6 +239,22 @@ pub enum AnchorKind {
     RingCut(i64),
 }
 
+impl AnchorKind {
+    /// The name of the anchor kind in the report (`line`, `junction`, `dead_end`, `bridge_hold`,
+    /// `tunnel_hold`, `ring_cut`).
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            AnchorKind::Line => "line",
+            AnchorKind::Junction(_) => "junction",
+            AnchorKind::DeadEnd(_) => "dead_end",
+            AnchorKind::BridgeHold => "bridge_hold",
+            AnchorKind::TunnelHold => "tunnel_hold",
+            AnchorKind::RingCut(_) => "ring_cut",
+        }
+    }
+}
+
 /// Why a zone kept its drawn line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeptReason {
@@ -334,7 +350,8 @@ pub struct PlannedZone {
     pub length_after_m: f64,
     /// The largest true distance of a planned route from the drawn line, in metres: the larger measure of the
     /// search's `max_move_m`, not the raster's stored stray distance (which is 0 across the cells the line
-    /// touches). 0 for a zone that kept its line.
+    /// touches). 0 when no leg of the zone was planned: a kept zone whose other legs were planned still
+    /// carries the move of those legs, so a reader can tell a kept zone from a partly planned one.
     pub max_stray_m: f64,
     /// The drawn grade between the zone's ends, mean over the line, in metres of rise per metre.
     pub drawn_grade: f64,

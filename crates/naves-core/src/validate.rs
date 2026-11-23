@@ -565,10 +565,14 @@ pub fn reroute_violations(reroute: Option<&RerouteReport>) -> Vec<Violation> {
             let road = z.stretches.join(", ");
             match &z.outcome {
                 ZoneOutcome::Planned => {
+                    // the drawn grade is the mean rise and the planned one the steepest profile step, over
+                    // the whole zone: a route found at a raised limit can still be under its drawn mean
+                    // (the relaxation may have been for a different leg, or only the budget ran out), so
+                    // the figure is cut at zero rather than printed negative
                     let steeper = if z.relax_steps > 0 {
                         format!(
                             ", {:.1} points steeper than drawn",
-                            (z.planned_grade - z.drawn_grade) * 100.0
+                            ((z.planned_grade - z.drawn_grade) * 100.0).max(0.0)
                         )
                     } else {
                         String::new()
@@ -583,16 +587,35 @@ pub fn reroute_violations(reroute: Option<&RerouteReport>) -> Vec<Violation> {
                         ),
                     )
                 }
-                ZoneOutcome::Kept { reason, detail } => violation(
-                    Rule::RoadCurveNotPlanned,
-                    z.at,
-                    format!(
-                        "The curve of {road} keeps its drawn line: {}, {detail}; radius {:.1} m, {:.1} m wanted",
-                        reason.id(),
-                        z.radius_after_m,
-                        z.radius_wanted_m
-                    ),
-                ),
+                ZoneOutcome::Kept { reason, detail } => {
+                    // `radius_after_m` covers only the legs that were planned; a kept leg's drawn
+                    // tightness is in `radius_before_m` (a zone with no planned leg has the same
+                    // value in both, but the drawn one is used regardless, so a partly planned zone
+                    // cannot hide a kept bend behind its planned legs' radius)
+                    let drawn_kept = z.max_stray_m <= 0.0;
+                    let radius = if drawn_kept {
+                        z.radius_before_m
+                    } else {
+                        // part of the zone moved: the tightest radius it keeps is the smaller of
+                        // the drawn and the planned ones
+                        z.radius_before_m.min(z.radius_after_m)
+                    };
+                    let what = if drawn_kept {
+                        "keeps its drawn line"
+                    } else {
+                        "is partly planned"
+                    };
+                    violation(
+                        Rule::RoadCurveNotPlanned,
+                        z.at,
+                        format!(
+                            "The curve of {road} {what}: {}, {detail}; radius {:.1} m, {:.1} m wanted",
+                            reason.id(),
+                            radius,
+                            z.radius_wanted_m
+                        ),
+                    )
+                }
             }
         })
         .collect()

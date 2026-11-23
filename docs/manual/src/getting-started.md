@@ -333,8 +333,9 @@ A curve that cannot be planned keeps the line OpenStreetMap draws and is reporte
 With the stage on, roads inside a planned curve move by up to three minimum radii, so edits to the road objects that are
 keyed by slot may no longer find their object (`orphaned_edit`). The findings are `road_curve_planned` and
 `road_curve_not_planned`; `build/report.json` has `roads.planning` (`zones`, `skipped`, `kept`, `tight_before_m`,
-`tight_after_m`, `max_stray_m`, `steeper_than_drawn`, `reverted` and `states`, and every zone with its radius before,
-wanted and after, its grades, relaxation steps, earthwork and outcome), and the build prints one line with the zones,
+`tight_after_m`, `max_stray_m`, `steeper_than_drawn`, `reverted` and `states`, and every zone with the kinds of its
+two anchors, the junction and the partner zone where the bend passes a junction, its radius before, wanted and
+after, its grades, relaxation steps, earthwork, outcome, the kept reason and its detail), and the build prints one line with the zones,
 the tight length before and after, the largest move and the legs steeper than drawn. The progress output (also the one
 the MCP `build` tool returns) has a line `Planning the tight curves (0.4 s)` with the time the stage took.
 

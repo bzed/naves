@@ -238,11 +238,15 @@ closer than 6 m). The points of a line that were merged because they lay closer 
 Road planning (switched off in this release, so these two findings do not appear) found a curve tighter than the
 tightest curve piece of its road type. For `road_curve_planned` the zone was re-routed; the message names the
 stretches, the radius before and after, how far the route strays from the drawn line and, when the route needed a
-raised grade limit, how many points steeper than drawn it is. `planned_grade` in the report is the **steepest step of
+raised grade limit, how many points steeper than drawn it is (the points compare the zone's **steepest profile
+step** with its **mean drawn grade**, so the figure is cut at zero when a route found at a raised limit is still
+not steeper than the drawn mean — the relaxation may have only tried, or been for a budget that ran out).
+`planned_grade` in the report is the **steepest step of
 the planned road's profile**, not the mean rise between the zone's ends (that is `drawn_grade`): a route that is
 longer than the drawn line can ride at the type's aim while its rise stays near the drawn rise. For
-`road_curve_not_planned` the zone kept the line OpenStreetMap draws; the message gives the reason and the radius the
-curve has. The reason is `no_route` (no route was found), `held` (a junction, a dead end, the end of a deck or the cut
+`road_curve_not_planned` the zone either kept the line OpenStreetMap draws (the message gives the reason and the
+radius the curve has, the drawn one) or is **partly planned** — part of it moved and the message says so, with
+the tighter of the drawn and the planned radius, so a kept bend cannot hide behind the planned legs' radius. The reason is `no_route` (no route was found), `held` (a junction, a dead end, the end of a deck or the cut
 of a closed loop left no room), `blocked_by_water` (a route exists only through water) or `blocked_by_road` (a route
 exists only into another road's earthwork, or the route came too near an earlier planned one and was reverted). The
 report gives the candidate the bend is for: `plate` (a concrete plate can build it) for `held` and `no_route`,

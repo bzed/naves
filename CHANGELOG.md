@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format follows
 
 - Road planning re-routes curves tighter than the road pieces. A zone of tight road (plus two minimum radii of road
   on each side) is re-routed inside a curve the pieces can build, **not steeper than the road as drawn or its type's
-  aim**, not further than three minimum radii from the drawn line, crossing a stream only as often as the drawn line
+  aim** (or, where a route needs more, at a raised limit up to the type's ceiling, reported), not further than three
+  minimum radii from the drawn line, crossing a stream only as often as the drawn line
   does and keeping out of another road's earthwork; junctions, dead ends, deck ends and the cut of a closed loop stay
   where they are. It is **switched off in this release** (`REROUTE_ENABLED`), so nothing moves and `roads.planning` in
   `build/report.json` is `{"enabled": false}`. With it on, roads inside planned curves move by up to three minimum

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use naves_core::features::FeatureKind;
 use naves_core::project::Project;
+use naves_core::reroute::REROUTE_ENABLED;
 use naves_core::smooth::SMOOTH_ENABLED;
 use naves_core::surface::SurfaceClass;
 use naves_export::build::{BuildError, build};
@@ -1146,6 +1147,34 @@ fn the_report_has_the_violations() {
         assert!(!progress_line, "{lines:#?}");
         assert_eq!(*smoothing, serde_json::json!({ "enabled": false }));
         assert!(out.smoothing.is_none());
+    }
+    // the planning is wired the same way: the report section, the progress line and the summary line
+    let planning = &report["roads"]["planning"];
+    let planning_line = lines
+        .iter()
+        .any(|l| l.starts_with("Planning the tight curves (") && l.ends_with(" s)"));
+    if REROUTE_ENABLED {
+        assert!(planning_line, "{lines:#?}");
+        for key in [
+            "tight_before_m",
+            "tight_after_m",
+            "max_stray_m",
+            "steeper_than_drawn",
+            "reverted",
+            "states",
+        ] {
+            assert!(planning[key].is_number(), "{key}: {planning}");
+        }
+        for key in ["zones", "kept", "skipped"] {
+            assert!(planning[key].is_array(), "{key}: {planning}");
+        }
+        let line = out.planning.as_deref().expect("a summary line");
+        assert!(line.contains("zones"), "{line}");
+    } else {
+        // the stage is off: no progress line, no summary line, and the report section says so
+        assert!(!planning_line, "{lines:#?}");
+        assert_eq!(*planning, serde_json::json!({ "enabled": false }));
+        assert!(out.planning.is_none());
     }
     let violations = report["violations"].as_array().unwrap();
     for v in violations {

@@ -10,16 +10,19 @@
     reason = "test helper code; failing loudly is the point, and the polylines have at least two points"
 )]
 
+use std::cell::RefCell;
+
 use naves_core::catalog::Family;
 use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
-use naves_core::heightmap::Heightmap;
+use naves_core::heightmap::{Heightmap, MapGeo};
+use naves_core::project::Project;
 use naves_core::reroute::{
-    Candidate, KeptReason, PlannedZone, REROUTE_ENABLED, RerouteReport, ZoneOutcome,
+    AnchorKind, Candidate, KeptReason, PlannedZone, REROUTE_ENABLED, RerouteReport, ZoneOutcome,
 };
 use naves_core::roadnet::RoadGraph;
 use naves_export::build::planning_json;
-use naves_export::generate::{Stages, fitted_graph, fitted_graph_with};
+use naves_export::generate::{Stages, fitted_graph, fitted_graph_with, plan_roads_with};
 
 fn way(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
     Feature {
@@ -49,8 +52,8 @@ fn flat() -> Heightmap {
     }
 }
 
-/// A right-angled city corner at (500, 500), with a through road at each of its junctions: the fixture of the
-/// smoothing tests, which the planning changes.
+/// A right-angled city corner at (500, 500), with a through road at each of its junctions: the fixture of
+/// `naves-core/tests/reroute.rs`; the smoothing tests use `corner_at` in `tests/smoothing.rs`.
 fn town_corner() -> Vec<Feature> {
     vec![
         way(
@@ -243,10 +246,7 @@ fn the_report_of_the_stage_reaches_the_planning_section() {
         at,
         stretches: vec!["7:1-2".to_string()],
         legs: 1,
-        anchors: (
-            naves_core::reroute::AnchorKind::Line,
-            naves_core::reroute::AnchorKind::Line,
-        ),
+        anchors: (AnchorKind::Line, AnchorKind::Line),
         junction: None,
         partner: None,
         outcome,
@@ -271,6 +271,10 @@ fn the_report_of_the_stage_reaches_the_planning_section() {
         original_feasible: true,
         candidate: None,
     };
+    let mut planned = zone("7:1-2#0", (1.0, 2.0), ZoneOutcome::Planned, 0);
+    // the bend leaves a junction and ends inside the chain: both ends are named, the partner is not
+    planned.anchors = (AnchorKind::Junction(5), AnchorKind::Line);
+    planned.junction = Some(5);
     let mut kept = zone(
         "7:1-2#1",
         (3.0, 4.0),
@@ -281,8 +285,11 @@ fn the_report_of_the_stage_reaches_the_planning_section() {
         0,
     );
     kept.candidate = Some(Candidate::Plate);
+    // this one is the other half of the same bend across the junction
+    kept.anchors = (AnchorKind::Line, AnchorKind::BridgeHold);
+    kept.partner = Some("7:1-2#0".to_string());
     let report = RerouteReport {
-        zones: vec![zone("7:1-2#0", (1.0, 2.0), ZoneOutcome::Planned, 0), kept],
+        zones: vec![planned, kept],
         kept_zones: vec![("7:1-2#1".to_string(), "anchors_close".to_string())],
         tight_before_m: 120.0,
         tight_after_m: 40.0,
@@ -303,6 +310,10 @@ fn the_report_of_the_stage_reaches_the_planning_section() {
     assert_eq!(first["outcome"], "planned");
     assert!(first["reason"].is_null());
     assert!(first["candidate"].is_null());
+    assert!(first["detail"].is_null());
+    assert_eq!(first["anchors"], serde_json::json!(["junction", "line"]));
+    assert_eq!(first["junction"], 5);
+    assert!(first["partner"].is_null());
     assert_eq!(first["drawn_grade"], 0.05);
     assert_eq!(first["planned_grade"], 0.14);
     assert_eq!(first["grade_limit"], 0.14);
@@ -311,10 +322,64 @@ fn the_report_of_the_stage_reaches_the_planning_section() {
     let second = &json["zones"][1];
     assert_eq!(second["outcome"], "kept");
     assert_eq!(second["reason"], "held");
+    assert_eq!(second["detail"], "anchors_close");
+    assert_eq!(
+        second["anchors"],
+        serde_json::json!(["line", "bridge_hold"])
+    );
+    assert!(second["junction"].is_null());
+    assert_eq!(second["partner"], "7:1-2#0");
     assert_eq!(second["candidate"], "plate");
     assert_eq!(
         Candidate::Plate.id(),
         "plate",
         "the candidate of a held zone"
+    );
+}
+
+#[test]
+fn the_stage_prints_its_progress_line_with_its_time() {
+    let catalog = synthetic_catalog();
+    let base = flat();
+    let features = town_corner();
+    let frame = MapGeo::new(&Project::new("Planning", 47.55, 12.975, 1000.0)).unwrap();
+    let lines = RefCell::new(Vec::new());
+    plan_roads_with(
+        &features,
+        &catalog,
+        &base,
+        &[],
+        &[],
+        &frame,
+        &|l| {
+            lines.borrow_mut().push(l.to_string());
+        },
+        Stages {
+            reroute: true,
+            smooth: false,
+        },
+    )
+    .unwrap();
+    let lines = lines.into_inner();
+    // the line is one sentence, like the smoothing's: `Planning the tight curves (<s> s)`, with the
+    // stage's own time in it, and there is no smoothing line with the smoothing off
+    let planned: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("Planning the tight curves (") && l.ends_with(" s)"))
+        .collect();
+    assert_eq!(planned.len(), 1, "{lines:#?}");
+    let seconds = planned[0]
+        .strip_prefix("Planning the tight curves (")
+        .and_then(|l| l.strip_suffix(" s)"))
+        .map_or_else(
+            || panic!("the line has no time: {}", planned[0]),
+            str::parse::<f64>,
+        );
+    assert!(seconds.expect("one decimal") >= 0.0);
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("Smoothing the road lines")),
+        "a stage that is off prints no line: {lines:#?}"
     );
 }

@@ -683,13 +683,22 @@ pub fn planning_json(reroute: Option<&RerouteReport>) -> serde_json::Value {
                 ZoneOutcome::Planned => ("planned", None),
                 ZoneOutcome::Kept { reason, .. } => ("kept", Some(reason.id())),
             };
+            // the kept reason's detail: what exactly stopped it (`anchors_close`, `route_of <zone>`, ...)
+            let detail = match &z.outcome {
+                ZoneOutcome::Planned => None,
+                ZoneOutcome::Kept { detail, .. } => Some(detail.as_str()),
+            };
             serde_json::json!({
                 "id": z.id,
                 "at": [z.at.0, z.at.1],
                 "stretches": z.stretches,
                 "legs": z.legs,
+                "anchors": [z.anchors.0.id(), z.anchors.1.id()],
+                "junction": z.junction,
+                "partner": z.partner,
                 "outcome": outcome,
                 "reason": reason,
+                "detail": detail,
                 "candidate": z.candidate.map(Candidate::id),
                 "radius_before_m": z.radius_before_m,
                 "radius_wanted_m": z.radius_wanted_m,

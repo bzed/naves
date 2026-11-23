@@ -634,10 +634,15 @@ fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place(
     assert!(n.smooth.as_ref().unwrap().summary().contains("1 plate"));
 }
 
-#[test]
-fn a_planned_curve_and_a_curve_that_was_not_planned_are_findings_at_their_place() {
-    use naves_core::reroute::{AnchorKind, Candidate, PlannedZone, RerouteReport, ZoneOutcome};
-    let zone = |at: (f64, f64), planned_grade: f64, relax: usize| PlannedZone {
+/// A planned zone of `7:1-2` for the planning findings: radii and grades that the assertions pick up in
+/// the messages.
+fn reroute_zone(
+    at: (f64, f64),
+    planned_grade: f64,
+    relax: usize,
+) -> naves_core::reroute::PlannedZone {
+    use naves_core::reroute::{AnchorKind, PlannedZone, ZoneOutcome};
+    PlannedZone {
         id: format!("7:1-2#{relax}"),
         at,
         stretches: vec!["7:1-2".to_string()],
@@ -666,21 +671,22 @@ fn a_planned_curve_and_a_curve_that_was_not_planned_are_findings_at_their_place(
         budget_exhausted: false,
         original_feasible: true,
         candidate: None,
-    };
-    let mut relaxed = zone((3.0, 4.0), 0.20, 1);
+    }
+}
+
+#[test]
+fn a_planned_curve_names_how_much_steeper_than_drawn_it_is() {
+    use naves_core::reroute::RerouteReport;
+    let mut relaxed = reroute_zone((3.0, 4.0), 0.20, 1);
     relaxed.drawn_grade = 0.12;
     relaxed.grade_limit = 0.22;
-    let mut held = zone((5.0, 6.0), 0.0, 0);
-    held.outcome = ZoneOutcome::Kept {
-        reason: naves_core::reroute::KeptReason::Held,
-        detail: "anchors_close".to_string(),
-    };
-    held.candidate = Some(Candidate::Plate);
-    held.weight = None;
+    // a relaxed route whose steepest step is under the drawn mean: the figure is cut at zero
+    let mut clamped = reroute_zone((7.0, 9.0), 0.14, 3);
+    clamped.drawn_grade = 0.20;
     let mut n = net(vec![]);
     n.reroute = Some(RerouteReport {
-        zones: vec![zone((1.0, 2.0), 0.14, 0), relaxed, held],
-        kept_zones: vec![("7:1-2#0".to_string(), "anchors_close".to_string())],
+        zones: vec![reroute_zone((1.0, 2.0), 0.14, 0), relaxed, clamped],
+        kept_zones: Vec::new(),
         tight_before_m: 60.0,
         tight_after_m: 20.0,
         max_stray_m: 1.5,
@@ -691,7 +697,7 @@ fn a_planned_curve_and_a_curve_that_was_not_planned_are_findings_at_their_place(
     });
     let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     let planned = only(Rule::RoadCurvePlanned, &v);
-    assert_eq!(planned.len(), 2);
+    assert_eq!(planned.len(), 3);
     assert_eq!(planned[0].at, (1.0, 2.0));
     assert!(
         planned[0].message.contains("4.0") && planned[0].message.contains("10.5"),
@@ -709,15 +715,78 @@ fn a_planned_curve_and_a_curve_that_was_not_planned_are_findings_at_their_place(
         "{}",
         planned[1].message
     );
+    assert_eq!(planned[2].at, (7.0, 9.0));
+    assert!(
+        planned[2].message.contains("0.0 points steeper than drawn")
+            && !planned[2].message.contains("-6.0"),
+        "a relaxed route that is not steeper than drawn reads zero, never negative: {}",
+        planned[2].message
+    );
+    assert!(
+        only(Rule::RoadCurveNotPlanned, &v).is_empty(),
+        "a planned zone keeps no warning"
+    );
+}
+
+#[test]
+fn a_kept_curve_names_its_reason_and_the_radius_it_keeps() {
+    use naves_core::reroute::{Candidate, KeptReason, RerouteReport, ZoneOutcome};
+    let mut held = reroute_zone((5.0, 6.0), 0.0, 0);
+    held.outcome = ZoneOutcome::Kept {
+        reason: KeptReason::Held,
+        detail: "anchors_close".to_string(),
+    };
+    held.candidate = Some(Candidate::Plate);
+    held.weight = None;
+    // no leg of the zone moved: the radius it keeps is the drawn one
+    held.max_stray_m = 0.0;
+    // a kept zone with a planned leg: the drawn radius of the kept leg is the one that stays
+    let mut partly = reroute_zone((9.0, 8.0), 0.14, 2);
+    partly.outcome = ZoneOutcome::Kept {
+        reason: KeptReason::Held,
+        detail: "route_of 7:1-2#1".to_string(),
+    };
+    partly.max_stray_m = 1.5;
+    partly.weight = None;
+    let mut n = net(vec![]);
+    n.reroute = Some(RerouteReport {
+        zones: vec![held, partly],
+        kept_zones: vec![("7:1-2#0".to_string(), "anchors_close".to_string())],
+        tight_before_m: 60.0,
+        tight_after_m: 20.0,
+        max_stray_m: 1.5,
+        steeper_than_drawn: 1,
+        reverted: 0,
+        states: 42,
+        skipped: Vec::new(),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
     let not_planned = only(Rule::RoadCurveNotPlanned, &v);
-    assert_eq!(not_planned.len(), 1);
+    assert_eq!(not_planned.len(), 2);
     assert_eq!(not_planned[0].at, (5.0, 6.0));
+    assert!(not_planned[0].message.contains("keeps its drawn line"));
     assert!(
         not_planned[0].message.contains("held")
             && not_planned[0].message.contains("anchors_close")
+            && not_planned[0].message.contains("4.0")
             && not_planned[0].message.contains("10.0"),
-        "{}",
+        "the radius of a zone that keeps its line is the drawn one: {}",
         not_planned[0].message
+    );
+    assert_eq!(not_planned[1].at, (9.0, 8.0));
+    assert!(
+        not_planned[1].message.contains("partly planned") && not_planned[1].message.contains("4.0"),
+        "a kept zone with a planned leg names the tighter of its radii: {}",
+        not_planned[1].message
+    );
+    assert!(
+        !not_planned[1].message.contains("10.5"),
+        "the radius of the planned leg hides the kept bend: {}",
+        not_planned[1].message
+    );
+    assert!(
+        only(Rule::RoadCurvePlanned, &v).is_empty(),
+        "a kept zone keeps no information"
     );
 }
 

@@ -8,8 +8,11 @@
 //! `cargo run --release -p naves-export --example road-analysis [terrain_size]`
 //!
 //! `STAGES=off|plan|smooth|plan+smooth` chooses the optional stages of the road graph; the build's own
-//! switches decide when it is not set. With planning on, the stage runs once here and once inside the
-//! placement (`plan_roads_with`), so the placement time includes a second planning run.
+//! switches decide when it is not set. With planning on, the stage runs **twice**: once here for its
+//! reports and the node check, and once inside the placement (`plan_roads_with` fits its own graph), so
+//! `TIMING placement with dips` includes a second full planning run (35 to 42 s on the 512 example)
+//! and the placement times are **not comparable across `STAGES`**; `TIMING reroute` is measured once,
+//! cleanly. `PLAN_STEEP` is per planned zone, not per leg (see its comment below).
 
 #![expect(
     clippy::indexing_slicing,
@@ -235,8 +238,11 @@ fn main() {
         println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
     }
     if let Some(report) = &reroute {
-        // what the planning did: the totals, every kept zone and every zone planned steeper than drawn by more
-        // than the margin (a zone's planned grade is the steepest step of its profiles)
+        // what the planning did: the totals, every kept zone and the zones planned steeper than drawn by
+        // more than the margin. `PLAN_STEEP` is **per zone, not per leg**: the report carries the zone's
+        // grades (the steepest step of its planned profiles against the zone's *mean* drawn grade) and no
+        // per-leg records, so kept zones with a planned leg are skipped and the count can differ from the
+        // summary's steeper legs.
         println!("PLAN {}", report.summary());
         for reason in [
             KeptReason::NoRoute,
@@ -248,13 +254,20 @@ fn main() {
         }
         for z in &report.zones {
             if let ZoneOutcome::Kept { reason, .. } = &z.outcome {
+                // `radius_after_m` covers only the planned legs: a kept zone where part moved is shown
+                // with the tighter of the drawn and planned radii, one that stood still with the drawn one
+                let radius = if z.max_stray_m <= 0.0 {
+                    z.radius_before_m
+                } else {
+                    z.radius_before_m.min(z.radius_after_m)
+                };
                 println!(
                     "PLAN_KEPT {} {} {:.1} {:.1} {:.1}",
                     z.id,
                     reason.id(),
                     z.at.0,
                     z.at.1,
-                    z.radius_after_m
+                    radius
                 );
             }
         }
@@ -350,8 +363,15 @@ fn main() {
             );
         }
         if reroute.is_some() {
+            // with both stages on the counts cover the stages together: the nodes are compared with the
+            // graph without either stage, so a move cannot be told apart by which stage made it
+            let both = if smooth.is_some() {
+                "; both stages were on, the smoothing's moves are in these counts too"
+            } else {
+                ""
+            };
             println!(
-                "PLAN_FIXED junctions moved {}, dead ends moved {}, bridge ends moved {}, tunnel ends moved {} (all must be 0)",
+                "PLAN_FIXED junctions moved {}, dead ends moved {}, bridge ends moved {}, tunnel ends moved {} (all must be 0{both})",
                 moved[1], moved[2], moved[3], moved[4]
             );
         }
