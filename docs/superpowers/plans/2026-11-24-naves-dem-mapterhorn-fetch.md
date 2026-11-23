@@ -30,7 +30,7 @@
 | `MAX_SIDE_PX` | 16_384 | `dem.rs`'s limit, guarded before writing |
 | `TILE_JOBS` | 4 | parallel tile requests (be polite) |
 | `MAX_TILE_BYTES` | 8 `<<` 20 | answer size cap per tile |
-| `Z_MIN`, `Z_MAX` | 12, 18 | fallback floor, probe ceiling |
+| `Z_MIN`, `Z_MAX` | 12, 18 | fallback floor, probe ceiling; `Z_MIN` is also where Mapterhorn's world fallback (Copernicus GLO-30, 30 m, a DSM) is native |
 | `RETRIES` | 3 | with the house's one-second-more pause (reuse `with_tries`) |
 | cache dir | `dem/mapterhorn/{z}/{x}/{y}.webp` | inside the project |
 | output file | `dem/mapterhorn_dtm.tif` | plus `dem/mapterhorn_dtm.attribution.txt` |
@@ -42,6 +42,8 @@
 3. **Maps bigger than `dem.rs` accepts** (extent above ~20.5 km at 2.5 m/px): the pixel size grows with the extent (`pixel_m = max(requested, (extent + 2·MARGIN_M)/8192.0)`), and the `MAX_PIXELS`/`MAX_SIDE_PX` guards error clearly before anything is written (Task 4, Task 5).
 4. **404 at native zoom is a fallback, not a failure** (macro-tile zoom borders, GLO-only regions): per-tile parent fallback down to `Z_MIN`, and a query whose bilinear quad touches a missing neighbour falls back as a whole to the next coarser zoom (Tasks 3, 5).
 5. **Re-runs must not hammer the server or double-list the file**: cached tiles are never re-requested (counted in tests), and the `sources.dem` upsert never duplicates the entry (Task 5).
+6. **A region Mapterhorn covers with nothing finer than the world fallback** (discovered zoom == `Z_MIN`): the fetch refuses by default, leaves `sources.dem` and the project untouched, tells the user that the current source stays in force — and that other sources exist but need their own implementation — and only a `--force` writes the 30 m fallback (Task 5, Task 6).
+7. **`sources.dem` order decides which file wins** (`Dem::open` picks the first tile containing the sample): the fetched file goes to the **front** of the list, ahead of 1° Copernicus tiles that would otherwise shadow it; existing entries are never overwritten (Task 5).
 
 ---
 
@@ -161,6 +163,28 @@ pub fn resample(pyramid: &TilePyramid, window: &GeoWindow, center_lat: f64, pixe
 - Produces:
 
 ```rust
+/// A remote Terrarium-encoded XYZ tile source. Sources with the same shape plug in as new
+/// constants; sources with other wire formats (COG, .hgt, WMS) get their own fetch later —
+/// the imagery catalogue (`naves_core::imagery::catalog`) is the pattern that grows into.
+pub struct TerrariumSource {
+    /// The id used in file names and messages.
+    pub id: &'static str,
+    /// The human name.
+    pub name: &'static str,
+    /// The XYZ template with `{z}`, `{x}`, `{y}`.
+    pub tile_url: &'static str,
+    /// Where the source list and licences live.
+    pub attribution_url: &'static str,
+}
+
+/// The only source v1 speaks.
+pub const MAPTERHORN: TerrariumSource = TerrariumSource {
+    id: "mapterhorn",
+    name: "Mapterhorn",
+    tile_url: "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp",
+    attribution_url: "https://mapterhorn.com/attribution",
+};
+
 /// Where tiles come from. `Ok(None)` is a 404 — absent at this zoom.
 pub trait TileGet: Sync {
     fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError>;
@@ -168,22 +192,32 @@ pub trait TileGet: Sync {
 
 /// Production source: ureq agent mirroring `RealHttp` (https only, UA `naves/<version>`,
 /// timeouts), 404 -> `Ok(None)`, other failures through `with_tries`.
-pub struct RealTiles { /* agent */ }
-impl RealTiles { pub fn new() -> RealTiles }
+pub struct RealTiles { /* agent + TerrariumSource */ }
+impl RealTiles { pub fn new(source: &'static TerrariumSource) -> RealTiles }
 
-pub struct DemFetchRequest { pub zoom: Option<u8>, pub pixel_m: Option<f64> } // derives Default; None means "discover"/"2.5 m"
+pub struct DemFetchRequest {
+    pub zoom: Option<u8>,
+    pub pixel_m: Option<f64>,
+    /// Write the 30 m world fallback even when nothing finer covers the project.
+    pub force: bool,
+} // derives Default; None/false mean "discover"/"2.5 m"/"refuse GLO-only"
 
 /// Fetches the bare-earth DEM of a project into `dem/mapterhorn_dtm.tif` and lists it in `naves.toml`.
 /// Sequence: read cached tiles -> fetch missing (TILE_JOBS parallel via a rayon pool) -> resample
 /// -> write_dem atomically -> attribution sidecar -> upsert `sources.dem` -> `project.save`.
-pub fn fetch_dem(project_dir: &Path, request: &DemFetchRequest, tiles: &dyn TileGet,
-                 note: &mut dyn FnMut(&str)) -> Result<Vec<PathBuf>, FetchError>
+/// Refuses — touching nothing — when the discovered coverage is nothing finer than the world
+/// fallback (`z == Z_MIN`) and `request.force` is false.
+pub fn fetch_dem(project_dir: &Path, source: &'static TerrariumSource, request: &DemFetchRequest,
+                 tiles: &dyn TileGet, note: &mut dyn FnMut(&str)) -> Result<Vec<PathBuf>, FetchError>
 ```
 
 - Consumes: Task 2's `fetch_window`/`tile_range`, Task 3's `TilePyramid::insert`, Task 4's `pixel_m`/`resample`, Task 1's `write_dem`, `imagery_fetch`'s `FetchError` and the now-`pub(crate)` `with_tries`, `project.save` from `naves-core`.
-- Zoom discovery when `request.zoom` is `None`: probe the 4 window corners and the centre, `Z_MAX` down to `Z_MIN`; the highest `z` at which all five exist is the target zoom (cache hits count as exists). Per tile: fetch at the target zoom; on `None` walk down to `Z_MIN`; a tile missing at every zoom is the Task-4/`resample` error path.
-- [ ] **Step 1: Failing tests** (all with a fake `TileGet`, temp project dirs, real `Project::save` round-trip, no network): (a) end-to-end — a fake serving synthetic ramp tiles for the window at z16 → `fetch_dem` writes `dem/mapterhorn_dtm.tif` that `Dem::open` reads and whose `height` at the map centre matches the ramp; (b) the cache — a second `fetch_dem` with a *counting* fake requests nothing; (c) the upsert — `sources.dem` contains `dem/mapterhorn_dtm.tif` once after two runs, and a pre-existing Copernicus entry is kept; (d) 404-at-native → parent fallback end to end (fake answers z16 404, z15 200); (e) the attribution sidecar contains the four fixed lines below.
-- [ ] **Step 2: verify failures → Step 3: implement** `TileGet`, `RealTiles` (caps answers at `MAX_TILE_BYTES`, uses the now `pub(crate)` `with_tries`/`transient`), the cache layout, discovery, `fetch_dem`, and the sidecar with this exact copy (only the retrieval date and window line vary):
+- Zoom discovery when `request.zoom` is `None`: probe the 4 window corners and the centre, `Z_MAX` down to `Z_MIN`; the highest `z` at which all five exist is the target zoom (cache hits count as exists). Per tile: fetch at the target zoom; on `None` walk down to `Z_MIN`; count the tiles that ended up below native zoom — a partial world-fallback count goes into the note line (e.g. `3 of 2116 tiles only have the 30 m world fallback`) and the attribution sidecar; a discovered zoom of `Z_MIN` means the whole project is GLO-only and is the refusal path below.
+- The GLO-only refusal: when the discovered zoom is `Z_MIN` and `request.force` is `false`, `fetch_dem` returns without writing anything, after passing this exact line to `note`, and a `FetchError::Other` with the same text: `Mapterhorn has nothing finer than Copernicus GLO-30 here; sources.dem is unchanged. Other sources exist (national portals, Sonny's 20 m, FABDEM if non-commercial), but none is implemented — TileGet sources slot into dem_fetch.rs, other formats need their own fetcher. Pass --force to fetch the 30 m world fallback anyway.`
+- The upsert order: `dem/mapterhorn_dtm.tif` goes to the **front** of `sources.dem` (`Dem::open` picks the first tile that contains the sample; behind a 1° Copernicus tile it would be dead), an existing entry with that path is replaced in place, no other entry is touched.
+
+- [ ] **Step 1: Failing tests** (all with a fake `TileGet`, temp project dirs, real `Project::save` round-trip, no network): (a) end-to-end — a fake serving synthetic ramp tiles for the window at z16 → `fetch_dem` writes `dem/mapterhorn_dtm.tif` that `Dem::open` reads and whose `height` at the map centre matches the ramp; (b) the cache — a second `fetch_dem` with a *counting* fake requests nothing; (c) the upsert — `sources.dem` contains `dem/mapterhorn_dtm.tif` exactly once after two runs, **at position 0**, and a pre-existing Copernicus entry is kept; (d) 404-at-native → parent fallback end to end (fake answers z16 404, z15 200); (e) the attribution sidecar contains the four fixed lines below; (f) a fake that answers only at `Z_MIN` (a GLO-only region) → `fetch_dem` errors with the refusal text, writes no file, and `naves.toml` is byte-identical to before; the same fake with `force: true` completes at z12; (g) a mixed fake (all probes at z16, one tile only at z12) completes and its note line contains `1 of <n> tiles only have the 30 m world fallback`.
+- [ ] **Step 2: verify failures → Step 3: implement** `TerrariumSource`/`MAPTERHORN`, `TileGet`, `RealTiles` (parameterised by the source; caps answers at `MAX_TILE_BYTES`, uses the now `pub(crate)` `with_tries`/`transient`), the cache layout, discovery, the GLO-only refusal, the mixed-coverage count, `fetch_dem`, the front-of-list upsert, and the sidecar with this exact copy (only the retrieval date, window/zoom line and fallback count vary):
 
 ```text
 Terrain elevation: Mapterhorn — https://mapterhorn.com
@@ -191,23 +225,25 @@ Source list and licences: https://mapterhorn.com/attribution
 Retrieved: <RFC 3339 date>  Window: <south> <west> to <north> <east>  Native zoom: up to z<zoom>
 The national data is bare-earth (CC BY 4.0, Etalab 2.0, DL-DE, OGL where present); the world fallback is Copernicus GLO-30.
 ```
-
 - [ ] **Step 4: tests PASS** (`cargo test -p naves-export --test dem_fetch`) → **Step 5: commit** `feat: naves dem fetch, the mapterhorn dem source`.
 
 ### Task 6: CLI wiring and documentation
 
 **Files:**
-- Modify: `crates/naves/src/cli.rs` (new `Dem(DemAction)` subcommand mirroring the existing `Imagery` subcommand: `fetch [DIR] --zoom <Z> --pixel-m <M>`, help text mirroring the imagery one; the `naves new` advice line becomes "Next: `naves dem fetch` writes a bare-earth height model into the project, or add your own files to `sources.dem` in `naves.toml`. Then run `naves build`.")
+- Modify: `crates/naves/src/cli.rs` (new `Dem(DemAction)` subcommand mirroring the existing `Imagery` subcommand: `fetch [DIR] --zoom <Z> --pixel-m <M> --force`, help text mirroring the imagery one; the `naves new` advice line becomes "Next: `naves dem fetch` writes a bare-earth height model into the project, or add your own files to `sources.dem` in `naves.toml`. Then run `naves build`.")
 - Modify: `docs/manual/src/getting-started.md` (after the Copernicus download paragraph: one short alternative paragraph naming `naves dem fetch`, ~340 MB for the example, the attribution sidecar, and that the map remembers the file in `naves.toml`), `docs/manual/src/project-file.md` (`dem` source table: mention the fetched `dem/mapterhorn_dtm.tif`), `CHANGELOG.md` (one `feat:` line under Unreleased).
 - Test: `crates/naves-export/tests/dem_fetch.rs` if any pure helper moved; CLI is reviewed by hand in the acceptance step (the repo has no CLI integration tests).
 
-- [ ] **Step 1: Wire the subcommand** (`fetch_dem(dir, &DemFetchRequest::default(), &RealTiles::new(), &mut |line| output::note(line))`, output lines mirroring `imagery_fetch`: a `note` with the Mapterhorn credit and size before anything downloads, a `result` per added path, and "naves.toml lists the files; `naves build` uses them.").
-- [ ] **Step 2: `cargo build -p naves` and `cargo test` green; `cargo clippy` clean.**
-- [ ] **Step 3: Acceptance on the real example (network, one-off, not a test):** in this worktree `naves dem fetch examples/berchtesgaden` (expect ~2 min, ~340 MB into the cache) then `naves build examples/berchtesgaden`, and compare `build/report.json` against the spike's stored `/var/tmp/naves-mapterhorn-spike/report_mapterhorn.json`: `road_misses_terrain` about 3597 ± boundary rounding (tile ranges differ by the margin rule), `road_grade` about 9, `earthworks_capped` about 129. The cache directory is then committed nowhere; `examples/berchtesgaden/dem/mapterhorn_dtm.tif` is **not** added to the repo (it is example data, and `dem/` is untracked).
-- [ ] **Step 4: Commit** `feat: naves dem fetch subcommand and manual chapter`.
+- [ ] **Step 1: Wire the subcommand** (`fetch_dem(dir, &MAPTERHORN, &DemFetchRequest { zoom, pixel_m, force }, &RealTiles::new(&MAPTERHORN), &mut |line| output::note(line))`). Output lines mirror `imagery_fetch`: before anything downloads, a `note` with the Mapterhorn credit, the expected size (MB, from the discovered tile count), and this reminder, fixed copy — `Other elevation sources exist (national portals, Sonny's 20 m, FABDEM if non-commercial); none is implemented. Terrarium XYZ sources slot into dem_fetch.rs, other formats need their own fetcher.`; then a `result` per added path, then "naves.toml lists the files; `naves build` uses them.".
+- [ ] **Step 2: Manual chapters keep the fallback rules:** in `getting-started.md`, after the fetch paragraph: "Where Mapterhorn has nothing finer than Copernicus GLO-30 — most of the world outside Europe and the US — the command refuses and `sources.dem` keeps the Copernicus files; `--force` fetches the 30 m fallback. Tiles that only have the fallback inside a covered region are named in the output and in `dem/mapterhorn_dtm.attribution.txt`."
+- [ ] **Step 3: `cargo build -p naves` and `cargo test` green; `cargo clippy` clean.**
+- [ ] **Step 4: Acceptance on the real example (network, one-off, not a test):** in this worktree `naves dem fetch examples/berchtesgaden` (expect ~2 min, ~340 MB into the cache) then `naves build examples/berchtesgaden`, and compare `build/report.json` against the spike's stored `/var/tmp/naves-mapterhorn-spike/report_mapterhorn.json`: `road_misses_terrain` about 3597 ± boundary rounding (tile ranges differ by the margin rule), `road_grade` about 9, `earthworks_capped` about 129. The cache directory is then committed nowhere; `examples/berchtesgaden/dem/mapterhorn_dtm.tif` is **not** added to the repo (it is example data, and `dem/` is untracked).
+- [ ] **Step 5: Commit** `feat: naves dem fetch subcommand and manual chapter`.
 
 ## Notes for the implementer
 
 - `naves build`, `dem.rs` and the height pipeline are **untouched** by this plan; if a task seems to need them, stop and re-read the spec — the point of path 1 is that the build reads an ordinary GeoTIFF.
+- **Extensibility is a seam, not a framework.** A new Terrarium-XYZ source is a new `TerrariumSource` const plus tests; `TileGet` fakes stay enough. A source in another wire format (national COG over HTTP ranges, Sonny's `.hgt`, FABDEM zips) starts as a sibling fetcher in `dem_fetch.rs` mirroring how `imagery` grew per-provider fetches inside its catalogue — no plugin registry, the constant list is the catalogue.
+- **The current source always stays available**: refusing GLO-only regions (and never touching `naves.toml` on any error) means `sources.dem` keeps working exactly as before; the fetched file is added at the front only on success.
 - The spike's scratch (fetch script, repack, both reports, hillshade image) lives in `/var/tmp/naves-mapterhorn-spike/` while this machine stays up; it is evidence, not source.
 - The measure of success is the recorded report deltas in the spike answers: road findings broadly down, `earthworks_capped` up because real gorge walls replace the DSM's smoothness. That regression is expected, disclosed in the manual, and **not** to be hidden by pre-smoothing the raster.
