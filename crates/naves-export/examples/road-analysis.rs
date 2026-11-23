@@ -7643,9 +7643,10 @@ fn profile_height_at(
     best.map(|(height, _)| height)
 }
 
-/// The step at a cut access road's entry: the road's height at the end joint the entry junction holds (the joint
-/// the `End` rule puts on the junction) against the lot's target at that same joint. Where the chain holds no end
-/// to the junction, the road's profile is interpolated at the junction's position and compared there.
+/// The step at a cut access road's entry: the built road's height at the end joint the entry junction holds (the
+/// joint the `End` rule puts on the junction; the profile's height, not the height the hold asks for) against the
+/// lot's target at that same joint. Where the chain holds no end to the junction, the road's profile is interpolated
+/// at the junction's position and compared there.
 fn entry_step(
     net: &naves_core::roadplace::PlacedNetwork,
     profiles: &naves_core::profile::Profiles,
@@ -7680,7 +7681,9 @@ fn entry_step(
                 })
         });
     let (at, height) = match held {
-        Some(hold) => (hold.at, hold.height),
+        // the road's own height at that joint, not the height the hold asks for: the two differ where the solve or
+        // the strip stops honouring the hold, and that is what the figure has to show
+        Some(hold) => (hold.at, profile_height_at(profiles, &owns, hold.at)?),
         // no joint of the chain is held to the junction: the road's profile at the junction's position
         None => (
             junction.at,
@@ -8114,6 +8117,31 @@ mod tests {
         )
         .expect("an entry");
         assert!((step - 0.3125).abs() < 1e-9, "{step}");
+    }
+
+    #[test]
+    fn the_entry_step_reads_the_built_road_not_the_height_the_hold_asks_for() {
+        // the same road and lot as above, but the strip's joint on the cap's end is at 108.000 m: the road stops
+        // 0.125 m below the 108.125 m the entry's plane asks for there, and the step has to show that 0.125 m
+        let roads = vec![
+            placed_road("s", 0, PlacedKind::Piece, (0.0, 0.0), (0.0, 10.0)),
+            placed_road("s", 1, PlacedKind::EndCap, (0.0, 10.0), (0.0, 16.25)),
+        ];
+        let joints = vec![(0.0, 0.0, 100.0), (0.0, 10.0, 105.0), (0.0, 16.25, 108.0)];
+        let coeffs = [105.0, 0.0, 0.5, 0.0, 0.0, 0.0];
+        let (net, profiles, junctions) =
+            entry_with(roads, joints, (0.0, 10.0), coeffs, (0.0, 10.0));
+        let lot_report = entry_report(coeffs);
+        let step = entry_step(
+            &net,
+            &profiles,
+            &junctions,
+            &flat_base(),
+            &lot_report,
+            &entry("s"),
+        )
+        .expect("an entry");
+        assert!((step - 0.125).abs() < 1e-9, "{step}");
     }
 
     #[test]
