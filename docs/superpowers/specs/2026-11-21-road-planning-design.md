@@ -716,11 +716,12 @@ were not re-measured by Task 7b.
 | name | value | meaning | supported by | re-check |
 |---|---|---|---|---|
 | `REROUTE_ENABLED` | `false` until judged | the switch | controller | |
-| `SAMPLE_M` | 2.0 m | resample for zones; arcs written back | `smooth::SAMPLE_M`, reused | |
+| `SAMPLE_M` | 2.0 m | resample for zones; the sampling a written route carries | `smooth::SAMPLE_M`, reused | |
 | `CHAIN_TURN_MAX_DEG` | 150° | a two-stretch node that turns more ends a chain | `smooth`, reused | |
 | `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | spike: tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts. Map: 1585 legs, tight 5176 m; lead 3 plans 1299 legs, tight 5945 m; lead 4 1146 legs, 6626 m (the switchbacks: neither at lead 2, switchback #1 at lead 3, both at lead 4) | |
 | `PLAN_RADIUS_MARGIN` | 1.05 | planning radius over the tightest arc | notes 3.6; routes 10.41 to 10.50 m | |
 | `PLAN_REACHED_FRACTION` | 0.99 | a written route's tightest sample, of the tightest arc | smoothing's reached rule | |
+| `PLAN_WRITE_TOL_M` | 0.02 m | the drop of a route's write-back over the `SAMPLE_M` sampling of it: the search's straight parts lose every interior point, an arc keeps the sampling (`written_line`) | measured: the smoothing's own 0.20 m drop over the sampled arcs leaves 4 m chords whose joints the stage's 2 m measures read at 5 m, not at the arc's 10.5 m, so the tolerance has to stay below the 0.05 m sagitta of a `SAMPLE_M` chord; the Task 9 tuning record has the table | |
 | `PLAN_STEP_M` | 6.0 m | search step | same legs as 4 m (1468 / 1466), a third of the CPU; 2 m loses legs | |
 | `PLAN_MAX_TURN_DEG` | 45° | largest heading change of a step | notes 3.5 | |
 | heading bins | 32 to 180 | `⌈2π / (θ/4)⌉`, clamped | notes 3.5 | |
@@ -799,7 +800,12 @@ with a moved two-stretch node, one straight road as a control. The switchbacks a
 - **Bridges.** No bridge stretch and no road within 25 m of a bridge end moves; `fit_bridges` sees the bridges as
   before.
 - **Placement.** It fits pieces to the planned line as to any line. Planned arcs have 1.05 times the tightest arc's
-  radius. The line has more points inside planned zones (2 m on arcs).
+  radius. The line inside planned zones is the route at the stage's own `SAMPLE_M` sampling with the straight parts
+  collapsed to what bounds them (the write-back of every sample of the search, one every 2° of an arc, was measured
+  2.2× slower at placement and wrote a route ten times as dense as the drawn network); the written arcs still read
+  their radius on the stage's 2 m measures, whatever the phase of the samples, the anchors stay bit for bit, and a
+  written line that fails the route's checks from scratch again keeps every sample of the search for that leg and is
+  counted in the report.
 - **Height solve.** Unchanged. It receives the placed pieces and sets every height. A planned route had a feasible
   two-pass profile at its grade limit, with its anchors on the terrain, so the solve should find it; its vertical
   curvature is watched in the judging (`road_grade`, `road_not_drivable`).

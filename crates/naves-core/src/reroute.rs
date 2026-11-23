@@ -26,7 +26,7 @@ use crate::reroute::raster::{
 };
 use crate::reroute::search::{
     LegInput, LegOutcome, Route, Weights, check_route, search_leg, search_leg_relaxed,
-    self_clearance,
+    self_clearance, written_line,
 };
 use crate::roadnet::{RoadGraph, Stretch, crossings_of};
 use crate::smooth::{ChainPlan, Link, WaterTest, plan_chains, radius_at, resample, tight_runs};
@@ -82,6 +82,13 @@ pub const SAMPLE_M: f64 = crate::smooth::SAMPLE_M;
 pub const PLAN_LEAD: f64 = 2.0;
 /// The planning radius is this much over the tightest arc.
 pub const PLAN_RADIUS_MARGIN: f64 = 1.05;
+/// The tolerance of the drop of a planned route's write-back ([`written_line`]): far below the sagitta of a
+/// two-metre sample of an arc at the planning radius (0.047 m at 10.5 m), so a straight part loses every interior
+/// point while an arc keeps its sampling. The smoothing stage's own drop (0.20 m) cannot be reused here: on the
+/// sampled arcs it leaves chords of about 4 m whose joints turn 22°, and the stage's measures, which read a written
+/// line on a 2 m resample, read those joints at a radius of 5 m, not the arc the chords stand for. `0.0`, the
+/// parameter [`RerouteParams::simplify`], keeps every sample of the search.
+pub const PLAN_WRITE_TOL_M: f64 = 0.02;
 /// A written route's tightest sample, as a fraction of the tightest arc, that counts as reached.
 pub const PLAN_REACHED_FRACTION: f64 = 0.99;
 /// Search step, in metres.
@@ -186,6 +193,8 @@ pub struct RerouteParams {
     pub raster_max_cells: usize,
     /// See [`PLAN_FIELD_MAX_CELLS`].
     pub field_max_cells: usize,
+    /// See [`PLAN_WRITE_TOL_M`].
+    pub simplify: f64,
 }
 
 impl Default for RerouteParams {
@@ -218,6 +227,7 @@ impl Default for RerouteParams {
             crossing_end_m: PLAN_CROSSING_END_M,
             raster_max_cells: PLAN_RASTER_MAX_CELLS,
             field_max_cells: PLAN_FIELD_MAX_CELLS,
+            simplify: PLAN_WRITE_TOL_M,
         }
     }
 }
@@ -407,8 +417,17 @@ pub struct RerouteReport {
     /// The routes reverted because they came too near an earlier accepted route; each is a leg that kept its line
     /// with reason [`KeptReason::BlockedByRoad`] and detail `route_of <zone id>`.
     pub reverted: usize,
+    /// The planned routes written with every sample of the search, because the simplified line did not pass the
+    /// route's checks again ([`written_line`]); the drop that would have saved the placement its density is not
+    /// made where it would change what is built.
+    pub kept_sampled_routes: usize,
     /// The states every search of every leg expanded, the diagnostic searches included.
     pub states: usize,
+    /// The point count of all stretches of the graph the stage got (the stage's write-back changes the
+    /// density of the lines as well as their shape; this is the number to watch against the placement time).
+    pub points_before: usize,
+    /// The point count of all stretches after the stage.
+    pub points_after: usize,
 }
 
 impl RerouteReport {
@@ -1131,6 +1150,8 @@ struct LegPlan {
     drawn_grade: f64,
     planned_grade: f64,
     original_feasible: bool,
+    /// Whether the written line keeps every sample of the search (see [`written_line`]); `false` for a kept leg.
+    dense: bool,
     route: Option<Route>,
 }
 
@@ -1207,6 +1228,7 @@ fn kept_leg(
         drawn_grade,
         planned_grade: 0.0,
         original_feasible,
+        dense: false,
         route: None,
     }
 }
@@ -1440,17 +1462,13 @@ fn plan_leg(
         &scenario, &band, radius, &ground_fn, params, self_along, self_clear,
     );
     match search_leg_relaxed(&input, &limits) {
-        Ok(LegOutcome::Found(route)) => {
+        Ok(LegOutcome::Found(mut route)) => {
             let rband = Band::from_params(params, route.grade_limit, cell);
+            let reached = wanted * params.reached_fraction;
             // The search returned a route, and only a try that did not run out returns one: `budget_exhausted` is
             // what the search says, not a default. A route the check from scratch rejects is a bug (the search's own
             // drops on the way are routine and nothing is reported for them).
-            if !check_route(
-                &input,
-                &rband,
-                wanted * params.reached_fraction,
-                &route.points,
-            ) {
+            if !check_route(&input, &rband, reached, &route.points) {
                 return kept_leg(
                     job,
                     KeptReason::NoRoute,
@@ -1462,6 +1480,11 @@ fn plan_leg(
                     original_feasible,
                 );
             }
+            // The write-back is what the stretch gets: the sampled line dropped to the tolerance (the grades below
+            // are measured on the written line, too), and a route whose simplified line fails the check from
+            // scratch again keeps every sample (counted in [`RerouteReport::kept_sampled_routes`]).
+            let written = written_line(&input, &rband, reached, &route, params.simplify);
+            route.points = written.points;
             let planned_grade = arrive(&route.points, &ground_fn, &rband)
                 .map_or(route.planned_grade, |p| p.max_grade());
             LegPlan {
@@ -1478,6 +1501,7 @@ fn plan_leg(
                 drawn_grade: drawn.mean,
                 planned_grade,
                 original_feasible,
+                dense: written.dense,
                 route: Some(route),
             }
         }
@@ -2373,6 +2397,9 @@ fn plan_graph_impl(
         }
     }
     let states = zones.iter().map(|z| z.states).sum();
+    let points_of = |g: &RoadGraph| g.stretches.iter().map(|s| s.points.len()).sum::<usize>();
+    let points_before = points_of(graph);
+    let points_after = points_of(&result);
     let steeper_than_drawn = results
         .iter()
         .filter(|r| {
@@ -2381,6 +2408,10 @@ fn plan_graph_impl(
         })
         .count();
     let max_stray = zones.iter().map(|z| z.max_stray_m).fold(0.0, f64::max);
+    let kept_sampled_routes = results
+        .iter()
+        .filter(|r| matches!(r.outcome, LegOutcomeKind::Planned) && r.dense)
+        .count();
     (
         result,
         RerouteReport {
@@ -2392,7 +2423,10 @@ fn plan_graph_impl(
             max_stray_m: max_stray,
             steeper_than_drawn,
             reverted,
+            kept_sampled_routes,
             states,
+            points_before,
+            points_after,
         },
     )
 }

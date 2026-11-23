@@ -36,7 +36,7 @@ use std::collections::{BinaryHeap, HashMap};
 use std::f64::consts::TAU;
 use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::smooth::radius_at;
+use crate::smooth::{radius_at, resample, simplify_line};
 
 use super::band::{Band, Reach, arrive, arrives, band_step, check_band, line_samples};
 use super::dubins::{DubinsPath, arc_points, dubins_paths, follow, segments};
@@ -1523,6 +1523,63 @@ pub fn check_route(
     match arrive(points, input.ground, band) {
         Ok(profile) => profile.max_grade() <= band.grade + GRADE_SLACK,
         Err(_) => false,
+    }
+}
+
+/// A route's write-back: the points the stretch is written with, and whether they are every sample of the search
+/// (the line could not be dropped; see [`written_line`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenLine {
+    /// The points of the written line. The two anchors stay bit for bit, whatever was dropped.
+    pub points: Vec<(f64, f64)>,
+    /// Every sample of the search is kept: the line passes no check after its drop, so the line the search
+    /// returned is written instead. `false` also covers a line with nothing to drop (a tolerance that is not
+    /// positive keeps every sample by [`simplify_line`]'s rule, too).
+    pub dense: bool,
+}
+
+/// The write-back of a route the search returned and [`check_route`] accepted: the sampled line at the stage's own
+/// sampling — [`resample`] at [`SAMPLE_M`] — with the points dropped that a straight between two of its samples does
+/// not need ([`simplify_line`] at `tolerance`, see [`crate::reroute::PLAN_WRITE_TOL_M`]).
+///
+/// The resampling is the drop that matters. The search samples an arc about every 2° of its curvature — 0.37 m at the
+/// planning radius of 10.5 m — and the write-back of that line would write a route more than ten times as dense as
+/// the network around it. On the stage's `SAMPLE_M` sampling the same arc turns 10.9° per sample, and the measures the
+/// stage reads a written line with — the radius of [`check_route`], the tight length of the report — sample at
+/// `SAMPLE_M` again, so the written arc still reads its own radius: 10.4 m against the 9.9 m the pieces ask for,
+/// whatever the phase of the samples. An arc cannot be dropped further: [`simplify_line`] at a tolerance that is
+/// worth having (the smoothing stage's 0.20 m) leaves chords of about 4 m whose joints turn 22°, and the resample
+/// reads the joint, not the arc the chords stand for: 5 m. So the tolerance only takes what is collinear, and
+/// straight parts lose every interior point while arcs keep the sampling.
+///
+/// The written line still passes [`check_route`] from scratch: a longer way over an obstacle, a wall crossed one
+/// time too many and the rest of the checks run on it as on the line the search returned. A line that fails keeps
+/// that line, sample by sample, and [`WrittenLine::dense`] says so; a tolerance that is not positive keeps every
+/// sample of the search. No point of the searched line is further from the written line than the sagitta of a
+/// `SAMPLE_M` chord of an arc at the planning radius: 0.05 m at 10.5 m.
+#[must_use]
+pub fn written_line(
+    input: &LegInput<'_>,
+    band: &Band,
+    min_radius_m: f64,
+    route: &Route,
+    tolerance: f64,
+) -> WrittenLine {
+    let sampled = resample(&route.points, SAMPLE_M);
+    let simplified = if tolerance > 0.0 {
+        simplify_line(&sampled, tolerance)
+    } else {
+        route.points.clone()
+    };
+    let droppable = simplified.len() < route.points.len();
+    let (written, dense) = if droppable && check_route(input, band, min_radius_m, &simplified) {
+        (simplified, false)
+    } else {
+        (route.points.clone(), droppable)
+    };
+    WrittenLine {
+        points: written,
+        dense,
     }
 }
 

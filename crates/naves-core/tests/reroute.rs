@@ -430,6 +430,7 @@ fn parameters_default_to_the_constants() {
     assert_eq!(p.chamfer_error, CHAMFER_ERROR);
     assert_eq!(p.raster_max_cells, 4_000_000);
     assert_eq!(p.crossing_end_m, 10.0);
+    assert_eq!(p.simplify, PLAN_WRITE_TOL_M);
     assert!(!p.enabled);
 }
 
@@ -1661,9 +1662,10 @@ fn more_samples_than_the_band_takes_are_clamped_like_the_band() {
 
 use naves_core::reroute::dubins::{DubinsPath, Turn, dubins_paths};
 use naves_core::reroute::search::{
-    LegInput, LegOutcome, Route, Weights, search_leg, search_leg_relaxed, self_clearance,
+    LegInput, LegOutcome, Route, Weights, WrittenLine, search_leg, search_leg_relaxed,
+    self_clearance, written_line,
 };
-use naves_core::reroute::{Anchor, PLAN_BUDGETS, Pose, RerouteError};
+use naves_core::reroute::{Anchor, PLAN_BUDGETS, PLAN_WRITE_TOL_M, Pose, RerouteError, SAMPLE_M};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 const RHO: f64 = 10.5;
@@ -2086,6 +2088,178 @@ fn a_right_angle_is_rounded_at_the_radius() {
         r.cost,
         flat_cost(&tangent, FRAC_PI_2, &s.obstacles())
     );
+}
+
+#[test]
+fn the_written_line_keeps_the_samples_the_stage_still_reads() {
+    // The search returns an arc about every 2° of curvature (79 points here) and a straight at most every 2 m;
+    // the write-back drops that to the stage's own SAMPLE_M sampling with its straight parts collapsed, and
+    // the written line passes the route's check from scratch again.
+    let s = Setup::new(
+        anchor(18.0, 0.0, 0.0),
+        anchor(60.0, 42.0, FRAC_PI_2),
+        &[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)],
+    );
+    let route = s.route();
+    let band = s.band();
+    // the stage's own acceptance: the family's tightest arc is 10 m here, and a written route must still
+    // reach 99 % of it (PLAN_REACHED_FRACTION); the search radius RHO is the planning margin over that
+    let reached = 9.9;
+    let mut written: Option<WrittenLine> = None;
+    let leg = s.run_edited(None, |input| {
+        written = Some(written_line(
+            input,
+            &band,
+            reached,
+            &route,
+            PLAN_WRITE_TOL_M,
+        ));
+    });
+    assert!(leg.is_ok(), "{leg:?}");
+    let w = written.expect("the write-back of an accepted route");
+    assert_eq!(
+        route.points.len(),
+        79,
+        "the fixtures may not drift silently"
+    );
+    // a plain corner with its straights: the points the stage's own sampling needs (the two anchors, one
+    // point at each end of the arc, and one per 2 m of it; every interior point of the straight parts is gone)
+    assert_eq!(w.points.len(), 11, "{:?}", w.points);
+    assert!(!w.dense);
+    // the anchors stay bit for bit
+    assert!(same_bits(w.points[0], route.points[0]));
+    assert!(same_bits(
+        *w.points.last().unwrap(),
+        *route.points.last().unwrap()
+    ));
+    // every sample of the search lies within the sagitta of the written line's sampling: a 2 m chord of an
+    // arc at the planning radius is 0.05 m off it (the step of the sampling divides the line evenly, so it is
+    // never longer than 2 m by much), far within the 0.20 m the road pieces are placed with
+    for p in &route.points {
+        let d = dist_to_line(*p, &w.points);
+        assert!(d <= 0.05, "sample {p:?} is {d} m from the written line");
+    }
+    // the written arc still reads its own radius, at any phase of the samples its measures take
+    let tight = |line: &[(f64, f64)]| {
+        naves_core::smooth::resample(line, SAMPLE_M)
+            .windows(3)
+            .map(|q| naves_core::smooth::radius_at(q[0], q[1], q[2]))
+            .fold(f64::INFINITY, f64::min)
+    };
+    assert!(
+        tight(&w.points) >= reached,
+        "the written arc reads {} m against {reached}",
+        tight(&w.points)
+    );
+    for skip in 1..4 {
+        let trimmed = &w.points[skip..];
+        assert!(
+            tight(trimmed) >= reached,
+            "the written arc reads {} m against {reached} from sample {skip}",
+            tight(trimmed)
+        );
+    }
+    assert!(tight(&route.points) >= reached, "fixture: the dense line");
+}
+
+/// The written line of a route whose drop fails the check from scratch: every sample is kept. The wall
+/// between the chord the resample takes and the arc it stands for crosses the written line one time too many,
+/// and no other check is offended — the samples of the search cross it nowhere.
+#[test]
+fn the_written_line_that_fails_its_check_keeps_every_sample() {
+    let s = Setup::new(
+        anchor(18.0, 0.0, 0.0),
+        anchor(60.0, 42.0, FRAC_PI_2),
+        &[(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)],
+    );
+    let route = s.route();
+    let band = s.band();
+    let reached = 9.9;
+    let dropped = {
+        let mut written: Option<WrittenLine> = None;
+        let _ = s.run_edited(None, |input| {
+            written = Some(written_line(
+                input,
+                &band,
+                reached,
+                &route,
+                PLAN_WRITE_TOL_M,
+            ));
+        });
+        let w = written.expect("the write-back");
+        assert!(!w.dense);
+        w.points
+    };
+    // a chord of the arc part with its widest gap to the samples over it, and the foot of the sample farthest
+    // off it: a wall from the inside of the chord halfway across the gap crosses the written line but stops
+    // well short of the samples of the search over it
+    let mut farthest = ((0.0, 0.0), 0.0_f64);
+    let mut foot = (0.0, 0.0);
+    for pair in dropped.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let span = (b.0 - a.0).hypot(b.1 - a.1);
+        for &p in &route.points {
+            let along = (p.0 - a.0) * (b.0 - a.0) + (p.1 - a.1) * (b.1 - a.1);
+            let t = along / (span * span);
+            if span <= 0.0 || t < 0.2 || t > 0.8 {
+                continue;
+            }
+            let gap = (p.0 - a.0 - t * (b.0 - a.0)).hypot(p.1 - a.1 - t * (b.1 - a.1));
+            if gap > farthest.1 {
+                farthest = (p, gap);
+                foot = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+            }
+        }
+    }
+    // sagitta of a 2 m sample at the planning radius: the wall needs the chord of an arc, not a straight
+    assert!(
+        (0.03..0.06).contains(&farthest.1),
+        "the fixture needs the chord of an arc: {farthest:?}"
+    );
+    let (dx, dy) = (farthest.0.0 - foot.0, farthest.0.1 - foot.1);
+    let len = dx.hypot(dy);
+    assert!(len > 0.0, "the chord and its sample coincide");
+    let n = (dx / len, dy / len);
+    let wall = Wall {
+        line: vec![
+            (foot.0 - 0.05 * n.0, foot.1 - 0.05 * n.1),
+            (
+                foot.0 + 0.5 * farthest.1 * n.0,
+                foot.1 + 0.5 * farthest.1 * n.1,
+            ),
+        ],
+        allowed: 0,
+        kind: WallKind::Stream,
+        anchors: [at(1000.0, 1000.0), at(1000.0, 1000.0)],
+        end_m: 10.0,
+    };
+    // the samples of the search cross it nowhere, the written line crosses it once
+    assert_eq!(
+        wall.crossings(&route.points),
+        0,
+        "the wall must not reach the samples"
+    );
+    assert_eq!(
+        wall.crossings(&dropped),
+        1,
+        "the wall must cross the written line"
+    );
+    // the edit closure must borrow the walls for any lifetime the input has, so the wall lives for good
+    let walls: &'static [Wall] = Box::leak(vec![wall].into_boxed_slice());
+    let mut kept: Option<WrittenLine> = None;
+    let _ = s.run_edited(None, |input| {
+        input.walls = walls;
+        kept = Some(written_line(
+            input,
+            &band,
+            reached,
+            &route,
+            PLAN_WRITE_TOL_M,
+        ));
+    });
+    let w = kept.expect("the write-back against the wall");
+    assert!(w.dense, "a written line of {} points", w.points.len());
+    assert_eq!(w.points, route.points, "every sample is kept");
 }
 
 /// The hairpin of the examples: legs x = 0 and x = 8 from y = 0 to 60, an apex of radius 4 above, anchors at
@@ -3923,6 +4097,76 @@ fn plan_a_town_corner() {
     assert!(is_close(main[0], (400.0, 500.0), 1e-9));
     assert!(is_close(*main.last().unwrap(), (500.0, 600.0), 1e-9));
     assert!(length_of(&main) > 190.0);
+}
+
+#[test]
+fn plan_a_written_route_keeps_only_the_points_it_needs() {
+    // The write-back of a planned leg is the stage's own sampling of the route: arcs keep a point every
+    // 2 m, straight parts collapse to what bounds them, and the anchors stay bit for bit. With the drop off
+    // (`simplify: 0.0`) every sample of the search is written instead — both runs are asserted here, so the
+    // count of the written line and its distance to the searched one cannot regress silently.
+    let g = town_corner();
+    let (dense_out, dense_report) = plan_with(
+        &g,
+        &flat_map(),
+        &|_: &Stretch| CITY_MIN_R,
+        &|_: (f64, f64)| false,
+        &[],
+        &RerouteParams {
+            simplify: 0.0,
+            ..RerouteParams::default()
+        },
+    );
+    assert!(is_planned(only_zone(&dense_report)), "{dense_report:?}");
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    let dense = points_of(&dense_out, "1:1-3");
+    let written = points_of(&out, "1:1-3");
+    // the counts, so a regression shows up as a number: every sample of the search, and the same route at
+    // the stage's own sampling
+    assert_eq!(dense.len(), 58, "the unsimplified write-back");
+    assert_eq!(written.len(), 14, "the written line");
+    // a quarter of the samples at most: the drop earns its name
+    assert!(
+        written.len() * 4 < dense.len(),
+        "{} written of {} samples",
+        written.len(),
+        dense.len()
+    );
+    // the anchors keep their exact position
+    assert!(same_bits(written[0], dense[0]));
+    assert!(same_bits(*written.last().unwrap(), *dense.last().unwrap()));
+    // the search's samples stay within the placement tolerance of the written line
+    for p in &dense {
+        let d = dist_to_line(*p, &written);
+        assert!(d <= 0.20 + 1e-6, "a searched sample is {d} m from the line");
+    }
+    // the zone the search planned is unchanged: same stretches, same nodes, and the corner is buildable
+    assert_eq!(stretch_ids(&out), stretch_ids(&dense_out));
+    assert_eq!(node_ids(&out), node_ids(&dense_out));
+    for node in [1, 3] {
+        assert_eq!(
+            crossing_point(&out, node),
+            crossing_point(&g, node),
+            "node {node} moved"
+        );
+    }
+    assert!(
+        zone.radius_after_m >= CITY_MIN_R - 0.01,
+        "{}",
+        zone.radius_after_m
+    );
+    assert_eq!(report.tight_after_m, 0.0, "{}", report.tight_after_m);
+    assert_eq!(report.kept_sampled_routes, 0, "{report:?}");
+    assert_eq!(dense_report.kept_sampled_routes, 0);
+    // the two runs agree on what the zone is; a kilometre of written line is neither
+    assert!(
+        length_of(&written) > 190.0 && (length_of(&written) - length_of(&dense)).abs() < 1.0,
+        "written {} against {}",
+        length_of(&written),
+        length_of(&dense)
+    );
 }
 
 #[test]
@@ -5781,6 +6025,9 @@ fn plan_the_summary_of_a_report() {
         max_stray_m: 28.46,
         steeper_than_drawn: 1,
         reverted: 0,
+        kept_sampled_routes: 0,
+        points_before: 30,
+        points_after: 30,
         states: 300,
     };
     assert_eq!(

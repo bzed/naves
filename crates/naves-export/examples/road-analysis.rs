@@ -234,6 +234,18 @@ fn main() {
     if reroute.is_some() {
         println!("TIMING reroute {:.1} s", reroute_time.as_secs_f64());
     }
+    if let Some(report) = &reroute {
+        // the point count of the graph before and after the stage: the write-back changes the density of the
+        // moved lines as well as their shape, and this is the number to watch against the placement time
+        println!(
+            "PLAN_POINTS before the stage {} after the stage {}",
+            report.points_before, report.points_after
+        );
+        println!(
+            "PLAN_SAMPLE_ROUTES {} (planned routes the write-back keeps at every sample of the search)",
+            report.kept_sampled_routes
+        );
+    }
     if smooth.is_some() {
         println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
     }

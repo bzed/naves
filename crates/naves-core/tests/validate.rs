@@ -692,6 +692,9 @@ fn a_planned_curve_names_how_much_steeper_than_drawn_it_is() {
         max_stray_m: 1.5,
         steeper_than_drawn: 1,
         reverted: 0,
+        kept_sampled_routes: 0,
+        points_before: 30,
+        points_after: 30,
         states: 42,
         skipped: Vec::new(),
     });
@@ -757,6 +760,9 @@ fn a_kept_curve_names_its_reason_and_the_radius_it_keeps() {
         max_stray_m: 1.5,
         steeper_than_drawn: 1,
         reverted: 0,
+        kept_sampled_routes: 0,
+        points_before: 30,
+        points_after: 30,
         states: 42,
         skipped: Vec::new(),
     });
