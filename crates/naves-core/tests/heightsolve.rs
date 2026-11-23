@@ -2946,6 +2946,75 @@ fn an_entry_holds_only_the_joints_inward_that_lie_over_the_lot() {
 }
 
 #[test]
+fn an_entry_holds_only_the_joints_inward_that_lie_within_reach_over_the_lot() {
+    // the same road, with the lot reaching from x = 205 instead of 245: the joints at 240 (10 m from the entry) and
+    // at 230 (20 m) both lie over the lot, but only 240 is within the 12.875 m an inward hold reaches (the entry's
+    // patch and 1.5 cells). A joint over the lot is held to the entry's plane, which the lot's surface leaves the
+    // farther the joint is from the entry, so a road that runs along inside a lot for 30 or 50 m is not pinned to it
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let net = network(vec![pieces(
+        "a",
+        Family::City,
+        (190.0, 300.0),
+        (250.0, 300.0),
+        10.0,
+    )]);
+    let lot = lot_surface(
+        "osm/way/1",
+        rectangle(205.0, 250.0, 400.0, 350.0),
+        (320.0, 300.0),
+        101.0,
+    );
+    let entry = CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (250.0, 300.0),
+        node: 9,
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[entry],
+        &hm,
+    );
+    let holds = chain_holds(&net, &net.chains[0], f64::from(hm.cell_m), &junctions);
+    let hold_at = |x: f64| {
+        holds
+            .iter()
+            .find(|(at, _)| (at.0 - x).abs() < 1e-9)
+            .map(|(_, hold)| *hold)
+    };
+    // both are over the lot, and only the joint within reach is held
+    assert!(
+        hold_at(250.0).is_some_and(|hold| hold.is_some()),
+        "{holds:?}"
+    );
+    assert!(
+        hold_at(240.0).is_some_and(|hold| hold.is_some()),
+        "{holds:?}"
+    );
+    assert!(
+        hold_at(230.0).is_some_and(|hold| hold.is_none()),
+        "{holds:?}"
+    );
+    // so the road ramps up to the entry instead of lying on the lot's surface 20 m into it
+    let (p, _) = solve_plain(&net, &hm, &junctions, &side_slopes(&net, &hm)).unwrap();
+    let joint = |x: f64| {
+        p.strips[0]
+            .joints
+            .iter()
+            .find(|j| (j.0 - x).abs() < 1e-9)
+            .copied()
+            .expect("a joint")
+    };
+    assert!((joint(240.0).2 - 101.0).abs() < 1e-6, "{:?}", joint(240.0));
+    assert!((joint(230.0).2 - 101.0).abs() > 0.01, "{:?}", joint(230.0));
+}
+
+#[test]
 fn an_access_road_ends_at_the_lots_surface_and_holds_the_joints_inward() {
     let (net, hm, mut junctions, lots, entries) = access_into_a_lot(101.0);
     add_lot_entries(&mut junctions, &net, &lots, &entries, &hm);

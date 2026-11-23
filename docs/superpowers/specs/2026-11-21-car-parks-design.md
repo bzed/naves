@@ -425,7 +425,10 @@ there (and the gradient of that target, `λ·∇S + (1 − λ)·∇g` with `∇g
 cell at the entry, as its gradient; Task 7 fix round 1, the brief's `λ·∇S` alone leaves a step on a λ < 1 lot on a
 slope). In the solve its height is a constant, as a junction on a roundabout takes the ring's plane
 (`Source::Constant` in `profile::model`). The hold rules `End` and `Inward` hold the road's end joint and the joints
-inward that lie over the lot to the surface's height there. So the road arrives at the lot's height, with no step.
+inward that lie over the lot to the surface's height there. `Inward` reaches no farther than an entry's reach (the
+entry's patch plus 1.5 terrain cells): a joint beyond it is not held even where it lies over the lot, because the hold
+is the entry's plane and the lot's surface leaves that plane the farther a joint is from the entry. So the road
+arrives at the lot's height, with no step.
 `junctions::add_lot_entries` adds them and puts the smoothed lots into `Junctions::lots`. An entry whose lot has no
 surface (surface only or excluded) gets no junction: the lot step cuts no access road there, and a dead end not cut
 (its inside part shorter than `LOT_ENTRY_M`) is covered only by the ground target below, not by a held end.
