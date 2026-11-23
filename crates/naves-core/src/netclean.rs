@@ -204,12 +204,15 @@ pub struct CleanReport {
     pub lot_through: Vec<String>,
     /// The groups whose removal would have split a component and that were left as they are.
     pub lots_split: Vec<usize>,
-    /// Access roads whose entry node a later step of the clean-up took away (a junction merge or a bridge approach
-    /// moved it): they get no entry junction.
+    /// Access roads that get no entry junction at all: those whose entry node a later step of the clean-up took away
+    /// (a junction merge or a bridge approach moved it) and those whose remainder behind the cut the placement
+    /// dropped (shorter than half a piece is wide, or ending under other roads, see
+    /// [`CleanReport::lot_access_unplaced`]). Each is a `road_in_lot_dropped` finding and the lot loses that access
+    /// road.
     pub lot_entries_lost: usize,
     /// Access roads whose remainder behind the cut the placement dropped (shorter than half a piece is wide, or
-    /// ending under other roads): they get no entry junction either, so the lot loses this access road. Each is a
-    /// `road_in_lot_dropped` finding, and they are counted in [`CleanReport::lot_entries_lost`] as well.
+    /// ending under other roads): they get no entry junction, so the lot loses this access road. The build counts
+    /// them in [`CleanReport::lot_entries_lost`] and keeps them here for the finding.
     pub lot_access_unplaced: Vec<CutAccess>,
     /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
     /// the lot step.
