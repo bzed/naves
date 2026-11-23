@@ -19,6 +19,7 @@ use crate::netclean::{ApproachKind, CleanReport};
 use crate::objects::OrphanedEdit;
 use crate::osm::LandPolygon;
 use crate::profile::{CLEARANCE_TOLERANCE_M, GradeExcess, GradeExcessKind, Profiles};
+use crate::reroute::{RerouteReport, ZoneOutcome};
 use crate::roadnet::DroppedDuplicate;
 use crate::roadplace::{OVERLAY_DROP_M, PlacedKind, PlacedNetwork};
 use crate::smooth::SmoothReport;
@@ -111,11 +112,15 @@ pub enum Rule {
     RoadCurveWidened,
     /// A curve that cannot be built as a curve: widening did not reach the radius of the road pieces.
     RoadCurveTooTight,
+    /// A curve tighter than the road pieces that road planning re-routed (information).
+    RoadCurvePlanned,
+    /// A curve tighter than the road pieces that road planning left as drawn (warning).
+    RoadCurveNotPlanned,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 31] = [
+    pub const ALL: [Rule; 33] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -147,6 +152,8 @@ impl Rule {
         Rule::BridgeEndAtJunction,
         Rule::RoadCurveWidened,
         Rule::RoadCurveTooTight,
+        Rule::RoadCurvePlanned,
+        Rule::RoadCurveNotPlanned,
     ];
 
     /// The stable id of the rule.
@@ -184,6 +191,8 @@ impl Rule {
             Rule::BridgeEndAtJunction => "bridge_end_at_junction",
             Rule::RoadCurveWidened => "road_curve_widened",
             Rule::RoadCurveTooTight => "road_curve_too_tight",
+            Rule::RoadCurvePlanned => "road_curve_planned",
+            Rule::RoadCurveNotPlanned => "road_curve_not_planned",
         }
     }
 }
@@ -538,6 +547,55 @@ fn smooth_violations(smooth: Option<&SmoothReport>) -> Vec<Violation> {
         }
     }
     out
+}
+
+/// One violation for each curve road planning re-routed (`road_curve_planned`, at the tightest point of the zone,
+/// with the radius before and after, the largest move and, when a relaxation was needed, how much steeper than
+/// drawn it is) and one for each curve it left as drawn (`road_curve_not_planned`, with the reason and the radius
+/// the curve has). `None` (the stage is off) has none.
+#[must_use]
+pub fn reroute_violations(reroute: Option<&RerouteReport>) -> Vec<Violation> {
+    let Some(report) = reroute else {
+        return Vec::new();
+    };
+    report
+        .zones
+        .iter()
+        .map(|z| {
+            let road = z.stretches.join(", ");
+            match &z.outcome {
+                ZoneOutcome::Planned => {
+                    let steeper = if z.relax_steps > 0 {
+                        format!(
+                            ", {:.1} points steeper than drawn",
+                            (z.planned_grade - z.drawn_grade) * 100.0
+                        )
+                    } else {
+                        String::new()
+                    };
+                    violation(
+                        Rule::RoadCurvePlanned,
+                        z.at,
+                        format!(
+                            "The curve of {road} was planned: radius {:.1} m -> {:.1} m, the route strays up to \
+                             {:.1} m from the drawn line{steeper}",
+                            z.radius_before_m, z.radius_after_m, z.max_stray_m
+                        ),
+                    )
+                }
+                ZoneOutcome::Kept { reason, detail } => violation(
+                    Rule::RoadCurveNotPlanned,
+                    z.at,
+                    format!(
+                        "The curve of {road} keeps its drawn line: {}, {detail}; radius {:.1} m, {:.1} m wanted",
+                        reason.id(),
+                        z.radius_after_m,
+                        z.radius_wanted_m
+                    ),
+                ),
+            }
+        })
+        .collect()
 }
 
 /// One violation for each change the clean-up of the graph made, at the place of the change. Nothing is changed
@@ -1205,6 +1263,7 @@ pub fn check_roads(
     out.extend(duplicate_violations(&net.duplicates));
     out.extend(clean_violations(&net.clean));
     out.extend(smooth_violations(net.smooth.as_ref()));
+    out.extend(reroute_violations(net.reroute.as_ref()));
     out.extend(junction_violations(junctions));
     out.extend(dip_violations(dips));
     out.extend(not_built_violations(net));

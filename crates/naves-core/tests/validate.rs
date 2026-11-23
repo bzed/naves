@@ -530,6 +530,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeEndAtJunction,
         Rule::RoadCurveWidened,
         Rule::RoadCurveTooTight,
+        Rule::RoadCurvePlanned,
+        Rule::RoadCurveNotPlanned,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -564,6 +566,8 @@ fn the_rule_ids_are_distinct_snake_case_words() {
     assert_eq!(Rule::BridgeEndAtJunction.id(), "bridge_end_at_junction");
     assert_eq!(Rule::RoadCurveWidened.id(), "road_curve_widened");
     assert_eq!(Rule::RoadCurveTooTight.id(), "road_curve_too_tight");
+    assert_eq!(Rule::RoadCurvePlanned.id(), "road_curve_planned");
+    assert_eq!(Rule::RoadCurveNotPlanned.id(), "road_curve_not_planned");
 }
 
 #[test]
@@ -628,6 +632,93 @@ fn a_widened_curve_and_a_curve_that_cannot_be_built_are_findings_at_their_place(
         tight[0].message
     );
     assert!(n.smooth.as_ref().unwrap().summary().contains("1 plate"));
+}
+
+#[test]
+fn a_planned_curve_and_a_curve_that_was_not_planned_are_findings_at_their_place() {
+    use naves_core::reroute::{AnchorKind, Candidate, PlannedZone, RerouteReport, ZoneOutcome};
+    let zone = |at: (f64, f64), planned_grade: f64, relax: usize| PlannedZone {
+        id: format!("7:1-2#{relax}"),
+        at,
+        stretches: vec!["7:1-2".to_string()],
+        legs: 1,
+        anchors: (AnchorKind::Line, AnchorKind::Line),
+        junction: None,
+        partner: None,
+        outcome: ZoneOutcome::Planned,
+        radius_before_m: 4.0,
+        radius_wanted_m: 10.0,
+        radius_after_m: 10.5,
+        length_before_m: 40.0,
+        length_after_m: 42.0,
+        max_stray_m: 1.5,
+        drawn_grade: 0.05,
+        drawn_grade_window: 0.09,
+        planned_grade,
+        grade_limit: 0.14,
+        relax_steps: relax,
+        climb_m: 1.0,
+        earthwork_m2: 2.5,
+        cut_max_m: 0.2,
+        fill_max_m: 0.3,
+        states: 42,
+        weight: Some(1.0),
+        budget_exhausted: false,
+        original_feasible: true,
+        candidate: None,
+    };
+    let mut relaxed = zone((3.0, 4.0), 0.20, 1);
+    relaxed.drawn_grade = 0.12;
+    relaxed.grade_limit = 0.22;
+    let mut held = zone((5.0, 6.0), 0.0, 0);
+    held.outcome = ZoneOutcome::Kept {
+        reason: naves_core::reroute::KeptReason::Held,
+        detail: "anchors_close".to_string(),
+    };
+    held.candidate = Some(Candidate::Plate);
+    held.weight = None;
+    let mut n = net(vec![]);
+    n.reroute = Some(RerouteReport {
+        zones: vec![zone((1.0, 2.0), 0.14, 0), relaxed, held],
+        kept_zones: vec![("7:1-2#0".to_string(), "anchors_close".to_string())],
+        tight_before_m: 60.0,
+        tight_after_m: 20.0,
+        max_stray_m: 1.5,
+        steeper_than_drawn: 1,
+        reverted: 0,
+        states: 42,
+        skipped: Vec::new(),
+    });
+    let v = run(&n, &Profiles::default(), &conformed(), &[], &[], &[], &[]);
+    let planned = only(Rule::RoadCurvePlanned, &v);
+    assert_eq!(planned.len(), 2);
+    assert_eq!(planned[0].at, (1.0, 2.0));
+    assert!(
+        planned[0].message.contains("4.0") && planned[0].message.contains("10.5"),
+        "{}",
+        planned[0].message
+    );
+    assert!(
+        !planned[0].message.contains("steeper"),
+        "a zone planned at its own limit is not steeper than drawn: {}",
+        planned[0].message
+    );
+    assert_eq!(planned[1].at, (3.0, 4.0));
+    assert!(
+        planned[1].message.contains("8.0 points steeper than drawn"),
+        "{}",
+        planned[1].message
+    );
+    let not_planned = only(Rule::RoadCurveNotPlanned, &v);
+    assert_eq!(not_planned.len(), 1);
+    assert_eq!(not_planned[0].at, (5.0, 6.0));
+    assert!(
+        not_planned[0].message.contains("held")
+            && not_planned[0].message.contains("anchors_close")
+            && not_planned[0].message.contains("10.0"),
+        "{}",
+        not_planned[0].message
+    );
 }
 
 #[test]

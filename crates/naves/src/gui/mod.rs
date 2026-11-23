@@ -383,11 +383,13 @@ impl NavesApp {
                         warnings,
                         bridges,
                         smoothing,
+                        planning,
                     }) => {
                         self.build_problems
                             .extend(warnings.iter().cloned().map(problems::Problem::note));
                         self.log.extend(warnings.into_iter().map(Line::Warning));
                         self.log.extend(bridges.into_iter().map(Line::Info));
+                        self.log.extend(planning.into_iter().map(Line::Info));
                         self.log.extend(smoothing.into_iter().map(Line::Info));
                         self.log.push(Line::Result(format!(
                             "Mod: {}\nMission: {}",

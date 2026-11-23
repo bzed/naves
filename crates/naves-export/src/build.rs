@@ -30,6 +30,7 @@ use naves_core::imagery::{ImageryError, TileImagery, load_imagery};
 use naves_core::objects::{OverridesError, piece_transform};
 use naves_core::profile::ProfileError;
 use naves_core::project::{ImageryFile, Project, ProjectError};
+use naves_core::reroute::{Candidate, RerouteReport, ZoneOutcome};
 use naves_core::roadplace::PlaceError;
 use naves_core::smooth::SmoothReport;
 use naves_core::surface::SurfaceError;
@@ -63,6 +64,8 @@ pub struct BuildOutput {
     pub bridges: Vec<String>,
     /// One line on what the smoothing of the road graph did; `None` when the stage is off or there are no roads.
     pub smoothing: Option<String>,
+    /// One line on what road planning did; `None` when the stage is off or there are no roads.
+    pub planning: Option<String>,
 }
 
 /// Errors from the build.
@@ -666,6 +669,74 @@ fn bridge_kind_json(kind: &BridgeKind) -> serde_json::Value {
     }
 }
 
+/// `roads.planning` of `build/report.json`: what road planning did to the road graph, or that it is off.
+#[must_use]
+pub fn planning_json(reroute: Option<&RerouteReport>) -> serde_json::Value {
+    let Some(r) = reroute else {
+        return serde_json::json!({ "enabled": false });
+    };
+    let zones: Vec<serde_json::Value> = r
+        .zones
+        .iter()
+        .map(|z| {
+            let (outcome, reason) = match &z.outcome {
+                ZoneOutcome::Planned => ("planned", None),
+                ZoneOutcome::Kept { reason, .. } => ("kept", Some(reason.id())),
+            };
+            serde_json::json!({
+                "id": z.id,
+                "at": [z.at.0, z.at.1],
+                "stretches": z.stretches,
+                "legs": z.legs,
+                "outcome": outcome,
+                "reason": reason,
+                "candidate": z.candidate.map(Candidate::id),
+                "radius_before_m": z.radius_before_m,
+                "radius_wanted_m": z.radius_wanted_m,
+                "radius_after_m": z.radius_after_m,
+                "length_before_m": z.length_before_m,
+                "length_after_m": z.length_after_m,
+                "max_stray_m": z.max_stray_m,
+                "drawn_grade": z.drawn_grade,
+                "drawn_grade_window": z.drawn_grade_window,
+                "planned_grade": z.planned_grade,
+                "grade_limit": z.grade_limit,
+                "relax_steps": z.relax_steps,
+                "climb_m": z.climb_m,
+                "earthwork_m2": z.earthwork_m2,
+                "cut_max_m": z.cut_max_m,
+                "fill_max_m": z.fill_max_m,
+                "states": z.states,
+                "weight": z.weight,
+                "budget_exhausted": z.budget_exhausted,
+                "original_feasible": z.original_feasible,
+            })
+        })
+        .collect();
+    let skipped: Vec<serde_json::Value> = r
+        .skipped
+        .iter()
+        .map(|(subject, reason)| serde_json::json!({ "subject": subject, "reason": reason }))
+        .collect();
+    let kept: Vec<serde_json::Value> = r
+        .kept_zones
+        .iter()
+        .map(|(zone, reason)| serde_json::json!({ "zone": zone, "reason": reason }))
+        .collect();
+    serde_json::json!({
+        "enabled": true,
+        "zones": zones,
+        "skipped": skipped,
+        "kept": kept,
+        "tight_before_m": r.tight_before_m,
+        "tight_after_m": r.tight_after_m,
+        "max_stray_m": r.max_stray_m,
+        "steeper_than_drawn": r.steeper_than_drawn,
+        "reverted": r.reverted,
+        "states": r.states,
+    })
+}
+
 /// `roads.smoothing` of `build/report.json`: what the smoothing of the road graph did, or that it is off.
 fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
     let Some(s) = smooth else {
@@ -769,6 +840,10 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
         object.insert(
             "smoothing".to_string(),
             smoothing_json(generated.smooth.as_ref()),
+        );
+        object.insert(
+            "planning".to_string(),
+            planning_json(generated.reroute.as_ref()),
         );
     }
     let report = serde_json::json!({
@@ -992,6 +1067,7 @@ pub fn build(
         warnings,
         bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
         smoothing: generated.smooth.as_ref().map(SmoothReport::summary),
+        planning: generated.reroute.as_ref().map(RerouteReport::summary),
     })
 }
 

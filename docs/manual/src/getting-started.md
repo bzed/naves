@@ -309,6 +309,35 @@ not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
 fix, "warning" means a place worth a look.
 
+**Tight curves can be planned (switched off in this release).** The stage exists but is off (`REROUTE_ENABLED`):
+nothing is planned, the roads are left as OpenStreetMap draws them, and `roads.planning` in `build/report.json` says
+`{"enabled": false}`. With the stage on, after the clean-up and before bridges are fitted (and before the smoothing,
+when that is on), the build looks for curves tighter than the tightest curve piece of their road type and re-routes
+them with a curve the pieces can build. A curve zone is the tight run plus two minimum radii of road on each side. The
+road keeps its place at junctions, dead ends, the ends of a deck and the cut of a closed loop, and the direction in
+which it leaves a junction does not change; inside the zone a node where a road merely continues moves with the line.
+
+What a planned road may do:
+
+- it keeps its road type's minimum radius (the tightest arc piece, times 1.05);
+- it is not steeper than the road as drawn (the mean rise between its ends) or, where the drawn line is gentle, than
+  the aim of its type (8 % on asphalt 1 up to 25 % on a dirt track). A route that needs more is tried again with the
+  limit raised in three steps up to the type's ceiling (27 % on a street, 45 % on a dirt track), and the finding says
+  how much steeper than drawn it is;
+- it strays at most three minimum radii (about 30 m) from the drawn line and keeps out of another road's earthwork,
+  except where the drawn line already runs near it;
+- it crosses a stream only as often as the drawn line does (the `waterway=stream`, `river` and `canal` ways), and it
+  does not enter water that the drawn line avoids.
+
+A curve that cannot be planned keeps the line OpenStreetMap draws and is reported; nothing else in the graph changes.
+With the stage on, roads inside a planned curve move by up to three minimum radii, so edits to the road objects that are
+keyed by slot may no longer find their object (`orphaned_edit`). The findings are `road_curve_planned` and
+`road_curve_not_planned`; `build/report.json` has `roads.planning` (`zones`, `skipped`, `kept`, `tight_before_m`,
+`tight_after_m`, `max_stray_m`, `steeper_than_drawn`, `reverted` and `states`, and every zone with its radius before,
+wanted and after, its grades, relaxation steps, earthwork and outcome), and the build prints one line with the zones,
+the tight length before and after, the largest move and the legs steeper than drawn. The progress output (also the one
+the MCP `build` tool returns) has a line `Planning the tight curves (0.4 s)` with the time the stage took.
+
 **Road lines can be smoothed (switched off in this release).** The stage exists but is off: the road planning is being
 built first, and it will then be decided whether the stage is still needed; with it on, road placement was about
 44 % slower on the example. Nothing below happens in a build of this release; `roads.smoothing` in `build/report.json`

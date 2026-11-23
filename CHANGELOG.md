@@ -13,6 +13,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Road planning re-routes curves tighter than the road pieces. A zone of tight road (plus two minimum radii of road
+  on each side) is re-routed inside a curve the pieces can build, **not steeper than the road as drawn or its type's
+  aim**, not further than three minimum radii from the drawn line, crossing a stream only as often as the drawn line
+  does and keeping out of another road's earthwork; junctions, dead ends, deck ends and the cut of a closed loop stay
+  where they are. It is **switched off in this release** (`REROUTE_ENABLED`), so nothing moves and `roads.planning` in
+  `build/report.json` is `{"enabled": false}`. With it on, roads inside planned curves move by up to three minimum
+  radii (about 30 m), so edits that are keyed by slot can be orphaned (`orphaned_edit`). With it on: new findings
+  `road_curve_planned` and `road_curve_not_planned`, `roads.planning` in `build/report.json` with the totals and every
+  zone, a line in the build summary and a progress line with the time of the stage; the `road-analysis` example runs
+  the stage with `STAGES=plan` (and `plan+smooth` together with the smoothing).
 - A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
   (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
   moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each

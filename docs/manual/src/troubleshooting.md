@@ -234,6 +234,22 @@ road between them, a straightened road that would cross another road, too wide a
 closer than 6 m). The points of a line that were merged because they lay closer than 0.5 m are not a finding; the
 `road-analysis` example lists each (`CLEAN speck`).
 
+**`road_curve_planned` (information), `road_curve_not_planned` (warning)**
+Road planning (switched off in this release, so these two findings do not appear) found a curve tighter than the
+tightest curve piece of its road type. For `road_curve_planned` the zone was re-routed; the message names the
+stretches, the radius before and after, how far the route strays from the drawn line and, when the route needed a
+raised grade limit, how many points steeper than drawn it is. `planned_grade` in the report is the **steepest step of
+the planned road's profile**, not the mean rise between the zone's ends (that is `drawn_grade`): a route that is
+longer than the drawn line can ride at the type's aim while its rise stays near the drawn rise. For
+`road_curve_not_planned` the zone kept the line OpenStreetMap draws; the message gives the reason and the radius the
+curve has. The reason is `no_route` (no route was found), `held` (a junction, a dead end, the end of a deck or the cut
+of a closed loop left no room), `blocked_by_water` (a route exists only through water) or `blocked_by_road` (a route
+exists only into another road's earthwork, or the route came too near an earlier planned one and was reverted). The
+report gives the candidate the bend is for: `plate` (a concrete plate can build it) for `held` and `no_route`,
+`curved_bridge` for `blocked_by_water`, and none for `blocked_by_road` or a planned zone. A route planned with a raised
+grade limit is still within its type's ceiling; look at the place and change the data (OpenStreetMap) if the result is
+not what you want. The stage has its own zone list in `roads.planning` of `build/report.json`.
+
 **`road_curve_widened` (information), `road_curve_too_tight` (warning)**
 The smoothing of the road lines (switched off in this release, so these two findings do not appear) found a curve tighter than the tightest curve piece of its road type. For
 `road_curve_widened` it was widened outward (an open corner, a turn of up to 120 degrees, may be cut inward instead)

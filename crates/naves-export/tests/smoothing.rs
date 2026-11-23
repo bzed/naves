@@ -11,7 +11,7 @@ use naves_core::heightmap::Heightmap;
 use naves_core::netclean;
 use naves_core::roadnet::{build_graph, collapse_small_rings, drop_duplicates};
 use naves_core::smooth::SMOOTH_ENABLED;
-use naves_export::generate::{fitted_graph, fitted_graph_with};
+use naves_export::generate::{Stages, fitted_graph, fitted_graph_with};
 
 fn way(id: i64, nodes: &[i64], points: &[(f64, f64)], bridge: bool) -> Feature {
     Feature {
@@ -71,8 +71,28 @@ fn smoothing_runs_before_the_bridges_are_fitted() {
     let features = corner_at(40.0);
     let base = flat();
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
-    let off = fitted_graph_with(&features, &catalog, &base, false, &|_| false);
-    let fitted = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
+    let off = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        Stages {
+            reroute: false,
+            smooth: false,
+        },
+        &|_| false,
+        &[],
+    );
+    let fitted = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        Stages {
+            reroute: false,
+            smooth: true,
+        },
+        &|_| false,
+        &[],
+    );
     let report = fitted.smooth.as_ref().expect("smoothing ran");
     assert!(
         report.max_move_m > 0.0 || report.max_outward_m > 0.0,
@@ -93,7 +113,17 @@ fn a_corner_in_the_approach_of_a_bridge_is_held_and_needs_its_lead() {
     let catalog = synthetic_catalog();
     let features = corner_at(10.0);
     let base = flat();
-    let fitted = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
+    let fitted = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        Stages {
+            reroute: false,
+            smooth: true,
+        },
+        &|_| false,
+        &[],
+    );
     assert!(lead_is_laid(&fitted.bridges), "{:?}", fitted.bridges);
     let report = fitted.smooth.as_ref().expect("smoothing ran");
     assert!(
@@ -108,7 +138,17 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     let catalog = synthetic_catalog();
     let features = corner_at(10.0);
     let base = flat();
-    let off = fitted_graph_with(&features, &catalog, &base, false, &|_| false);
+    let off = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        Stages {
+            reroute: false,
+            smooth: false,
+        },
+        &|_| false,
+        &[],
+    );
     assert!(off.smooth.is_none());
     // the graph is the cleaned graph itself: nothing of the stage is in it
     let (flat_graph, _) =
@@ -117,7 +157,17 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     let (cleaned, _) = netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
     assert_eq!(off.built, cleaned);
     // and the stage on does change it (this corner is one the stage widens), so the pin above means something
-    let on = fitted_graph_with(&features, &catalog, &base, true, &|_| false);
+    let on = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        Stages {
+            reroute: false,
+            smooth: true,
+        },
+        &|_| false,
+        &[],
+    );
     assert_ne!(on.built, cleaned);
     // the graph is what fit_bridges makes of the cleaned graph
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
@@ -125,7 +175,7 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     assert_eq!(off.graph, graph);
     assert_eq!(off.bridges, bridges);
     // and `fitted_graph` follows the constant
-    let default = fitted_graph(&features, &catalog, &base, &|_| false);
+    let default = fitted_graph(&features, &catalog, &base, &|_| false, &[]);
     assert_eq!(default.smooth.is_some(), SMOOTH_ENABLED);
     if !SMOOTH_ENABLED {
         // the build's graph is bitwise the cleaned graph
