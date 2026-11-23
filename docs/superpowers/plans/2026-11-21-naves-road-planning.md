@@ -52,17 +52,19 @@ Steps marked **(DeepSeek)** are simple and fully specified; the controller may d
   DayZ profile folder or client settings. Non-default server ports. Remove `@naves*` symlinks from the DayZ install
   afterwards. One game at a time.
 - Figures are quoted for Berchtesgaden at half scale (`scale.horizontal = 0.5`), terrain size 2048 (4 m cells).
-- Constants, verbatim from the spec (all `pub const` in `reroute.rs`, collected in `RerouteParams::default()`; the
-  ones marked **(re-check)** are confirmed or changed by Task 7b, and the spec's table changes in the same commit):
-  `REROUTE_ENABLED = false`, `PLAN_LEAD = 2.0` (minimum radii, **re-check**), `PLAN_RADIUS_MARGIN = 1.05`,
+- Constants, verbatim from the spec (all `pub const` in `reroute.rs`, collected in `RerouteParams::default()`; Task 7b
+  re-checked them on the map on 2026-11-23 and changed no value: `W_EARTH` stays 1.0 because the combined gate missed
+  its steepness bar. The spec's table carries the figures and still marks the three unmeasured self-clearance
+  constants **(re-check)**):
+  `REROUTE_ENABLED = false`, `PLAN_LEAD = 2.0` (minimum radii), `PLAN_RADIUS_MARGIN = 1.05`,
   `PLAN_REACHED_FRACTION = 0.99`, `PLAN_STEP_M = 6.0`, `PLAN_MAX_TURN_DEG = 45.0`, `PLAN_HEADING_BINS_MIN = 32`,
   `PLAN_HEADING_BINS_MAX = 180`, `PLAN_ARRIVE_REACH = max(3·s, 4·R)`, `PLAN_JUNCTION_STRAIGHT_M = 6.25`,
-  `PLAN_BRIDGE_HOLD_M = 25.0`, `PLAN_DECK_ANCHOR_M = 12.0`, `PLAN_STRAY_MAX = 3.0` (minimum radii, **re-check**),
-  `PLAN_CUT_M = 6.0`, `PLAN_FILL_M = 6.0` (**re-check**), `PLAN_ANCHOR_TOL_M = 0.5` (**re-check**),
-  `PLAN_GRADE_RELAX_STEPS = 3` (**re-check**), `PLAN_STEEPER_MARGIN = 0.02`, `PLAN_DRAWN_WINDOW_M = 20.0`,
-  `W_SLOPE = 4.0`, `W_CURVE = 0.1`, `W_EARTH = 1.0` (**re-check**), `W_STRAY = 0.25` (**re-check**),
-  `PLAN_BUDGETS = [(1.0, 10_000), (1.5, 20_000), (3.0, 40_000)]` (**re-check**), `PLAN_MAX_ZONE_M = 400.0`,
-  `PLAN_EXEMPT_EXTEND_M = 10.0` (**re-check**), `PLAN_CROSSING_END_M = 10.0`, `PLAN_RASTER_MAX_CELLS = 4_000_000`,
+  `PLAN_BRIDGE_HOLD_M = 25.0`, `PLAN_DECK_ANCHOR_M = 12.0`, `PLAN_STRAY_MAX = 3.0` (minimum radii),
+  `PLAN_CUT_M = 6.0`, `PLAN_FILL_M = 6.0`, `PLAN_ANCHOR_TOL_M = 0.5`,
+  `PLAN_GRADE_RELAX_STEPS = 3`, `PLAN_STEEPER_MARGIN = 0.02`, `PLAN_DRAWN_WINDOW_M = 20.0`,
+  `W_SLOPE = 4.0`, `W_CURVE = 0.1`, `W_EARTH = 1.0`, `W_STRAY = 0.25`,
+  `PLAN_BUDGETS = [(1.0, 10_000), (1.5, 20_000), (3.0, 40_000)]`, `PLAN_MAX_ZONE_M = 400.0`,
+  `PLAN_EXEMPT_EXTEND_M = 10.0`, `PLAN_CROSSING_END_M = 10.0`, `PLAN_RASTER_MAX_CELLS = 4_000_000`,
   `PLAN_FIELD_MAX_CELLS = 1_000_000`, `CHAMFER_ERROR = 1.0824`. Derived per leg: the grade limit
   `g_leg = min(grade_ceiling, max(grade_aim, drawn mean grade))`, the test threshold
   `thr(c) = (c + res) · CHAMFER_ERROR + res · √2`, `PLAN_SELF_FREE = thr(road clearance) + own core reach`,

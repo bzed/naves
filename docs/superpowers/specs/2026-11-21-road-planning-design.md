@@ -8,9 +8,10 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 Status: design, 2026-11-21, amended the same day after the spike (plan Task 1,
 `.superpowers/sdd/2026-11-21-naves-road-planning/spike/answers.md`). Written by the assistant on the controller's
 brief, within the maintainer's decisions. Decisions the maintainer made are marked **(maintainer)**, rulings of the
-controller **(controller)**; everything else is the assistant's call and easy to change. Numbers marked
-**(re-check)** were measured by the spike without the grade rule and the corrected band of this amendment; they are
-frozen only after the re-check on the map (plan Task 7b).
+controller **(controller)**; everything else is the assistant's call and easy to change. The constants the spike
+measured were re-measured on the map with the grade rule and frozen (plan Task 7b, 2026-11-23); the constants table
+carries the figures. Only the three self-clearance constants, which Task 7b did not measure, still carry the
+**(re-check)** mark.
 
 The method comes from the clean-room notes `docs/research/2026-11-21-road-tools-clean-room-notes.md`, sections 3.2 to
 3.6 (obstacles, profile band, cost field, arc search, margins) and 5.1 (the two-pass profile, used here to measure
@@ -702,15 +703,16 @@ Outputs:
 
 ## Constants
 
-All in `reroute.rs`, all `pub const`, collected in `RerouteParams::default()`. The last column says which ones the
-re-check with the grade rule (plan Task 7b) must confirm before they are frozen.
+All in `reroute.rs`, all `pub const`, collected in `RerouteParams::default()`. Everything but the three self-clearance
+constants was re-measured on the map with the grade rule (plan Task 7b, 2026-11-23); `supported by` carries the
+figures, and only the last column's **(re-check)** rows are still open.
 
 | name | value | meaning | supported by | re-check |
 |---|---|---|---|---|
 | `REROUTE_ENABLED` | `false` until judged | the switch | controller | |
 | `SAMPLE_M` | 2.0 m | resample for zones; arcs written back | `smooth::SAMPLE_M`, reused | |
 | `CHAIN_TURN_MAX_DEG` | 150° | a two-stretch node that turns more ends a chain | `smooth`, reused | |
-| `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts | yes: longer loops need room |
+| `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | spike: tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts. Map: 1585 legs, tight 5176 m; lead 3 plans 1299 legs, tight 5945 m; lead 4 1146 legs, 6626 m (the two switchbacks only at lead 3 and 4) | |
 | `PLAN_RADIUS_MARGIN` | 1.05 | planning radius over the tightest arc | notes 3.6; routes 10.41 to 10.50 m | |
 | `PLAN_REACHED_FRACTION` | 0.99 | a written route's tightest sample, of the tightest arc | smoothing's reached rule | |
 | `PLAN_STEP_M` | 6.0 m | search step | same legs as 4 m (1468 / 1466), a third of the CPU; 2 m loses legs | |
@@ -720,31 +722,31 @@ re-check with the grade rule (plan Task 7b) must confirm before they are frozen.
 | `PLAN_JUNCTION_STRAIGHT_M` | 6.25 m | straight at a junction anchor | half a junction piece; 0 m plans 65 more zones, 3 m 45 more | revisit with the piece |
 | `PLAN_BRIDGE_HOLD_M` | 25.0 m | road held beside a bridge or tunnel end | `smooth::WIDEN_BRIDGE_HOLD_M`; controller | |
 | `PLAN_DECK_ANCHOR_M` | 12.0 m | a deck this near a fixed anchor belongs to it | spike: clean-up's 8 m approach | |
-| `PLAN_STRAY_MAX` | 3.0 minimum radii | furthest a route strays | cap 2 loses 3 of 34 town corners, 4 to 6 find none more; largest move 28.5 m | yes: switchbacks under the grade rule |
-| `PLAN_CUT_M`, `PLAN_FILL_M` | 6.0 m each | band around the terrain | found equal at 3, 6, 12; measured with the lower-bound earthwork | yes: real earthwork |
-| `PLAN_ANCHOR_TOL_M` | 0.5 m | road height at an anchor within this of the terrain | assistant, from the switchback check | yes |
+| `PLAN_STRAY_MAX` | 3.0 minimum radii | furthest a route strays | spike: cap 2 loses 3 of 34 town corners, 4 to 6 find none more. Map: 3 binds on no leg (largest move 28.47 m); 4 and 5 plan the same 1585 legs, move 5 to reverted and raise the largest move to 33.3 m; no value plans the two switchbacks, which are kept and reported to the maintainer | |
+| `PLAN_CUT_M`, `PLAN_FILL_M` | 6.0 m each | band around the terrain | spike: equal at 3, 6 and 12 on the lower-bound earthwork. Map, real earthwork: 3 plans 1578 legs, 6 1585, 12 1584; the profile's deepest cut and highest fill follow the band (3.00/3.00, 6.00/6.00, 10.58/12.00); 12 overrules the set rule (9 legs differ) and is worse on the leg count, the earthwork and the time | |
+| `PLAN_ANCHOR_TOL_M` | 0.5 m | road height at an anchor within this of the terrain | assistant, from the switchback check. Map: 0.25 / 0.5 / 1.0 plan 1589 / 1585 / 1586 legs, 48 / 56 / 73 more than 2 points steeper than drawn and 3 / 4 / 5 above the ceiling (1.0: largest earthwork 458 m² against 305); the profile never exceeds a leg's limit at any of the three, so the rule's profile test is vacuous and 1.0 was overruled | |
 | grade limit `g_leg` | `min(ceiling, max(aim, drawn mean))` | grade of the band for a leg | controller; `limits.rs` | |
-| `PLAN_GRADE_RELAX_STEPS` | 3 | thirds of the gap to the ceiling, tried in turn | assistant | yes: how many legs need them |
+| `PLAN_GRADE_RELAX_STEPS` | 3 | thirds of the gap to the ceiling, tried in turn | assistant. Map: 20 of 1585 planned legs (1.26 %) needed one step, 15 at the first, 3 at the second and 2 at the third; 293 legs failed all four limits and kept their line | |
 | `PLAN_STEEPER_MARGIN` | 0.02 | a planned leg this much steeper than drawn is counted | assistant | |
 | `PLAN_DRAWN_WINDOW_M` | 20.0 m | window of the reported (not used) steepest drawn grade | controller's example | |
 | `W_SLOPE` | 4.0 | metres of road per metre of climb | notes 3.5 | |
 | `W_CURVE` | 0.1 | times `|δ| · R` | notes 3.5 | |
-| `W_EARTH` | 1.0 | metres of road per m² of earthwork | −38 % (lower-bound) earthwork against 0.5 at equal length, found, states | yes: real earthwork |
-| `W_STRAY` | 0.25 | metres of road per m² between route and original line | the selection rule above; switchback stray p95 13.9 m (0.05: 27.6 m) | yes |
-| `PLAN_BUDGETS` | (1.0, 10 000), (1.5, 20 000), (3.0, 40 000) | weight and expanded states per try | 4 × 1745; whole map plans the same legs as with 400 000 | yes |
+| `W_EARTH` | 1.0 | metres of road per m² of earthwork | spike: −38 % lower-bound earthwork against 0.5 at equal length. Map, real earthwork: 0.5 plans 1590 legs, 1.0 1585, 2.0 1591 at −23 % earthwork (19 013 against 24 537 m²) and 50.8 s; 2.0 was chosen, but the combined gate gave 58 legs more than 2 points steeper than drawn against the bar of 56 (1.0: 56), so 1.0 stays | |
+| `W_STRAY` | 0.25 | metres of road per m² between route and original line | the selection rule above; spike: switchback stray p95 13.9 m (0.05: 27.6 m). Map: 0.05 plans 19 fewer legs (1566), reverts 21 more, lowers the earthwork sum to 19 591 m² and raises the states p95 to 11 836 (6 365) | |
+| `PLAN_BUDGETS` | (1.0, 10 000), (1.5, 20 000), (3.0, 40 000) | weight and expanded states per try | spike: 4 × 1745; whole map plans the same legs as with 400 000. Map: the literal rule (4 × the six-site maximum of 400 = 1600) would move 215 of the 1730 weight-1 arrivals to the 1.5 try (p99 7 843, max 9 934), so 10 000 is kept (ruling); doubled budgets plan 3 fewer legs (1582) and revert 4 more | |
 | `PLAN_MAX_ZONE_M` | 400 m | a longer zone is not planned | at lead 2 only 2 zones are longer; 1000 m plans 2 more | |
-| `PLAN_EXEMPT_EXTEND_M` | 10.0 m | exempt part of a road beyond where the original comes near | assistant (per-place exemption) | yes |
-| `PLAN_SELF_FREE` | road clearance threshold + own reach | own road beyond an anchor that is not an obstacle | assistant (self-clearance) | yes |
-| `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep `self_clear_m` | assistant (self-clearance) | yes |
-| `self_clear_m` | `max(width, min(road clearance threshold, smallest distance of two samples of the original line more than PLAN_SELF_ALONG apart))` | what the own road's samples keep from each other; `search::self_clearance` | controller (review of Task 5) | yes |
-| `DOMINANCE_TOL_M`, `PER_KEY` | 2 m, 4 | states of a cell and heading that stay alive | switchback-1 and the corridor test | yes |
+| `PLAN_EXEMPT_EXTEND_M` | 10.0 m | exempt part of a road beyond where the original comes near | assistant (per-place exemption). Map: 0 plans 1574 legs (282 fixed anchors, 179 reverts), 20 plans 1589 (209 reverts) and would need the exact distance check; 10 kept | |
+| `PLAN_SELF_FREE` | road clearance threshold + own reach | own road beyond an anchor that is not an obstacle | assistant (self-clearance) | (re-check) |
+| `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep `self_clear_m` | assistant (self-clearance) | (re-check) |
+| `self_clear_m` | `max(width, min(road clearance threshold, smallest distance of two samples of the original line more than PLAN_SELF_ALONG apart))` | what the own road's samples keep from each other; `search::self_clearance` | controller (review of Task 5) | (re-check) |
+| `DOMINANCE_TOL_M`, `PER_KEY` | 2 m, 4 | states of a cell and heading that stay alive | switchback-1 and the corridor test. Map: tolerance 0 flips 52 outcomes (net −4 legs), takes 1.8× the time and 4.4× the states p95; 16 states per key flips nothing | |
 | `PLAN_CROSSING_END_M` | 10.0 m | wall crossings this near an anchor are not counted | spike: 7 check failures to 1 | |
 | raster resolution | half the terrain cell, 1 to 2.5 m | obstacle raster | notes 3.2 | |
 | `PLAN_RASTER_MAX_CELLS` | 4 000 000 | per leg; grows by 1.25 | assistant | |
 | field resolution | `max(s, terrain cell)` (6 m) | cost-to-go grid | notes 3.4 | |
 | `PLAN_FIELD_MAX_CELLS` | 1 000 000 | per leg; grows by 1.25 | notes 3.4 | |
 | `CHAMFER_ERROR` | 1.0824 | chamfer and octile excess | notes 3.2, 3.4 | |
-| test threshold `thr(c)` | `(c + res) · CHAMFER_ERROR + res · √2` | one threshold for test, exemption, water cap | notes 3.2; spike 8.1 | yes: against `c + res/2` |
+| test threshold `thr(c)` | `(c + res) · CHAMFER_ERROR + res · √2` | one threshold for test, exemption, water cap | notes 3.2; spike 8.1. Map: `c + res/2` plans 28 more legs (1613) but leaves 2 routes inside another road's clearance (0.55 and 0.70 m by the stage's own exemption; `thr(c)`: 0) | |
 | road clearance | `core_reach_m(own half) + cell` | earthworks touch, with the other road stamped at its reach | `netclean`, `conform::core_reach_m` | |
 | water threshold | `min(thr(core_reach_m(own half)), d_orig)`, `d_orig` the stored chamfer distance of the original line | the cap is in the map's measure, not an inverted `thr`; kept by the raster, not passed by the caller. An original that touches water (stored distance 0) gives cap 0 for that leg: only water cells block there | spike 8.1; review of Task 2 | |
 
