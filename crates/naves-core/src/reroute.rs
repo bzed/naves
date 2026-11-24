@@ -417,9 +417,11 @@ pub struct RerouteReport {
     /// The routes reverted because they came too near an earlier accepted route; each is a leg that kept its line
     /// with reason [`KeptReason::BlockedByRoad`] and detail `route_of <zone id>`.
     pub reverted: usize,
-    /// The planned routes written with every sample of the search, because the simplified line did not pass the
+    /// The planned routes written with every sample of the search, because the written line did not pass the
     /// route's checks again ([`written_line`]); the drop that would have saved the placement its density is not
-    /// made where it would change what is built.
+    /// made where it would change what is built. Only a route whose drop was tried is here: with a tolerance
+    /// that is not positive ([`RerouteParams::simplify`]) the drop is switched off, every route is written at
+    /// every sample and none is counted.
     pub kept_sampled_routes: usize,
     /// The states every search of every leg expanded, the diagnostic searches included.
     pub states: usize,
@@ -1150,8 +1152,9 @@ struct LegPlan {
     drawn_grade: f64,
     planned_grade: f64,
     original_feasible: bool,
-    /// Whether the written line keeps every sample of the search (see [`written_line`]); `false` for a kept leg.
-    dense: bool,
+    /// Whether the write-back of this leg fell back to the samples of the search (see [`written_line`]);
+    /// `false` for a kept leg.
+    fell_back: bool,
     route: Option<Route>,
 }
 
@@ -1228,7 +1231,7 @@ fn kept_leg(
         drawn_grade,
         planned_grade: 0.0,
         original_feasible,
-        dense: false,
+        fell_back: false,
         route: None,
     }
 }
@@ -1501,7 +1504,7 @@ fn plan_leg(
                 drawn_grade: drawn.mean,
                 planned_grade,
                 original_feasible,
-                dense: written.dense,
+                fell_back: written.fell_back,
                 route: Some(route),
             }
         }
@@ -2117,9 +2120,33 @@ fn nearest_point(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// The routes against each other, in zone order, place by place: a point of a later route that comes within the road
-/// clearance threshold of a route accepted before it, where the two drawn lines were not already that near at that
-/// place (the drawn points nearest to the two route points, [`drawn_was_near`]), reverts the later route; its leg
+/// The place of `line` nearest to `p` — the foot of the perpendicular when it lands inside a segment, the end
+/// when it does not — and its true distance. [`nearest_point`], the point reading, measures only the line's own
+/// vertices: on a written line, where a straight part is only its two ends, it reads an approach to the middle
+/// of the straight at the distance of an end point. The cross-check ([`check_routes`]) reads the routes by
+/// their true distance, whatever the write-back did to their density.
+fn nearest_on(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
+    line.windows(2)
+        .filter_map(|w| match w {
+            [a, b] => {
+                let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+                let along = if dx * dx + dy * dy > 0.0 {
+                    (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let place = (a.0 + along * dx, a.1 + along * dy);
+                Some((place, dist(p, place)))
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// The routes against each other, in zone order, place by place: a place of a later route, sampled at the stage's
+/// [`SAMPLE_M`], that comes within the road clearance threshold of a route accepted before it, by the true
+/// distance to the accepted route's line, where the two drawn lines were not already that near at that place
+/// (the drawn points nearest to the two places, [`drawn_was_near`]), reverts the later route; its leg
 /// keeps its line with reason [`KeptReason::BlockedByRoad`] and detail
 /// `route_of <zone id>`. The threshold is the true distance at which the two roads' earthwork touches: the earlier
 /// route's reach plus this leg's clearance (its own reach and one terrain cell), about 26 m for two City stretches.
@@ -2175,9 +2202,12 @@ fn check_routes(
             {
                 continue;
             }
-            // the first place of this route that is too near the accepted one and where the drawn lines were not
-            for &p in &route.points {
-                let Some((q, near)) = nearest_point(p, &other_route.points) else {
+            // the first place of this route that is too near the accepted one and where the drawn lines were not.
+            // The route is read at the stage's own sampling and the accepted one by its true distance, so the
+            // answer does not depend on how dense the written lines are: on a collapsed straight part the
+            // approach is in the middle, with no point of either line near it.
+            for p in resample(&route.points, SAMPLE_M) {
+                let Some((q, near)) = nearest_on(p, &other_route.points) else {
                     continue;
                 };
                 if near >= threshold || drawn_was_near(orig, other_orig, p, q, threshold) {
@@ -2410,7 +2440,7 @@ fn plan_graph_impl(
     let max_stray = zones.iter().map(|z| z.max_stray_m).fold(0.0, f64::max);
     let kept_sampled_routes = results
         .iter()
-        .filter(|r| matches!(r.outcome, LegOutcomeKind::Planned) && r.dense)
+        .filter(|r| matches!(r.outcome, LegOutcomeKind::Planned) && r.fell_back)
         .count();
     (
         result,
@@ -2794,5 +2824,38 @@ mod tests {
             bridge_hold_node(&[1, 3], &bounds, &pts, &arcs, 84.3, false, 25.0),
             Some((110.0, 0.0))
         );
+    }
+
+    /// The cross-check measures the true distance between the routes, and the written line of a straight part is
+    /// only its two ends: the nearest place of a line runs on its segments, not on its points. This is the case
+    /// the review of the tuning made: a point 21 m from the middle of a written straight of 60 m is 21.0 m from
+    /// the line, while its points are 36.6 m away, beyond the earthwork-touching threshold (26 m for City), so
+    /// a route that approaches an accepted one over the middle of a collapsed straight has to be reverted by the
+    /// segment reading alone.
+    #[test]
+    fn the_distance_to_a_written_straight_is_true() {
+        let straight = [(-30.0, 0.0), (30.0, 0.0)];
+        let (_, by_points) = nearest_point((0.0, 21.0), &straight).expect("a vertex");
+        assert!(
+            by_points > 26.0,
+            "{by_points}: the point reading is what went blind"
+        );
+        let (place, true_distance) =
+            nearest_on((0.0, 21.0), &straight).expect("a place on the line");
+        assert!(
+            (place.0 - 0.0).abs() < 1e-9 && (place.1 - 0.0).abs() < 1e-9,
+            "{place:?}"
+        );
+        assert!((true_distance - 21.0).abs() < 1e-9, "{true_distance}");
+    }
+
+    /// A place past the end of the line reads the end: the foot of the perpendicular is clamped to the
+    /// segment.
+    #[test]
+    fn the_distance_past_the_end_of_a_line_is_to_its_end() {
+        let line = [(-10.0, 0.0), (10.0, 0.0)];
+        let (place, d) = nearest_on((20.0, 5.0), &line).expect("a place on the line");
+        assert_eq!(place, (10.0, 0.0));
+        assert!((d - (5.0_f64 * 5.0_f64 + 100.0).sqrt()).abs() < 1e-9, "{d}");
     }
 }

@@ -1526,16 +1526,16 @@ pub fn check_route(
     }
 }
 
-/// A route's write-back: the points the stretch is written with, and whether they are every sample of the search
-/// (the line could not be dropped; see [`written_line`]).
+/// A route's write-back: the points the stretch is written with, and whether the write-back fell back to the
+/// samples (see [`written_line`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WrittenLine {
     /// The points of the written line. The two anchors stay bit for bit, whatever was dropped.
     pub points: Vec<(f64, f64)>,
-    /// Every sample of the search is kept: the line passes no check after its drop, so the line the search
-    /// returned is written instead. `false` also covers a line with nothing to drop (a tolerance that is not
-    /// positive keeps every sample by [`simplify_line`]'s rule, too).
-    pub dense: bool,
+    /// The write-back fell back: the line failed the check after its drop, so the samples of the search are
+    /// written instead. `false` also covers a line with nothing to drop and the drop that is switched off
+    /// altogether (a tolerance that is not positive keeps every sample by [`simplify_line`]'s rule, too).
+    pub fell_back: bool,
 }
 
 /// The write-back of a route the search returned and [`check_route`] accepted: the sampled line at the stage's own
@@ -1554,7 +1554,7 @@ pub struct WrittenLine {
 ///
 /// The written line still passes [`check_route`] from scratch: a longer way over an obstacle, a wall crossed one
 /// time too many and the rest of the checks run on it as on the line the search returned. A line that fails keeps
-/// that line, sample by sample, and [`WrittenLine::dense`] says so; a tolerance that is not positive keeps every
+/// that line, sample by sample, and [`WrittenLine::fell_back`] says so; a tolerance that is not positive keeps every
 /// sample of the search. No point of the searched line is further from the written line than the sagitta of a
 /// `SAMPLE_M` chord of an arc at the planning radius: 0.05 m at 10.5 m.
 #[must_use]
@@ -1572,14 +1572,14 @@ pub fn written_line(
         route.points.clone()
     };
     let droppable = simplified.len() < route.points.len();
-    let (written, dense) = if droppable && check_route(input, band, min_radius_m, &simplified) {
+    let (written, fell_back) = if droppable && check_route(input, band, min_radius_m, &simplified) {
         (simplified, false)
     } else {
         (route.points.clone(), droppable)
     };
     WrittenLine {
         points: written,
-        dense,
+        fell_back,
     }
 }
 

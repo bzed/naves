@@ -2125,7 +2125,7 @@ fn the_written_line_keeps_the_samples_the_stage_still_reads() {
     // a plain corner with its straights: the points the stage's own sampling needs (the two anchors, one
     // point at each end of the arc, and one per 2 m of it; every interior point of the straight parts is gone)
     assert_eq!(w.points.len(), 11, "{:?}", w.points);
-    assert!(!w.dense);
+    assert!(!w.fell_back);
     // the anchors stay bit for bit
     assert!(same_bits(w.points[0], route.points[0]));
     assert!(same_bits(
@@ -2187,7 +2187,7 @@ fn the_written_line_that_fails_its_check_keeps_every_sample() {
             ));
         });
         let w = written.expect("the write-back");
-        assert!(!w.dense);
+        assert!(!w.fell_back);
         w.points
     };
     // a chord of the arc part with its widest gap to the samples over it, and the foot of the sample farthest
@@ -2258,7 +2258,7 @@ fn the_written_line_that_fails_its_check_keeps_every_sample() {
         ));
     });
     let w = kept.expect("the write-back against the wall");
-    assert!(w.dense, "a written line of {} points", w.points.len());
+    assert!(w.fell_back, "a written line of {} points", w.points.len());
     assert_eq!(w.points, route.points, "every sample is kept");
 }
 

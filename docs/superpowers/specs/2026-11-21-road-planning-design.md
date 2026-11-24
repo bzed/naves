@@ -607,7 +607,10 @@ them.
   within the threshold of `q` that are themselves nearer than the threshold (`drawn_was_near`). Two zones that
   meet at a junction therefore share the junction, where their drawn lines touch, and only the places near it are
   exempt: a route that bulges into the other route 60 m away from the junction is still reverted. A pair of legs is
-  never exempted as a whole. The samples of the routes and of the drawn lines are compared by their true distance;
+  never exempted as a whole. Which line the check reads: the later route by samples along itself — the stage's
+  own `SAMPLE_M` sampling, whatever the write-back kept — and the accepted route by the *segments* of its written
+  line, so the measured distance is the true one and the check's answer does not depend on how many points a
+  written line carries. The samples of the routes and of the drawn lines are compared by their true distance;
   the drawn lines are the chains' 2 m samples.
 - **The diagnostic searches** of a leg without a route run at the ceiling grade with the last budget pair only:
   first without the water areas and the stream walls, then without the other roads (their earthwork, their walls
