@@ -7,6 +7,7 @@ pub mod bridge;
 pub mod build;
 pub mod catalog_read;
 pub mod config;
+pub mod dem_fetch;
 pub mod generate;
 pub mod geotiff_write;
 pub mod imagery_fetch;
