@@ -2927,8 +2927,9 @@ fn the_junction_inside_the_lot_is_counted_in_the_report() {
     ));
 }
 
-/// A street at y = -1.5 (just beyond the tolerance) with an access road to a junction in the lot: cut four metres
-/// inside, the piece is 5.5 m.
+/// A street at y = -1.5 (just beyond the tolerance) with an access road to a junction four metres inside the lot: the
+/// road is 5.5 m long, shorter than the least a cut access road keeps (`LOT_ACCESS_MIN_M`), so the lot step does not
+/// cut it, and the aisle at the junction goes.
 fn a_short_access() -> RoadGraph {
     build_graph(&[
         plain(
@@ -2937,14 +2938,43 @@ fn a_short_access() -> RoadGraph {
             &[(-20.0, -1.5), (20.0, -1.5), (60.0, -1.5)],
             Family::City,
         ),
-        plain(2, &[2, 5], &[(20.0, -1.5), (20.0, 20.0)], Family::City),
+        plain(2, &[2, 5], &[(20.0, -1.5), (20.0, 4.0)], Family::City),
         plain(
             3,
             &[4, 5, 6],
-            &[(5.0, 20.0), (20.0, 20.0), (35.0, 20.0)],
+            &[(5.0, 4.0), (20.0, 4.0), (35.0, 4.0)],
             Family::City,
         ),
     ])
+}
+
+/// A street at y = -2 (just beyond the tolerance) with a 32 m access road that runs north into the lot from a T on it, ending 30 m inside it.
+fn a_long_access_from_a_close_t() -> RoadGraph {
+    build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-20.0, -2.0), (20.0, -2.0), (60.0, -2.0)],
+            Family::City,
+        ),
+        plain(2, &[2, 5], &[(20.0, -2.0), (20.0, 30.0)], Family::City),
+    ])
+}
+
+#[test]
+fn a_cut_access_road_keeps_at_least_the_length_that_can_be_placed() {
+    // the lot's edge is 2 m from the T, so a cut 4 m inside would keep 6 m, which the placement cannot lay behind the
+    // T's junction piece; the cut keeps `LOT_ACCESS_MIN_M` from the T instead
+    let g = a_long_access_from_a_close_t();
+    let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
+    let step = drop_lot_roads(&g, &lot);
+    assert_eq!(step.access.len(), 1);
+    let kept = stretch(&step.graph, "2:2-5");
+    assert!(near(
+        *kept.points.last().unwrap(),
+        (20.0, -2.0 + naves_core::lot::LOT_ACCESS_MIN_M)
+    ));
+    assert!((step.access[0].cut_m - (32.0 - naves_core::lot::LOT_ACCESS_MIN_M)).abs() < 1e-6);
 }
 
 #[test]
@@ -2958,10 +2988,11 @@ fn a_short_access_piece_is_not_a_stub_but_would_be_one_without_the_lots() {
         *stretch(&out, "2:2-5").points.last().unwrap(),
         (20.0, 4.0)
     ));
-    // control: the same graph after the cut, cleaned without groups, loses the 5.5 m piece as a stub
+    // control: the same graph after the removal, cleaned without groups, loses the 5.5 m piece as a stub (too short to
+    // be cut: the road keeps its length, and its end is the lot's entry all the same)
     let step = drop_lot_roads(&g, &lot);
     let (cut, _, access, _) = (step.graph, step.dropped, step.access, step.unchanged);
-    assert_eq!(access.len(), 1);
+    assert_eq!(access.len(), 0);
     let (plain_out, plain_report) = clean(&cut, &wide, 8.0);
     assert_eq!(
         plain_report

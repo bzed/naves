@@ -33,8 +33,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::sidepath::splits;
 use super::{degrees, middle, rebuilt, root};
 use crate::lot::{
-    Assessed, LOT_ENTRY_M, LOT_INSIDE_SHARE, LOT_INSIDE_TOL_M, Outcome, Polygon, ring_contains,
-    segment_distance, touches,
+    Assessed, LOT_ACCESS_MIN_M, LOT_ENTRY_M, LOT_INSIDE_SHARE, LOT_INSIDE_TOL_M, Outcome, Polygon,
+    ring_contains, segment_distance, touches,
 };
 use crate::roadnet::{
     EPS_M, RoadGraph, Stretch, first_free_node, point_along, polyline_length, samples, slice_points,
@@ -391,11 +391,12 @@ fn last_entry(shape: &Shape<'_>, points: &[Point]) -> Option<f64> {
     })
 }
 
-/// Where `line` (a dead end last) is cut: [`LOT_ENTRY_M`] beyond its last entry. The distance from its start, the new
-/// end and the length cut off.
+/// Where `line` (a dead end last) is cut: [`LOT_ENTRY_M`] beyond its last entry, but not nearer than
+/// [`LOT_ACCESS_MIN_M`] to its start (a road that starts at a T beside the lot keeps enough to be placed). The distance
+/// from its start, the new end and the length cut off.
 fn cut_end(shape: &Shape<'_>, line: &[Point]) -> Option<(f64, Point, f64)> {
     let total = polyline_length(line);
-    let stop = last_entry(shape, line)? + LOT_ENTRY_M;
+    let stop = (last_entry(shape, line)? + LOT_ENTRY_M).max(LOT_ACCESS_MIN_M);
     if total - stop <= EPS_M {
         return None;
     }

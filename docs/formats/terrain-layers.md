@@ -109,10 +109,21 @@ Slots 2 and 3 are read from Bohemia's sample; check them in the game before rely
 Slot 4 is the paved ground of lots (car parks and the like). Its class is `en_tarmacold` of `surfaces_bliss`, whose
 files are `en_tarmac_old_nopx.paa` and `en_tarmac_old_ca.paa` (the game's `en_tarmac` has no texture files, and
 Livonia uses `en_tarmac_old`); on the satellite image and in the surface overlay it has the average colour of the
-texture, `(66, 68, 70)`. The mask value `(0, 0, 0, 128)` is Livonia's alpha 128 with black as the free colour; it has
-not yet been seen in the game, the in-game check decides. **Slot 4 is written only on tiles that use it**: a tile
-material names the tarmac textures in `Stage11` and `Stage12` only if its mask has a slot 4 pixel (including the
-overlap); every other tile is written exactly as it was before the layer existed, with empty stages for slot 4.
+texture, `(66, 68, 70)`. The mask value `(0, 0, 0, 128)` is Livonia's alpha 128 with black as the free colour.
+
+**The fifth layer does not show in the game.** Game check of 2026-11-27 on the Berchtesgaden example (a car park of
+12 600 m² and others, mask pixels written with slot 4's value and a tile material that lists the layer): the client draws
+the layer of the pixel's *colour* and ignores its alpha. Alpha 0, 64, 128 and 192 with black gave grass, with red rock,
+with green forest, with blue soil; swapping the tarmac textures for stones in `Stage11`/`Stage12` changed nothing; the
+same result came with Livonia's own mask file (`M_000_005_lca.paa`, whose alpha 128 patches show the layer of their
+colour) in a tile material of the same shape as Livonia's (`TerrainX`, slot 4 in `Stage11`/`Stage12`, empty slots as
+`texture = ""`), with Livonia-style material names (`p_XXX-YYY_L00_L01_L02_L03_L04_N.rvmat`) and with `UsedTerrainMaterials`
+(the generated config inherits Livonia's list anyway). Whether Livonia's own alpha channels work in
+the game was not checked on Livonia itself; if they do, what makes them work is not in the mask, the tile material, the
+material names or the config. Paved lots are painted soil (slot 3) instead
+(`TARMAC_PAINTED` is off); the generator still knows the class and writes slot 4 for it, so a later finding can switch
+it on again. A tile material names the tarmac textures in `Stage11` and `Stage12` only if its mask has a slot 4 pixel
+(including the overlap), so with the fallback on every tile is written exactly as before the layer existed.
 
 ## Where grass ends
 

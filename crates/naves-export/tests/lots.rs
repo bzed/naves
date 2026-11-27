@@ -592,7 +592,7 @@ fn with_the_stage_on_the_ground_is_the_lots_target_and_its_surface_is_painted() 
             {
                 assert_eq!(
                     generated.surfaces.at(at.0, at.1),
-                    SurfaceClass::Tarmac,
+                    SurfaceClass::Soil,
                     "({at:?})"
                 );
             }
@@ -601,14 +601,14 @@ fn with_the_stage_on_the_ground_is_the_lots_target_and_its_surface_is_painted() 
     assert!(inside > 100, "{inside} vertices inside the lot");
     // the lot was shaped: the hollow is filled where the lot's plane lies above it
     assert_ne!(generated.heightmap.h, generated.base.h);
-    // paved by its own `surface=asphalt` tag, and the surface grid says so everywhere in the lot, not only at its
-    // middle (the road bed is soil)
+    // paved by its own `surface=asphalt` tag, decided tarmac and painted soil (`TARMAC_PAINTED` is off) everywhere in
+    // the lot, not only at its middle
     assert_eq!(report.class_of("osm/way/100"), Some(SurfaceClass::Tarmac));
     let area = &report.assessed[0].area;
     let middle = naves_core::lot::centre(area);
     assert_eq!(
         generated.surfaces.at(middle.0, middle.1),
-        SurfaceClass::Tarmac,
+        SurfaceClass::Soil,
         "{middle:?}"
     );
     let high = area
@@ -622,7 +622,7 @@ fn with_the_stage_on_the_ground_is_the_lots_target_and_its_surface_is_painted() 
         );
         assert_eq!(
             generated.surfaces.at(at.0, at.1),
-            SurfaceClass::Tarmac,
+            SurfaceClass::Soil,
             "{at:?}"
         );
     }
@@ -673,10 +673,11 @@ fn the_report_says_what_the_lot_stage_did() {
 }
 
 #[test]
-fn an_access_road_the_placement_drops_is_a_lost_entry_in_the_build() {
-    // a service road leaves the lot's west edge from a T on a tertiary road that runs 2 m outside it: the cut keeps
-    // 6 m, and the placement drops those, because what is left after the T's trim is shorter than half a piece is
-    // wide. The lot loses this access road, and the build says so.
+fn an_access_road_that_leaves_a_lot_from_a_close_t_keeps_a_placed_road() {
+    // a service road leaves the lot's west edge from a T on a tertiary road that runs 2 m outside it. Cut 4 m inside
+    // the lot it would be 6 m long, and the placement drops that (what is left after the T's trim is shorter than
+    // half a piece is wide), so the lot would lose its access road (game check of 2026-11-27: a lot of the example
+    // lost it so). The cut keeps at least `LOT_ACCESS_MIN_M` of the road instead, enough to be placed.
     let (_dir, env, proj) = setup();
     let nodes = [
         (60, lat_of(300.0), lon_of(298.0)),
@@ -695,21 +696,20 @@ fn an_access_road_the_placement_drops_is_a_lost_entry_in_the_build() {
             .unwrap();
     let lots = &report["roads"]["lots"];
     assert_eq!(lots["smoothed"], 1);
-    // the cut happened, and it is the access road it left the placement dropped
+    // the cut happened, and the access road it left is placed: nothing is lost
     assert_eq!(lots["access_cut"], 1);
     assert!(
-        out.warnings
+        !out.warnings
             .iter()
             .any(|warning| warning.contains("shorter than half its width and not placed")),
         "{:?}",
         out.warnings
     );
-    // so the entry is lost and counted
-    assert_eq!(lots["entries_lost"], 1);
-    // the summary line the build prints names it
+    assert_eq!(lots["entries_lost"], 0);
     let line = out.lots.as_deref().expect("a lot summary");
-    assert!(line.contains(", 1 access road cut, 1 entry lost"), "{line}");
-    // and the finding says which access road went: one for the cut, one for the loss
+    assert!(line.contains(", 1 access road cut"), "{line}");
+    assert!(!line.contains("entry lost"), "{line}");
+    // the only finding on it is the cut, not a loss
     let dropped: Vec<&str> = report["violations"]
         .as_array()
         .unwrap()
@@ -717,13 +717,18 @@ fn an_access_road_the_placement_drops_is_a_lost_entry_in_the_build() {
         .filter(|violation| violation["rule"] == Rule::RoadInLotDropped.id())
         .map(|violation| violation["message"].as_str().unwrap())
         .collect();
-    let lost: Vec<&&str> = dropped
-        .iter()
-        .filter(|message| message.ends_with("is lost: the part the cut left is not placed"))
-        .collect();
-    assert_eq!(lost.len(), 1, "{dropped:?}");
     assert!(
-        lost[0].starts_with("The access road 12:62-63 of lot osm/way/100 "),
+        dropped.iter().all(|message| !message.contains("is lost")),
+        "{dropped:?}"
+    );
+    assert_eq!(
+        dropped
+            .iter()
+            .filter(
+                |message| message.starts_with("The access road 12:62-63 of lot osm/way/100 is cut")
+            )
+            .count(),
+        1,
         "{dropped:?}"
     );
 }
@@ -762,7 +767,9 @@ fn a_lot_in_an_extract_without_any_road_gets_its_surface_and_its_smooth_ground()
     let report = generated.lots.as_ref().expect("the lot stage ran");
     assert_eq!(report.counts().smoothed, 1);
     assert_eq!(report.class_of("osm/way/100"), Some(SurfaceClass::Tarmac));
-    assert_eq!(generated.surfaces.at(500.0, 500.0), SurfaceClass::Tarmac);
+    // the lot is decided paved, and painted soil: the game ignores the mask alpha that would select the fifth layer
+    // (tarmac), so a paved lot is painted with the soil layer (`TARMAC_PAINTED`)
+    assert_eq!(generated.surfaces.at(500.0, 500.0), SurfaceClass::Soil);
     // the hollow inside the lot is filled: the ground is the lot's plane, not the base
     assert_ne!(generated.heightmap.h, generated.base.h);
     let surface = report.surfaces.first().expect("a surface");
@@ -778,7 +785,7 @@ fn a_lot_in_an_extract_without_any_road_gets_its_surface_and_its_smooth_ground()
     let off = generate_with(&proj2, &p2, &env2.tools(), stages(false), &quiet).unwrap();
     assert!(off.lots.is_none());
     assert_eq!(off.heightmap.h, off.base.h);
-    assert_ne!(off.surfaces.at(500.0, 500.0), SurfaceClass::Tarmac);
+    assert_ne!(off.surfaces.at(500.0, 500.0), SurfaceClass::Soil);
 }
 
 #[test]

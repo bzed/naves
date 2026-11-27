@@ -827,10 +827,11 @@ fn narrow(v: f64) -> f32 {
 }
 
 /// Whether a paved lot is painted as [`SurfaceClass::Tarmac`]: the fifth ground layer, layer slot 4 with the mask
-/// value (0, 0, 0, 128). The value is fitted to Livonia's terrain masks but has not been seen in the game yet, so
-/// the design keeps one place where a paved lot is painted soil instead — this constant and [`lot_classes`] — and it
-/// stays on until the game check of a map with lots disproves the slot.
-pub const TARMAC_PAINTED: bool = true;
+/// value (0, 0, 0, 128). **Off**: the game check of 2026-11-27 showed that the client ignores the alpha of a map's
+/// mask for the layer choice (alpha 0, 64, 128 and 192 all gave the layer of the colour, also with Livonia's own mask
+/// file and a tile material that lists the fifth layer), so slot 4 never shows and a paved lot is painted soil, the
+/// plan's fallback. This constant and [`lot_classes`] are the one place where that happens.
+pub const TARMAC_PAINTED: bool = false;
 
 /// The classes the lots are painted with, from the decided ones: [`SurfaceClass::Tarmac`] becomes
 /// [`SurfaceClass::Soil`] when `tarmac_painted` is off. The single fallback for a slot 4 that does not work (see

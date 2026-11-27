@@ -201,7 +201,10 @@ ones:
   crossing, measured along the road, inside; a new node ends it there (id above all others, sorted order, the start of
   a stretch before its end), and the cut piece keeps the stretch's id. "Enters" means the line passes from not well
   inside a member (outside, or on its outline) to well inside it, so a road that runs along an edge enters where it
-  turns away from the edge, whichever edge it is. A stretch whose inside part is shorter than `LOT_ENTRY_M` is not cut.
+  turns away from the edge, whichever edge it is. A stretch whose inside part is shorter than `LOT_ENTRY_M` is not cut. The cut keeps at least
+  `LOT_ACCESS_MIN_M` (15 m) of the road from its other end (game check 2026-11-27: an access road that starts at a T 2 m
+  from the lot kept 6 m, which the placement cannot lay behind the T's junction piece, and the lot lost it), and a road
+  no longer than that is not cut.
   A stretch with a dead end inside at both ends is cut at both, also when the two ends lie in different groups (each
   end by its own group). The end is the lot's **entry** for that road. Four
   metres inside, so that the road's last joint and its core lie on the smoothed ground, not on the shoulder, and the
@@ -220,8 +223,8 @@ ones:
   with no height tie, and without the protection a short access piece would be dropped as a stub and the lot would
   lose its access. What the clean-up keeps, the placement can still drop: where the part the cut left is shorter than
   half a road piece is wide, or ends under other roads, it is not placed, and the lot loses that access road. That is
-  a lost entry, counted (`lot_entries_lost`, `entries_lost`, `1 entry lost` in the build's line) and reported; it is
-  not prevented.
+  a lost entry, counted (`lot_entries_lost`, `entries_lost`, `1 entry lost` in the build's line) and reported. The
+  cut's minimum length (`LOT_ACCESS_MIN_M`) prevents the usual case, an access road that starts at a T beside the lot.
 - **Connections.** A group counts as one node for the connectivity check (a vehicle drives across a lot). The removal
   may not split a component counted this way; if it would (by construction it should not), nothing changes for that
   group and it is reported (`would_split`).
@@ -305,8 +308,8 @@ building" **(maintainer)**: this is what the game uses for them.
   them until the pipeline is wired.
 - The fifth layer is selected by mask alpha 128 (RGB free; the value to write is (0, 0, 0, 128)); slot 5 would be
   alpha 0; slots 0 to 3 stay black, red, green, blue at alpha 255. Evidence: 71 Livonia masks fitted against their
-  material variants with no violation in 3840 cells; not yet seen in the game, the game check confirms it. If the game
-  check disproves it, paved lots are painted soil and the maintainer is told.
+  material variants with no violation in 3840 cells; the game check of 2026-11-27 disproved it (the client ignores the mask alpha on a
+  map's masks; `docs/formats/terrain-layers.md`), so paved lots are painted soil (`TARMAC_PAINTED` off).
 - A tile material names the tarmac textures in slot 4 only if its mask uses slot 4, so a build without lots writes
   every file as today.
 

@@ -141,7 +141,8 @@ pub const SURFACES: &[Surface] = &[
 ];
 
 /// The mask colour of a layer slot: black, red, green, blue at full alpha are slots 0 to 3, alpha 128 is slot 4
-/// (Livonia's masks: the colour of an alpha 128 pixel is free, black is written; not yet seen in the game).
+/// (Livonia's masks: the colour of an alpha 128 pixel is free, black is written). The game ignores that alpha on a
+/// map's masks, so nothing is painted with it (see `generate::TARMAC_PAINTED`).
 fn mask_rgba(slot: usize) -> [u8; 4] {
     match slot {
         1 => [255, 0, 0, 255],

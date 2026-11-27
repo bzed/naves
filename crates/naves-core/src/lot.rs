@@ -35,6 +35,12 @@ pub const LOT_INSIDE_SHARE: f64 = 0.5;
 /// How far inside the edge of a lot a cut access road ends, in metres (`limits::RAMP_JOINT_MIN_M`: one terrain cell
 /// at 2048).
 pub const LOT_ENTRY_M: f64 = crate::limits::RAMP_JOINT_MIN_M;
+/// The least length, in metres, that a cut access road keeps (from its other end): a road that starts at a T beside the
+/// lot would otherwise be left with a few metres, which the placement cannot lay (a T's junction piece takes half its
+/// length, 6.25 m, from the road, and what is left must be longer than half a piece is wide). 15 m holds the junction's
+/// half, one piece and an end cap. The cut goes [`LOT_ENTRY_M`] beyond the lot's edge, or at this length from the other
+/// end where that is farther; a road no longer than this is not cut.
+pub const LOT_ACCESS_MIN_M: f64 = 15.0;
 /// The smallest radius of curvature of a lot's surface, in metres: the gentlest road's vertical radius
 /// (`limits::min_vertical_radius(Family::Asf1)`).
 pub const LOT_MIN_RADIUS_M: f64 = 600.0;

@@ -107,11 +107,12 @@ and the road beds.
   each metre by its way's `surface` tag and, without one, by its road type (asphalt 1 to 3 and street paved, gravel and
   dirt track grass); a lot with none of its own takes the street beside it within reach of a road's earthwork; a lot
   with nothing is grass.
-- **The tarmac layer.** A paved lot is painted with the game's tarmac surface, layer slot 4, selected by the mask
-  value (0, 0, 0, 128); a grass lot is painted grass (layer slot 0), whatever the ground decision gave the place
-  around it. The slot's mask value is fitted to Livonia's terrain masks but has not been seen in the game yet:
-  `TARMAC_PAINTED` in the generation maps paved lots to soil instead when it is off, and that is the one place where
-  the fallback happens. A map without a paved lot keeps its four ground layers.
+- **The paved ground.** A paved lot is painted with the soil surface (layer slot 3) and a grass lot is painted grass
+  (layer slot 0), whatever the ground decision gave the place around it. A tarmac surface as a fifth layer (slot 4,
+  mask value (0, 0, 0, 128), as Livonia's masks seem to encode it) does not show in the game: the client takes the
+  layer from the mask's colour and ignores its alpha on a map's masks (tested 2026-11-27, also with Livonia's own mask
+  file). `TARMAC_PAINTED` in the generation is the one place where a paved lot is painted soil instead of tarmac. A map
+  keeps its four ground layers.
 - **Smooth ground.** The ground of a lot and one and a half cells beyond its edge is one plane, or, where the ground is
   curved, a gentle quadratic whose curvature is at most that of the gentlest road (a 600 m vertical radius). Inside a
   lot the ground does not go up and down by more than about 0.1 m over 24 m (a lot whose change had to be scaled down
