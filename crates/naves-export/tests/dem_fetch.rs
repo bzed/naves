@@ -9,13 +9,17 @@
     reason = "test helper code; failing loudly is the point"
 )]
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use image::ImageEncoder as _;
 use naves_core::dem::Dem;
 use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
 use naves_export::dem_fetch::{
-    MARGIN_M, TILE_PX, TilePyramid, fetch_window, terrarium, tile_range, world_px,
+    DEFAULT_PIXEL_M, MARGIN_M, MAX_PIXELS, MAX_SIDE_PX, TILE_PX, TilePyramid, TileStore, dem_grid,
+    fetch_window, resample, terrarium, tile_range, world_px,
 };
 use naves_export::geotiff_write::{DemMosaic, write_dem};
 use naves_export::imagery_fetch::FetchError;
@@ -336,4 +340,212 @@ fn sample_of_an_uncovered_point_is_none() {
 fn insert_refuses_a_bad_tile() {
     let mut pyramid = TilePyramid::default();
     assert!(pyramid.insert(16, 1, 1, b"garbage").is_err());
+}
+
+/// A tile store over a map that counts the loads of every tile.
+#[derive(Default)]
+struct FakeStore {
+    tiles: BTreeMap<(u8, u32, u32), Vec<u8>>,
+    loads: Mutex<BTreeMap<(u8, u32, u32), usize>>,
+}
+
+impl TileStore for FakeStore {
+    fn load(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError> {
+        *self.loads.lock().unwrap().entry((z, x, y)).or_default() += 1;
+        Ok(self.tiles.get(&(z, x, y)).cloned())
+    }
+}
+
+impl FakeStore {
+    fn total_loads(&self) -> usize {
+        self.loads.lock().unwrap().values().sum()
+    }
+}
+
+/// Height as a function of latitude and longitude only (so it is the same in every tile).
+fn ramp_of(lat: f64, lon: f64) -> f64 {
+    100.0 + (lat - 47.0) * 1000.0 + (lon - 12.0) * 500.0
+}
+
+/// A store with all tiles of `x0..=x1`, `y0..=y1` at `z`, each holding the ramp at its pixel centres.
+fn ramp_store(z: u8, x0: u32, x1: u32, y0: u32, y1: u32) -> FakeStore {
+    let mut store = FakeStore::default();
+    let n = f64::from(1u32 << z);
+    let size = n * f64::from(TILE_PX);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let webp = terrarium_webp(TILE_PX, |c, r| {
+                let wx = f64::from(x) * f64::from(TILE_PX) + f64::from(c) + 0.5;
+                let wy = f64::from(y) * f64::from(TILE_PX) + f64::from(r) + 0.5;
+                let lon = wx / size * 360.0 - 180.0;
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * wy / size))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                ramp_of(lat, lon)
+            });
+            store.tiles.insert((z, x, y), webp);
+        }
+    }
+    store
+}
+
+/// A window of `rows` tile rows at z16 around the fixture tile, a little inside its edges.
+fn ramp_window(tile_rows: u32) -> GeoWindow {
+    let (north, west) = tile_corner(16, 35130, 22901);
+    let (south, east) = tile_corner(16, 35131, 22901 + tile_rows);
+    let dy = (north - south) * 0.1;
+    let dx = (east - west) * 0.1;
+    GeoWindow {
+        south: south + dy,
+        west: west + dx,
+        north: north - dy,
+        east: east - dx,
+    }
+}
+
+#[test]
+fn resample_matches_the_ramp_inside_one_tile() {
+    let window = ramp_window(1);
+    let store = ramp_store(16, 35129, 35131, 22900, 22903);
+    let (mosaic, bounds) = resample(&store, &window, 20.0, 16).unwrap();
+    assert!(mosaic.width > 1 && mosaic.height > 1);
+    assert_eq!(mosaic.data.len(), (mosaic.width * mosaic.height) as usize);
+    let sx = (bounds.east - bounds.west) / f64::from(mosaic.width);
+    let sy = (bounds.north - bounds.south) / f64::from(mosaic.height);
+    assert_eq!(bounds.west.to_bits(), window.west.to_bits());
+    assert_eq!(bounds.north.to_bits(), window.north.to_bits());
+    for (c, r) in [
+        (0, 0),
+        (mosaic.width - 1, 0),
+        (0, mosaic.height - 1),
+        (mosaic.width - 1, mosaic.height - 1),
+    ] {
+        let lat = bounds.north - (f64::from(r) + 0.5) * sy;
+        let lon = bounds.west + (f64::from(c) + 0.5) * sx;
+        let got = f64::from(mosaic.data[(r * mosaic.width + c) as usize]);
+        // the ramp is not exactly linear in Web Mercator; the tolerance covers 1/256 m and that
+        assert!(
+            (got - ramp_of(lat, lon)).abs() < 0.05,
+            "({c},{r}): {got} vs {}",
+            ramp_of(lat, lon)
+        );
+    }
+}
+
+#[test]
+fn resample_is_continuous_across_band_borders_and_loads_each_tile_at_most_three_times() {
+    let window = ramp_window(4);
+    let store = ramp_store(16, 35129, 35131, 22900, 22906);
+    let (mosaic, _) = resample(&store, &window, 30.0, 16).unwrap();
+    let w = mosaic.width as usize;
+    // the ramp falls by about 1000 m per degree of latitude: one row is a step of this size
+    let (south, north) = (window.south, window.north);
+    let step = (north - south) * 1000.0 / f64::from(mosaic.height);
+    for r in 1..mosaic.height as usize {
+        let jump = f64::from(mosaic.data[(r - 1) * w] - mosaic.data[r * w]);
+        assert!(
+            (jump - step).abs() < 0.5 * step + 0.05,
+            "row {r}: jump {jump}, step {step}"
+        );
+    }
+    let loads = store.loads.lock().unwrap();
+    assert!(loads.values().all(|n| *n <= 3), "loads: {loads:?}");
+    assert!(loads.keys().all(|(z, ..)| *z == 16));
+}
+
+#[test]
+fn dem_grid_of_the_example_is_two_and_a_half_metres() {
+    let window = fetch_window(&example_project()).unwrap();
+    let (cols, rows, pixel_m) = dem_grid(&window, None).unwrap();
+    assert!((pixel_m - DEFAULT_PIXEL_M).abs() < 1e-12, "pixel {pixel_m}");
+    assert!(cols <= MAX_SIDE_PX && rows <= MAX_SIDE_PX);
+    assert!(u64::from(cols) * u64::from(rows) <= MAX_PIXELS);
+}
+
+#[test]
+fn dem_grid_grows_a_large_map_to_just_fit() {
+    let mut p = Project::new("T", 47.571_769, 12.946_451, 24_500.0);
+    p.scale.horizontal = 0.5;
+    let window = fetch_window(&p).unwrap();
+    let (cols, rows, pixel_m) = dem_grid(&window, None).unwrap();
+    assert!(pixel_m > DEFAULT_PIXEL_M, "pixel {pixel_m}");
+    assert!(cols <= MAX_SIDE_PX && rows <= MAX_SIDE_PX);
+    assert!(u64::from(cols) * u64::from(rows) <= MAX_PIXELS);
+    // within 1 % of the smallest pixel that fits: a pixel 1 % smaller does not
+    let (c2, r2, _) = grid_at(&window, pixel_m * 0.99);
+    assert!(
+        c2 > MAX_SIDE_PX || r2 > MAX_SIDE_PX || u64::from(c2) * u64::from(r2) > MAX_PIXELS,
+        "a 1 % smaller pixel still fits: {c2} x {r2}"
+    );
+    // a pixel that is requested and already fits stays
+    let (_, _, same) = dem_grid(&window, Some(pixel_m * 1.5)).unwrap();
+    assert!((same - pixel_m * 1.5).abs() < 1e-9);
+}
+
+/// The raw grid at a given pixel, through `dem_grid`'s own geometry: a requested pixel that is too small is
+/// grown, so compare through `resample`'s guard instead.
+fn grid_at(window: &GeoWindow, pixel_m: f64) -> (u32, u32, f64) {
+    let mid = f64::midpoint(window.south, window.north).to_radians();
+    let w = (window.east - window.west) * 111_320.0 * mid.cos() / pixel_m;
+    let h = (window.north - window.south) * 111_132.0 / pixel_m;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test values are small and positive"
+    )]
+    (w.ceil() as u32, h.ceil() as u32, pixel_m)
+}
+
+#[test]
+fn dem_grid_refuses_a_bad_request() {
+    let window = fetch_window(&example_project()).unwrap();
+    assert!(dem_grid(&window, Some(0.0)).is_err());
+    assert!(dem_grid(&window, Some(-1.0)).is_err());
+    assert!(dem_grid(&window, Some(f64::NAN)).is_err());
+    assert!(dem_grid(&window, Some(f64::INFINITY)).is_err());
+}
+
+#[test]
+fn resample_checks_the_size_before_loading_anything() {
+    let window = fetch_window(&example_project()).unwrap();
+    let store = FakeStore::default();
+    let err = resample(&store, &window, 0.5, 16).unwrap_err();
+    assert!(matches!(err, FetchError::Other(_)), "{err}");
+    assert_eq!(store.total_loads(), 0);
+    assert!(resample(&store, &window, 0.0, 16).is_err());
+    assert!(resample(&store, &window, 5.0, 19).is_err());
+    assert!(resample(&store, &window, 5.0, 11).is_err());
+    assert_eq!(store.total_loads(), 0);
+}
+
+#[test]
+fn resample_names_the_tile_when_no_zoom_covers_a_pixel() {
+    let window = ramp_window(1);
+    let store = FakeStore::default();
+    let err = resample(&store, &window, 20.0, 16).unwrap_err().to_string();
+    assert!(err.contains("no tile covers"), "{err}");
+    assert!(err.contains("16/351"), "{err}");
+    assert!(err.contains("parents are missing"), "{err}");
+}
+
+#[test]
+fn resample_falls_back_to_ancestors_for_missing_tiles() {
+    let window = ramp_window(1);
+    // nothing at z16, a constant tile at z15
+    let mut store = FakeStore::default();
+    store
+        .tiles
+        .insert((15, 17565, 11450), terrarium_webp(TILE_PX, |_, _| 777.0));
+    store
+        .tiles
+        .insert((15, 17564, 11450), terrarium_webp(TILE_PX, |_, _| 777.0));
+    store
+        .tiles
+        .insert((15, 17565, 11451), terrarium_webp(TILE_PX, |_, _| 777.0));
+    store
+        .tiles
+        .insert((15, 17564, 11451), terrarium_webp(TILE_PX, |_, _| 777.0));
+    let (mosaic, _) = resample(&store, &window, 40.0, 16).unwrap();
+    assert!(mosaic.data.iter().all(|h| (h - 777.0).abs() < 1e-3));
 }
