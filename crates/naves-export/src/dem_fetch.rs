@@ -187,19 +187,19 @@ impl TilePyramid {
             .map(|h| f64::from(*h))
     }
 
-    /// Bilinear height at a position, taken from the finest zoom from `zoom_max` down to [`Z_MIN`] at which all
-    /// four pixels around it are held (pixel centres, as `Dem::height`); `None` if there is none.
+    /// Bilinear height at a position at `zoom_max` (pixel centres, as `Dem::height`). A pixel of the quad that is
+    /// not held is replaced by the value at its own centre one zoom coarser, by the same rule, down to
+    /// [`Z_MIN`]; a pixel that no zoom serves drops out and the others share its weight (the edge of all
+    /// coverage); `None` if none is served.
     #[must_use]
     pub fn sample(&self, lat: f64, lon: f64, zoom_max: u8) -> Option<f64> {
-        if !lat.is_finite() || !lon.is_finite() {
+        if !lat.is_finite() || !lon.is_finite() || zoom_max < Z_MIN {
             return None;
         }
-        (Z_MIN..=zoom_max.min(TILE_ZOOM_LIMIT))
-            .rev()
-            .find_map(|z| self.sample_at(lat, lon, z))
+        self.sample_at(lat, lon, zoom_max.min(TILE_ZOOM_LIMIT))
     }
 
-    /// The bilinear value at zoom `z` alone.
+    /// The bilinear value at zoom `z`, with the per-pixel fallback of [`TilePyramid::sample`].
     fn sample_at(&self, lat: f64, lon: f64, z: u8) -> Option<f64> {
         let (wx, wy) = world_px(lat, lon, z);
         let (fx, fy) = (wx - 0.5, wy - 0.5);
@@ -213,10 +213,56 @@ impl TilePyramid {
         )]
         let (ix, iy) = (x0 as i64, y0 as i64);
         let (tx, ty) = (fx - x0, fy - y0);
-        let top = self.pixel(z, ix, iy)? * (1.0 - tx) + self.pixel(z, ix + 1, iy)? * tx;
-        let bottom = self.pixel(z, ix, iy + 1)? * (1.0 - tx) + self.pixel(z, ix + 1, iy + 1)? * tx;
-        Some(top * (1.0 - ty) + bottom * ty)
+        let corner = |dx: i64, dy: i64| -> Option<f64> {
+            let (px, py) = (ix.checked_add(dx)?, iy.checked_add(dy)?);
+            self.pixel(z, px, py).or_else(|| {
+                if z <= Z_MIN {
+                    return None;
+                }
+                let (la, lo) = pixel_centre(z, px, py);
+                self.sample_at(la, lo, z - 1)
+            })
+        };
+        let corners = [
+            (corner(0, 0), (1.0 - tx) * (1.0 - ty)),
+            (corner(1, 0), tx * (1.0 - ty)),
+            (corner(0, 1), (1.0 - tx) * ty),
+            (corner(1, 1), tx * ty),
+        ];
+        // a pixel that no zoom serves (the edge of everything held) drops out and the others share its weight
+        let (sum, weight) = corners
+            .iter()
+            .filter_map(|(h, w)| h.map(|h| (h * w, *w)))
+            .fold((0.0, 0.0), |(s, w), (hs, ws)| (s + hs, w + ws));
+        (weight > 1e-9).then(|| sum / weight)
     }
+}
+
+/// Latitude and longitude of the centre of world pixel `(px, py)` at `z` (the inverse of [`world_px`]).
+fn pixel_centre(z: u8, px: i64, py: i64) -> (f64, f64) {
+    let size = f64::powi(2.0, i32::from(z)) * f64::from(TILE_PX);
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices are below 2^40, exact in f64"
+    )]
+    let (cx, cy) = (px as f64 + 0.5, py as f64 + 0.5);
+    let lon = cx / size * 360.0 - 180.0;
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * cy / size))
+        .sinh()
+        .atan()
+        .to_degrees();
+    (lat, lon)
+}
+
+/// The zoom a raster of `pixel_m` real metres needs at latitude `lat`: the smallest zoom in [`Z_MIN`]..=[`Z_MAX`]
+/// whose ground pixel (`40 075 016.686 * cos(lat) / (512 * 2^z)` metres) is at most half of `pixel_m`;
+/// [`Z_MAX`] if none is.
+#[must_use]
+pub fn zoom_for_pixel(lat: f64, pixel_m: f64) -> u8 {
+    let ground = 40_075_016.686 * lat.to_radians().cos().abs() / f64::from(TILE_PX);
+    (Z_MIN..=Z_MAX)
+        .find(|z| ground / f64::powi(2.0, i32::from(*z)) <= pixel_m / 2.0)
+        .unwrap_or(Z_MAX)
 }
 
 /// Raw tile bytes by `(z, x, y)`, as resampling reads them: the project's tile cache in production.
@@ -461,7 +507,7 @@ fn uncovered(lat: f64, lon: f64, zoom_max: u8) -> FetchError {
         tile_index(wy / f64::from(TILE_PX), tiles),
     );
     FetchError::Other(format!(
-        "no tile covers {lat} N {lon} E (tile {zoom_max}/{tx}/{ty} and its parents are missing)"
+        "no tile at any zoom covers {lat} N {lon} E (tile {zoom_max}/{tx}/{ty})"
     ))
 }
 
@@ -708,6 +754,7 @@ fn choose_zoom(
     window: &GeoWindow,
     request: &DemFetchRequest,
     name: &str,
+    pixel_m: f64,
 ) -> Result<u8, FetchError> {
     if let Some(z) = request.zoom {
         if !(Z_MIN..=Z_MAX).contains(&z) {
@@ -717,7 +764,8 @@ fn choose_zoom(
         }
         return Ok(z);
     }
-    for z in (Z_MIN..=Z_MAX).rev() {
+    let top = zoom_for_pixel(f64::midpoint(window.south, window.north), pixel_m).min(Z_MAX);
+    for z in (Z_MIN..=top).rev() {
         let mut all = true;
         for (x, y) in probe_tiles(window, z) {
             if !cache.ensure(tiles, z, x, y)? {
@@ -762,7 +810,7 @@ pub fn describe_dem_fetch(
         root: project_dir.join("dem").join(source.id),
         source_id: source.id,
     };
-    let zoom = choose_zoom(&cache, tiles, &window, request, source.name)?;
+    let zoom = choose_zoom(&cache, tiles, &window, request, source.name, pixel_m)?;
     let all = coords(tile_range(&window, zoom));
     let cached = all
         .iter()
@@ -897,7 +945,7 @@ pub fn fetch_dem(
         root: project_dir.join("dem").join(source.id),
         source_id: source.id,
     };
-    let zoom = choose_zoom(&cache, tiles, &window, request, source.name)?;
+    let zoom = choose_zoom(&cache, tiles, &window, request, source.name, pixel_m)?;
     note(&format!("zoom {zoom}"));
     if request.zoom.is_none() && zoom == Z_MIN && !request.force {
         note(GLO_ONLY);

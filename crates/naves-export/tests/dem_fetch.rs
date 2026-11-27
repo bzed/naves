@@ -19,9 +19,9 @@ use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
 use naves_export::dem_fetch::{
     DEFAULT_PIXEL_M, DemFetchRequest, MAPTERHORN, MARGIN_M, MAX_PIXELS, MAX_SIDE_PX,
-    MAX_TILE_BYTES, RealTiles, TILE_PX, TerrariumSource, TileGet, TilePyramid, TileStore, Z_MIN,
-    dem_grid, describe_dem_fetch, fetch_dem, fetch_window, resample, terrarium, tile_range,
-    world_px,
+    MAX_TILE_BYTES, RealTiles, TILE_PX, TerrariumSource, TileGet, TilePyramid, TileStore, Z_MAX,
+    Z_MIN, dem_grid, describe_dem_fetch, fetch_dem, fetch_window, resample, terrarium, tile_range,
+    world_px, zoom_for_pixel,
 };
 use naves_export::geotiff_write::{DemMosaic, write_dem};
 use naves_export::imagery_fetch::FetchError;
@@ -320,14 +320,44 @@ fn sample_prefers_native_zoom_and_falls_back_on_an_incomplete_quad() {
         .sample(f64::midpoint(lat0, lat1), f64::midpoint(lon0, lon1), 16)
         .unwrap();
     assert!((inner - 1000.0).abs() < 1e-3, "inner {inner}");
-    // the north-east corner (inside the z15 parent): the quad needs absent z16 neighbours, so the parent answers
+    // the north-east corner (inside the z15 parent): the quad needs absent z16 neighbours, whose pixels the
+    // parent supplies one by one, so the value lies between the two
     let edge = pyramid.sample(lat0, lon1, 16).unwrap();
-    assert!((edge - 2000.0).abs() < 1e-3, "edge {edge}");
+    assert!(edge > 1500.0 && edge < 2000.0, "edge {edge}");
     // a coarser zoom_max never looks at z16
     let coarse = pyramid
         .sample(f64::midpoint(lat0, lat1), f64::midpoint(lon0, lon1), 15)
         .unwrap();
     assert!((coarse - 2000.0).abs() < 1e-3, "coarse {coarse}");
+}
+
+#[test]
+fn sample_falls_back_per_pixel_at_a_coverage_border() {
+    // A (z16, 1000 m) has no z15 parent; its east neighbour B is absent at z16 but its z15 parent holds 2000 m
+    let mut pyramid = TilePyramid::default();
+    pyramid
+        .insert(16, 35129, 22901, &terrarium_webp(TILE_PX, |_, _| 1000.0))
+        .unwrap();
+    pyramid
+        .insert(15, 17565, 11450, &terrarium_webp(TILE_PX, |_, _| 2000.0))
+        .unwrap();
+    let (lat0, lon0) = tile_corner(16, 35129, 22901);
+    let (lat1, lon1) = tile_corner(16, 35130, 22902);
+    let lat = f64::midpoint(lat0, lat1);
+    // on the border: the quad straddles A and B
+    let border = pyramid.sample(lat, lon1, 16).unwrap();
+    assert!(border > 1100.0 && border < 1900.0, "border {border}");
+    // in A's interior: A's own value
+    let inner = pyramid.sample(lat, f64::midpoint(lon0, lon1), 16).unwrap();
+    assert!((inner - 1000.0).abs() < 1e-3, "inner {inner}");
+}
+
+#[test]
+fn zoom_for_pixel_is_the_coarsest_zoom_with_two_samples_per_pixel() {
+    assert_eq!(zoom_for_pixel(47.57, 2.5), 16);
+    assert_eq!(zoom_for_pixel(47.57, 5.0), 15);
+    assert_eq!(zoom_for_pixel(0.0, 0.1), Z_MAX);
+    assert_eq!(zoom_for_pixel(47.57, 1000.0), Z_MIN);
 }
 
 #[test]
@@ -526,9 +556,8 @@ fn resample_names_the_tile_when_no_zoom_covers_a_pixel() {
     let window = ramp_window(1);
     let store = FakeStore::default();
     let err = resample(&store, &window, 20.0, 16).unwrap_err().to_string();
-    assert!(err.contains("no tile covers"), "{err}");
+    assert!(err.contains("no tile at any zoom covers"), "{err}");
     assert!(err.contains("16/351"), "{err}");
-    assert!(err.contains("parents are missing"), "{err}");
 }
 
 #[test]
@@ -931,4 +960,47 @@ fn describe_names_zoom_tiles_and_size() {
     assert!(text.contains(&format!("{n} tiles")), "{text}");
     assert!(text.contains(" MB"), "{text}");
     assert!(text.contains("already cached"), "{text}");
+}
+
+#[test]
+fn the_default_zoom_stops_at_what_the_pixel_needs() {
+    let (dir, _) = small_project();
+    let tile = flat(500.0);
+    let tiles = fake(|_, _, _| Some(tile.clone()));
+    run(dir.path(), &tiles, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    let calls = tiles.calls.lock().unwrap();
+    assert!(!calls.is_empty());
+    assert!(calls.iter().all(|(z, ..)| *z <= 16), "{calls:?}");
+    assert!(calls.iter().any(|(z, ..)| *z == 16));
+}
+
+#[test]
+fn a_tile_with_only_its_parent_does_not_need_the_neighbours_parents() {
+    let (dir, project) = small_project();
+    let window = fetch_window(&project).unwrap();
+    let (px, py) = world_px(project.area.center_lat, project.area.center_lon, 14);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "tile indices of a point in Germany"
+    )]
+    let t = (
+        (px / f64::from(TILE_PX)).floor() as u32,
+        (py / f64::from(TILE_PX)).floor() as u32,
+    );
+    assert!(window.west < window.east);
+    let tile = flat(500.0);
+    let tiles = fake(|z, x, y| match z {
+        14 => ((x, y) != t).then(|| tile.clone()),
+        13 => ((x, y) == (t.0 >> 1, t.1 >> 1)).then(|| tile.clone()),
+        _ => None,
+    });
+    run(dir.path(), &tiles, &at_zoom(14)).0.unwrap();
+    let dem = Dem::open(&[dir.path().join("dem/mapterhorn_dtm.tif")]).unwrap();
+    let got = dem
+        .height(project.area.center_lat, project.area.center_lon)
+        .unwrap();
+    assert!((got - 500.0).abs() < 1e-3, "{got}");
 }

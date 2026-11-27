@@ -85,7 +85,7 @@ enum DemAction {
     Fetch {
         /// The project folder (default: the current folder).
         dir: Option<PathBuf>,
-        /// The zoom level to fetch at (default: the finest Mapterhorn has for the area).
+        /// The zoom level to fetch at (default: the finest zoom that the pixel needs and Mapterhorn has for the area).
         #[arg(long)]
         zoom: Option<u8>,
         /// The pixel size in real metres (default: 2.5; it grows until the raster fits the limits).

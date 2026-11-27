@@ -84,7 +84,7 @@ Berchtesgaden example), then downloads with four requests at a time.
 | Option | Meaning |
 |---|---|
 | `DIR` | the project folder |
-| `--zoom Z` | fetch at this zoom level (12 to 18) instead of the finest one Mapterhorn has for the area; skips the check for the 30 m fallback |
+| `--zoom Z` | fetch at this zoom level (12 to 18) instead of the finest zoom that the pixel needs (twice the resolution of `--pixel-m`) and Mapterhorn has for the area; skips the check for the 30 m fallback |
 | `--pixel-m M` | the pixel size of the raster in real metres (default 2.5; it grows until the raster fits the limits of the build) |
 | `--force` | write the 30 m fallback where Mapterhorn has nothing finer |
 
