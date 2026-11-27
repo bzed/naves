@@ -1288,3 +1288,38 @@ fn a_chain_too_long_to_smooth_is_not_touched_and_is_listed() {
         "the short chain is still smoothed"
     );
 }
+
+// --- held lines ----------------------------------------------------------------------------------------------
+
+fn held_stretch(mut s: Stretch) -> Stretch {
+    s.held = true;
+    s
+}
+
+#[test]
+fn held_curve_is_not_smoothed() {
+    let points = hairpin_of(14.0);
+    let g = graph(vec![held_stretch(stretch("a", 1, 2, &points))]);
+    for (out, report) in [run(&g), widen_run(&g)] {
+        assert_eq!(out, g);
+        assert_eq!(report.kept.len(), 1, "{:?}", report.kept);
+        assert_eq!(report.kept[0].0, "a");
+        assert_eq!(report.zones.len(), 0);
+    }
+    // the same line, not held, is changed
+    let free = graph(vec![stretch("a", 1, 2, &points)]);
+    assert_ne!(run(&free).0, free);
+}
+
+#[test]
+fn a_held_neighbour_keeps_its_points_and_the_shared_node_stays() {
+    let mut g = split_hairpin(14.0, 10, false);
+    g.stretches[1] = held_stretch(g.stretches[1].clone());
+    let node = *g.stretches[0].points.last().unwrap();
+    for (out, report) in [run(&g), widen_run(&g)] {
+        assert_eq!(out.stretches[1], g.stretches[1]);
+        assert_eq!(bits(*out.stretches[0].points.last().unwrap()), bits(node));
+        assert_eq!(report.kept, vec![("b".to_string(), "held".to_string())]);
+        assert_eq!(out.crossings, g.crossings);
+    }
+}

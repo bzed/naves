@@ -39,6 +39,9 @@ All notable changes to this project are documented here. The format follows
   `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited` and `road_in_lot_dropped`, a
   `roads.lots` section in `build/report.json`, a line in the build summary and a progress line with the time of the
   stage.
+- A road line marked `naves:keep=yes` is kept as drawn by the network clean-up and the smoothing: it is never removed as a
+  sidepath, stub or speck, no junction merge moves its nodes, no bridge approach cuts or moves it, and the smoothing leaves
+  its points alone. A removal or move that would have to change it does not happen and is reported with the reason `held`.
 - A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
   (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
   moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each

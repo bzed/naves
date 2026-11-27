@@ -20,10 +20,15 @@
 //!   (`"bridge_too_short"` otherwise), no other bridge, tunnel or loop ends at the node (`"no_room"`, the same test as
 //!   above) and no road passes under the part that is cut off (`"road_below"`).
 //!
+//! A held stretch (`naves:keep=yes`) is never cut, re-aimed or moved to another node: a bridge that is held is not
+//! shortened, a continuing road that is held is not cut, and a held side road is not moved; the end then stays as it is
+//! with the reason `"held"`.
+//!
 //! A bridge end with only two stretch ends is not touched and not reported. The ends are handled in the order of
 //! the bridge ids (end 0 before end 1) on the graph as the earlier ends left it; new nodes are numbered above all
 //! existing nodes in that order.
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 
 use super::{
@@ -65,6 +70,11 @@ fn from_node(s: &Stretch, node: i64) -> Vec<Point> {
     }
 }
 
+/// The length of the line of `s`.
+fn length_of(s: &Stretch) -> f64 {
+    polyline_length(&s.points)
+}
+
 /// The first unused name `<id>/approach<n>`.
 fn piece_id(work: &[Stretch], id: &str) -> String {
     let taken: BTreeSet<&str> = work.iter().map(|s| s.id.as_str()).collect();
@@ -100,6 +110,9 @@ fn shorten(
     next_node: i64,
 ) -> Result<Change, &'static str> {
     let b = work.get(bi).ok_or("no_room")?;
+    if b.held {
+        return Err("held");
+    }
     let node = if at_start { b.start } else { b.end };
     if another_deck_at(work, bi, node) {
         return Err("no_room");
@@ -220,6 +233,23 @@ fn cut_continuation(
     ]
 }
 
+/// Whether the roads of the road-goes-on case would have to change a held stretch: the continuing one `ci` is cut
+/// (it is not just [`APPROACH_M`] long) or one of the roads at `node` is moved.
+fn held_in_the_way(work: &[Stretch], bi: usize, ci: usize, node: i64) -> bool {
+    let cut_needed = work.get(ci).is_some_and(|c| {
+        c.held
+            && (length_of(c) - APPROACH_M)
+                .abs()
+                .partial_cmp(&SPECK_M)
+                .is_none_or(Ordering::is_gt)
+    });
+    cut_needed
+        || work
+            .iter()
+            .enumerate()
+            .any(|(i, s)| i != bi && i != ci && s.held && (s.start == node || s.end == node))
+}
+
 /// The road-goes-on case: the roads on the deck end node `node` are joined to the continuing stretch `ci`.
 fn move_side_roads(
     work: &[Stretch],
@@ -233,6 +263,9 @@ fn move_side_roads(
     };
     if another_deck_at(work, bi, node) {
         return Err("no_room");
+    }
+    if held_in_the_way(work, bi, ci, node) {
+        return Err("held");
     }
     let far = if c.start == node { c.end } else { c.start };
     let along = from_node(c, node);

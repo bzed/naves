@@ -618,7 +618,8 @@ pub(crate) fn plan_chains(graph: &RoadGraph) -> Vec<ChainPlan> {
         let (Some(sa), Some(sb)) = (graph.stretches.get(a.0), graph.stretches.get(b.0)) else {
             continue;
         };
-        if !sound(sa) || !sound(sb) || sa.tunnel != sb.tunnel {
+        // a held line is a chain of its own: nothing is joined to it, so no node of it can move with a neighbour
+        if !sound(sa) || !sound(sb) || sa.tunnel != sb.tunnel || sa.held || sb.held {
             continue;
         }
         let (Some(pa), Some(pb)) = (end_point(sa, a.1), end_point(sb, b.1)) else {
@@ -1200,7 +1201,9 @@ impl Tally {
 /// crossings are then rebuilt from the stretches. A stretch whose chain cannot be fitted keeps its line and
 /// is listed in [`SmoothReport::kept`]; a sound stretch with fewer than three samples has nothing to smooth,
 /// keeps its line and is counted in [`SmoothReport::skipped_short`] instead. A chain whose widening fails keeps
-/// the fit and is listed in [`SmoothReport::widen_failed`].
+/// the fit and is listed in [`SmoothReport::widen_failed`]. A held stretch (`naves:keep=yes`) keeps its points bit
+/// for bit and is listed in [`SmoothReport::kept`] as `held`; it is a chain of its own, so a neighbour that ends at
+/// one of its nodes does not move that node.
 ///
 /// `min_radius` gives the tightest radius of a stretch's family (`NaN`, `0.0` or infinity for none: no zone).
 /// With [`WIDEN_ENABLED`] off this is [`smooth_graph_fit_only`].
@@ -1266,6 +1269,27 @@ fn bridge_end_nodes(graph: &RoadGraph) -> BTreeSet<i64> {
         .collect()
 }
 
+/// Whether the chain is a held stretch (a chain of its own, see [`plan_chains`]); if so it is listed in `kept`.
+fn mark_held(graph: &RoadGraph, plan: &ChainPlan, kept: &mut [Option<String>]) -> bool {
+    let [link] = plan.links.as_slice() else {
+        return false;
+    };
+    let held = graph.stretches.get(link.stretch).is_some_and(|s| s.held);
+    if held && let Some(k) = kept.get_mut(link.stretch) {
+        *k = Some("held".to_string());
+    }
+    held
+}
+
+/// The chains of [`plan_chains`] without the held lines: those are not touched and not solved, and are listed in
+/// `kept` (see [`mark_held`]).
+fn unheld_chains(graph: &RoadGraph, kept: &mut [Option<String>]) -> Vec<ChainPlan> {
+    plan_chains(graph)
+        .into_iter()
+        .filter(|plan| !mark_held(graph, plan, kept))
+        .collect()
+}
+
 fn smooth_graph_with(
     graph: &RoadGraph,
     min_radius: &dyn Fn(&Stretch) -> f64,
@@ -1273,7 +1297,8 @@ fn smooth_graph_with(
     params: &SmoothParams,
     widen_on: bool,
 ) -> (RoadGraph, SmoothReport) {
-    let plans = plan_chains(graph);
+    let mut tally = Tally::new(graph);
+    let plans = unheld_chains(graph, &mut tally.kept);
     let family_minimum: Vec<f64> = graph.stretches.iter().map(min_radius).collect();
     let bridge_nodes = bridge_end_nodes(graph);
     let context = Context {
@@ -1285,7 +1310,6 @@ fn smooth_graph_with(
         .map(|plan| solve_chain(graph, plan, &family_minimum, params, widen_on, &context))
         .collect();
     let mut result = graph.clone();
-    let mut tally = Tally::new(graph);
     let mut fitted_points: Vec<usize> = graph.stretches.iter().map(|s| s.points.len()).collect();
     let mut node_moved = false;
     for (plan, solved) in plans.iter().zip(&solved) {

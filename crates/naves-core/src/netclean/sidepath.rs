@@ -19,6 +19,9 @@
 //! passes a bridge of the road (within the bridge's length and one cell at each end). Otherwise it stays, with the
 //! reason `clear`.
 //!
+//! A held stretch (`naves:keep=yes`) is never removed: a run of it stays with the reason `held`, and so does a run
+//! whose removal would have to cut a held road by a new node or end a held stretch on the road instead.
+//!
 //! What was joined to a removed part is not lost: every stretch that met it at a node goes on along its own heading to
 //! the road (within twice [`SIDEPATH_MAX_M`]) or else straight to the nearest point; the rest of a stretch at an end of
 //! a removed part inside it meets the road shallowly ahead of that end. The road is cut there by a new node unless a
@@ -997,6 +1000,9 @@ impl<'a> Ctx<'a> {
             plain,
             target,
             ray,
+            held: kept
+                .iter()
+                .any(|&x| self.stretch(x).is_some_and(|s| s.held)),
         })
     }
 
@@ -1110,6 +1116,9 @@ impl<'a> Ctx<'a> {
             if drop.is_none() {
                 drop = self.space_new_nodes(&state, &mut ends, &mut needs);
             }
+            if drop.is_none() {
+                drop = self.held_conflict(&ends, &needs);
+            }
             match drop {
                 Some((k, reason)) => {
                     if let Some(slot) = state.get_mut(k) {
@@ -1166,6 +1175,8 @@ struct NodeNeed {
     target: Hit,
     /// Where the joining stretch meets the road if it goes on along its own heading.
     ray: Option<Hit>,
+    /// Whether a stretch that would have to be moved to the road is held.
+    held: bool,
 }
 
 /// What a removal of groups did.
@@ -1347,6 +1358,31 @@ impl Ctx<'_> {
         None
     }
 
+    /// A run that stays because the removal would have to change a held stretch: a new node in it, or a held stretch that
+    /// met the removed part and would have to end on the road.
+    fn held_conflict(
+        &self,
+        ends: &[[Option<Hit>; 2]],
+        needs: &[NodeNeed],
+    ) -> Option<(usize, &'static str)> {
+        let cuts_held = |hit: &Hit| {
+            let length = self.total(hit.stretch);
+            self.stretch(hit.stretch).is_some_and(|s| s.held)
+                && hit.along > EPS_M
+                && hit.along < length - EPS_M
+        };
+        for (k, pair) in ends.iter().enumerate() {
+            if pair.iter().flatten().any(cuts_held) {
+                return Some((k, "held"));
+            }
+        }
+        needs
+            .iter()
+            .find(|n| n.held || cuts_held(&n.target))
+            .and_then(|n| self.shorter_of(&n.removed))
+            .map(|k| (k, "held"))
+    }
+
     fn hit_at(
         ends: &[[Option<Hit>; 2]],
         needs: &[NodeNeed],
@@ -1421,6 +1457,14 @@ impl Ctx<'_> {
                     .map(|s| point_along(&s.points, f64::midpoint(r.from, r.to)))
             })
             .unwrap_or_default()
+    }
+
+    /// Whether the stretch of run `k` is held: its line is kept as drawn.
+    fn run_is_held(&self, k: usize) -> bool {
+        self.runs
+            .get(k)
+            .and_then(|r| self.stretch(r.stretch))
+            .is_some_and(|s| s.held)
     }
 
     fn kept(&self, k: usize, reason: &'static str) -> Option<KeptSidepath> {
@@ -1502,6 +1546,9 @@ fn one_family(
     let mut wanted: BTreeSet<usize> = BTreeSet::new();
     for (g, group) in ctx.groups.iter().enumerate() {
         match (group.candidate, group.disturbs, group.runs.first()) {
+            (true, true, Some(&k)) if group.runs.iter().any(|&r| ctx.run_is_held(r)) => {
+                kept.extend(ctx.kept(k, "held"));
+            }
             (true, true, _) => {
                 wanted.insert(g);
             }

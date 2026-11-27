@@ -166,7 +166,8 @@ pub struct NoApproach {
     pub end: u8,
     /// Why not: `"bridge_too_short"` (the bridge would be shorter than three times [`APPROACH_M`]), `"road_below"`
     /// (a road passes under the part that would be cut off) or `"no_room"` (another bridge deck, tunnel or loop ends
-    /// at the same node, the road beyond is too short, or the roads cannot be joined to it).
+    /// at the same node, the road beyond is too short, or the roads cannot be joined to it) or `"held"` (a stretch that
+    /// would have to be cut, re-aimed or moved is held, `naves:keep=yes`).
     pub reason: &'static str,
     /// The end of the deck, in map metres.
     pub at: (f64, f64),
@@ -422,7 +423,7 @@ fn stubs_and_specks_if(
         };
         let length = polyline_length(&s.points);
         let short = length < STUB_MAX_M && (!s.drivable || length < widths(s.family));
-        if !short || s.bridge || s.tunnel || s.roundabout || s.start == s.end {
+        if !short || s.held || s.bridge || s.tunnel || s.roundabout || s.start == s.end {
             continue;
         }
         let was = |n: i64| input.get(&n).copied().unwrap_or(0);
@@ -457,7 +458,12 @@ fn stubs_and_specks_if(
         if dropped {
             continue;
         }
-        let (points, removed) = without_specks(&s.points);
+        // a held line keeps every point it was drawn with
+        let (points, removed) = if s.held {
+            (s.points.clone(), Vec::new())
+        } else {
+            without_specks(&s.points)
+        };
         specks.extend(removed.into_iter().map(|at| DroppedSpeck {
             stretch: s.id.clone(),
             at,
@@ -517,7 +523,8 @@ struct Cluster {
 }
 
 /// Step 3: junctions joined by a stretch shorter than [`JUNCTION_MERGE_M`] become one. A cluster of them is merged
-/// only if all its nodes lie within twice that distance of each other, no roundabout node is among them, at most
+/// only if all its nodes lie within twice that distance of each other, no roundabout node and no end of a held
+/// stretch (`naves:keep=yes`) is among them, at most
 /// one of them is the end of a bridge or a tunnel, and no longer stretch joins two of them; otherwise it is left as
 /// it is and reported. The node that stays is the bridge end, or else the node whose roads rank highest (lowest id on
 /// a tie); the short stretches between the nodes go, and every other stretch that ended at one of them ends at the
@@ -536,12 +543,15 @@ struct NodeFacts {
     /// ends.
     near_deck: BTreeMap<i64, BTreeSet<i64>>,
     roundabout: BTreeSet<i64>,
+    /// The nodes that end a held stretch.
+    held_end: BTreeSet<i64>,
 }
 
 fn node_facts(graph: &RoadGraph, order: &[usize]) -> NodeFacts {
     let mut at = BTreeMap::new();
     let mut bridge_end = BTreeSet::new();
     let mut roundabout = BTreeSet::new();
+    let mut held_end = BTreeSet::new();
     for s in order.iter().filter_map(|&i| graph.stretches.get(i)) {
         for (node, point) in [(s.start, s.points.first()), (s.end, s.points.last())] {
             if let Some(&p) = point {
@@ -552,6 +562,9 @@ fn node_facts(graph: &RoadGraph, order: &[usize]) -> NodeFacts {
             }
             if s.roundabout {
                 roundabout.insert(node);
+            }
+            if s.held {
+                held_end.insert(node);
             }
         }
     }
@@ -576,6 +589,7 @@ fn node_facts(graph: &RoadGraph, order: &[usize]) -> NodeFacts {
         bridge_end,
         near_deck,
         roundabout,
+        held_end,
     }
 }
 
@@ -600,6 +614,9 @@ fn deck_nodes(facts: &NodeFacts, cluster: &Cluster) -> Vec<i64> {
 fn judge(graph: &RoadGraph, facts: &NodeFacts, cluster: &Cluster) -> Result<i64, &'static str> {
     if cluster.nodes.iter().any(|n| facts.roundabout.contains(n)) {
         return Err("a roundabout is among the junctions");
+    }
+    if cluster.nodes.iter().any(|n| facts.held_end.contains(n)) {
+        return Err("a held road line ends at one of the junctions");
     }
     let deck_nodes = deck_nodes(facts, cluster);
     if deck_nodes.len() > 1 {

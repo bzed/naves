@@ -3854,3 +3854,158 @@ fn groups_built_by_hand_that_overlap_cut_an_end_once_and_report_only_nodes_that_
     let once = drop_lot_roads(&g, &[make(0, "osm/way/1")]);
     assert_eq!(step.graph, once.graph);
 }
+
+// ---- held lines ----
+
+/// The way marked `naves:keep=yes`: its line is kept as drawn.
+fn held(mut f: Feature) -> Feature {
+    if let FeatureKind::Road { held, .. } = &mut f.kind {
+        *held = true;
+    }
+    f
+}
+
+#[test]
+fn held_stub_is_kept() {
+    let g = road_with_stub(held(way(
+        2,
+        &[2, 4],
+        &[(50.0, 0.0), (50.0, 4.0)],
+        Family::Mud,
+        false,
+        false,
+        false,
+    )));
+    assert!(g.stretches.iter().any(|s| s.held));
+    let (out, dropped) = drop_stubs(&g, &widths);
+    assert_eq!(dropped, Vec::new());
+    assert_eq!(out, g);
+}
+
+#[test]
+fn a_held_line_keeps_its_points_closer_than_half_a_metre() {
+    let g = build_graph(&[held(plain(
+        1,
+        &[1, 2, 3],
+        &[(0.0, 0.0), (0.3, 0.0), (50.0, 0.0)],
+        Family::Asf3,
+    ))]);
+    let (out, report) = clean(&g, &widths, 8.0);
+    assert_eq!(report.specks, Vec::new());
+    assert_eq!(out, g);
+}
+
+#[test]
+fn held_sidepath_is_kept() {
+    let g = scene(main_road(Family::Asf3), held(side_road(5.0, Family::Grav)));
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    assert_eq!((&out, dropped.len()), (&g, 0));
+    assert_eq!(kept_reasons(&kept), ["held"]);
+    assert_eq!(kept[0].stretch, "2:2-3");
+    // the same road, not held, goes (see the test above)
+    let (_, dropped, _) = drop_sidepaths(
+        &scene(main_road(Family::Asf3), side_road(5.0, Family::Grav)),
+        &widths,
+        CELL_M,
+    );
+    assert_eq!(dropped.len(), 1);
+}
+
+#[test]
+fn a_road_that_meets_a_removed_track_and_is_held_is_not_joined_elsewhere() {
+    let mut features = track_with_a_side_road();
+    features[3] = held(features[3].clone());
+    let g = build_graph(&features);
+    let (out, dropped, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    // the held road would have had to end somewhere else: its end node stays, so does what it hangs on
+    let side = out.stretches.iter().find(|s| s.id == "4:7-8").unwrap();
+    let before = g.stretches.iter().find(|s| s.id == "4:7-8").unwrap();
+    assert_eq!(side, before);
+    assert!(
+        kept.iter().any(|k| k.reason == "held"),
+        "{kept:?} {dropped:?}"
+    );
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn a_held_road_is_not_cut_by_a_joint() {
+    let mut features = track_with_a_side_road();
+    features[0] = held(features[0].clone());
+    let g = build_graph(&features);
+    let (out, _, kept) = drop_sidepaths(&g, &widths, CELL_M);
+    for s in g.stretches.iter().filter(|s| s.held) {
+        assert!(out.stretches.contains(s), "{} changed", s.id);
+    }
+    assert!(kept.iter().any(|k| k.reason == "held"), "{kept:?}");
+    assert_eq!(components(&out), components(&g));
+}
+
+#[test]
+fn held_junction_is_not_merged() {
+    let make = |hold: i64| {
+        let mut g = two_ts(4.0);
+        for s in &mut g.stretches {
+            if s.id.starts_with(&format!("{hold}:")) {
+                s.held = true;
+            }
+        }
+        g
+    };
+    // the held side road ends at node 3, the junction that would go; the one at node 2 is the kept one
+    for hold in [2, 3] {
+        let g = make(hold);
+        let (out, merged, not_merged) = merge_names(&g);
+        assert_eq!(merged, Vec::new(), "held {hold}");
+        assert_eq!(out, g);
+        assert_eq!(not_merged.len(), 1);
+        assert_eq!(not_merged[0].nodes, [2, 3]);
+        assert!(not_merged[0].reason.contains("held"));
+    }
+}
+
+#[test]
+fn a_held_stretch_between_two_close_junctions_is_not_removed_by_the_merge() {
+    let mut g = two_ts(4.0);
+    for s in &mut g.stretches {
+        s.held = s.id == "1:2-3";
+    }
+    let (out, merged, not_merged) = merge_names(&g);
+    assert_eq!((merged.len(), not_merged.len()), (0, 1));
+    assert_eq!(out, g);
+}
+
+#[test]
+fn held_bridge_approach_untouched() {
+    // the road that goes on beyond the deck is held: it is not cut into an approach
+    let mut g = continuing(40.0, 100.0);
+    for s in &mut g.stretches {
+        s.held = s.id == "2:2-3";
+    }
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(out, g);
+    assert_eq!(none.len(), 1);
+    assert_eq!(none[0].reason, "held");
+    // the side road that would be moved is held
+    let mut g = continuing(40.0, 100.0);
+    for s in &mut g.stretches {
+        s.held = s.id == "3:2-4";
+    }
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(out, g);
+    assert_eq!(none.iter().map(|n| n.reason).collect::<Vec<_>>(), ["held"]);
+}
+
+#[test]
+fn a_held_bridge_is_not_shortened() {
+    let mut g = t_at_the_end(40.0);
+    for s in &mut g.stretches {
+        s.held = s.bridge;
+    }
+    let (out, approaches, none) = make_approaches(&g);
+    assert_eq!(approaches, Vec::new());
+    assert_eq!(out, g);
+    assert!(none.iter().all(|n| n.reason == "held"), "{none:?}");
+}
