@@ -300,9 +300,11 @@ fn holds(polygons: &[Polygon], places: &[Point]) -> bool {
 
 // ----- one group -----
 
-/// A stretch that may be judged: not a bridge, not a tunnel, every point a number, a line.
+/// A stretch that may be judged: not a bridge, not a tunnel, not held (`naves:keep=yes`: the lot step neither
+/// removes nor cuts it), every point a number, a line.
 fn judgeable(s: &Stretch) -> bool {
-    !s.bridge
+    !s.held
+        && !s.bridge
         && !s.tunnel
         && s.points.len() >= 2
         && s.points.iter().all(|p| p.0.is_finite() && p.1.is_finite())

@@ -176,6 +176,13 @@ fn lot_tags<'a>(
     is_lot.then_some(kept)
 }
 
+/// The kept tags of `tags` if they make a lot (see [`LOT_TAGS`]), else `None`: the test the reader of an extract
+/// applies, for ways that come from elsewhere (the hand-made edits).
+#[must_use]
+pub fn lot_tags_of(tags: &BTreeMap<String, String>) -> Option<BTreeMap<String, String>> {
+    lot_tags(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+}
+
 /// Even-odd test of `point` against a closed ring.
 fn ring_contains(ring: &[Point], point: Point) -> bool {
     let mut inside = false;

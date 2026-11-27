@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::ElementId;
 use super::ways::{WayAction, WayEdit, WayEdits, fingerprint};
-use crate::osm::{OsmWay, OsmWays};
+use crate::osm::{LotPolygon, OsmWay, OsmWays, lot_tags_of};
 
 /// Something about an edit that the user should look at. The edit is applied anyway unless it is `Broken`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,5 +179,158 @@ fn original_issue(edit: &WayEdit, original: Option<&OsmWay>) -> Option<EditIssue
             .as_ref()
             .is_some_and(|base| *base != fingerprint(&o.tags, &o.nodes))
             .then_some(EditIssue::OriginalChanged { way }),
+    }
+}
+
+/// Whether `edit` is a closed way (at least three corners and the first node again) whose tags make a lot.
+fn lot_tags_of_edit(edit: &WayEdit) -> Option<BTreeMap<String, String>> {
+    let closed = edit.nodes.len() >= 4 && edit.nodes.first() == edit.nodes.last();
+    if edit.action == WayAction::Delete || !closed {
+        return None;
+    }
+    lot_tags_of(&edit.tags)
+}
+
+/// Applies the way edits to the lots (car parks, camp sites and similar areas) of the extract; the edits win.
+///
+/// A `modify` or `add` of a closed way (at least three corners, the first node again) whose tags make a lot
+/// ([`lot_tags_of`]) replaces the way lot of that id (`relation == false`, part 0) or adds one, with its outline as
+/// drawn and no holes. A `modify` of a lot id whose new tags make no lot, or a `delete`, removes the way lot of that
+/// id. Relations are not editable, and a way edit that has nothing to do with a lot leaves the lots alone. The result
+/// is in the order of [`OsmLand::lots`](crate::osm::OsmLand::lots): ways in id order (user ways after the OSM ones),
+/// then the relations as they were.
+///
+/// The ring of a [`LotPolygon`] has no node ids, so an edit's nodes are resolved like those of
+/// [`apply_way_edits`]: from the node edits first, then from `ways`, the highway and waterway ways of the extract.
+/// The nodes of a lot's ring are in none of those, so **a lot edit needs a node edit for every node of its
+/// outline** (the editor writes them); a node without a position makes the edit [`EditIssue::Broken`] and it is
+/// left out. A node edit does not move the ring of a lot that is not edited.
+///
+/// The report is for the build to put together with that of [`apply_way_edits`] ([`EditReport::absorb_lots`]), which
+/// has already counted every `add` and `modify` and every `delete` of a way of `ways`: so `applied` here counts
+/// only the `delete`s of a lot that is not in `ways`, and the issues are the `Broken` ones and
+/// [`EditIssue::OriginalGone`] for a `delete` (or a lot `modify`) of an id that is neither a lot nor in `ways`.
+/// There is no [`EditIssue::OriginalChanged`] for a lot: a lot has no node ids to fingerprint.
+#[must_use]
+pub fn apply_lot_edits(
+    lots: &[LotPolygon],
+    ways: &OsmWays,
+    edits: &WayEdits,
+) -> (Vec<LotPolygon>, EditReport) {
+    let mut known: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    for way in &ways.ways {
+        for (&node, &point) in way.nodes.iter().zip(&way.points) {
+            known.entry(node).or_insert(point);
+        }
+    }
+    let moved: BTreeMap<i64, (f64, f64)> = edits
+        .nodes
+        .iter()
+        .filter_map(|n| Some((n.id.raw()?, (n.lat, n.lon))))
+        .collect();
+    let position = |node: i64| moved.get(&node).or_else(|| known.get(&node)).copied();
+    let in_ways: BTreeSet<i64> = ways.ways.iter().map(|w| w.id).collect();
+
+    let mut way_lots: BTreeMap<i64, LotPolygon> = lots
+        .iter()
+        .filter(|l| !l.relation)
+        .map(|l| (l.id, l.clone()))
+        .collect();
+    let existing: BTreeSet<i64> = way_lots.keys().copied().collect();
+    let mut report = EditReport::default();
+
+    let mut by_id: Vec<(i64, &WayEdit)> = edits
+        .ways
+        .iter()
+        .filter_map(|w| Some((w.id.raw()?, w)))
+        .collect();
+    by_id.sort_by_key(|(raw, _)| *raw);
+    for (raw, edit) in by_id {
+        let lot_tags = lot_tags_of_edit(edit);
+        let was_lot = existing.contains(&raw);
+        let place = |nodes: &[ElementId]| {
+            nodes
+                .iter()
+                .find_map(|n| position(n.raw()?))
+                .unwrap_or((0.0, 0.0))
+        };
+        match (edit.action, lot_tags) {
+            (WayAction::Delete, _) | (WayAction::Modify, None) => {
+                if way_lots.remove(&raw).is_some() {
+                    if edit.action == WayAction::Delete && !in_ways.contains(&raw) {
+                        report.applied += 1;
+                    }
+                } else if !was_lot && !in_ways.contains(&raw) && edit.action == WayAction::Delete {
+                    report
+                        .issues
+                        .push((EditIssue::OriginalGone { way: edit.id }, place(&edit.nodes)));
+                }
+            }
+            (WayAction::Add, None) => {}
+            (action, Some(kept)) => {
+                if action == WayAction::Modify && !was_lot && !in_ways.contains(&raw) {
+                    report
+                        .issues
+                        .push((EditIssue::OriginalGone { way: edit.id }, place(&edit.nodes)));
+                }
+                let positions: Vec<Option<(f64, f64)>> = edit
+                    .nodes
+                    .iter()
+                    .map(|id| id.raw().and_then(position))
+                    .collect();
+                let missing = positions
+                    .iter()
+                    .position(Option::is_none)
+                    .and_then(|at| edit.nodes.get(at).copied());
+                let outer: Vec<(f64, f64)> = positions.into_iter().flatten().collect();
+                if let Some(node) = missing {
+                    report
+                        .issues
+                        .push((EditIssue::Broken { way: edit.id, node }, place(&edit.nodes)));
+                    // a broken edit leaves the way out: the lot it would have replaced is gone too
+                    way_lots.remove(&raw);
+                } else {
+                    way_lots.insert(
+                        raw,
+                        LotPolygon {
+                            id: raw,
+                            relation: false,
+                            part: 0,
+                            tags: kept,
+                            outer,
+                            holes: Vec::new(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<LotPolygon> = way_lots.into_values().collect();
+    out.extend(lots.iter().filter(|l| l.relation).cloned());
+    (out, report)
+}
+
+impl EditReport {
+    /// Puts the report of [`apply_lot_edits`] (`lots`) into this one, the report of [`apply_way_edits`]: the counts
+    /// add up, the issues of `lots` are added unless this report has them already, and the
+    /// [`EditIssue::OriginalGone`] this report has for an id that is a lot of `lots_before` (the lots as read,
+    /// before the edits) is dropped: `apply_way_edits` only knows the highway and waterway ways, so a lot is "gone"
+    /// to it. Each way is then reported once.
+    pub fn absorb_lots(&mut self, lots: EditReport, lots_before: &[LotPolygon]) {
+        let is_lot = |way: &ElementId| {
+            way.raw()
+                .is_some_and(|raw| lots_before.iter().any(|l| !l.relation && l.id == raw))
+        };
+        self.issues.retain(|(issue, _)| match issue {
+            EditIssue::OriginalGone { way } => !is_lot(way),
+            _ => true,
+        });
+        self.applied += lots.applied;
+        for (issue, at) in lots.issues {
+            if !self.issues.iter().any(|(have, _)| *have == issue) {
+                self.issues.push((issue, at));
+            }
+        }
     }
 }

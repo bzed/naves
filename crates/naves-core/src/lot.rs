@@ -354,7 +354,10 @@ fn make_area(frame: &MapGeo, lot: &LotPolygon) -> Option<LotArea> {
     let id = if lot.relation {
         format!("osm/relation/{}/{}", lot.id, lot.part)
     } else {
-        format!("osm/way/{}", lot.id)
+        match crate::edits::ElementId::from_raw(lot.id) {
+            Some(crate::edits::ElementId::User(n)) => format!("user/way/{n}"),
+            _ => format!("osm/way/{}", lot.id),
+        }
     };
     Some(LotArea {
         id,

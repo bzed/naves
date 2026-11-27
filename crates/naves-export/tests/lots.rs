@@ -924,3 +924,131 @@ fn the_smoothing_stage_has_its_own_progress_line_when_it_is_on() {
         lines.borrow()
     );
 }
+
+// --- hand-made lot edits --------------------------------------------------------------------------------------------
+
+use naves_core::edits::{By, ElementId, WayAction, WayEdit, WayEdits};
+
+fn lot_tags_of_parking() -> std::collections::BTreeMap<String, String> {
+    [("amenity".to_string(), "parking".to_string())].into()
+}
+
+fn lot_areas(out: &naves_export::generate::Generated) -> Vec<(String, f64)> {
+    out.lots
+        .as_ref()
+        .unwrap()
+        .assessed
+        .iter()
+        .map(|a| (a.area.id.clone(), a.area.area_m2))
+        .collect()
+}
+
+#[test]
+fn edited_lot_outline_replaces_osm() {
+    let (_dir, env, proj) = setup();
+    let p = project(&proj, true, false, false);
+    let before = generate_with(&proj, &p, &env.tools(), stages(true), &quiet).unwrap();
+    let areas = lot_areas(&before);
+    assert_eq!(areas.len(), 1);
+    assert!((areas[0].1 - 160_000.0).abs() < 2_000.0, "{areas:?}");
+
+    // the car park is redrawn as a square of 200 m: a node edit for each of its four nodes
+    let mut edits = WayEdits::default();
+    for (i, &(x, y)) in [
+        (400.0, 400.0),
+        (600.0, 400.0),
+        (600.0, 600.0),
+        (400.0, 600.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        edits.nodes.push(naves_core::edits::NodeEdit {
+            id: ElementId::Osm(100 + i64::try_from(i).unwrap()),
+            lat: lat_of(y),
+            lon: lon_of(x),
+            base: None,
+            by: By::User,
+        });
+    }
+    edits.ways.push(WayEdit {
+        id: ElementId::Osm(100),
+        action: WayAction::Modify,
+        tags: lot_tags_of_parking(),
+        nodes: [100, 101, 102, 103, 100].map(ElementId::Osm).to_vec(),
+        base: None,
+        by: By::User,
+    });
+    edits.save(&proj).unwrap();
+    let after = generate_with(&proj, &p, &env.tools(), stages(true), &quiet).unwrap();
+    let areas = lot_areas(&after);
+    assert_eq!(areas.len(), 1);
+    assert_eq!(areas[0].0, "osm/way/100");
+    assert!((areas[0].1 - 40_000.0).abs() < 1_000.0, "{areas:?}");
+    assert!(
+        after.edits.issues.is_empty(),
+        "reported once or not at all: {:?}",
+        after.edits.issues
+    );
+}
+
+#[test]
+fn deleted_lot_is_gone() {
+    let (_dir, env, proj) = setup();
+    let p = project(&proj, true, false, false);
+    let mut edits = WayEdits::default();
+    edits.ways.push(WayEdit {
+        id: ElementId::Osm(100),
+        action: WayAction::Delete,
+        tags: std::collections::BTreeMap::new(),
+        nodes: Vec::new(),
+        base: None,
+        by: By::User,
+    });
+    edits.save(&proj).unwrap();
+    let out = generate_with(&proj, &p, &env.tools(), stages(true), &quiet).unwrap();
+    assert_eq!(lot_areas(&out).len(), 0);
+    assert_eq!(out.edits.applied, 1);
+    assert!(out.edits.issues.is_empty(), "{:?}", out.edits.issues);
+}
+
+#[test]
+fn drawn_lot_on_custom_map() {
+    // no OpenStreetMap source at all: the lot comes from the edits alone
+    let (_dir, env, proj) = setup();
+    std::fs::create_dir_all(proj.join("dem")).unwrap();
+    std::fs::write(proj.join("dem/hollow.tif"), dem()).unwrap();
+    let mut p = Project::new("Test", CENTRE.0, CENTRE.1, MAP_M);
+    p.scale.horizontal = 1.0;
+    p.scale.height = 1.0;
+    p.grid.terrain_size = 512;
+    p.grid.land_size = 64;
+    p.sources.dem = vec!["dem/hollow.tif".into()];
+    p.save(&proj).unwrap();
+    let mut edits = WayEdits::default();
+    let corners: Vec<ElementId> = [
+        (300.0, 300.0),
+        (700.0, 300.0),
+        (700.0, 700.0),
+        (300.0, 700.0),
+    ]
+    .iter()
+    .map(|&(x, y)| edits.new_node(lat_of(y), lon_of(x), By::User).unwrap())
+    .collect();
+    let mut ring = corners.clone();
+    ring.push(corners[0]);
+    let id = edits
+        .add_way(lot_tags_of_parking(), ring, By::User)
+        .unwrap();
+    edits.save(&proj).unwrap();
+    let out = generate_with(&proj, &p, &env.tools(), stages(true), &quiet).unwrap();
+    let areas = lot_areas(&out);
+    assert_eq!(areas.len(), 1, "{areas:?}");
+    assert_eq!(areas[0].0, "user/way/5");
+    assert!((areas[0].1 - 160_000.0).abs() < 2_000.0);
+    assert_eq!(id, ElementId::User(5), "the corners took 1 to 4");
+    assert_eq!(out.edits.applied, 1);
+    // with the lot stage off the drawn lot is ignored
+    let off = generate_with(&proj, &p, &env.tools(), stages(false), &quiet).unwrap();
+    assert!(off.lots.is_none());
+}

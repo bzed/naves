@@ -34,6 +34,9 @@ All notable changes to this project are documented here. The format follows
   OpenStreetMap files from them alone; edits always win and a drawn way is kept as drawn (`naves:keep`, `naves:plan`).
   New findings `edit_broken`, `edit_original_changed` and `edit_outside_map`, an `edits` section in
   `build/report.json`, and a line in the build summary and the MCP `build` result.
+- Lots take hand-made edits: a closed way in `edits/ways.toml` with lot tags (`amenity=parking`, `tourism=camp_site`,
+  ...) adds a lot, replaces the outline of the OpenStreetMap lot of that id or, with `delete`, removes it, also on a map
+  without OpenStreetMap files; the lot stage never removes or cuts a way tagged `naves:keep=yes`.
 - Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or grass surface and
   smooth ground; the roads inside them are no longer built, and their access roads end just inside them (an access road keeps at least 15 m, so that one that leaves a T beside the lot is still
   laid). **The lot stage is now on**

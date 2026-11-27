@@ -20,7 +20,9 @@ use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_w
 use naves_core::conform::{AreaPatch, Conformed, LevelPatch, conform_areas};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
-use naves_core::edits::{EditReport, ElementId, WayAction, WayEdits, apply_way_edits};
+use naves_core::edits::{
+    EditReport, ElementId, WayAction, WayEdits, apply_lot_edits, apply_way_edits,
+};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, add_lot_entries, find_junctions};
@@ -33,7 +35,7 @@ use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     panel_object_height, road_object_id, road_objects,
 };
-use naves_core::osm::{LandPolygon, OsmWays, read_ways};
+use naves_core::osm::{LandPolygon, OsmLand, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
 use naves_core::reroute::{REROUTE_ENABLED, RerouteParams, RerouteReport, reroute_graph};
@@ -159,6 +161,10 @@ struct Read {
     edits: EditReport,
     /// The added or modified ways none of whose nodes lies on the map, with the `(lat, lon)` of their first node.
     outside: Vec<(ElementId, (f64, f64))>,
+    /// The ways of the extract as read, before the edits: the lot edits resolve their nodes from them.
+    extract: OsmWays,
+    /// The edits, for the lot stage.
+    way_edits: WayEdits,
 }
 
 fn read_features(
@@ -191,6 +197,8 @@ fn read_features(
         water: water_lines(&ways, frame, map_size),
         outside: ways_outside(&ways, &edits, frame, map_size),
         edits: report,
+        extract,
+        way_edits: edits,
     })
 }
 
@@ -1213,18 +1221,26 @@ pub fn generate_with(
     let base = build_heightmap(project, &dem)?;
     let sources = LoadedSources::open(project, project_dir, progress)?;
     let frame = MapGeo::new(project).map_err(HeightmapError::from)?;
-    let read = read_features(project, project_dir, &frame, progress)?;
+    let mut read = read_features(project, project_dir, &frame, progress)?;
     let overrides = Overrides::load(project_dir)?;
     let lakes = sources
         .osm
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
-    // the lot areas of the same extracts, map metres and stable ids
+    // the lot areas of the same extracts, with the hand-made lot edits applied (a custom map without OpenStreetMap
+    // has the drawn lots alone), in map metres and with stable ids
     let (lots, skipped_lots) = if stages.lots {
-        sources
+        let before = sources
             .osm
             .as_ref()
-            .map_or((Vec::new(), 0), |land| naves_core::lot::areas(land, &frame))
+            .map_or_else(Vec::new, |land| land.lots.clone());
+        let (edited, lot_report) = apply_lot_edits(&before, &read.extract, &read.way_edits);
+        read.edits.absorb_lots(lot_report, &before);
+        let land = OsmLand {
+            lots: edited,
+            ..OsmLand::default()
+        };
+        naves_core::lot::areas(&land, &frame)
     } else {
         (Vec::new(), 0)
     };

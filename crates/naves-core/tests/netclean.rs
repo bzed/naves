@@ -4009,3 +4009,50 @@ fn a_held_bridge_is_not_shortened() {
     assert_eq!(out, g);
     assert!(none.iter().all(|n| n.reason == "held"), "{none:?}");
 }
+
+#[test]
+fn held_road_in_lot_is_kept() {
+    // the T of `lot_with_a_t`, but the service roads inside the lot are held
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-20.0, -30.0), (20.0, -30.0), (60.0, -30.0)],
+            Family::Asf3,
+        ),
+        plain(2, &[2, 5], &[(20.0, -30.0), (20.0, 20.0)], Family::Asf3),
+        held(plain(
+            3,
+            &[4, 5, 6],
+            &[(5.0, 20.0), (20.0, 20.0), (35.0, 20.0)],
+            Family::Grav,
+        )),
+    ]);
+    let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
+    let step = drop_lot_roads(&g, &lot);
+    assert!(step.dropped.is_empty(), "{:?}", step.dropped);
+    assert!(stretch_ids(&step.graph).contains(&"3:4-5".to_string()));
+    assert!(stretch_ids(&step.graph).contains(&"3:5-6".to_string()));
+}
+
+#[test]
+fn held_access_road_is_not_cut() {
+    let g = build_graph(&[
+        plain(
+            1,
+            &[1, 2, 3],
+            &[(-20.0, -30.0), (20.0, -30.0), (60.0, -30.0)],
+            Family::Asf3,
+        ),
+        held(plain(
+            2,
+            &[2, 5],
+            &[(20.0, -30.0), (20.0, 20.0)],
+            Family::Asf3,
+        )),
+    ]);
+    let lot = [lot_group(square(0.0, 0.0, 40.0, 40.0))];
+    let step = drop_lot_roads(&g, &lot);
+    assert!(step.access.is_empty(), "{:?}", step.access);
+    assert_eq!(step.graph, g);
+}

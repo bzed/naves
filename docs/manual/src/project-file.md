@@ -280,6 +280,15 @@ no lot removes or cuts it. It still gets pieces, heights, junction pieces and ea
 is too tight for the pieces is reported, not rebuilt. `naves:keep=no` hands the way back to the generator, and
 `naves:plan=yes` lets the road planning improve the line anyway (draw it roughly and let Náves route it).
 
+**Lots.** A closed way whose tags make a lot (`amenity=parking`, `amenity=tourist_bus_parking`, `highway=rest_area`,
+`tourism=camp_site`, `tourism=caravan_site`) is a lot, not a road: `add` draws a car park or camp site, `modify`
+replaces the outline of the lot with that way id, `delete` removes it. Give the way a node edit for **every node** of
+its outline (a lot's corners are not stored as nodes, so the build cannot find them elsewhere); a node without a
+position leaves the way out and the build reports `edit_broken`. A `modify` whose tags are no lot any more removes the
+lot. The edited lot has no holes; lots that are relations cannot be edited yet. Lots exist only while the lot stage is
+on; a map without OpenStreetMap files has the lots drawn in this file alone. The lot stage never removes or cuts a way
+with `naves:keep=yes`: a held road inside a lot, or a held access road, stays as drawn.
+
 Every number must be finite, the counts and lengths are limited, and ids must be as above. A file that breaks this
 stops the build with a message that names the file and the element.
 
