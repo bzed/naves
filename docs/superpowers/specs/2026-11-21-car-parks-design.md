@@ -536,6 +536,7 @@ All in `naves-core/src/lot.rs`, `pub const`.
 | `LOT_INSIDE_TOL_M` | 1.0 m | digitising tolerance of "inside", and of "touching" for groups | controller ("a small tolerance") |
 | `LOT_INSIDE_SHARE` | 0.5 | share of a stretch's length that must be inside by more than the tolerance | assistant: keeps a road drawn on the outline |
 | `LOT_ENTRY_M` | 4.0 m | how far inside the edge a cut access road ends | `limits::RAMP_JOINT_MIN_M`, one cell at 2048 |
+| `LOT_ACCESS_MIN_M` | 15 m | least length a cut access road keeps from its other end; a road no longer than this is not cut | controller, game check 2026-11-27: a T junction piece takes 6.25 m, so 15 m holds the junction half, one piece and an end cap |
 | `LOT_PLANE_FIT_M` | 0.5 m | a lot whose plane is within this of its ground (95th percentile) gets the plane | assistant, from the table (138 of 191) **(judge)** |
 | `LOT_MIN_RADIUS_M` | 600 m | smallest radius of curvature of the surface | `limits::min_vertical_radius(Family::Asf1)` |
 | `LOT_RELIEF_LENGTH_M` | 24 m | the "short distance" of "no local height changes" | six terrain cells, about five car lengths |
