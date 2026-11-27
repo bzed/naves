@@ -129,6 +129,10 @@ pub const PLAN_BUDGETS: [(f64, usize); 3] = [(1.0, 10_000), (1.5, 20_000), (3.0,
 pub const PLAN_MAX_ZONE_M: f64 = 400.0;
 /// Exempt part of a road beyond where the original line comes near, in metres.
 pub const PLAN_EXEMPT_EXTEND_M: f64 = 10.0;
+/// The cross-check ignores a graze: a later route reverts only where it comes nearer than the threshold minus this,
+/// in metres, to an accepted route at a place the drawn lines were not near. Without it the answer at the edge of
+/// the threshold is decided by centimetres.
+pub const PLAN_GRAZE_M: f64 = 1.0;
 /// Wall crossings this near an anchor are not counted, in metres.
 pub const PLAN_CROSSING_END_M: f64 = 10.0;
 /// Most cells of the obstacle raster of a leg; the resolution grows by 1.25 until it fits.
@@ -2094,12 +2098,14 @@ struct AcceptedRoute {
 }
 
 /// Whether the two legs' drawn lines were already within `near_m` of each other at the place of the two route
-/// points `p` (of the later route) and `q` (the nearest point of the accepted route): the drawn point of the later
-/// leg nearest to `p` and the drawn point of the accepted leg nearest to `q` are themselves nearer than `near_m`.
-/// This is the per-place exemption of the cross-check: only where the drawn lines already ran that close at that
-/// place may the route come that close. A disc of `near_m` around the route points is not enough for "the place":
-/// it would exempt a conflict 24 m away from a place where the drawn lines came 20 m near each other, although the
-/// drawn lines at the conflict itself run 32 m apart.
+/// points `p` (of the later route) and `q` (the nearest point of the accepted route): the foot of `p` on the later
+/// leg's drawn line and the foot of `q` on the accepted leg's drawn line (the drawn line nearest to each, by its
+/// segments, [`nearest_on`]) are themselves nearer than `near_m`. This is the per-place exemption of the
+/// cross-check: only where the drawn lines already ran that close at that place may the route come that close.
+/// The drawn lines are read as continuous lines, not by their 2 m samples, so the answer does not depend on where
+/// the samples fall. A disc of `near_m` around the route points is not enough for "the place": it would exempt a
+/// conflict 24 m away from a place where the drawn lines came 20 m near each other, although the drawn lines at
+/// the conflict itself run 32 m apart.
 fn drawn_was_near(
     orig: &[(f64, f64)],
     other_orig: &[(f64, f64)],
@@ -2107,21 +2113,14 @@ fn drawn_was_near(
     q: (f64, f64),
     near_m: f64,
 ) -> bool {
-    match (nearest_point(p, orig), nearest_point(q, other_orig)) {
+    match (nearest_on(p, orig), nearest_on(q, other_orig)) {
         (Some((a, _)), Some((b, _))) => dist(a, b) < near_m,
         _ => false,
     }
 }
 
-/// The point of `line` nearest to `p`, and its distance.
-fn nearest_point(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
-    line.iter()
-        .map(|&q| (q, dist(p, q)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-}
-
 /// The place of `line` nearest to `p` — the foot of the perpendicular when it lands inside a segment, the end
-/// when it does not — and its true distance. [`nearest_point`], the point reading, measures only the line's own
+/// when it does not — and its true distance. The point reading (nearest vertex) measures only the line's own
 /// vertices: on a written line, where a straight part is only its two ends, it reads an approach to the middle
 /// of the straight at the distance of an end point. The cross-check ([`check_routes`]) reads the routes by
 /// their true distance, whatever the write-back did to their density.
@@ -2145,8 +2144,9 @@ fn nearest_on(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
 
 /// The routes against each other, in zone order, place by place: a place of a later route, sampled at the stage's
 /// [`SAMPLE_M`], that comes within the road clearance threshold of a route accepted before it, by the true
-/// distance to the accepted route's line, where the two drawn lines were not already that near at that place
-/// (the drawn points nearest to the two places, [`drawn_was_near`]), reverts the later route; its leg
+/// distance to the accepted route's line, by more than [`PLAN_GRAZE_M`] (it comes nearer than the threshold minus
+/// that), where the two drawn lines were not already that near at that place (the feet of the two places on the
+/// drawn lines, [`drawn_was_near`]), reverts the later route; its leg
 /// keeps its line with reason [`KeptReason::BlockedByRoad`] and detail
 /// `route_of <zone id>`. The threshold is the true distance at which the two roads' earthwork touches: the earlier
 /// route's reach plus this leg's clearance (its own reach and one terrain cell), about 26 m for two City stretches.
@@ -2159,6 +2159,18 @@ fn check_routes(
     chains: &[ChainLine],
     works: &[ZoneWork],
     cell: f64,
+) -> usize {
+    check_routes_at(results, jobs, chains, works, cell, SAMPLE_M)
+}
+
+/// [`check_routes`] with the spacing at which the later route is read; the answer must not depend on it.
+fn check_routes_at(
+    results: &mut [LegPlan],
+    jobs: &[LegJob],
+    chains: &[ChainLine],
+    works: &[ZoneWork],
+    cell: f64,
+    sample_m: f64,
 ) -> usize {
     let mut accepted: Vec<AcceptedRoute> = Vec::new();
     let mut reverted = 0_usize;
@@ -2206,11 +2218,13 @@ fn check_routes(
             // The route is read at the stage's own sampling and the accepted one by its true distance, so the
             // answer does not depend on how dense the written lines are: on a collapsed straight part the
             // approach is in the middle, with no point of either line near it.
-            for p in resample(&route.points, SAMPLE_M) {
+            for p in resample(&route.points, sample_m) {
                 let Some((q, near)) = nearest_on(p, &other_route.points) else {
                     continue;
                 };
-                if near >= threshold || drawn_was_near(orig, other_orig, p, q, threshold) {
+                if near >= threshold - PLAN_GRAZE_M
+                    || drawn_was_near(orig, other_orig, p, q, threshold)
+                {
                     continue;
                 }
                 conflict = works.get(other.zone).map(|work| work.id.clone());
@@ -2834,6 +2848,12 @@ mod tests {
     /// segment reading alone.
     #[test]
     fn the_distance_to_a_written_straight_is_true() {
+        fn nearest_point(p: (f64, f64), line: &[(f64, f64)]) -> Option<((f64, f64), f64)> {
+            line.iter()
+                .map(|&q| (q, dist(p, q)))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        }
+
         let straight = [(-30.0, 0.0), (30.0, 0.0)];
         let (_, by_points) = nearest_point((0.0, 21.0), &straight).expect("a vertex");
         assert!(
@@ -2980,5 +3000,105 @@ mod tests {
             other @ LegOutcomeKind::Planned => panic!("{other:?}"),
         }
         assert!(results[1].route.is_none());
+    }
+
+    /// The threshold of the cross-check for two legs of the check chains (half width 3.5 m) on a 4 m cell.
+    fn check_threshold() -> f64 {
+        let chain = check_chain("t", vec![(0.0, 0.0), (2.0, 0.0)]);
+        2.0 * leg_reach(&chain, 4.0, 0, 1) + 4.0
+    }
+
+    /// Route A is a straight of 100 m along x = 0, written as its two ends, drawn the same. Route B's drawn line
+    /// runs along x = `drawn_x` from y = 40 to 60; its written line is that line with a bow towards A: a flat
+    /// bottom at x = `bow_x` between y = 48 and 52, written with the points `written_step` apart and starting
+    /// `lead_in` metres before y = 40 on the same line. Returns how many routes `check_routes_at` reverts when it
+    /// reads the later route every `sample_m`.
+    fn cross_check_bow(
+        drawn_x: f64,
+        bow_x: f64,
+        written_step: f64,
+        lead_in: f64,
+        sample_m: f64,
+    ) -> usize {
+        let drawn_a: Vec<(f64, f64)> = (0..=50).map(|i| (0.0, 2.0 * f64::from(i))).collect();
+        let drawn_b: Vec<(f64, f64)> = (0..=10)
+            .map(|i| (drawn_x, 40.0 + 2.0 * f64::from(i)))
+            .collect();
+        let corners = [
+            (drawn_x, 40.0 - lead_in),
+            (drawn_x, 40.0),
+            (bow_x, 48.0),
+            (bow_x, 52.0),
+            (drawn_x, 60.0),
+        ];
+        let written_b = crate::smooth::resample(&corners, written_step);
+        let chains = vec![
+            check_chain("a", drawn_a.clone()),
+            check_chain("b", drawn_b.clone()),
+        ];
+        let job = |zone: usize, samples: usize| LegJob {
+            zone,
+            chain: zone,
+            a: 0,
+            b: samples - 1,
+            start: EndKind::DeadEnd(1),
+            end: EndKind::DeadEnd(2),
+            tight: Vec::new(),
+        };
+        let jobs = vec![job(0, drawn_a.len()), job(1, drawn_b.len())];
+        let work = |chain: usize, id: &str| ZoneWork {
+            chain,
+            id: id.to_string(),
+            s: 0,
+            e: 0,
+            tightest: 0,
+            tight: Vec::new(),
+            fixed: None,
+            legs: Vec::new(),
+        };
+        let works = vec![work(0, "zone-a"), work(1, "zone-b")];
+        let mut results = vec![
+            check_leg(vec![(0.0, 0.0), (0.0, 100.0)], drawn_a.len()),
+            check_leg(written_b, drawn_b.len()),
+        ];
+        check_routes_at(&mut results, &jobs, &chains, &works, 4.0, sample_m)
+    }
+
+    /// A route that only grazes the threshold, 0.5 m inside it, is not reverted; one 1.5 m inside is.
+    #[test]
+    fn check_routes_ignores_a_graze_and_reverts_a_deeper_violation() {
+        let thr = check_threshold();
+        assert_eq!(
+            cross_check_bow(thr + 14.0, thr - 0.5, 2.0, 0.0, SAMPLE_M),
+            0,
+            "a graze of 0.5 m"
+        );
+        assert_eq!(
+            cross_check_bow(thr + 14.0, thr - 1.5, 2.0, 0.0, SAMPLE_M),
+            1,
+            "a violation of 1.5 m"
+        );
+    }
+
+    /// The answer does not depend on where the later route is sampled: the same geometry, the route read every
+    /// 2, 0.5 and 0.25 m, from shifted starts and written with other spacings, gives the same answer, both
+    /// where the drawn lines were just near enough to exempt the place (1 cm inside the threshold) and where
+    /// they were just too far (1 cm outside it).
+    #[test]
+    fn the_cross_check_does_not_depend_on_the_sampling() {
+        let thr = check_threshold();
+        for (drawn_x, expected) in [(thr - 0.01, 0), (thr + 0.01, 1)] {
+            for sample_m in [2.0, 0.5, 0.25] {
+                for lead_in in [0.0, 0.7, 1.3] {
+                    for written_step in [2.0, 0.25] {
+                        assert_eq!(
+                            cross_check_bow(drawn_x, thr - 4.0, written_step, lead_in, sample_m),
+                            expected,
+                            "drawn {drawn_x}, read every {sample_m}, lead-in {lead_in}, written every {written_step}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
