@@ -13,6 +13,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `naves dem fetch` downloads a bare-earth height model from Mapterhorn for the area of the project (2.5 m pixels by
+  default, `--zoom`, `--pixel-m`), caches the tiles in `dem/mapterhorn/`, writes `dem/mapterhorn_dtm.tif` with an
+  attribution sidecar and lists the file first in `sources.dem`. Where Mapterhorn has nothing finer than Copernicus
+  GLO-30 it refuses and leaves the project alone; `--force` fetches the 30 m fallback. The advice printed by
+  `naves new` names the command.
 - Road planning re-routes curves tighter than the road pieces. A zone of tight road (plus two minimum radii of road
   on each side) is re-routed inside a curve the pieces can build, **not steeper than the road as drawn or its type's
   aim** (or, where a route needs more, at a raised limit up to the type's ceiling, reported), not further than three

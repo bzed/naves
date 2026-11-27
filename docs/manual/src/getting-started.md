@@ -32,6 +32,16 @@ dem = ["dem/Copernicus_DSM_COG_10_N47_00_E012_00_DEM.tif",
 An area can span several tiles; Náves joins them without a seam. If a spot is not covered, the build stops and
 names it.
 
+Instead of Copernicus you can let Náves fetch a finer, bare-earth height model from Mapterhorn:
+`naves dem fetch berchtesgaden` downloads about 340 MB for this example into `berchtesgaden/dem/`, writes
+`dem/mapterhorn_dtm.tif` and an attribution sidecar (`dem/mapterhorn_dtm.attribution.txt`), and lists the file first
+in `sources.dem` in `naves.toml`, so the map remembers it and the build uses it before any other DEM file. Where
+Mapterhorn has nothing finer than Copernicus GLO-30 — most of the world outside Europe and the US — the command
+refuses and `sources.dem` keeps the Copernicus files; `--force` fetches the 30 m fallback. Tiles that only have the
+fallback inside a covered region are named in the output and in `dem/mapterhorn_dtm.attribution.txt`. On a sharper
+height model the report's `earthworks_capped` may rise (real gorge walls, which a smoother model hides); that is
+expected. See [`naves dem fetch`](cli.md#naves-dem-fetch).
+
 ## 3. Build
 
 ```sh
