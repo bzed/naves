@@ -274,11 +274,11 @@ positions of that node in every way, `delete` removes a way, `modify` replaces i
 If the OpenStreetMap original of a `modify` or `delete` has changed or is gone since you made the edit, the edit is
 still applied and the build reports `edit_original_changed` (see [Troubleshooting](troubleshooting.md)).
 
-**`naves:keep` and `naves:plan`.** Every way you draw or change gets `naves:keep=yes`: Náves keeps the line as drawn.
+**`naves:keep` and `naves:plan`.** `naves:keep=yes` means Náves keeps the line as drawn; the editor gives it to every way you draw or change (write it yourself when you edit the file by hand).
 The network clean-up does not remove it or move its nodes, the smoothing and the junction merge leave it alone, and
 no lot removes or cuts it. It still gets pieces, heights, junction pieces and earthwork like any road, and a bend that
 is too tight for the pieces is reported, not rebuilt. `naves:keep=no` hands the way back to the generator, and
-`naves:plan=yes` lets the road planning improve the line anyway (draw it roughly and let Náves route it).
+`naves:plan=yes` is for the road planning that is still to come: it will let it improve the line anyway (draw it roughly and let Náves route it); today it does nothing.
 
 **Lots.** A closed way whose tags make a lot (`amenity=parking`, `amenity=tourist_bus_parking`, `highway=rest_area`,
 `tourism=camp_site`, `tourism=caravan_site`) is a lot, not a road: `add` draws a car park or camp site, `modify`
