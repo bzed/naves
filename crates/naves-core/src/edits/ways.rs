@@ -206,6 +206,18 @@ impl WayEdits {
                 }
                 _ => {}
             }
+            match &way.base {
+                Some(_) if way.action == WayAction::Add => {
+                    return Err(invalid(&what, "an added way has no base"));
+                }
+                Some(base)
+                    if base.len() != 16
+                        || !base.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+                {
+                    return Err(invalid(&what, "base is not a fingerprint"));
+                }
+                _ => {}
+            }
             Self::check_tags(&what, &way.tags)?;
             // The length is checked before any per-node work.
             if way.nodes.len() > MAX_WAY_NODES {

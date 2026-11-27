@@ -369,3 +369,35 @@ fn damaged_file_is_an_error() {
         Err(EditsError::Parse(_))
     ));
 }
+
+#[test]
+fn base_on_add_is_refused() {
+    let mut edits = sample();
+    edits.ways[0].base = Some("0123456789abcdef".to_string());
+    assert!(matches!(
+        edits.validate(),
+        Err(EditsError::Invalid {
+            problem: "an added way has no base",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn bad_base_is_refused() {
+    for bad in ["xyz", "0123456789abcdef0", "0123456789ABCDEF", ""] {
+        let mut edits = sample();
+        edits.ways[1].base = Some(bad.to_string());
+        assert!(
+            matches!(
+                edits.validate(),
+                Err(EditsError::Invalid {
+                    problem: "base is not a fingerprint",
+                    ..
+                })
+            ),
+            "{bad}"
+        );
+    }
+    assert!(sample().validate().is_ok());
+}
