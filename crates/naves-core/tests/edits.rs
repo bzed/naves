@@ -730,3 +730,237 @@ mod apply {
         assert_eq!(report.issues.len(), 0);
     }
 }
+
+// ---- edit operations ----
+
+use naves_core::osm::OsmWay;
+
+fn osm_way(id: i64) -> OsmWay {
+    OsmWay {
+        id,
+        tags: tags(&[("highway", "track")]),
+        nodes: vec![10, 11],
+        points: vec![(47.0, 12.0), (47.1, 12.1)],
+    }
+}
+
+#[expect(clippy::unwrap_used, reason = "test helper")]
+fn ops_nodes(edits: &mut WayEdits, n: u32) -> Vec<ElementId> {
+    (0..n)
+        .map(|i| {
+            edits
+                .new_node(47.0 + f64::from(i) * 0.001, 12.0, By::User)
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn add_way_sets_keep() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 2);
+    let id = e
+        .add_way(tags(&[("highway", "track")]), n, By::User)
+        .unwrap();
+    let w = e.ways.iter().find(|w| w.id == id).unwrap();
+    assert_eq!(w.tags.get("naves:keep").map(String::as_str), Some("yes"));
+    assert_eq!(w.action, WayAction::Add);
+    e.validate().unwrap();
+}
+
+#[test]
+fn keep_no_is_respected() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 2);
+    let id = e
+        .add_way(
+            tags(&[("highway", "track"), ("naves:keep", "no")]),
+            n,
+            By::User,
+        )
+        .unwrap();
+    let w = e.ways.iter().find(|w| w.id == id).unwrap();
+    assert_eq!(w.tags.get("naves:keep").map(String::as_str), Some("no"));
+}
+
+#[test]
+fn modify_twice_keeps_first_base() {
+    let mut e = WayEdits::default();
+    let orig = osm_way(8421);
+    let nodes = vec![ElementId::Osm(10), ElementId::Osm(11)];
+    e.modify_way(&orig, tags(&[("highway", "path")]), nodes.clone(), By::User)
+        .unwrap();
+    let base = e.ways[0].base.clone();
+    assert_eq!(base, Some(fingerprint(&orig.tags, &orig.nodes)));
+    let mut changed = osm_way(8421);
+    changed.nodes = vec![10, 12];
+    e.modify_way(&changed, tags(&[("highway", "track")]), nodes, By::Ai)
+        .unwrap();
+    assert_eq!(e.ways.len(), 1);
+    assert_eq!(e.ways[0].base, base);
+    assert_eq!(e.ways[0].by, By::Ai);
+    e.validate().unwrap();
+}
+
+#[test]
+fn modify_user_way_updates_add() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 3);
+    let id = e
+        .add_way(tags(&[("highway", "track")]), n[..2].to_vec(), By::User)
+        .unwrap();
+    let raw = id.raw().unwrap();
+    let mut o = osm_way(raw);
+    o.nodes.clear();
+    e.modify_way(&o, tags(&[("highway", "path")]), n.clone(), By::User)
+        .unwrap();
+    assert_eq!(e.ways.len(), 1);
+    assert_eq!(e.ways[0].action, WayAction::Add);
+    assert_eq!(e.ways[0].base, None);
+    assert_eq!(e.ways[0].nodes, n);
+    assert!(
+        e.modify_way(&osm_way(USER_ID_BASE + 99), tags(&[]), n, By::User)
+            .is_err()
+    );
+}
+
+#[test]
+fn delete_user_way_drops_its_nodes() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 3);
+    let a = e.add_way(tags(&[]), vec![n[0], n[1]], By::User).unwrap();
+    let _b = e.add_way(tags(&[]), vec![n[1], n[2]], By::User).unwrap();
+    e.delete_way(&osm_way(a.raw().unwrap()), By::User).unwrap();
+    assert_eq!(e.ways.len(), 1);
+    let ids: Vec<_> = e.nodes.iter().map(|x| x.id).collect();
+    assert_eq!(ids, vec![n[1], n[2]]);
+    e.validate().unwrap();
+}
+
+#[test]
+fn delete_osm_way_replaces_modify_and_modify_replaces_delete() {
+    let mut e = WayEdits::default();
+    let orig = osm_way(8421);
+    let nodes = vec![ElementId::Osm(10), ElementId::Osm(11)];
+    e.modify_way(&orig, tags(&[]), nodes.clone(), By::User)
+        .unwrap();
+    let base = e.ways[0].base.clone();
+    e.delete_way(&orig, By::User).unwrap();
+    assert_eq!(e.ways.len(), 1);
+    assert_eq!(e.ways[0].action, WayAction::Delete);
+    assert_eq!(e.ways[0].base, base);
+    assert_eq!(e.ways[0].nodes.len() + e.ways[0].tags.len(), 0);
+    e.validate().unwrap();
+    e.modify_way(&orig, tags(&[]), nodes, By::User).unwrap();
+    assert_eq!(e.ways[0].action, WayAction::Modify);
+    assert_eq!(e.ways[0].base, base);
+    let mut fresh = WayEdits::default();
+    fresh.delete_way(&orig, By::Ai).unwrap();
+    assert_eq!(
+        fresh.ways[0].base,
+        Some(fingerprint(&orig.tags, &orig.nodes))
+    );
+    fresh.validate().unwrap();
+}
+
+#[test]
+fn reset_returns_to_osm() {
+    use naves_core::edits::apply_way_edits;
+    use naves_core::osm::OsmWays;
+    let orig = osm_way(8421);
+    let ways = OsmWays {
+        ways: vec![orig.clone()],
+        skipped: 0,
+    };
+    let mut e = WayEdits::default();
+    let u = e.new_node(47.05, 12.05, By::User).unwrap();
+    e.modify_way(
+        &orig,
+        tags(&[("highway", "path")]),
+        vec![ElementId::Osm(10), u],
+        By::User,
+    )
+    .unwrap();
+    e.reset_way(ElementId::Osm(8421));
+    assert_eq!(e.ways.len(), 0);
+    assert_eq!(e.nodes.len(), 0);
+    let (out, _) = apply_way_edits(&ways, &e);
+    assert_eq!(out.ways, vec![orig]);
+    e.reset_way(ElementId::Osm(1)); // no edit: nothing happens
+}
+
+#[test]
+fn reset_user_way_is_delete() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 2);
+    let id = e.add_way(tags(&[]), n, By::User).unwrap();
+    e.reset_way(id);
+    assert_eq!(e.ways.len() + e.nodes.len(), 0);
+}
+
+#[test]
+fn ids_are_never_reused() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 2);
+    let w = e.add_way(tags(&[]), n, By::User).unwrap(); // u3
+    assert_eq!(w, user(3));
+    e.reset_way(w);
+    assert_eq!(e.new_node(47.0, 12.0, By::User).unwrap(), user(4));
+}
+
+#[test]
+fn move_node_rules() {
+    let mut e = WayEdits::default();
+    let u = e.new_node(47.0, 12.0, By::User).unwrap();
+    e.move_node(u, 47.5, 12.5, None, By::Ai).unwrap();
+    assert_eq!(
+        (e.nodes[0].lat, e.nodes[0].lon, e.nodes[0].by),
+        (47.5, 12.5, By::Ai)
+    );
+    assert_eq!(e.nodes[0].base, None);
+    let osm = ElementId::Osm(812);
+    assert!(e.move_node(osm, 1.0, 1.0, None, By::User).is_err());
+    e.move_node(osm, 47.1, 12.1, Some((47.0, 12.0)), By::User)
+        .unwrap();
+    e.move_node(osm, 47.2, 12.2, Some((9.0, 9.0)), By::User)
+        .unwrap();
+    let n = e.nodes.iter().find(|n| n.id == osm).unwrap();
+    assert_eq!((n.lat, n.base), (47.2, Some((47.0, 12.0))));
+    e.move_node(osm, 47.3, 12.3, None, By::User).unwrap();
+    assert!(e.move_node(user(77), 1.0, 1.0, None, By::User).is_err());
+    assert!(e.move_node(osm, f64::NAN, 1.0, None, By::User).is_err());
+    assert!(
+        e.move_node(ElementId::Osm(0), 1.0, 1.0, Some((1.0, 1.0)), By::User)
+            .is_err()
+    );
+    e.validate().unwrap();
+}
+
+#[test]
+fn operations_refuse_bad_input_and_leave_the_set_unchanged() {
+    let mut e = WayEdits::default();
+    let n = ops_nodes(&mut e, 2);
+    let before = e.clone();
+    assert!(e.new_node(100.0, 0.0, By::User).is_err());
+    assert!(e.add_way(tags(&[]), vec![n[0]], By::User).is_err());
+    assert!(e.add_way(tags(&[]), vec![n[0], n[0]], By::User).is_err());
+    assert!(
+        e.add_way(tags(&[]), vec![n[0], ElementId::User(0)], By::User)
+            .is_err()
+    );
+    let many = (1..=65)
+        .map(|i| (format!("k{i}"), "v".to_string()))
+        .collect();
+    assert!(e.add_way(many, n.clone(), By::User).is_err());
+    assert!(e.delete_way(&osm_way(0), By::User).is_err());
+    assert!(e.delete_way(&osm_way(USER_ID_BASE + 50), By::User).is_err());
+    assert_eq!(e, before);
+    let mut full = WayEdits {
+        next_id: u64::MAX >> 2,
+        ..WayEdits::default()
+    };
+    full.next_id = (1 << 63) + 1;
+    assert!(full.new_node(1.0, 1.0, By::User).is_err());
+    assert!(full.add_way(tags(&[]), n, By::User).is_err());
+    assert_eq!(full.next_id, (1 << 63) + 1);
+}

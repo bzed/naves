@@ -8,6 +8,7 @@
 
 pub mod apply;
 pub mod ids;
+pub mod ops;
 pub mod ways;
 
 use std::path::PathBuf;

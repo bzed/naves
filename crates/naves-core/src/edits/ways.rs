@@ -116,14 +116,14 @@ impl Default for WayEdits {
     }
 }
 
-fn invalid(what: &str, problem: &'static str) -> EditsError {
+pub(super) fn invalid(what: &str, problem: &'static str) -> EditsError {
     EditsError::Invalid {
         what: what.to_string(),
         problem,
     }
 }
 
-fn check_position(what: &str, lat: f64, lon: f64) -> Result<(), EditsError> {
+pub(super) fn check_position(what: &str, lat: f64, lon: f64) -> Result<(), EditsError> {
     if !lat.is_finite() || !lon.is_finite() {
         return Err(invalid(what, "position is not a finite number"));
     }
@@ -244,7 +244,10 @@ impl WayEdits {
         Ok(())
     }
 
-    fn check_tags(what: &str, tags: &BTreeMap<String, String>) -> Result<(), EditsError> {
+    pub(super) fn check_tags(
+        what: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<(), EditsError> {
         if tags.len() > MAX_TAGS {
             return Err(invalid(what, "too many tags"));
         }
@@ -259,7 +262,7 @@ impl WayEdits {
         Ok(())
     }
 
-    fn check_nodes(what: &str, nodes: &[ElementId]) -> Result<(), EditsError> {
+    pub(super) fn check_nodes(what: &str, nodes: &[ElementId]) -> Result<(), EditsError> {
         if nodes.len() < 2 {
             return Err(invalid(what, "a way needs at least 2 nodes"));
         }
