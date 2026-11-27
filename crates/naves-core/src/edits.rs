@@ -6,11 +6,13 @@
 //! An edit set is a TOML file of the project. Every element it names is identified by an [`ElementId`]: an OSM
 //! id for what came from OpenStreetMap, or `u<n>` for what the user drew.
 
+pub mod apply;
 pub mod ids;
 pub mod ways;
 
 use std::path::PathBuf;
 
+pub use apply::{EditIssue, EditReport, apply_way_edits};
 pub use ids::{ElementId, ElementIdError, USER_ID_BASE};
 pub use ways::{
     By, MAX_NODE_EDITS, MAX_TAG_LEN, MAX_TAGS, MAX_WAY_EDITS, MAX_WAY_NODES, NodeEdit, WayAction,

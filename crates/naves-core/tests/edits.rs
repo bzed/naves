@@ -401,3 +401,332 @@ fn bad_base_is_refused() {
     }
     assert!(sample().validate().is_ok());
 }
+
+mod apply {
+    use std::collections::BTreeMap;
+
+    use naves_core::edits::{
+        By, EditIssue, ElementId, NodeEdit, USER_ID_BASE, WayAction, WayEdit, WayEdits,
+        apply_way_edits, fingerprint,
+    };
+    use naves_core::osm::{OsmWay, OsmWays};
+
+    fn tags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    fn way(id: i64, nodes: &[i64]) -> OsmWay {
+        OsmWay {
+            id,
+            tags: tags(&[("highway", "track")]),
+            nodes: nodes.to_vec(),
+            points: nodes
+                .iter()
+                .map(|&n| i32::try_from(n).unwrap_or(0))
+                .map(|n| (47.0 + f64::from(n) * 0.001, 12.0 + f64::from(n) * 0.001))
+                .collect(),
+        }
+    }
+
+    fn osm() -> OsmWays {
+        OsmWays {
+            ways: vec![way(10, &[1, 5, 2]), way(20, &[5, 3, 4])],
+            skipped: 3,
+        }
+    }
+
+    fn node_edit(id: ElementId, lat: f64, lon: f64) -> NodeEdit {
+        NodeEdit {
+            id,
+            lat,
+            lon,
+            base: None,
+            by: By::User,
+        }
+    }
+
+    fn way_edit(id: ElementId, action: WayAction, nodes: &[ElementId]) -> WayEdit {
+        WayEdit {
+            id,
+            action,
+            tags: if action == WayAction::Delete {
+                BTreeMap::new()
+            } else {
+                tags(&[("highway", "service")])
+            },
+            nodes: nodes.to_vec(),
+            base: None,
+            by: By::User,
+        }
+    }
+
+    fn osm_ids(ids: &[i64]) -> Vec<ElementId> {
+        ids.iter().map(|&i| ElementId::Osm(i)).collect()
+    }
+
+    fn find(ways: &OsmWays, id: i64) -> Option<&OsmWay> {
+        ways.ways.iter().find(|w| w.id == id)
+    }
+
+    #[test]
+    fn moved_node_moves_in_every_way() {
+        let mut edits = WayEdits::default();
+        edits.nodes.push(node_edit(ElementId::Osm(5), 1.5, 2.5));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert_eq!(find(&out, 10).unwrap().points[1], (1.5, 2.5));
+        assert_eq!(find(&out, 20).unwrap().points[0], (1.5, 2.5));
+        assert_eq!(find(&out, 10).unwrap().points[0], (47.001, 12.001));
+        assert_eq!(out.skipped, 3);
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.issues.len(), 0);
+    }
+
+    #[test]
+    fn modify_replaces_tags_and_nodes() {
+        let mut edits = WayEdits::default();
+        edits.ways.push(way_edit(
+            ElementId::Osm(10),
+            WayAction::Modify,
+            &osm_ids(&[1, 3]),
+        ));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        let w = find(&out, 10).unwrap();
+        assert_eq!(w.nodes, vec![1, 3]);
+        assert_eq!(w.tags, tags(&[("highway", "service")]));
+        assert_eq!(w.points, vec![(47.001, 12.001), (47.003, 12.003)]);
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.issues.len(), 0);
+    }
+
+    #[test]
+    fn delete_removes_way() {
+        let mut edits = WayEdits::default();
+        edits
+            .ways
+            .push(way_edit(ElementId::Osm(10), WayAction::Delete, &[]));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert!(find(&out, 10).is_none());
+        assert!(find(&out, 20).is_some());
+        assert_eq!(report.applied, 1);
+    }
+
+    #[test]
+    fn add_inserts_user_way_with_raw_ids() {
+        let mut edits = WayEdits {
+            next_id: 10,
+            ..WayEdits::default()
+        };
+        edits.nodes.push(node_edit(ElementId::User(1), 48.0, 13.0));
+        edits.nodes.push(node_edit(ElementId::User(2), 48.1, 13.1));
+        edits.ways.push(way_edit(
+            ElementId::User(1),
+            WayAction::Add,
+            &[ElementId::User(1), ElementId::User(2)],
+        ));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        let w = find(&out, USER_ID_BASE + 1).unwrap();
+        assert_eq!(w.nodes, vec![USER_ID_BASE + 1, USER_ID_BASE + 2]);
+        assert_eq!(w.points, vec![(48.0, 13.0), (48.1, 13.1)]);
+        assert_eq!(out.ways.last().unwrap().id, USER_ID_BASE + 1);
+        assert_eq!(report.applied, 1);
+    }
+
+    #[test]
+    fn added_way_joins_existing_node() {
+        let mut edits = WayEdits {
+            next_id: 10,
+            ..WayEdits::default()
+        };
+        edits.nodes.push(node_edit(ElementId::User(1), 48.0, 13.0));
+        edits.ways.push(way_edit(
+            ElementId::User(1),
+            WayAction::Add,
+            &[ElementId::Osm(5), ElementId::User(1)],
+        ));
+        let (out, _) = apply_way_edits(&osm(), &edits);
+        let w = find(&out, USER_ID_BASE + 1).unwrap();
+        assert_eq!(w.points[0], (47.005, 12.005));
+    }
+
+    #[test]
+    fn missing_node_is_broken() {
+        let mut edits = WayEdits::default();
+        edits.ways.push(way_edit(
+            ElementId::Osm(10),
+            WayAction::Modify,
+            &osm_ids(&[1, 999]),
+        ));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert!(find(&out, 10).is_none());
+        assert!(find(&out, 20).is_some());
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.issues.len(), 1);
+        assert_eq!(
+            report.issues[0].0,
+            EditIssue::Broken {
+                way: ElementId::Osm(10),
+                node: ElementId::Osm(999)
+            }
+        );
+        assert_eq!(report.issues[0].1, (47.001, 12.001));
+    }
+
+    #[test]
+    fn gone_original_still_applies() {
+        let mut edits = WayEdits::default();
+        edits.ways.push(way_edit(
+            ElementId::Osm(77),
+            WayAction::Modify,
+            &osm_ids(&[1, 2]),
+        ));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert!(find(&out, 77).is_some());
+        assert_eq!(
+            report.issues[0].0,
+            EditIssue::OriginalGone {
+                way: ElementId::Osm(77)
+            }
+        );
+        assert_eq!(report.applied, 1);
+    }
+
+    #[test]
+    fn gone_delete_changes_nothing() {
+        let mut edits = WayEdits::default();
+        edits
+            .ways
+            .push(way_edit(ElementId::Osm(77), WayAction::Delete, &[]));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert_eq!(out.ways.len(), 2);
+        assert_eq!(report.applied, 0);
+        assert_eq!(report.issues.len(), 1);
+    }
+
+    #[test]
+    fn changed_original_is_reported() {
+        let mut edits = WayEdits::default();
+        let mut e = way_edit(ElementId::Osm(10), WayAction::Modify, &osm_ids(&[1, 2]));
+        e.base = Some("0000000000000000".to_string());
+        edits.ways.push(e);
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert_eq!(find(&out, 10).unwrap().nodes, vec![1, 2]);
+        assert_eq!(
+            report.issues[0].0,
+            EditIssue::OriginalChanged {
+                way: ElementId::Osm(10)
+            }
+        );
+        assert_eq!(report.applied, 1);
+    }
+
+    #[test]
+    fn matching_base_is_not_reported() {
+        let base = osm();
+        let w = find(&base, 10).unwrap();
+        let mut edits = WayEdits::default();
+        let mut e = way_edit(ElementId::Osm(10), WayAction::Delete, &[]);
+        e.base = Some(fingerprint(&w.tags, &w.nodes));
+        edits.ways.push(e);
+        let (_, report) = apply_way_edits(&base, &edits);
+        assert_eq!(report.issues.len(), 0);
+        assert_eq!(report.applied, 1);
+    }
+
+    #[test]
+    fn order_of_file_does_not_matter() {
+        let mut a = WayEdits {
+            next_id: 10,
+            ..WayEdits::default()
+        };
+        a.nodes.push(node_edit(ElementId::Osm(5), 1.5, 2.5));
+        a.nodes.push(node_edit(ElementId::User(1), 48.0, 13.0));
+        a.ways
+            .push(way_edit(ElementId::Osm(20), WayAction::Delete, &[]));
+        a.ways.push(way_edit(
+            ElementId::User(1),
+            WayAction::Add,
+            &[ElementId::Osm(5), ElementId::User(1)],
+        ));
+        a.ways.push(way_edit(
+            ElementId::Osm(10),
+            WayAction::Modify,
+            &osm_ids(&[1, 999]),
+        ));
+        let mut b = a.clone();
+        b.nodes.reverse();
+        b.ways.reverse();
+        let mut reversed = osm();
+        reversed.ways.reverse();
+        let (out_a, rep_a) = apply_way_edits(&osm(), &a);
+        let (out_b, rep_b) = apply_way_edits(&reversed, &b);
+        assert_eq!(out_a, out_b);
+        assert_eq!(rep_a, rep_b);
+        let ids: Vec<i64> = out_a.ways.iter().map(|w| w.id).collect();
+        assert!(ids.windows(2).all(|p| p[0] < p[1]));
+    }
+
+    #[test]
+    fn no_osm_is_fine() {
+        let mut edits = WayEdits {
+            next_id: 10,
+            ..WayEdits::default()
+        };
+        edits.nodes.push(node_edit(ElementId::User(1), 48.0, 13.0));
+        edits.nodes.push(node_edit(ElementId::User(2), 48.1, 13.1));
+        edits.ways.push(way_edit(
+            ElementId::User(1),
+            WayAction::Add,
+            &[ElementId::User(1), ElementId::User(2)],
+        ));
+        let (out, _) = apply_way_edits(&OsmWays::default(), &edits);
+        assert_eq!(out.ways.len(), 1);
+    }
+
+    #[test]
+    fn broken_without_known_node_uses_node_edit_or_zero() {
+        let mut edits = WayEdits {
+            next_id: 10,
+            ..WayEdits::default()
+        };
+        edits.nodes.push(node_edit(ElementId::User(1), 48.0, 13.0));
+        edits.ways.push(way_edit(
+            ElementId::User(1),
+            WayAction::Add,
+            &[ElementId::Osm(900), ElementId::User(1)],
+        ));
+        edits.ways.push(way_edit(
+            ElementId::Osm(5),
+            WayAction::Modify,
+            &osm_ids(&[901, 902]),
+        ));
+        let (out, report) = apply_way_edits(&OsmWays::default(), &edits);
+        assert_eq!(out.ways.len(), 0);
+        let positions: Vec<(f64, f64)> = report
+            .issues
+            .iter()
+            .filter(|i| matches!(i.0, EditIssue::Broken { .. }))
+            .map(|i| i.1)
+            .collect();
+        // Sorted by way id: the OSM way first, then the user way.
+        assert_eq!(positions, vec![(0.0, 0.0), (48.0, 13.0)]);
+    }
+
+    #[test]
+    fn node_of_a_deleted_way_still_counts_as_known() {
+        let mut edits = WayEdits::default();
+        edits
+            .ways
+            .push(way_edit(ElementId::Osm(20), WayAction::Delete, &[]));
+        edits.ways.push(way_edit(
+            ElementId::Osm(10),
+            WayAction::Modify,
+            &osm_ids(&[1, 3]),
+        ));
+        let (out, report) = apply_way_edits(&osm(), &edits);
+        assert_eq!(find(&out, 10).unwrap().points[1], (47.003, 12.003));
+        assert_eq!(report.issues.len(), 0);
+    }
+}
