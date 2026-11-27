@@ -27,6 +27,8 @@ use naves_core::conform::ConformError;
 use naves_core::dem::DemError;
 use naves_core::heightmap::{Heightmap, HeightmapError};
 use naves_core::imagery::{ImageryError, TileImagery, load_imagery};
+use naves_core::lot::{LotReport, SurfaceSource, centre};
+use naves_core::netclean::CleanReport;
 use naves_core::objects::{OverridesError, piece_transform};
 use naves_core::profile::ProfileError;
 use naves_core::project::{ImageryFile, Project, ProjectError};
@@ -41,7 +43,7 @@ use rayon::prelude::*;
 use crate::bridge::{Finished, copy_tree, run_supervised};
 use crate::catalog_read::{CatalogReadError, unpack_roads, unpack_used};
 use crate::config::{prefix, world_config_with};
-use crate::generate::{Generated, generate};
+use crate::generate::{Generated, Stages, generate_with};
 use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
@@ -66,6 +68,9 @@ pub struct BuildOutput {
     pub smoothing: Option<String>,
     /// One line on what road planning did; `None` when the stage is off or there are no roads.
     pub planning: Option<String>,
+    /// One line on what the lot stage did; `None` when the stage is off, `Some` with its own line ("Lots: none"
+    /// included) whenever the stage is on.
+    pub lots: Option<String>,
 }
 
 /// Errors from the build.
@@ -796,6 +801,88 @@ fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
     })
 }
 
+/// `roads.lots` of `build/report.json`: what the lot stage did, or that it is off. `clean` is the clean-up of the
+/// same graph: it holds the roads the lot step removed, the access roads it cut and the stretches that stay as through
+/// roads. Figures that need a surface are `null` for a lot that has none.
+fn lots_json(lots: Option<&LotReport>, clean: &CleanReport) -> serde_json::Value {
+    let Some(report) = lots else {
+        return serde_json::json!({ "enabled": false });
+    };
+    let counts = report.counts();
+    let by_kind: serde_json::Map<String, serde_json::Value> = counts
+        .kinds
+        .iter()
+        .map(|(kind, number)| (kind.id().to_string(), serde_json::json!(number)))
+        .collect();
+    let by_reason: serde_json::Map<String, serde_json::Value> = counts
+        .reasons
+        .iter()
+        .map(|(reason, number)| ((*reason).to_string(), serde_json::json!(number)))
+        .collect();
+    let by_form: serde_json::Map<String, serde_json::Value> = counts
+        .forms
+        .iter()
+        .map(|(form, number)| (form.id().to_string(), serde_json::json!(number)))
+        .collect();
+    let entries: Vec<serde_json::Value> = report
+        .assessed
+        .iter()
+        .map(|lot| {
+            let at = centre(&lot.area);
+            serde_json::json!({
+                "id": lot.area.id,
+                "kind": lot.area.kind.id(),
+                "x": at.0,
+                "y": at.1,
+                "area_m2": lot.area.area_m2,
+                "outcome": lot.outcome.id(),
+                "reason": lot.outcome.reason(),
+                "form": match lot.outcome {
+                    naves_core::lot::Outcome::Smoothed { form } => Some(form.id()),
+                    _ => None,
+                },
+                "surface": report.class_of(&lot.area.id).map(naves_core::surface::SurfaceClass::id),
+                "surface_source": report.source_of(&lot.area.id).map(SurfaceSource::id),
+                "move_p95_m": lot.move_p95_m,
+                "move_max_m": lot.move_max_m,
+                "lambda": report.surface_of(lot).map(|surface| surface.surface.lambda),
+                "slope_p95": lot.slope_p95,
+                "relief_before_m": lot.relief_before_m,
+                "relief_after_m": lot.relief_after_m,
+                "range_before": [lot.range_before.0, lot.range_before.1],
+                "range_after": [lot.range_after.0, lot.range_after.1],
+            })
+        })
+        .collect();
+    let holes_dropped: usize = report
+        .assessed
+        .iter()
+        .map(|lot| lot.area.holes_dropped)
+        .sum();
+    serde_json::json!({
+        "enabled": true,
+        "kinds": by_kind,
+        "smoothed": counts.smoothed,
+        "surface_only": counts.surface_only,
+        "excluded": counts.excluded,
+        "forms": by_form,
+        "reasons": by_reason,
+        "paved": counts.paved,
+        "grass": counts.grass,
+        "steep": counts.steep,
+        "move_limited": counts.move_limited,
+        "roads_removed": clean.lot_roads.len(),
+        "roads_removed_m": clean.lot_roads.iter().map(|d| d.length_m).sum::<f64>(),
+        "access_cut": clean.lot_access.len(),
+        "junctions_removed": clean.junctions_in_lots,
+        "through": clean.lot_through_kept,
+        "through_stretches": clean.lot_through,
+        "holes_dropped": holes_dropped,
+        "entries_lost": clean.lot_entries_lost,
+        "lots": entries,
+    })
+}
+
 /// `build/report.json`: the numbers, what every OpenStreetMap bridge was built from, and every violation.
 fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError> {
     let violations: Vec<serde_json::Value> = generated
@@ -853,6 +940,10 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
         object.insert(
             "planning".to_string(),
             planning_json(generated.reroute.as_ref()),
+        );
+        object.insert(
+            "lots".to_string(),
+            lots_json(generated.lots.as_ref(), &generated.clean),
         );
     }
     let report = serde_json::json!({
@@ -986,12 +1077,26 @@ pub fn build(
     tools: &Tools,
     progress: &dyn Fn(&str),
 ) -> Result<BuildOutput, BuildError> {
+    build_with(project_dir, tools, Stages::DEFAULT, progress)
+}
+
+/// [`build`] with the stages of the generation switched on or off: the CLI, the GUI and MCP build with
+/// [`Stages::DEFAULT`]; the tests of a stage that is off in this release build with it on.
+///
+/// # Errors
+/// As [`build`].
+pub fn build_with(
+    project_dir: &Path,
+    tools: &Tools,
+    stages: Stages,
+    progress: &dyn Fn(&str),
+) -> Result<BuildOutput, BuildError> {
     progress("Loading the project");
     // External tools run in other working directories, so every path they get must be absolute.
     let project_dir = &std::path::absolute(project_dir).map_err(io_err(project_dir))?;
     let project = Project::load(project_dir)?;
     // All sources are read before anything is cleaned or any tool runs, so a bad file costs nothing.
-    let generated = generate(project_dir, &project, tools, progress)?;
+    let generated = generate_with(project_dir, &project, tools, stages, progress)?;
     let heightmap = &generated.heightmap;
 
     let imagery = load_imagery(&project, project_dir, progress)?;
@@ -1077,13 +1182,19 @@ pub fn build(
         bridges: generated.bridges.iter().map(BridgeFit::summary).collect(),
         smoothing: generated.smooth.as_ref().map(SmoothReport::summary),
         planning: generated.reroute.as_ref().map(RerouteReport::summary),
+        lots: generated
+            .lots
+            .as_ref()
+            .map(|report| report.summary(&generated.clean)),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generate::lot_classes;
     use naves_core::smooth::WidenedZone;
+    use naves_core::surface::SurfaceClass;
 
     #[test]
     fn a_failed_widening_keeps_its_reason_in_the_report() {
@@ -1120,5 +1231,151 @@ mod tests {
         assert_eq!(json["zones"][0]["blocked_by_water"], true);
         assert_eq!(json["points_after"], 4);
         assert_eq!(smoothing_json(None)["enabled"], false);
+    }
+
+    #[test]
+    fn the_lot_section_says_that_the_stage_is_off() {
+        assert_eq!(
+            lots_json(None, &CleanReport::default()),
+            serde_json::json!({ "enabled": false })
+        );
+    }
+
+    #[test]
+    fn the_lot_section_says_what_became_of_every_lot() {
+        use naves_core::lot::{
+            Assessed, Form, LotArea, LotKind, LotReport, LotSurface, NO_GROUP, Outcome, Placement,
+            Surface, SurfaceSource,
+        };
+        let area = |id: &str, kind: LotKind| LotArea {
+            id: id.to_string(),
+            kind,
+            placement: Placement::Ground,
+            outer: vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 0.0)],
+            holes: Vec::new(),
+            area_m2: 50.0,
+            surface_tag: None,
+            holes_dropped: 1,
+        };
+        let lot = |id: &str, kind: LotKind, group: usize, outcome: Outcome| Assessed {
+            area: area(id, kind),
+            group,
+            outcome,
+            steep: false,
+            move_p95_m: if group == NO_GROUP { f64::NAN } else { 0.5 },
+            move_max_m: if group == NO_GROUP { f64::NAN } else { 1.0 },
+            slope_p95: if group == NO_GROUP { f64::NAN } else { 0.1 },
+            relief_before_m: if group == NO_GROUP { f64::NAN } else { 0.4 },
+            relief_after_m: if group == NO_GROUP { f64::NAN } else { 0.1 },
+            range_before: (f64::NAN, f64::NAN),
+            range_after: (f64::NAN, f64::NAN),
+            water_share: 0.0,
+        };
+        let report = LotReport {
+            assessed: vec![
+                lot(
+                    "osm/way/1",
+                    LotKind::CarPark,
+                    0,
+                    Outcome::Smoothed { form: Form::Plane },
+                ),
+                lot(
+                    "osm/way/2",
+                    LotKind::BusParking,
+                    NO_GROUP,
+                    Outcome::SurfaceOnly {
+                        reason: "street_side",
+                    },
+                ),
+                lot(
+                    "osm/way/3",
+                    LotKind::RestArea,
+                    NO_GROUP,
+                    Outcome::Excluded {
+                        reason: "not_at_ground",
+                    },
+                ),
+            ],
+            surfaces: vec![LotSurface {
+                group: 0,
+                members: vec!["osm/way/1".to_string()],
+                polygons: vec![(area("osm/way/1", LotKind::CarPark).outer, Vec::new())],
+                surface: Surface {
+                    at: (5.0, 5.0),
+                    coeffs: [100.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    form: Form::Plane,
+                    lambda: 1.0,
+                },
+            }],
+            classes: vec![
+                ("osm/way/1".to_string(), SurfaceClass::Tarmac),
+                ("osm/way/2".to_string(), SurfaceClass::Grass),
+            ],
+            sources: vec![SurfaceSource::Tag, SurfaceSource::Street],
+        };
+        let json = lots_json(Some(&report), &CleanReport::default());
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["smoothed"], 1);
+        assert_eq!(json["surface_only"], 1);
+        assert_eq!(json["excluded"], 1);
+        assert_eq!(json["holes_dropped"], 3);
+        assert_eq!(json["paved"], 1);
+        assert_eq!(json["grass"], 1);
+        assert_eq!(json["kinds"]["car_park"], 1);
+        assert_eq!(json["reasons"]["not_at_ground"], 1);
+        assert_eq!(json["forms"]["plane"], 1);
+        // the smoothed lot has the surface figures, the others null (a figure that needs a surface)
+        assert_eq!(json["lots"][0]["form"], "plane");
+        assert_eq!(json["lots"][0]["surface"], "tarmac");
+        assert_eq!(json["lots"][0]["surface_source"], "tag");
+        assert_eq!(json["lots"][0]["lambda"], 1.0);
+        assert_eq!(json["lots"][1]["form"], serde_json::Value::Null);
+        assert_eq!(json["lots"][1]["reason"], "street_side");
+        assert_eq!(json["lots"][1]["surface"], "grass");
+        assert_eq!(json["lots"][1]["surface_source"], "street");
+        assert_eq!(json["lots"][1]["move_p95_m"], serde_json::Value::Null);
+        assert_eq!(json["lots"][2]["reason"], "not_at_ground");
+        assert_eq!(json["lots"][2]["surface"], serde_json::Value::Null);
+        assert_eq!(json["lots"][2]["surface_source"], serde_json::Value::Null);
+        assert_eq!(json["lots"][2]["lambda"], serde_json::Value::Null);
+        assert_eq!(
+            json["lots"][2]["range_after"],
+            serde_json::json!([null, null])
+        );
+    }
+
+    #[test]
+    fn the_lot_section_has_the_through_chains_and_the_lost_entries() {
+        let clean = CleanReport {
+            lot_through_kept: 2,
+            lot_through: vec!["1:1-2".to_string(), "2:2-3".to_string()],
+            lot_entries_lost: 1,
+            ..CleanReport::default()
+        };
+        let json = lots_json(Some(&LotReport::default()), &clean);
+        assert_eq!(json["enabled"], true);
+        assert_eq!(json["through"], 2);
+        assert_eq!(
+            json["through_stretches"],
+            serde_json::json!(["1:1-2", "2:2-3"])
+        );
+        assert_eq!(json["entries_lost"], 1);
+    }
+
+    #[test]
+    fn a_paved_lot_is_painted_tarmac_or_the_soils_of_the_ground() {
+        let classes = [
+            ("osm/way/1".to_string(), SurfaceClass::Tarmac),
+            ("osm/way/2".to_string(), SurfaceClass::Grass),
+        ];
+        // the constant is the single switch of the fallback: on, the design's slot 4; off, soil
+        assert_eq!(lot_classes(&classes, true), classes);
+        assert_eq!(
+            lot_classes(&classes, false),
+            [
+                ("osm/way/1".to_string(), SurfaceClass::Soil),
+                ("osm/way/2".to_string(), SurfaceClass::Grass),
+            ]
+        );
     }
 }

@@ -145,6 +145,10 @@ fn ground_unfolds_its_legend() {
     h.get_by_label("Ground").click();
     h.run_steps(3);
     assert!(h.query_by_label("Soil").is_some());
+    assert!(
+        h.query_by_label("Tarmac").is_some(),
+        "the legend has every class"
+    );
 }
 
 #[test]
@@ -200,7 +204,7 @@ fn switching_levels_does_not_touch_the_project_file() {
 #[test]
 fn ground_shares_add_up_to_one() {
     let grid = SurfaceGrid::from_fn(64, 10.0, |col, row| {
-        SurfaceClass::ALL[((col / 8 + row / 16) % 4) as usize]
+        SurfaceClass::ALL[((col / 8 + row / 16) % 5) as usize]
     });
     let shares = ground_shares(&grid, 640.0);
     assert!(
@@ -210,7 +214,7 @@ fn ground_shares_add_up_to_one() {
     assert!(shares.iter().all(|s| *s > 0.0));
     let flat = SurfaceGrid::from_fn(8, 10.0, |_, _| SurfaceClass::Rock);
     let flat = ground_shares(&flat, 80.0);
-    assert!((flat[1] - 1.0).abs() < 1e-12 && flat[0] + flat[2] + flat[3] < 1e-12);
+    assert!((flat[1] - 1.0).abs() < 1e-12 && flat[0] + flat[2] + flat[3] + flat[4] < 1e-12);
 }
 
 #[test]

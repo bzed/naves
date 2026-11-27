@@ -16,6 +16,7 @@ use std::f64::consts::{FRAC_PI_4, PI, TAU};
 use crate::bridgekind::{BridgeKind, straight_room};
 use crate::catalog::Family;
 use crate::features::{Feature, FeatureKind};
+use crate::lot::Paving;
 
 /// A road from crossing to crossing.
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +58,50 @@ pub struct Stretch {
     pub bridge_offset: f64,
     /// A road tagged `foot=use_sidepath` (any of the ways it is made of): its pedestrians use a path beside it.
     pub use_sidepath: bool,
+    /// The metres of the stretch's line whose way is tagged with a paved `surface`. Not one of the attributes that cut a
+    /// stretch. A piece cut from a stretch takes the stretch's average share in proportion to its length, not the
+    /// surface of the way it happens to lie on: whoever needs the metres inside an area must clip by geometry. A
+    /// line that is moved or shortened (a merged junction, a bridge approach, smoothing) keeps its share of its new
+    /// length, so the sum over the pieces equals the original only for pure cuts; a line under 1 micrometre long has 0
+    /// metres of each.
+    pub paved_m: f64,
+    /// The metres of the line whose way is tagged with an unpaved `surface` (see [`Stretch::paved_m`]).
+    pub unpaved_m: f64,
+}
+
+impl Stretch {
+    /// The metres of the line that no way tags paved or unpaved: the line's length less [`Stretch::paved_m`] and
+    /// [`Stretch::unpaved_m`], never below 0 (the sums are made in a different order from the length's, so a fully
+    /// tagged stretch can come out about 1e-13 short).
+    #[must_use]
+    pub fn untagged_m(&self) -> f64 {
+        (polyline_length(&self.points) - self.paved_m - self.unpaved_m).max(0.0)
+    }
+
+    /// The stretch with its metres paved and unpaved scaled to its line: they were those of a line of `from_m` metres
+    /// (the line before it was cut, shortened or moved), so each keeps its share of the length. A line that is
+    /// shorter than 1 micrometre before or not a finite length after gets 0 metres of each, never NaN.
+    #[must_use]
+    pub(crate) fn rescaled(mut self, from_m: f64) -> Stretch {
+        self.rescale(from_m);
+        self
+    }
+
+    /// [`Stretch::rescaled`] in place.
+    pub(crate) fn rescale(&mut self, from_m: f64) {
+        let factor = if from_m > EPS_M {
+            polyline_length(&self.points) / from_m
+        } else {
+            0.0
+        };
+        let factor = if factor.is_finite() && factor >= 0.0 {
+            factor
+        } else {
+            0.0
+        };
+        self.paved_m *= factor;
+        self.unpaved_m *= factor;
+    }
 }
 
 /// A node where stretches meet.
@@ -120,6 +165,8 @@ struct Seg {
     way: i64,
     /// Not part of `attrs`: the tags must not cut a stretch.
     use_sidepath: bool,
+    /// Not part of `attrs` either: the surface tag counts metres, it does not cut.
+    paving: Option<Paving>,
 }
 
 fn segments(features: &[Feature]) -> Vec<Seg> {
@@ -133,6 +180,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             roundabout,
             layer,
             use_sidepath,
+            paving,
         } = feature.kind
         else {
             continue;
@@ -156,6 +204,7 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
                     attrs,
                     way: feature.way_id,
                     use_sidepath,
+                    paving,
                 });
             }
         }
@@ -170,6 +219,9 @@ struct Walked {
     attrs: Attrs,
     way: i64,
     use_sidepath: bool,
+    /// The metres of its segments whose way is tagged paved and unpaved.
+    paved_m: f64,
+    unpaved_m: f64,
     /// Every node on it is a plain joint: nothing marks where it starts.
     ring: bool,
 }
@@ -293,10 +345,17 @@ fn walk(
     let mut nodes = Vec::new();
     let mut points = Vec::new();
     let mut way = i64::MAX;
+    let (mut paved_m, mut unpaved_m) = (0.0, 0.0);
     let attrs = first.map(|x| x.attrs);
     for &(i, forward) in &seq {
         let Some(seg) = segs.get(i) else { continue };
         way = way.min(seg.way);
+        let length = polyline_length(&[seg.pa, seg.pb]);
+        match seg.paving {
+            Some(Paving::Paved) => paved_m += length,
+            Some(Paving::Unpaved) => unpaved_m += length,
+            None => {}
+        }
         let (na, pa, nb, pb) = if forward {
             (seg.a, seg.pa, seg.b, seg.pb)
         } else {
@@ -324,6 +383,8 @@ fn walk(
         use_sidepath: seq
             .iter()
             .any(|&(i, _)| segs.get(i).is_some_and(|x| x.use_sidepath)),
+        paved_m,
+        unpaved_m,
         ring,
     }
 }
@@ -375,6 +436,8 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         bridge_kind: None,
         bridge_offset: 0.0,
         use_sidepath: w.use_sidepath,
+        paved_m: w.paved_m,
+        unpaved_m: w.unpaved_m,
     })
 }
 
@@ -817,6 +880,7 @@ pub fn collapse_small_rings(
             continue;
         }
         let mut s = s.clone();
+        let before = polyline_length(&s.points);
         if let Some(&(node, centre)) = at_start {
             s.start = node;
             if let Some(p) = s.points.first_mut() {
@@ -833,6 +897,7 @@ pub fn collapse_small_rings(
             std::mem::swap(&mut s.start, &mut s.end);
             s.points.reverse();
         }
+        s.rescale(before);
         stretches.push(s);
     }
     let crossings = crossings(&stretches);
@@ -1131,16 +1196,19 @@ pub fn with_bridge_spans(graph: &RoadGraph, spans: &[BridgeSpan]) -> RoadGraph {
                 next_node = next_node.saturating_add(1);
                 n
             };
-            stretches.push(Stretch {
-                id,
-                bridge,
-                points: slice_points(&s.points, from, to),
-                start: *node,
-                end,
-                bridge_kind: None,
-                bridge_offset: 0.0,
-                ..s.clone()
-            });
+            stretches.push(
+                Stretch {
+                    id,
+                    bridge,
+                    points: slice_points(&s.points, from, to),
+                    start: *node,
+                    end,
+                    bridge_kind: None,
+                    bridge_offset: 0.0,
+                    ..s.clone()
+                }
+                .rescaled(total),
+            );
             *node = end;
         };
         for (k, &(f, t)) in merged.iter().enumerate() {
@@ -1203,10 +1271,17 @@ pub(crate) fn grow_into(graph: &mut RoadGraph, i: usize, bridge_at_start: bool, 
     if !from_node {
         rest.reverse();
     }
+    // the metres of the part that moves to the bridge go with it
+    let mut moved = (0.0, 0.0);
     if let Some(s) = graph.stretches.get_mut(n) {
+        let before = (polyline_length(&s.points), s.paved_m, s.unpaved_m);
         s.points = rest;
+        s.rescale(before.0);
+        moved = (before.1 - s.paved_m, before.2 - s.unpaved_m);
     }
     if let Some(b) = graph.stretches.get_mut(i) {
+        b.paved_m += moved.0;
+        b.unpaved_m += moved.1;
         if bridge_at_start {
             head.reverse();
             head.extend(b.points.iter().skip(1).copied());
@@ -1779,13 +1854,16 @@ fn rebuild_stretch(s: &Stretch, list: &[Mark], word: &str, out: &mut Vec<Stretch
         } else {
             format!("{}/{word}{}", s.id, part - 1)
         };
-        out.push(Stretch {
-            id,
-            points,
-            start: ends.0,
-            end: ends.1,
-            ..s.clone()
-        });
+        out.push(
+            Stretch {
+                id,
+                points,
+                start: ends.0,
+                end: ends.1,
+                ..s.clone()
+            }
+            .rescaled(total),
+        );
     };
     for mark in list {
         match *mark {
@@ -1810,4 +1888,47 @@ fn rebuild_stretch(s: &Stretch, list: &[Mark], word: &str, out: &mut Vec<Stretch
         part += 1;
     }
     emit(cursor, total, (node, s.end), (head, None), part);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stretch(points: Vec<(f64, f64)>, paved_m: f64) -> Stretch {
+        Stretch {
+            id: "1:1-2".to_string(),
+            family: Family::Asf3,
+            drivable: true,
+            bridge: false,
+            tunnel: false,
+            roundabout: false,
+            layer: 0,
+            points,
+            start: 1,
+            end: 2,
+            bridge_kind: None,
+            bridge_offset: 0.0,
+            use_sidepath: false,
+            paved_m,
+            unpaved_m: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_finite_leaves_no_nan_in_the_metres() {
+        for paved in [0.0, 50.0] {
+            let mut s = stretch(vec![(0.0, 0.0), (f64::NAN, 0.0)], paved);
+            s.rescale(100.0);
+            assert!(
+                s.paved_m.abs() < 1e-12 && s.unpaved_m.abs() < 1e-12,
+                "{s:?}"
+            );
+            let mut s = stretch(vec![(0.0, 0.0), (f64::INFINITY, 0.0)], paved);
+            s.rescale(100.0);
+            assert!(
+                s.paved_m.abs() < 1e-12 && s.unpaved_m.abs() < 1e-12,
+                "{s:?}"
+            );
+        }
+    }
 }

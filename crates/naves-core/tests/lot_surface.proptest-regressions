@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Seeds for failure cases proptest has generated in the past. They are checked in so the cases run again.
+# None so far; the test runs with a fixed seed.

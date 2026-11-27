@@ -18,6 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::Family;
 use crate::heightmap::Heightmap;
 use crate::limits::{CROSS_FALL_AIM, grade_ceiling};
+use crate::lot::LotSurface;
+use crate::netclean::CutAccess;
 use crate::profile::{ON_ROAD_M, RoadStrip, chain_holds, meeting_bounds, meeting_on, rank};
 use crate::roadnet::{Ring, RoadGraph};
 use crate::roadplace::{Overlay, PlacedKind, PlacedNetwork};
@@ -69,6 +71,9 @@ pub enum JunctionKind {
     Overlay,
     /// A chain ends on another road without a crossing.
     EndOnRoad,
+    /// Where a cut access road ends inside a smoothed lot: the lot's surface holds the road's end, as a ring's
+    /// plane holds the junctions on it. Its height, gradient and place are fixed (see [`add_lot_entries`]).
+    LotEntry,
 }
 
 /// A place where roads meet, with one height for all of them.
@@ -78,9 +83,11 @@ pub struct Junction {
     pub at: (f64, f64),
     /// What meets here.
     pub kind: JunctionKind,
-    /// Median of the original ground.
+    /// Median of the original ground (for a lot entry: the ground at its place; its `height` is the lot's target
+    /// there).
     pub ground: f64,
-    /// The height the roads get: `ground` as found, the solved height after [`crate::profile::solve_clearing`].
+    /// The height the roads get: `ground` as found, the solved height after [`crate::profile::solve_clearing`] (a lot
+    /// entry keeps the lot's target there).
     pub height: f64,
     /// Rank of the most important road meeting here.
     pub rank: u8,
@@ -247,6 +254,9 @@ pub fn ring_plane(base: &Heightmap, ring: &Ring, graph: &RoadGraph) -> RingPlane
 pub struct Junctions {
     /// The planes of the roundabouts of the network: the junctions on a ring take their height from it.
     pub rings: Vec<RingPlane>,
+    /// The lots whose ground is smoothed, one surface per group (see [`add_lot_entries`]): the ground target of a
+    /// joint over one of them is the lot's surface there, not the original ground.
+    pub lots: Vec<LotSurface>,
     /// The junctions, sorted by position.
     pub points: Vec<Junction>,
     /// The links, sorted by their ends and length.
@@ -498,6 +508,7 @@ fn kind_order(kind: JunctionKind) -> u8 {
         JunctionKind::Overlay => 1,
         JunctionKind::Join => 2,
         JunctionKind::EndOnRoad => 3,
+        JunctionKind::LotEntry => 4,
     }
 }
 
@@ -772,6 +783,134 @@ pub fn find_junctions(net: &PlacedNetwork, graph: &RoadGraph, base: &Heightmap) 
     junctions
 }
 
+/// The central difference of the base ground over one cell at `at`: 0 for a component whose samples are missing
+/// (no data, or a cell that is not a positive number).
+fn ground_gradient(base: &Heightmap, at: (f64, f64), cell: f64) -> (f64, f64) {
+    if !(cell.is_finite() && cell > 0.0) {
+        return (0.0, 0.0);
+    }
+    let height = |dx: f64, dy: f64| {
+        let h = f64::from(base.sample(at.0 + dx, at.1 + dy).height);
+        h.is_finite().then_some(h)
+    };
+    let along = |low: Option<f64>, high: Option<f64>| match (low, high) {
+        (Some(low), Some(high)) => (high - low) / (2.0 * cell),
+        _ => 0.0,
+    };
+    (
+        along(height(-cell, 0.0), height(cell, 0.0)),
+        along(height(0.0, -cell), height(0.0, cell)),
+    )
+}
+
+/// The gradient of the height the terrain gets at `at`: `λ·∇S + (1 − λ)·∇g` (see [`LotSurface::target`]), with `∇g`
+/// the base ground's central difference over one cell there.
+fn target_gradient(
+    surface: &LotSurface,
+    at: (f64, f64),
+    base: &Heightmap,
+    cell: f64,
+) -> (f64, f64) {
+    let (sx, sy) = surface.surface.gradient_at(at);
+    let lambda = surface.surface.lambda;
+    let (gx, gy) = ground_gradient(base, at, cell);
+    (
+        lambda * sx + (1.0 - lambda) * gx,
+        lambda * sy + (1.0 - lambda) * gy,
+    )
+}
+
+/// Adds a `LotEntry` junction for every cut access road of a smoothed lot, at the placed end of the road: the
+/// height of the lot's target there and the gradient of that target (`λ·∇S + (1 − λ)·∇g`), half the road's width as
+/// the patch, rank 0 and the access stretch (see [`crate::profile::solve_clearing`]). The smoothed lots go into
+/// [`Junctions::lots`] so that the ground target of a joint over one of them is its surface. `entries` are the cuts
+/// of the lot step: an entry whose lot has no surface (a surface-only or an excluded lot) gets no junction.
+pub fn add_lot_entries(
+    junctions: &mut Junctions,
+    net: &PlacedNetwork,
+    lots: &[LotSurface],
+    entries: &[CutAccess],
+    base: &Heightmap,
+) {
+    junctions.lots = lots.to_vec();
+    let cell = f64::from(base.cell_m);
+    // the entries in a fixed order, whatever order the lot step reports them in
+    let mut sorted: Vec<&CutAccess> = entries.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.stretch
+            .cmp(&b.stretch)
+            .then(a.node.cmp(&b.node))
+            .then(a.entry.0.total_cmp(&b.entry.0))
+            .then(a.entry.1.total_cmp(&b.entry.1))
+    });
+    let mut added: Vec<Junction> = Vec::new();
+    for entry in sorted {
+        // a surface-only or an excluded lot has no surface: no entry junction, the road is as it was
+        let Some(surface) = lots
+            .iter()
+            .find(|surface| surface.members.contains(&entry.lot))
+        else {
+            continue;
+        };
+        // the placed end of the access road nearest the entry
+        let mut best: Option<((f64, f64), f64, f64)> = None;
+        for road in &net.roads {
+            if !road
+                .slot
+                .stretch
+                .split('|')
+                .any(|part| part == entry.stretch.as_str())
+            {
+                continue;
+            }
+            for end in [(road.start.x, road.start.y), (road.end.x, road.end.y)] {
+                let distance = (end.0 - entry.entry.0).hypot(end.1 - entry.entry.1);
+                if best.is_none_or(|(_, _, best_distance)| distance < best_distance) {
+                    best = Some((end, road.width / 2.0, distance));
+                }
+            }
+        }
+        let Some((at, half_width, _)) = best else {
+            continue;
+        };
+        let ground = f64::from(base.sample(at.0, at.1).height);
+        let height = surface.target(at, ground);
+        let (gx, gy) = target_gradient(surface, at, base, cell);
+        if !(at.0.is_finite()
+            && at.1.is_finite()
+            && ground.is_finite()
+            && height.is_finite()
+            && gx.is_finite()
+            && gy.is_finite()
+            && half_width.is_finite())
+        {
+            continue;
+        }
+        added.push(Junction {
+            at,
+            kind: JunctionKind::LotEntry,
+            ground,
+            height,
+            rank: 0,
+            patch_m: half_width,
+            stretches: std::iter::once(entry.stretch.clone()).collect(),
+            lower: BTreeSet::new(),
+            gradient: (gx, gy),
+            tilt_axis: None,
+            tilt_cap: 0.0,
+        });
+    }
+    if added.is_empty() {
+        return;
+    }
+    junctions.points.extend(added);
+    // the junctions stay sorted by position
+    junctions.points.sort_by(|a, b| by_position(&a.at, &b.at));
+    // the links are made again with the entries among the junctions, so that a link over its ceiling is reported
+    junctions.links = held_links(net, cell, junctions);
+    junctions.unresolved.clear();
+}
+
 /// The links of the junctions as the roads hold them: along every chain, the road between two consecutive
 /// joints that are held (by [`chain_holds`], the rules the height solve uses) to different junctions. Its
 /// length is the length along the chain between the two joints, at least 1 m, so that the grade of a link
@@ -853,7 +992,7 @@ fn through_road<'a>(lines: &'a [Line], raw: &Raw) -> Option<(&'a Line, f64, (f64
             let line = lines.get(raw.arms.get(1)?.line)?;
             Some((line, line.project(raw.at).1, line.heading_near(raw.at)?))
         }
-        JunctionKind::Join => None,
+        JunctionKind::Join | JunctionKind::LotEntry => None,
     }
 }
 
@@ -1083,6 +1222,7 @@ fn merged(
     });
     Junctions {
         rings: rings.to_vec(),
+        lots: Vec::new(),
         points,
         links: out_links,
         unresolved: Vec::new(),

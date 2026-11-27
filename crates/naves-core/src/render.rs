@@ -555,7 +555,7 @@ fn roads_layer(data: &LayerData<'_>, req: &RenderRequest, size: (u32, u32)) -> R
 fn paths_layer(data: &LayerData<'_>, req: &RenderRequest, size: (u32, u32)) -> RgbaImage {
     let mut canvas = Canvas::new(req, size);
     for feature in data.features {
-        let FeatureKind::Path { width_m } = feature.kind else {
+        let FeatureKind::Path { width_m, .. } = feature.kind else {
             continue;
         };
         let half = (width_m / canvas.step_x).max(MIN_PATH_PX) / 2.0;

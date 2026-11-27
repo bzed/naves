@@ -53,6 +53,7 @@ fn feature(
             roundabout: false,
             layer,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

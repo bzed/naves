@@ -17,13 +17,17 @@ use naves_core::bridgeground::bridge_spans;
 use naves_core::bridgekind::{BridgeFit, choose, crossing_thickness, fit_bridges};
 use naves_core::catalog::{BridgeModel, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_walkable};
-use naves_core::conform::{Conformed, LevelPatch, conform_bridges};
+use naves_core::conform::{AreaPatch, Conformed, LevelPatch, conform_areas};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
-use naves_core::junctions::{Junction, JunctionKind, Junctions, find_junctions};
-use naves_core::netclean::{self, CleanReport};
+use naves_core::junctions::{Junction, JunctionKind, Junctions, add_lot_entries, find_junctions};
+use naves_core::lot::{
+    Assessed, LOT_INSIDE_TOL_M, LOTS_ENABLED, LotArea, LotReport, LotSurface, SurfaceSource,
+    contains, edge_distance,
+};
+use naves_core::netclean::{self, CleanReport, CutAccess, surviving_entries};
 use naves_core::objects::{
     GeneratedObject, ObjectId, Overrides, PlacedObject, apply_overrides, bridge_object_height,
     panel_object_height, road_object_id, road_objects,
@@ -42,7 +46,7 @@ use naves_core::smooth::{
     SMOOTH_ENABLED, SmoothParams, SmoothReport, WaterTest, min_radius, smooth_graph_in_water,
 };
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
-use naves_core::validate::{Violation, check_roads, water_test};
+use naves_core::validate::{Violation, check_roads, lot_violations, sort_violations, water_test};
 use serde::Serialize;
 
 use crate::build::BuildError;
@@ -121,6 +125,10 @@ pub struct Generated {
     pub smooth: Option<SmoothReport>,
     /// What road planning did to the road graph; `None` when the stage is off or there are no roads.
     pub reroute: Option<RerouteReport>,
+    /// What the lot stage found and decided; `None` when the stage is off.
+    pub lots: Option<LotReport>,
+    /// What the clean-up of the road graph did (empty when there are no roads).
+    pub clean: CleanReport,
 }
 
 /// The roads of a project: nothing when it has none.
@@ -191,8 +199,25 @@ pub fn place_once(
     catalog: &PieceCatalog,
     base: &Heightmap,
 ) -> Result<Placed, BuildError> {
+    place_once_with(graph, catalog, base, &[], &[])
+}
+
+/// [`place_once`] with the smoothed lots and the cut access roads of the lot step: an entry becomes a
+/// [`JunctionKind::LotEntry`] at the placed end of its access road, held to the lot's surface, and the ground target
+/// of a joint over a lot is the lot's surface there (see [`add_lot_entries`]).
+///
+/// # Errors
+/// As [`place_once`].
+pub fn place_once_with(
+    graph: &RoadGraph,
+    catalog: &PieceCatalog,
+    base: &Heightmap,
+    lots: &[LotSurface],
+    entries: &[CutAccess],
+) -> Result<Placed, BuildError> {
     let net = place_network(graph, catalog)?;
-    let junctions = find_junctions(&net, graph, base);
+    let mut junctions = find_junctions(&net, graph, base);
+    add_lot_entries(&mut junctions, &net, lots, entries, base);
     let side = side_slopes(&net, base);
     // the heights of all roads and junctions are one problem; a bridge over a road keeps its clearance in it
     // what the catalog could not measure it says in its own warnings
@@ -228,50 +253,80 @@ pub struct FittedGraph {
     pub reroute: Option<RerouteReport>,
     /// How long road planning took (zero when the stage is off); a measurement, not part of any output.
     pub reroute_time: std::time::Duration,
+    /// What the lot stage found and decided; `None` when the stage is off ([`LOTS_ENABLED`]).
+    pub lots: Option<LotReport>,
+    /// How long the lot stage's own work took (zero when the stage is off): the assessment of the lots (the surface
+    /// fits and the water share), their groups and the surface decision. The clean-up is not in it (it runs its own
+    /// lot step as its first of five steps), and neither is the terrain shaping or the painting, which are one pass
+    /// each with the roads and with the ground. A measurement, not part of any output.
+    pub lots_time: std::time::Duration,
     /// What every OpenStreetMap bridge was built from, and why.
     pub bridges: Vec<BridgeFit>,
 }
 
-/// Which optional stages of the road graph run: road planning (`reroute_graph`) and the smoothing of the road
-/// lines (`smooth_graph_in_water`). Both are off unless their switch says otherwise, but they can be chosen per
-/// call, so `road-analysis` runs the four combinations with the same binary.
+/// Which of the stages that change the roads run: road planning (`reroute_graph`), the smoothing of the road lines
+/// (`smooth_graph_in_water`) and the lot stage. Each is on or off as its switch says, but they can be chosen per
+/// call, so `road-analysis` runs the combinations with the same binary. The switches are constants, not project
+/// settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stages {
     /// Road planning: re-route the tight curves (`REROUTE_ENABLED`).
     pub reroute: bool,
     /// The smoothing of the road lines (`SMOOTH_ENABLED`).
     pub smooth: bool,
+    /// The lot stage: car parks, camp sites and similar areas (`LOTS_ENABLED`).
+    pub lots: bool,
 }
 
 impl Stages {
-    /// Both stages as their switches say (`REROUTE_ENABLED`, `SMOOTH_ENABLED`).
+    /// The stages as their switches say: road planning and the smoothing are off until they were judged, the lot
+    /// stage is on (`REROUTE_ENABLED`, `SMOOTH_ENABLED`, `LOTS_ENABLED`).
     pub const DEFAULT: Stages = Stages {
         reroute: REROUTE_ENABLED,
         smooth: SMOOTH_ENABLED,
+        lots: LOTS_ENABLED,
     };
 }
 
+impl Default for Stages {
+    fn default() -> Stages {
+        Stages::DEFAULT
+    }
+}
+
 /// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, the graph
-/// cleaned ([`netclean::clean`]), road planning the tight curves ([`reroute_graph`], unless
+/// cleaned ([`netclean::clean_with`], with the groups of the lots), the lots judged ([`naves_core::lot::assess`] and
+/// [`naves_core::lot::surfaces_with_sources`]), road planning the tight curves ([`reroute_graph`], unless
 /// [`REROUTE_ENABLED`] is off), smoothed ([`smooth_graph_in_water`], unless [`SMOOTH_ENABLED`] is off) and every
 /// OpenStreetMap bridge built from the part that fits it on the original ground `base`.
 #[must_use]
 ///
-/// `in_water` tells whether a point of the map is in water: neither stage puts a road into water (see
-/// [`naves_core::validate::water_test`]). `streams` are the stream lines in map metres ([`water_lines`]): a route
-/// of the planning crosses one only as often as the drawn line does.
+/// `in_water` tells whether a point of the map is in water: neither the planning nor the smoothing puts a road into
+/// water and a lot mostly in water is excluded (see [`naves_core::validate::water_test`]). `streams` are the stream
+/// lines in map metres ([`water_lines`]): a route of the planning crosses one only as often as the drawn line does.
+/// `lots` are the lot areas of the project ([`naves_core::lot::areas`]); they are read only when [`LOTS_ENABLED`] is
+/// on.
 pub fn fitted_graph(
     features: &[Feature],
     catalog: &PieceCatalog,
     base: &Heightmap,
     in_water: WaterTest<'_>,
     streams: &[Vec<(f64, f64)>],
+    lots: &[LotArea],
 ) -> FittedGraph {
-    fitted_graph_with(features, catalog, base, Stages::DEFAULT, in_water, streams)
+    fitted_graph_with(
+        features,
+        catalog,
+        base,
+        Stages::DEFAULT,
+        in_water,
+        streams,
+        lots,
+    )
 }
 
-/// [`fitted_graph`] with the stages of the road graph switched on or off: off, the graph is the cleaned graph with
-/// the bridges fitted, as it was before the stages existed.
+/// [`fitted_graph`] with the stages switched on or off: with all off, the graph is the cleaned graph with the
+/// bridges fitted, as it was before the stages existed, and `lots` is `None`.
 #[must_use]
 pub fn fitted_graph_with(
     features: &[Feature],
@@ -280,14 +335,54 @@ pub fn fitted_graph_with(
     stages: Stages,
     in_water: WaterTest<'_>,
     streams: &[Vec<(f64, f64)>],
+    lots: &[LotArea],
 ) -> FittedGraph {
     // a roundabout smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of its surface is a plain crossing
     let (flat, roundabouts) =
         collapse_small_rings(&build_graph(features), &|f| catalog.tightest_arc(f));
     let (deduplicated, duplicates) = drop_duplicates(&flat);
-    let (built, mut clean) =
-        netclean::clean(&deduplicated, &|f| f.width_m(), f64::from(base.cell_m));
+    let cell_m = f64::from(base.cell_m);
+    // The lots are judged on the graph as the roads come in (the duplicates dropped, before the clean-up takes
+    // anything out), and the clean-up gets their groups in the same run: its step 0 removes the roads inside them.
+    // The class comes from what that step removed, so it is decided after the clean-up, from the same list of lots
+    // and the same road features the graph was built from.
+    let started_lots = std::time::Instant::now();
+    let (assessed, surfaces): (Vec<Assessed>, Vec<LotSurface>) = if stages.lots {
+        naves_core::lot::assess(lots, base, in_water)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let groups = if stages.lots {
+        netclean::lot::groups(&assessed)
+    } else {
+        Vec::new()
+    };
+    // the clean-up runs between the lot work and is timed out of it: its lot step is its first, but it is one run
+    // with the other four steps and cannot be separated from them
+    let started_clean = std::time::Instant::now();
+    let (built, mut clean) = netclean::clean_with(&deduplicated, &|f| f.width_m(), cell_m, &groups);
+    let clean_time = started_clean.elapsed();
     clean.roundabouts = roundabouts;
+    let decided = if stages.lots {
+        naves_core::lot::surfaces_with_sources(&assessed, &deduplicated, &clean, cell_m, features)
+    } else {
+        Vec::new()
+    };
+    let lots_time = if stages.lots {
+        lot_time(started_lots.elapsed(), Some(clean_time))
+    } else {
+        std::time::Duration::ZERO
+    };
+    let (classes, sources): (Vec<(String, SurfaceClass)>, Vec<SurfaceSource>) = decided
+        .into_iter()
+        .map(|(id, class, source)| ((id, class), source))
+        .unzip();
+    let lot_report = stages.lots.then_some(LotReport {
+        assessed,
+        surfaces,
+        classes,
+        sources,
+    });
     // a family without a curve piece has nothing that counts as tight
     let radius =
         |s: &naves_core::roadnet::Stretch| min_radius(catalog, s.family).unwrap_or(f64::INFINITY);
@@ -324,6 +419,8 @@ pub fn fitted_graph_with(
         smooth_time,
         reroute,
         reroute_time,
+        lots: lot_report,
+        lots_time,
         bridges,
     }
 }
@@ -352,11 +449,17 @@ pub struct RoadPlan {
 /// there are no further rounds, the dips that are left are only told apart into fill and report.
 ///
 /// `water` are the streams in map metres and `lakes` the areas of the project, which tell whether a dip lies
-/// over water.
+/// over water. `lots` are the lot areas ([`naves_core::lot::areas`]); with the lot stage on
+/// ([`Stages::DEFAULT`]), their entry junctions and through-road ground targets go into the placement (see
+/// [`place_once_with`]).
 ///
 /// # Errors
 /// A stretch that cannot be fitted, or [`BuildError::Profile`] when the height solve reports no solution or
 /// finds a road without ground data.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one input per source and switch, as the placement needs them"
+)]
 pub fn plan_roads(
     features: &[Feature],
     catalog: &PieceCatalog,
@@ -364,6 +467,7 @@ pub fn plan_roads(
     water: &[Vec<(f64, f64)>],
     lakes: &[LandPolygon],
     frame: &MapGeo,
+    lots: &[LotArea],
     progress: &dyn Fn(&str),
 ) -> Result<RoadPlan, BuildError> {
     plan_roads_with(
@@ -373,20 +477,17 @@ pub fn plan_roads(
         water,
         lakes,
         frame,
-        progress,
         Stages::DEFAULT,
+        lots,
+        progress,
     )
 }
 
-/// [`plan_roads`] with the stages of the road graph chosen per call: `water` are also the stream lines the road
-/// planning keeps its routes off.
+/// [`plan_roads`] with the stages switched on or off.
 ///
 /// # Errors
 /// As [`plan_roads`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one input per kind of source, like `plan_roads` plus the stages"
-)]
+#[expect(clippy::too_many_arguments, reason = "one input per source and switch")]
 pub fn plan_roads_with(
     features: &[Feature],
     catalog: &PieceCatalog,
@@ -394,8 +495,9 @@ pub fn plan_roads_with(
     water: &[Vec<(f64, f64)>],
     lakes: &[LandPolygon],
     frame: &MapGeo,
-    progress: &dyn Fn(&str),
     stages: Stages,
+    lots: &[LotArea],
+    progress: &dyn Fn(&str),
 ) -> Result<RoadPlan, BuildError> {
     let FittedGraph {
         graph: widened,
@@ -405,6 +507,8 @@ pub fn plan_roads_with(
         smooth_time,
         reroute,
         reroute_time,
+        lots: lot_report,
+        lots_time,
         bridges,
         ..
     } = fitted_graph_with(
@@ -414,6 +518,7 @@ pub fn plan_roads_with(
         stages,
         &water_test(lakes, frame),
         water,
+        lots,
     );
     if reroute.is_some() {
         progress(&format!(
@@ -427,7 +532,20 @@ pub fn plan_roads_with(
             smooth_time.as_secs_f64()
         ));
     }
-    let first = place_once(&widened, catalog, base)?;
+    if lot_report.is_some() {
+        progress(&format!(
+            "Assessing the lots ({:.1} s)",
+            lots_time.as_secs_f64()
+        ));
+    }
+    // an entry whose node a later clean-up step took away gets no junction (the count is in the clean-up's report).
+    // The filter runs on the graph the placement gets: the smoothing and the bridge fitting come after the clean-up,
+    // and an entry they dropped would be filtered here but not counted there.
+    let surfaces: &[LotSurface] = lot_report
+        .as_ref()
+        .map_or(&[], |report| report.surfaces.as_slice());
+    let entries = surviving_entries(&widened, &clean.lot_access);
+    let first = place_once_with(&widened, catalog, base, surfaces, &entries)?;
     let dips = |graph: &RoadGraph, placed: &Placed, bridges: bool| {
         find_dips(
             graph,
@@ -457,7 +575,8 @@ pub fn plan_roads_with(
     } else {
         progress("Placing the roads again with bridges over the dips");
         let graph = with_bridge_spans(&widened, &spans);
-        let placed = place_once(&graph, catalog, base)?;
+        // a span splits a stretch and adds nodes; an entry's node stays as it is
+        let placed = place_once_with(&graph, catalog, base, surfaces, &entries)?;
         // the dips that are left cannot be bridged any more
         let left = dips(&graph, &placed, false)
             .into_iter()
@@ -466,9 +585,16 @@ pub fn plan_roads_with(
         (graph, placed, left, true)
     };
     placed.net.duplicates = duplicates;
+    // an access road the placement dropped behind its cut gets no entry junction either: count it as a lost entry
+    // and keep it for the finding (`road_in_lot_dropped`), as the clean-up does for an entry whose node went
+    let unplaced = naves_core::netclean::entries_without_road(&placed.net, &entries);
+    let mut clean = clean;
+    clean.lot_entries_lost += unplaced.len();
+    clean.lot_access_unplaced = unplaced;
     placed.net.clean = clean;
     placed.net.smooth = smooth;
     placed.net.reroute = reroute;
+    placed.net.lots = lot_report;
     placed.net.bridge_fits = bridges;
     mark_placed(&mut placed.net.bridge_fits, &placed.net.roads);
     Ok(RoadPlan {
@@ -480,39 +606,40 @@ pub fn plan_roads_with(
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "one input per source and switch")]
 fn place_roads(
     read: &Read,
+    lots: &[LotArea],
     lakes: &[LandPolygon],
     base: &Heightmap,
     frame: &MapGeo,
     tools: &Tools,
+    stages: Stages,
     progress: &dyn Fn(&str),
 ) -> Result<Roads, BuildError> {
     let features = &read.features;
-    if !features
+    let has_roads = features
         .iter()
-        .any(|f| matches!(f.kind, FeatureKind::Road { .. }))
-    {
-        return Ok(Roads {
-            net: PlacedNetwork::default(),
-            graph: RoadGraph::default(),
-            profiles: Profiles::default(),
-            junctions: Junctions::default(),
-            conformed: None,
-            catalog: None,
-            dips: Vec::new(),
-        });
+        .any(|f| matches!(f.kind, FeatureKind::Road { .. }));
+    if !has_roads {
+        // the stage is on: the lots (or their absence) are reported like any other build, never as "off"
+        if stages.lots {
+            return lots_only(lots, features, lakes, base, frame, progress);
+        }
+        return Ok(empty_roads());
     }
     progress("Reading the road pieces of the game");
     let catalog = road_catalog(tools, &tools.cache_dir)?;
     progress("Placing the roads");
-    let plan = plan_roads(
+    let plan = plan_roads_with(
         features,
         &catalog,
         base,
         &read.water,
         lakes,
         frame,
+        stages,
+        lots,
         progress,
     )?;
     progress("Shaping the terrain to the roads");
@@ -523,9 +650,14 @@ fn place_roads(
         ..
     } = plan.placed;
     let patches = level_patches(&junctions, f64::from(base.cell_m));
+    // the lots' smooth ground is a polygon patch beside the discs of the junctions
+    let lot_patches = net
+        .lots
+        .as_ref()
+        .map_or_else(Vec::new, |report| area_patches(&report.surfaces));
     // the ground under every placed deck is shaped for it, from the deck as placed
     let spans = bridge_spans(&net, &profiles.strips, &catalog, &plan.graph);
-    let conformed = conform_bridges(base, &profiles.strips, &patches, &spans)?;
+    let conformed = conform_areas(base, &profiles.strips, &patches, &lot_patches, &spans)?;
     Ok(Roads {
         net,
         graph: plan.graph,
@@ -534,6 +666,77 @@ fn place_roads(
         conformed: Some(conformed),
         catalog: Some(catalog),
         dips: plan.dips,
+    })
+}
+
+/// The roads of a project that has none: nothing placed, nothing shaped.
+fn empty_roads() -> Roads {
+    Roads {
+        net: PlacedNetwork::default(),
+        graph: RoadGraph::default(),
+        profiles: Profiles::default(),
+        junctions: Junctions::default(),
+        conformed: None,
+        catalog: None,
+        dips: Vec::new(),
+    }
+}
+
+/// The lot stage's own time, from two clock readings: the span from the assessment to the surface decision, less the
+/// clean-up that ran inside it (`None` when the path runs no clean-up). The terrain shaping and the painting happen
+/// after the span, so neither is in it. The clocks are not injected, but both paths read them at the same points
+/// around their lot work, and the subtraction is what this is: tested with fixed durations, without a clock.
+fn lot_time(span: std::time::Duration, clean: Option<std::time::Duration>) -> std::time::Duration {
+    span.saturating_sub(clean.unwrap_or_default())
+}
+
+/// The lots of a project without any road: their surface classes and their smooth ground, without a placement. The
+/// class is decided like the build's, on an empty graph, so a lot with no road of its own is grass unless its tag
+/// says otherwise.
+fn lots_only(
+    lots: &[LotArea],
+    features: &[Feature],
+    lakes: &[LandPolygon],
+    base: &Heightmap,
+    frame: &MapGeo,
+    progress: &dyn Fn(&str),
+) -> Result<Roads, BuildError> {
+    let started = std::time::Instant::now();
+    let (assessed, surfaces) = naves_core::lot::assess(lots, base, &water_test(lakes, frame));
+    let clean = CleanReport::default();
+    let decided = naves_core::lot::surfaces_with_sources(
+        &assessed,
+        &RoadGraph::default(),
+        &clean,
+        f64::from(base.cell_m),
+        features,
+    );
+    let (classes, sources): (Vec<(String, SurfaceClass)>, Vec<SurfaceSource>) = decided
+        .into_iter()
+        .map(|(id, class, source)| ((id, class), source))
+        .unzip();
+    let report = LotReport {
+        assessed,
+        surfaces,
+        classes,
+        sources,
+    };
+    // the time is read before the terrain is shaped: the shaping is not the lot stage's own work, and the roads path
+    // measures the same steps (assessment and surface decision, with no clean-up here)
+    let lots_time = lot_time(started.elapsed(), None);
+    progress(&format!(
+        "Assessing the lots ({:.1} s)",
+        lots_time.as_secs_f64()
+    ));
+    let patches = area_patches(&report.surfaces);
+    let conformed = conform_areas(base, &[], &[], &patches, &[])?;
+    Ok(Roads {
+        net: PlacedNetwork {
+            lots: Some(report),
+            ..PlacedNetwork::default()
+        },
+        conformed: Some(conformed),
+        ..empty_roads()
     })
 }
 
@@ -577,6 +780,16 @@ pub fn level_patches(junctions: &Junctions, cell_m: f64) -> Vec<LevelPatch> {
         rank: ring.rank,
     }));
     patches
+}
+
+/// The polygon patches of the smoothed lots: one per group, rank 0 (below every road), the ground shaped to the
+/// group's surface (see [`naves_core::conform::AreaPatch`]). The order is the order of `lots`.
+#[must_use]
+pub fn area_patches(lots: &[LotSurface]) -> Vec<AreaPatch> {
+    lots.iter()
+        .cloned()
+        .map(|surface| AreaPatch { surface, rank: 0 })
+        .collect()
 }
 
 /// The deck level of every bridge object: the height of the profile at its start.
@@ -663,10 +876,101 @@ fn narrow(v: f64) -> f32 {
     narrowed
 }
 
-/// Paints the paths on the ground, along their OpenStreetMap lines.
-fn paint_paths(surfaces: &mut SurfaceGrid, features: &[Feature]) {
+/// Whether a paved lot is painted as [`SurfaceClass::Tarmac`]: the fifth ground layer, layer slot 4 with the mask
+/// value (0, 0, 0, 128). **Off**: the game check of 2026-11-27 showed that the client ignores the alpha of a map's
+/// mask for the layer choice (alpha 0, 64, 128 and 192 all gave the layer of the colour, also with Livonia's own mask
+/// file and a tile material that lists the fifth layer), so slot 4 never shows and a paved lot is painted soil, the
+/// plan's fallback. This constant and [`lot_classes`] are the one place where that happens.
+pub const TARMAC_PAINTED: bool = false;
+
+/// The classes the lots are painted with, from the decided ones: [`SurfaceClass::Tarmac`] becomes
+/// [`SurfaceClass::Soil`] when `tarmac_painted` is off. The single fallback for a slot 4 that does not work (see
+/// [`TARMAC_PAINTED`]); the order and the ids stay as they are.
+#[must_use]
+pub fn lot_classes(
+    classes: &[(String, SurfaceClass)],
+    tarmac_painted: bool,
+) -> Vec<(String, SurfaceClass)> {
+    classes
+        .iter()
+        .map(|(id, class)| {
+            let painted = if !tarmac_painted && *class == SurfaceClass::Tarmac {
+                SurfaceClass::Soil
+            } else {
+                *class
+            };
+            (id.clone(), painted)
+        })
+        .collect()
+}
+
+/// Paints the lots on the ground: every lot of `areas` that has a class in `decided` (the outer ring less its holes,
+/// even-odd, one `SurfaceGrid::fill_polygon` each), the largest first and in the order of the ids among equals, so
+/// that a car park inside a camp site shows on top of it. The order of `areas` and `decided` does not matter. A lot
+/// without a decision is not painted and a decision without a lot is ignored.
+pub fn paint_lots(
+    surfaces: &mut SurfaceGrid,
+    areas: &[LotArea],
+    decided: &[(String, SurfaceClass)],
+) {
+    let mut lots: Vec<(&LotArea, SurfaceClass)> = areas
+        .iter()
+        .filter_map(|area| {
+            decided
+                .iter()
+                .find(|(id, _)| *id == area.id)
+                .map(|(_, class)| (area, *class))
+        })
+        .collect();
+    lots.sort_by(|a, b| {
+        b.0.area_m2
+            .total_cmp(&a.0.area_m2)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    for (area, class) in lots {
+        surfaces.fill_polygon(&area.outer, &area.holes, class);
+    }
+}
+
+/// Whether every point of a path, sampled every metre along the line (its vertices included), lies in some lot of
+/// `lots` or within [`LOT_INSIDE_TOL_M`] of its edge. It may pass from one lot into another that touches it: the lots
+/// of one group share one surface.
+fn path_in_lot(points: &[(f64, f64)], lots: &[LotArea]) -> bool {
+    let mut samples: Vec<(f64, f64)> = points.to_vec();
+    for pair in points.windows(2) {
+        if let [a, b] = pair {
+            let length = (b.0 - a.0).hypot(b.1 - a.1);
+            if !length.is_finite() {
+                return false;
+            }
+            let steps = length.ceil().clamp(1.0, 1.0e5);
+            let mut i = 1.0;
+            while i < steps {
+                let f = i / steps;
+                samples.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
+                i += 1.0;
+            }
+        }
+    }
+    !samples.is_empty()
+        && samples.iter().all(|&p| {
+            lots.iter()
+                .any(|lot| contains(lot, p) || edge_distance(lot, p) <= LOT_INSIDE_TOL_M)
+        })
+}
+
+/// Paints the paths with lots: a path that is a street of a lot (`street: true`: a driveway or a parking aisle) and lies
+/// wholly in the lots (every point of its line, not only its vertices, in some lot of `lots` or within
+/// [`LOT_INSIDE_TOL_M`] of its edge) is not painted, the lot's own surface is the ground there. A street may pass from
+/// one lot into another that touches it. Every other path, a footway through a lot included, a street that leaves the
+/// lots and one that runs between two lots with a gap, is painted as before. `lots` are the lots that are painted (those
+/// with a decision): pass no lot that is excluded. Paint the lots first.
+pub fn paint_paths_with(surfaces: &mut SurfaceGrid, features: &[Feature], lots: &[LotArea]) {
     for feature in features {
-        if let FeatureKind::Path { width_m } = feature.kind {
+        if let FeatureKind::Path { width_m, street } = feature.kind {
+            if street && path_in_lot(&feature.points, lots) {
+                continue;
+            }
             surfaces.stroke(&feature.points, width_m, SurfaceClass::Soil);
         }
     }
@@ -817,7 +1121,8 @@ fn decide_ground(
     Ok((decided.grid, warnings))
 }
 
-/// Generates the terrain, the roads and the ground of the project in `project_dir`.
+/// Generates the terrain, the roads and the ground of the project in `project_dir`, with the stages of this release
+/// ([`Stages::DEFAULT`]).
 ///
 /// `progress` is called with a short line before every step.
 ///
@@ -827,6 +1132,25 @@ pub fn generate(
     project_dir: &Path,
     project: &Project,
     tools: &Tools,
+    progress: &dyn Fn(&str),
+) -> Result<Generated, BuildError> {
+    generate_with(project_dir, project, tools, Stages::DEFAULT, progress)
+}
+
+/// [`generate`] with the stages switched on or off. The lots are read from the same OpenStreetMap extracts the
+/// ground is decided from ([`naves_core::lot::areas`]) and only when their stage is on.
+///
+/// # Errors
+/// As [`generate`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the pipeline is one list of steps, in the order they run, and each is a few lines"
+)]
+pub fn generate_with(
+    project_dir: &Path,
+    project: &Project,
+    tools: &Tools,
+    stages: Stages,
     progress: &dyn Fn(&str),
 ) -> Result<Generated, BuildError> {
     if project.sources.dem.is_empty() {
@@ -850,7 +1174,26 @@ pub fn generate(
         .osm
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
-    let roads = place_roads(&read, lakes, &base, &frame, tools, progress)?;
+    // the lot areas of the same extracts, map metres and stable ids
+    let (lots, skipped_lots) = if stages.lots {
+        sources
+            .osm
+            .as_ref()
+            .map_or((Vec::new(), 0), |land| naves_core::lot::areas(land, &frame))
+    } else {
+        (Vec::new(), 0)
+    };
+    // rings the reader of the extract could not close or that have no three corners, beside those `lot::areas`
+    // skips for a point that cannot be projected
+    let skipped_lot_rings = if stages.lots {
+        sources
+            .osm
+            .as_ref()
+            .map_or(0, |land| land.skipped_lot_rings)
+    } else {
+        0
+    };
+    let roads = place_roads(&read, &lots, lakes, &base, &frame, tools, stages, progress)?;
     let features = read.features;
 
     let heightmap = roads
@@ -869,7 +1212,25 @@ pub fn generate(
     );
 
     let (mut surfaces, mut warnings) = decide_ground(project, &sources, &heightmap, progress)?;
-    paint_paths(&mut surfaces, &features);
+    let skipped = skipped_lots + skipped_lot_rings;
+    if skipped > 0 {
+        warnings.push(format!(
+            "{skipped} OpenStreetMap lot ring(s) were skipped: the extract cuts them, they lack nodes, have fewer \
+             than three corners or a point that cannot be projected; they get no surface"
+        ));
+    }
+    // the decided ground, then the lots (largest first), then the paths (a street that lies in painted lots is not
+    // painted), then the road beds. The classes are the ones `paint_lots` is given: exactly the lots with a decision.
+    let classes = roads.net.lots.as_ref().map_or_else(Vec::new, |report| {
+        lot_classes(&report.classes, TARMAC_PAINTED)
+    });
+    paint_lots(&mut surfaces, &lots, &classes);
+    let painted: Vec<LotArea> = lots
+        .iter()
+        .filter(|area| classes.iter().any(|(id, _)| *id == area.id))
+        .cloned()
+        .collect();
+    paint_paths_with(&mut surfaces, &features, &painted);
     paint_roads(
         &mut surfaces,
         &roads.graph,
@@ -898,7 +1259,7 @@ pub fn generate(
         .osm
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
-    let violations = check_roads(
+    let mut violations = check_roads(
         &roads.net,
         &roads.profiles,
         &roads.junctions,
@@ -910,6 +1271,10 @@ pub fn generate(
         &frame,
         &roads.dips,
     );
+    if let Some(report) = roads.net.lots.as_ref() {
+        violations.extend(lot_violations(report, &roads.net.clean));
+        sort_violations(&mut violations);
+    }
     if let Some(catalog) = roads.catalog.as_ref() {
         warnings.extend(catalog.warnings().iter().cloned());
     }
@@ -931,5 +1296,32 @@ pub fn generate(
         bridges: roads.net.bridge_fits.clone(),
         smooth: roads.net.smooth.clone(),
         reroute: roads.net.reroute.clone(),
+        lots: roads.net.lots.clone(),
+        clean: roads.net.clean.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_lot_time_is_the_span_less_the_clean_up() {
+        // no clean-up (a project without roads): the whole span
+        assert_eq!(
+            lot_time(Duration::from_millis(100), None),
+            Duration::from_millis(100)
+        );
+        // the clean-up runs inside the span and is taken out
+        assert_eq!(
+            lot_time(Duration::from_millis(100), Some(Duration::from_millis(40))),
+            Duration::from_millis(60)
+        );
+        // a clock that ticked backwards, or a clean-up that cannot be inside the span, gives zero, never a negative
+        assert_eq!(
+            lot_time(Duration::from_millis(10), Some(Duration::from_millis(40))),
+            Duration::ZERO
+        );
+    }
 }

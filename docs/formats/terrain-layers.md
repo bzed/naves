@@ -90,9 +90,10 @@ names show how many slots a tile uses (`P_000-000_L00` uses one):
 | 2 | red, alpha 255 | 1 |
 | 3 | green, alpha 255 | 2 |
 | 4 | blue, alpha 255 | 3 |
-| 5 or more | colours at alpha 128 | 4 and up (the exact colours are not needed yet) |
+| 5 or more | colours at alpha 128 | 4 and up (Livonia's masks: alpha 128 selects slot 4 and alpha 0 slot 5, whatever the colour) |
 
-Livonia's masks use the same colours. Náves uses the first four slots:
+Livonia's masks use the same colours (71 of its masks fitted against their material variants, 3840 land cells without
+a violation: alpha 128 is slot 4, alpha 0 is slot 5, the colour of such a pixel is free). Náves uses five slots:
 
 | Slot | Class | Mask | Texture (`dz\surfaces_bliss\data\terrain\`) |
 |---|---|---|---|
@@ -100,9 +101,29 @@ Livonia's masks use the same colours. Náves uses the first four slots:
 | 1 | rock | `(255, 0, 0, 255)` | `en_stones` |
 | 2 | forest | `(0, 255, 0, 255)` | `en_forest_con` |
 | 3 | soil | `(0, 0, 255, 255)` | `en_soil` |
+| 4 | tarmac | `(0, 0, 0, 128)` | `en_tarmac_old` |
 
 Slots 2 and 3 are read from Bohemia's sample; check them in the game before relying on them (see the test notes in
 `AGENTS.md`).
+
+Slot 4 is the paved ground of lots (car parks and the like). Its class is `en_tarmacold` of `surfaces_bliss`, whose
+files are `en_tarmac_old_nopx.paa` and `en_tarmac_old_ca.paa` (the game's `en_tarmac` has no texture files, and
+Livonia uses `en_tarmac_old`); on the satellite image and in the surface overlay it has the average colour of the
+texture, `(66, 68, 70)`. The mask value `(0, 0, 0, 128)` is Livonia's alpha 128 with black as the free colour.
+
+**The fifth layer does not show in the game.** Game check of 2026-11-27 on the Berchtesgaden example (a car park of
+12 600 m² and others, mask pixels written with slot 4's value and a tile material that lists the layer): the client draws
+the layer of the pixel's *colour* and ignores its alpha. Alpha 0, 64, 128 and 192 with black gave grass, with red rock,
+with green forest, with blue soil; swapping the tarmac textures for stones in `Stage11`/`Stage12` changed nothing; the
+same result came with Livonia's own mask file (`M_000_005_lca.paa`, whose alpha 128 patches show the layer of their
+colour) in a tile material of the same shape as Livonia's (`TerrainX`, slot 4 in `Stage11`/`Stage12`, empty slots as
+`texture = ""`), with Livonia-style material names (`p_XXX-YYY_L00_L01_L02_L03_L04_N.rvmat`) and with `UsedTerrainMaterials`
+(the generated config inherits Livonia's list anyway). Whether Livonia's own alpha channels work in
+the game was not checked on Livonia itself; if they do, what makes them work is not in the mask, the tile material, the
+material names or the config. Paved lots are painted soil (slot 3) instead
+(`TARMAC_PAINTED` is off); the generator still knows the class and writes slot 4 for it, so a later finding can switch
+it on again. A tile material names the tarmac textures in `Stage11` and `Stage12` only if its mask has a slot 4 pixel
+(including the overlap), so with the fallback on every tile is written exactly as before the layer existed.
 
 ## Where grass ends
 
@@ -135,7 +156,7 @@ Livonia's tile materials have `PixelShaderID = "TerrainX"`, `VertexShaderID = "T
 - `Stage0` = satellite image (`texGen = 3`), `Stage1` = mask (`texGen = 4`),
 - `Stage2` = the placeholder `#(rgb,1,1,1)color(0.5,0.5,0.5,1,cdt)` (`texGen = 0`),
 - `Stage3 … Stage14` = six layers as pairs: the layer's `_nopx` texture (`texGen = 1`), then its `_ca` texture
-  (`texGen = 2`); an unused layer has `texture = ""`,
+  (`texGen = 2`); an unused layer has `texture = ""` (Náves lists slot 4, tarmac, only on tiles whose mask uses it),
 - `TexGen0` identity, `TexGen1` and `TexGen2` scale the surface textures by 10.
 
 The file name lists the layer ids of the six slots (`P_000-000_L00_L01_L02_L10_L09_L04.rvmat`; `N` = unused slot).

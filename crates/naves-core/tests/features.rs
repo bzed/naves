@@ -15,6 +15,7 @@ use naves_core::catalog::Family;
 use naves_core::features::{Feature, FeatureKind, Source, classify, road_features, water_lines};
 use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
+use naves_core::lot::Paving;
 use naves_core::osm::{OsmWay, OsmWays, read_ways};
 use naves_core::project::Project;
 use naves_core::roadnet::build_graph;
@@ -41,6 +42,7 @@ fn road(family: Family, drivable: bool) -> Option<FeatureKind> {
         roundabout: false,
         layer: 0,
         use_sidepath: false,
+        paving: None,
     })
 }
 
@@ -49,7 +51,48 @@ fn road(family: Family, drivable: bool) -> Option<FeatureKind> {
     reason = "reads as the row's expected value"
 )]
 fn path(width_m: f64) -> Option<FeatureKind> {
-    Some(FeatureKind::Path { width_m })
+    Some(FeatureKind::Path {
+        width_m,
+        street: false,
+    })
+}
+
+/// The street of a lot: a driveway or a parking aisle.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "reads as the row's expected value"
+)]
+fn street(width_m: f64) -> Option<FeatureKind> {
+    Some(FeatureKind::Path {
+        width_m,
+        street: true,
+    })
+}
+
+/// A road row whose `surface` tag names `paving`.
+fn road_on(family: Family, drivable: bool, paving: Paving) -> Option<FeatureKind> {
+    match road(family, drivable) {
+        Some(FeatureKind::Road {
+            family,
+            drivable,
+            bridge,
+            tunnel,
+            roundabout,
+            layer,
+            use_sidepath,
+            ..
+        }) => Some(FeatureKind::Road {
+            family,
+            drivable,
+            bridge,
+            tunnel,
+            roundabout,
+            layer,
+            use_sidepath,
+            paving: Some(paving),
+        }),
+        other => other,
+    }
 }
 
 /// Tags and what they classify as.
@@ -62,6 +105,7 @@ type Row<'a> = (Vec<(&'a str, &'a str)>, Option<FeatureKind>);
 )]
 fn classification_table() {
     use Family::{Asf1, Asf2, Asf3, City, Grav, Mud};
+    use Paving::{Paved, Unpaved};
     let cases: Vec<Row<'_>> = vec![
         (vec![("highway", "motorway")], road(Asf1, true)),
         (vec![("highway", "trunk")], road(Asf1, true)),
@@ -80,11 +124,11 @@ fn classification_table() {
         ),
         (
             vec![("highway", "service"), ("service", "driveway")],
-            path(3.0),
+            street(3.0),
         ),
         (
             vec![("highway", "service"), ("service", "parking_aisle")],
-            path(3.0),
+            street(3.0),
         ),
         (
             vec![("highway", "track"), ("tracktype", "grade1")],
@@ -96,15 +140,15 @@ fn classification_table() {
         ),
         (
             vec![("highway", "track"), ("surface", "asphalt")],
-            road(Grav, true),
+            road_on(Grav, true, Paved),
         ),
         (
             vec![("highway", "track"), ("surface", "compacted")],
-            road(Grav, true),
+            road_on(Grav, true, Unpaved),
         ),
         (
             vec![("highway", "track"), ("surface", "gravel")],
-            road(Grav, true),
+            road_on(Grav, true, Unpaved),
         ),
         // the tracktype wins over the surface
         (
@@ -113,12 +157,12 @@ fn classification_table() {
                 ("tracktype", "grade3"),
                 ("surface", "asphalt"),
             ],
-            road(Mud, true),
+            road_on(Mud, true, Paved),
         ),
         (vec![("highway", "track")], road(Mud, true)),
         (
             vec![("highway", "track"), ("surface", "dirt")],
-            road(Mud, true),
+            road_on(Mud, true, Unpaved),
         ),
         (
             vec![("highway", "track"), ("tracktype", "grade3")],
@@ -223,6 +267,56 @@ fn classification_table() {
     for (pairs, expected) in cases {
         assert_eq!(classify(&tags(&pairs)), expected, "{pairs:?}");
     }
+}
+
+#[test]
+fn a_road_keeps_its_surface_as_paving_and_the_family_does_not_change() {
+    use Family::{Asf3, City, Mud};
+    let with = |highway: &str, extra: &[(&str, &str)], surface: Option<&str>| {
+        let mut pairs = vec![("highway", highway)];
+        pairs.extend_from_slice(extra);
+        if let Some(value) = surface {
+            pairs.push(("surface", value));
+        }
+        classify(&tags(&pairs))
+    };
+    assert_eq!(
+        with("service", &[], Some("fine_gravel")),
+        road_on(City, true, Paving::Unpaved)
+    );
+    assert_eq!(
+        with("service", &[], Some("asphalt")),
+        road_on(City, true, Paving::Paved)
+    );
+    assert_eq!(with("service", &[], None), road(City, true));
+    assert_eq!(with("service", &[], Some("foo")), road(City, true));
+    assert_eq!(
+        with("tertiary", &[], Some("gravel")),
+        road_on(Asf3, true, Paving::Unpaved)
+    );
+    // a track's family still follows its tags: an unpaved tag does not make it better or worse
+    assert_eq!(
+        with("track", &[("tracktype", "grade3")], Some("asphalt")),
+        road_on(Mud, true, Paving::Paved)
+    );
+}
+
+#[test]
+fn only_driveways_and_parking_aisles_are_streets() {
+    let kind = |pairs: &[(&str, &str)]| classify(&tags(pairs));
+    assert_eq!(
+        kind(&[("highway", "service"), ("service", "parking_aisle")]),
+        street(3.0)
+    );
+    assert_eq!(
+        kind(&[("highway", "service"), ("service", "driveway")]),
+        street(3.0)
+    );
+    assert_eq!(kind(&[("highway", "footway")]), path(1.6));
+    assert_eq!(
+        kind(&[("highway", "path"), ("sac_scale", "hiking")]),
+        path(1.6)
+    );
 }
 
 #[test]

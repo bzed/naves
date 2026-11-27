@@ -234,8 +234,19 @@ fn every_class_has_its_mask_colour() {
 #[test]
 fn surfaces_are_indexed_by_slot() {
     let names: Vec<_> = SURFACES.iter().map(|s| s.name).collect();
-    assert_eq!(names, ["grass", "rock", "forest", "soil"]);
-    assert_eq!(SURFACES.len(), 4);
+    assert_eq!(names, ["grass", "rock", "forest", "soil", "tarmac"]);
+    assert_eq!(SURFACES.len(), SurfaceClass::ALL.len());
+    // tarmac is the worn tarmac of the Livonia surface pack, in colour the average of its texture
+    let tarmac = &SURFACES[SurfaceClass::Tarmac.slot()];
+    assert_eq!(
+        tarmac.nopx,
+        "dz\\surfaces_bliss\\data\\terrain\\en_tarmac_old_nopx.paa"
+    );
+    assert_eq!(
+        tarmac.ca,
+        "dz\\surfaces_bliss\\data\\terrain\\en_tarmac_old_ca.paa"
+    );
+    assert_eq!(tarmac.sat_rgb, SurfaceClass::Tarmac.rgb());
 }
 
 #[test]
@@ -466,4 +477,205 @@ fn marked_pixel_lands_on_the_tile_position() {
         sat_png(&set, "001_002").get_pixel(off.0, off.1).0,
         [50, 60, 70]
     );
+}
+
+/// Today's text of a tile material, written before the tarmac layer: a tile whose mask does not use slot 4 is written
+/// byte for byte as before.
+const TILE_BEFORE_TARMAC: &str = r##"ambient[] = {1, 1, 1, 1};
+diffuse[] = {0.7, 0.7, 0.7, 1};
+forcedDiffuse[] = {0, 0, 0, 0};
+emmisive[] = {0, 0, 0, 0};
+specular[] = {0, 0, 0, 0};
+specularPower = 0;
+PixelShaderID = "TerrainX";
+VertexShaderID = "Terrain";
+class Stage0 {
+    texture = "naves\worlds\t\data\layers\s_001_001_lco.paa";
+    texGen = 3;
+};
+class Stage1 {
+    texture = "naves\worlds\t\data\layers\m_001_001_lca.paa";
+    texGen = 4;
+};
+class Stage2 {
+    texture = "#(rgb,1,1,1)color(0.5,0.5,0.5,1,cdt)";
+    texGen = 0;
+};
+class Stage3 {
+    texture = "dz\surfaces_bliss\data\terrain\en_grass1_nopx.paa";
+    texGen = 1;
+};
+class Stage4 {
+    texture = "dz\surfaces_bliss\data\terrain\en_grass1_ca.paa";
+    texGen = 2;
+};
+class Stage5 {
+    texture = "dz\surfaces_bliss\data\terrain\en_stones_nopx.paa";
+    texGen = 1;
+};
+class Stage6 {
+    texture = "dz\surfaces_bliss\data\terrain\en_stones_ca.paa";
+    texGen = 2;
+};
+class Stage7 {
+    texture = "dz\surfaces_bliss\data\terrain\en_forest_con_nopx.paa";
+    texGen = 1;
+};
+class Stage8 {
+    texture = "dz\surfaces_bliss\data\terrain\en_forest_con_ca.paa";
+    texGen = 2;
+};
+class Stage9 {
+    texture = "dz\surfaces_bliss\data\terrain\en_soil_nopx.paa";
+    texGen = 1;
+};
+class Stage10 {
+    texture = "dz\surfaces_bliss\data\terrain\en_soil_ca.paa";
+    texGen = 2;
+};
+class Stage11 {
+    texture = "";
+    texGen = 1;
+};
+class Stage12 {
+    texture = "";
+    texGen = 2;
+};
+class Stage13 {
+    texture = "";
+    texGen = 1;
+};
+class Stage14 {
+    texture = "";
+    texGen = 2;
+};
+class TexGen3 {
+    uvSource = "worldPos";
+    class uvTransform {
+        aside[] = {0.0018310547, 0, 0};
+        up[] = {0, 0, 0.0018310547};
+        dir[] = {0, -0.0018310547, 0};
+        pos[] = {-0.90625, 0.96875, 0};
+    };
+};
+class TexGen4 {
+    uvSource = "worldPos";
+    class uvTransform {
+        aside[] = {0.0018310547, 0, 0};
+        up[] = {0, 0, 0.0018310547};
+        dir[] = {0, -0.0018310547, 0};
+        pos[] = {-0.90625, 0.96875, 0};
+    };
+};
+class TexGen0 {
+    uvSource = "tex";
+    class uvTransform {
+        aside[] = {1, 0, 0};
+        up[] = {0, 1, 0};
+        dir[] = {0, 0, 1};
+        pos[] = {0, 0, 0};
+    };
+};
+class TexGen1 {
+    uvSource = "tex";
+    class uvTransform {
+        aside[] = {10, 0, 0};
+        up[] = {0, 10, 0};
+        dir[] = {0, 0, 0};
+        pos[] = {0, 0, 0};
+    };
+};
+class TexGen2 {
+    uvSource = "tex";
+    class uvTransform {
+        aside[] = {10, 0, 0};
+        up[] = {0, 10, 0};
+        dir[] = {0, 0, 0};
+        pos[] = {0, 0, 0};
+    };
+};
+"##;
+
+#[test]
+fn a_tile_without_tarmac_is_written_as_before_the_tarmac_layer() {
+    let set = build_layers(&flat(256, 100.0), 16, PREFIX, &quadrants(), None).unwrap();
+    let text = String::from_utf8(file(&set.files, "data/layers/p_001-001.rvmat").to_vec()).unwrap();
+    assert_eq!(text, TILE_BEFORE_TARMAC);
+    // the masks, pixel for pixel (FNV-1a over the decoded RGBA bytes of the four tiles)
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for tile in ["000_000", "001_000", "000_001", "001_001"] {
+        let mask =
+            image::load_from_memory(file(&set.files, &format!("data/layers/m_{tile}_lca.png")))
+                .unwrap()
+                .to_rgba8();
+        for byte in mask.as_raw() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    assert_eq!(hash, 0x71c1_d32c_7212_2325);
+}
+
+/// The quadrants of `quadrants`, with a tarmac square in the middle of the north-west tile (a map of 1024 m, tiles
+/// of 512 m): 64 x 64 cells of 16 m.
+fn with_tarmac() -> SurfaceGrid {
+    let base = quadrants();
+    SurfaceGrid::from_fn(64, 16.0, |col, row| {
+        if (8..16).contains(&col) && (40..48).contains(&row) {
+            SurfaceClass::Tarmac
+        } else {
+            base.at(f64::from(col) * 16.0 + 8.0, f64::from(row) * 16.0 + 8.0)
+        }
+    })
+}
+
+#[test]
+fn a_tile_with_tarmac_lists_the_tarmac_textures_and_selects_them_in_its_mask() {
+    let set = build_layers(&flat(256, 100.0), 16, PREFIX, &with_tarmac(), None).unwrap();
+    let dir = "dz\\surfaces_bliss\\data\\terrain\\";
+    let text = |tile: &str| {
+        String::from_utf8(file(&set.files, &format!("data/layers/p_{tile}.rvmat")).to_vec())
+            .unwrap()
+    };
+    // tile (0, 0) counts from the north-west and holds the tarmac
+    let with = text("000-000");
+    for (stage, suffix) in [(11, "nopx"), (12, "ca")] {
+        let want = format!(
+            "class Stage{stage} {{\n    texture = \"{dir}en_tarmac_old_{suffix}.paa\";\n    texGen = {};",
+            stage - 10
+        );
+        assert!(with.contains(&want), "stage {stage}: {with}");
+    }
+    for stage in [13, 14] {
+        let want = format!("class Stage{stage} {{\n    texture = \"\";");
+        assert!(with.contains(&want), "slot 5 stays empty: {with}");
+    }
+    // the mask has slot 4's colour on the tarmac: black at alpha 128
+    let mask = image::load_from_memory(file(&set.files, "data/layers/m_000_000_lca.png"))
+        .unwrap()
+        .to_rgba8();
+    // cell (8..16, 40..48) is x 128..256 m, y 640..768 m; a pixel is 512 / 480 m and the tile starts at y = 1024 m
+    let (px, py) = (16 + 178, 16 + 300);
+    assert_eq!(mask.get_pixel(px, py).0, [0, 0, 0, 128]);
+    assert_eq!(mask.get_pixel(450, 450).0, [0, 255, 0, 255], "forest");
+    // the other tiles have no tarmac and are written as before
+    assert_eq!(text("001-001"), TILE_BEFORE_TARMAC);
+    assert!(!text("001-000").contains("en_tarmac_old"));
+    assert!(!text("000-001").contains("en_tarmac_old"));
+}
+
+#[test]
+fn a_tarmac_cell_shows_the_tarmac_colour_on_the_satellite_image() {
+    let set = build_layers(&flat(256, 100.0), 16, PREFIX, &with_tarmac(), None).unwrap();
+    let sat = image::load_from_memory(file(&set.files, "data/layers/s_000_000_lco.png"))
+        .unwrap()
+        .to_rgb8();
+    let [r, g, b] = sat.get_pixel(16 + 178, 16 + 300).0;
+    // light baked shading is 70 to 100 % of the class colour
+    for (got, class) in [r, g, b].into_iter().zip(SurfaceClass::Tarmac.rgb()) {
+        assert!(
+            f32::from(got) >= f32::from(class) * 0.7 - 1.0 && got <= class,
+            "{got} against {class}"
+        );
+    }
 }

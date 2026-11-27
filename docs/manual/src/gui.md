@@ -65,7 +65,7 @@ Above the stack are the **base maps**, one at a time: **Relief** (shaded, sun in
 (green flat to red at 45° and steeper; the surface painter makes ground above 35° rock), **Height**, **Ground**
 and **Imagery**.
 
-- **Ground** shows the ground classes Náves will paint (grass, rock, forest and soil), in the colours of the
+- **Ground** shows the ground classes Náves will paint (grass, rock, forest, soil and tarmac, the paved ground of car parks), in the colours of the
   satellite image, with a legend under the row. It is decided from the land cover and OpenStreetMap files
   of the project, and from slope and altitude where they say nothing, exactly as the build does. The map takes
   a little longer to appear when the project lists such files.

@@ -37,6 +37,7 @@ fn way(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -115,8 +116,10 @@ fn the_stages_off_leave_the_graph_of_today() {
         Stages {
             reroute: false,
             smooth: false,
+            lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert!(plain.reroute.is_none());
@@ -145,8 +148,10 @@ fn a_tight_corner_is_planned_and_only_its_chain_moves() {
         Stages {
             reroute: false,
             smooth: false,
+            lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     let on = fitted_graph_with(
@@ -156,8 +161,10 @@ fn a_tight_corner_is_planned_and_only_its_chain_moves() {
         Stages {
             reroute: true,
             smooth: false,
+            lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     let report = on.reroute.as_ref().expect("the planning ran");
@@ -196,8 +203,10 @@ fn a_stream_beside_the_corner_is_not_crossed_by_a_planned_route() {
         Stages {
             reroute: true,
             smooth: false,
+            lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert!(
@@ -211,9 +220,11 @@ fn a_stream_beside_the_corner_is_not_crossed_by_a_planned_route() {
         Stages {
             reroute: true,
             smooth: false,
+            lots: false,
         },
         &|_| false,
         &[stream.to_vec()],
+        &[],
     );
     let report = held.reroute.as_ref().expect("the planning ran");
     assert_eq!(report.zones.len(), 1, "{:?}", report.zones);
@@ -234,7 +245,7 @@ fn the_default_follows_the_switch() {
     let catalog = synthetic_catalog();
     let base = flat();
     let features = town_corner();
-    let default = fitted_graph(&features, &catalog, &base, &|_| false, &[]);
+    let default = fitted_graph(&features, &catalog, &base, &|_| false, &[], &[]);
     assert_eq!(default.reroute.is_some(), REROUTE_ENABLED);
 }
 
@@ -351,12 +362,14 @@ fn the_stage_prints_its_progress_line_with_its_time() {
         &[],
         &[],
         &frame,
-        &|l| {
-            lines.borrow_mut().push(l.to_string());
-        },
         Stages {
             reroute: true,
             smooth: false,
+            lots: false,
+        },
+        &[],
+        &|l| {
+            lines.borrow_mut().push(l.to_string());
         },
     )
     .unwrap();

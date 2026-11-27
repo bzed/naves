@@ -84,9 +84,18 @@ fn main() -> Result<()> {
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
     let streams = water_lines(&ways, &frame, project.map_size_m());
-    let plan = plan_roads(&features, &catalog, &base, &streams, lakes, &frame, &|m| {
-        eprintln!("{m}");
-    })?;
+    let plan = plan_roads(
+        &features,
+        &catalog,
+        &base,
+        &streams,
+        lakes,
+        &frame,
+        &[],
+        &|m| {
+            eprintln!("{m}");
+        },
+    )?;
     let objects = plan.placed.net.roads;
     let strips = plan.placed.profiles.strips;
     let paths: Vec<Vec<(f64, f64)>> = features

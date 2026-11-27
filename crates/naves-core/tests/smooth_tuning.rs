@@ -33,6 +33,8 @@ fn stretch(id: &str, start: i64, end: i64, points: &[P]) -> Stretch {
         bridge_kind: None,
         bridge_offset: 0.0,
         use_sidepath: false,
+        paved_m: 0.0,
+        unpaved_m: 0.0,
     }
 }
 
@@ -421,4 +423,34 @@ fn the_tight_length_after_is_measured_on_samples_like_the_one_before() {
     assert!(s.tight_before_m > 0.0, "{s:?}");
     assert!(s.tight_after_m >= s.tight_before_m - 1e-9, "{s:?}");
     assert!(report.tight_after_m >= report.tight_before_m - 1e-9);
+}
+
+#[test]
+fn a_simplified_line_keeps_its_share_of_paved_metres() {
+    // a gentle bend drawn with a point every 5 m, all of it paved
+    let line: Vec<P> = (0..=40)
+        .map(|i| {
+            let x = f64::from(i) * 5.0;
+            (x, 0.002 * x * x / 10.0)
+        })
+        .collect();
+    let mut s = stretch("s", 1, 2, &line);
+    s.paved_m = line
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    let (out, _) = smooth_graph(&graph(vec![s]), &ten, &SmoothParams::default());
+    let now = &out.stretches[0];
+    let length: f64 = now
+        .points
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum();
+    assert!(now.points.len() < line.len());
+    assert!(
+        (now.paved_m - length).abs() < 1e-6,
+        "{} of {length}",
+        now.paved_m
+    );
+    assert!(now.unpaved_m.abs() < 1e-9);
 }

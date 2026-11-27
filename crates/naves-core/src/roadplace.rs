@@ -251,6 +251,9 @@ pub struct PlacedNetwork {
     /// What road planning did to the graph (set by the build after the placement, like `duplicates`); `None` when
     /// the stage is off.
     pub reroute: Option<crate::reroute::RerouteReport>,
+    /// What the lot stage found and decided (set by the build after the placement, like `duplicates`); `None` when
+    /// the stage is off.
+    pub lots: Option<crate::lot::LotReport>,
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,

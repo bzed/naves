@@ -63,7 +63,7 @@ specified; the controller may delegate them to a cheaper model.
   `LOT_INSIDE_SHARE = 0.5`, `LOT_ENTRY_M = 4.0`, `LOT_PLANE_FIT_M = 0.5`, `LOT_MIN_RADIUS_M = 600.0`
   (`limits::min_vertical_radius(Family::Asf1)`), `LOT_RELIEF_LENGTH_M = 24.0`, the relief target
   `LOT_RELIEF_LENGTH_M² / (8 · LOT_MIN_RADIUS_M)` (0.12 m), `LOT_MAX_MOVE_M = 3.0`, `LOT_STEEP =
-  limits::CROSS_FALL_LIMIT` (0.20), `LOT_MIN_VERTICES = 3`, `LOT_WATER_MAX = 0.5`, `LOT_SAMPLE_M = 1.0`; the lot patch
+  limits::CROSS_FALL_LIMIT` (0.20), `LOT_MIN_VERTICES = 3`, `LOT_WATER_MAX = 0.5` (samples are on a fixed 1 m grid, not a constant); the lot patch
   has rank 0; reused, not copied: `conform::SHOULDER_CELLS`, `conform::core_reach_m`, `limits::RAMP_JOINT_MIN_M`.
   Paved families `Asf1`, `Asf2`, `Asf3`, `City`; grass `Grav`, `Mud`. The paved and unpaved `surface` values are the
   spec's two lists, verbatim.
@@ -172,7 +172,7 @@ No commit.
   with a NaN point or only two distinct corners is skipped and counted; `edge_distance` of the square's centre is 20;
   `surface_tag` `Paved` for `asphalt`, `Unpaved` for `grass`, `None` for `foo`; ids `osm/way/7` and
   `osm/relation/9/1`; the same output for reversed input.
-- [ ] **Step 3:** RED. **Step 4:** implement; the area is counted on a `LOT_SAMPLE_M` grid of even-odd samples.
+- [ ] **Step 3:** RED. **Step 4:** implement; the area is counted on a fixed 1 m grid of even-odd samples.
   **Step 5:** GREEN, the fuzz seeds, `make check`.
 - [ ] **Step 6:** Commit `feat: the lot areas of OpenStreetMap are read` (nothing consumes them yet; no CHANGELOG
   line).
@@ -283,12 +283,15 @@ change).
   Vec<Vec<(f64, f64)>>)> }` (built by `lot::groups(&[Assessed]) -> Vec<LotGroup>` in `lot.rs`).
 - `netclean::DroppedInLot { pub stretch: String, pub lot: String, pub length_m: f64, pub at: (f64, f64) }`.
 - `netclean::CutAccess { pub stretch: String, pub lot: String, pub cut_m: f64, pub entry: (f64, f64), pub node: i64 }`.
-- `netclean::drop_lot_roads(graph: &RoadGraph, groups: &[LotGroup]) -> (RoadGraph, Vec<DroppedInLot>,
-  Vec<CutAccess>, Vec<usize>)` (the last: groups left unchanged, `would_split`).
+- `netclean::drop_lot_roads(graph: &RoadGraph, groups: &[LotGroup]) -> LotStep` with `LotStep { graph, dropped:
+  Vec<DroppedInLot>, access: Vec<CutAccess>, unchanged: Vec<usize> (groups left unchanged, `would_split`), through:
+  Vec<String> (inside stretches kept as roads through a lot), entries: BTreeSet<i64> (every node the step leaves with
+  one stretch: the stub step leaves them alone) }`. `LotGroup` also has `areas_m2: Vec<f64>` (parallel to `members`).
+  `CleanReport::lot_through` holds `through` (sorted ids), `lot_through_kept` counts it.
 - `netclean::components_with(graph: &RoadGraph, groups: &[LotGroup]) -> usize`.
 - `netclean::clean_with(graph, widths, cell_m, groups: &[LotGroup]) -> (RoadGraph, CleanReport)`; `clean` calls it with
-  `&[]`, unchanged in behaviour. The lot step runs first; the stub step treats every `CutAccess::node` as not a free
-  end.
+  `&[]`, unchanged in behaviour. The lot step runs first; the stub step leaves every node in `LotStep::entries` alone (every node the
+  lot step leaves with one stretch: the new ends of the cut access roads and the nodes where a removed road met one road).
 - `CleanReport::lot_roads`, `lot_access`, `lots_split`, `junctions_in_lots: usize`; components counted with
   `components_with`; `components_by_step` gets the lot step first.
 
@@ -334,8 +337,8 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   `SurfaceClass::ALL: [SurfaceClass; 5]`. If Task 1 found no slot-4 colour: no new class, paved is `SurfaceClass::Soil`,
   and the tarmac steps of this task are skipped.
 - `SurfaceGrid::fill_polygon(&mut self, outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>], class: SurfaceClass)`.
-- `layers::SURFACES` gets the tarmac entry with the file names from Task 1 (`en_tarmac`); `mask_rgba(4)` is Task 1's
-  colour.
+- `layers::SURFACES` gets the tarmac entry with the file names from Task 1 (`en_tarmacold`, texture `en_tarmac_old`: the game's `en_tarmac` has no texture files);
+  `mask_rgba(4)` is (0, 0, 0, 128), Task 1's value, not yet seen in the game.
 - `rvmat::tile_material` writes slot 4's textures only for a tile whose mask uses slot 4 (an argument with the tile's
   used slots; documented).
 - `lot::surfaces(assessed: &[Assessed], graph: &RoadGraph, clean: &CleanReport, cell_m: f64)
@@ -361,7 +364,7 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   that the car park's cells have the car park's class; a `parking_aisle` path inside a lot is not painted, a footway
   through it is, on top of the lot.
 - [ ] **Step 4:** RED. **Step 5:** implement. **Step 6 (DeepSeek):** `docs/formats/terrain-layers.md`: the slot-4 row
-  (tarmac, its colour, its texture, `en_tarmacold` as the alternative) and the sentence that slot 4 is written only on
+  (tarmac, its mask value alpha 128, its texture `en_tarmac_old`) and the sentence that slot 4 is written only on
   tiles that use it. **Step 7:** GREEN, `make check`. The GUI's ground legend reads `SurfaceClass::ALL`
   (`crates/naves/src/gui/levels/ground.rs`): if the GUI shows anything new, invoke `/frontend-design:frontend-design`
   first; map items keep the DayZ look.
@@ -389,8 +392,9 @@ called yet), tests `crates/naves-core/tests/surface.rs`, `tests/lot.rs`, `crates
   bridges: &[BridgeSpan]) -> Result<Conformed, ConformError>`; `conform_bridges` calls it with `&[]`, unchanged.
 - `JunctionKind::LotEntry`; `Junctions::lots: Vec<LotSurface>`; `junctions::add_lot_entries(junctions: &mut
   Junctions, net: &PlacedNetwork, lots: &[LotSurface], entries: &[CutAccess], base: &Heightmap)`: one junction per entry
-  of a smoothed lot at the placed end of its access road, height `target` there, gradient `gradient_at` (times λ),
-  `patch_m` half the road's width, `stretches` the access stretch, rank 0. Entries of surface-only lots get none.
+  of a smoothed lot at the placed end of its access road, height `target` there, gradient the gradient of that target
+  `λ·∇S + (1 − λ)·∇g` (`∇g` the base ground over one cell), `patch_m` half the road's width, `stretches` the access
+  stretch, rank 0. Entries of surface-only lots get none.
 - In `profile::model`, a `LotEntry` junction is a constant plane like a ring junction; `ground_targets` uses
   `LotSurface::target` for a joint over a smoothed lot instead of the original ground.
 - `generate::place_once_with(graph, catalog, base, lots: &[LotSurface], entries: &[CutAccess]) -> Result<Placed,
@@ -483,7 +487,7 @@ this task creates `Stages { pub smooth: bool, pub lots: bool }` with `Stages::DE
   Unreleased, Added: "Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or
   grass surface and smooth ground; the roads inside them are no longer built, and their access roads end just inside
   ... switched off in this release (`LOTS_ENABLED`) ... with it on, edits on removed or cut roads are orphaned
-  (`orphaned_edit`): on the example 85 roads are removed and 46 cut ... `roads.lots` in `build/report.json`, findings
+  (`orphaned_edit`): on the example 85 roads are removed and 21 cut ... `roads.lots` in `build/report.json`, findings
   `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited`, `road_in_lot_dropped`".
 - [ ] **Step 6:** GREEN, `make check` (with `make docs`).
 - [ ] **Step 7:** Commit `feat: lots in the build, switched off`.
@@ -497,8 +501,8 @@ this task creates `Stages { pub smooth: bool, pub lots: bool }` with `Stages::DE
 - [ ] **Step 2:** Two runs of `road-analysis` on Berchtesgaden at 2048 with the same binary: `LOTS=off` and `LOTS=on`.
   Logs `judge/<off|on>/ra-2048.log`, `RULES_OUT=judge/<off|on>/rules.tsv`.
 - [ ] **Step 3:** Write `judge/compare.md`, one table, two columns, beside Task 1's baseline:
-  - lots by kind and outcome, plane and quadratic, paved and grass, steep (spec: 44), move limited (spec: 2);
-  - stretches and metres removed (spec: 85, 2064 m), access roads cut (46), junction nodes removed (47);
+  - lots by kind and outcome, plane and quadratic, paved and grass, steep (spec: 44), move limited (spec: 3);
+  - stretches and metres removed (spec: 85, 2064 m), access roads (32 dead ends, 21 cut), junction nodes removed (47);
   - components with groups as nodes (must not grow); drivable length (must fall by no more than the removed and cut
     metres);
   - per lot kind, the local relief before and after (`LOT_RELIEF`; after at most 0.12 m outside the move-limited
@@ -524,19 +528,18 @@ No commit, unless Step 4's tuning changes a constant.
 
 - [ ] **Step 1:** Build the map twice: once from this branch as it is (stage off), once from a scratch worktree under
   `/var/tmp/naves-lots/game/` with `LOTS_ENABLED = true` (not committed; its own target dir under the same folder).
-  For the tarmac comparison, a third build with `en_tarmacold` in place of `en_tarmac` (same worktree, not committed).
   Log HEAD, the worktree's diff and the binary's mtime each time. Keep the `build/` folders under
   `/var/tmp/naves-lots/game/`.
 - [ ] **Step 2:** `tools/ingame-check/run.sh` on each build with the same `sites.json` (24G cap, server 8G, client
   14G, non-default ports, one game at a time, headless sway only). Do a control run against vanilla Livonia first if
   anything looks broken. Stop the game when done; remove the `@naves*` symlinks from the DayZ install.
 - [ ] **Step 3:** Send the contact sheets to the maintainer with one line per site: surface (tarmac shows, not dark red
-  or flat colour; tarmac or worn tarmac), the ground (smooth, no bumps, no hole or dam, the shoulder blended; whether a
+  or flat colour; that mask alpha 128 selects the fifth layer), the ground (smooth, no bumps, no hole or dam, the shoulder blended; whether a
   large lot looks artificially even), the access road and the through road (no step, drivable onto the lot), anything
   that looks wrong.
-- [ ] **Step 4:** The maintainer decides whether `LOTS_ENABLED` becomes `true` and which tarmac. If on: a commit
+- [ ] **Step 4:** The maintainer decides whether `LOTS_ENABLED` becomes `true` and that the fifth layer shows. If on: a commit
   `feat!: lots are switched on` that flips the constant, updates the manual ("off" becomes "on") and adds the
-  **Breaking** note for orphaned edits (85 roads removed and 46 cut on the example) to `CHANGELOG.md`; `make check`.
+  **Breaking** note for orphaned edits (85 roads removed and 21 cut on the example) to `CHANGELOG.md`; `make check`.
 
 ### Task 11: Final review (Opus)
 

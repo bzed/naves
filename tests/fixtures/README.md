@@ -138,9 +138,32 @@ with `tunnel=culvert`, a way with `highway=track` and `waterway=stream`, a strea
 canal and a stream with `tunnel=no`. It tests which ways `read_ways` keeps and which `water_lines` returns. It is
 also a valid seed (`valid_waterways`) of the `osm_ways` fuzz target. Made with `osmium cat` from an `.osm` file.
 
+## `osm/lots.osm.pbf`, `water_only`, `lot_broken` and `water_broken`: lots, synthetic
+
+Made up for the tests, not taken from OpenStreetMap, so they have no attribution. Each has its source beside it as
+an OPL text file (`osm/<name>.opl`); the PBF is made from it with
+
+```sh
+osmium cat -F opl lots.opl -o lots.osm.pbf --overwrite
+```
+
+(osmium 1.19; the same for `water_only`, `lot_broken` and `water_broken`).
+
+- `lots.osm.pbf`: ways tagged `amenity=parking` (with `parking=surface`, `surface=asphalt`), `tourism=camp_site`,
+  `tourism=caravan_site`, `highway=rest_area`, `amenity=tourist_bus_parking`, and (not lots) `amenity=parking_space`
+  and `tourism=camp_pitch`; a `natural=water` way; a car park with `layer=-1`, `building=yes` and
+  `location=underground`; and a `type=multipolygon` relation (`amenity=parking`) with two outer rings and one inner
+  ring in the first. All near 47.595 N, 12.975 to 13.0 E. It is also a valid seed (`valid_lots`) of the `osm_read`
+  fuzz target.
+- `water_only.osm.pbf`: the water way alone, with the same node ids.
+- `lot_broken.osm.pbf`: an unclosed `amenity=parking` way and a sound `natural=water` way.
+- `water_broken.osm.pbf`: an unclosed `natural=water` way and a sound `amenity=parking` way.
+
+They test `OsmLand::lots`, `OsmLand::skipped_lot_rings` and the `lot` module.
+
 ## The fuzz corpus carries these licences
 
 Some seeds in `fuzz/corpus/` are copies, truncated copies or damaged copies of the fixtures above, so they carry the
 fixture's licence and attribution, not the project's (`REUSE.toml`): `dem_tile/` (Copernicus DEM), `imagery_tile/`
 (Copernicus Sentinel), `landcover_tile/` (ESA WorldCover, CC-BY-4.0), `osm_read/` and `osm_ways/` except
-`osm_ways/valid_waterways` (OpenStreetMap, ODbL-1.0; `valid_waterways` is the synthetic `waterways.osm.pbf`).
+`osm_ways/valid_waterways` and `osm_read/valid_lots` (OpenStreetMap, ODbL-1.0; the two exceptions are the synthetic `waterways.osm.pbf` and `lots.osm.pbf`).

@@ -54,7 +54,7 @@ planning is on (it is off in this release), one line on it (zones, planned and k
 move, legs steeper than drawn; the numbers are in `roads.planning` of `build/report.json`, which says
 `{"enabled": false}` while it is off), and, when the road smoothing is on (it is off in this release), one line on it (chains,
 largest move, tight length before and after, curve zones reached; the numbers are in `roads.smoothing` of
-`build/report.json`, which says `{"enabled": false}` while it is off). The last two lines on standard output are the folders to use:
+`build/report.json`, which says `{"enabled": false}` while it is off), and one line on the lots (the lots by kind, the smoothed ones by form and surface, the steep and move-limited ones, the roads removed and cut, and the entries lost; the numbers are in `roads.lots`). The last two lines on standard output are the folders to use:
 
 ```text
 Mod:     <DIR>/build/@naves_<world>

@@ -531,6 +531,9 @@ async fn build_runs_and_reports_the_paths() {
             .ends_with("dayzOffline.test")
     );
     assert!(out["warnings"].is_array());
+    // the lot stage is on in this release: its line is in the result
+    assert!(out["lots"].is_string(), "{out}");
+    assert!(out.get("smoothing").is_some(), "{out}");
     assert!(
         f.proj
             .join("build/@naves_test/addons/naves_test.pbo")

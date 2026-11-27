@@ -57,6 +57,7 @@ fn feature(id: i64, points: &[(f64, f64)], nodes: &[i64], family: Family) -> Fea
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

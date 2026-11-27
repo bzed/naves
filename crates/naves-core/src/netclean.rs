@@ -7,10 +7,18 @@
 //! Every step is `fn(&RoadGraph, ...) -> (RoadGraph, reports)`, deterministic, and never makes the graph fall
 //! apart: the number of its connected components never grows. A step that is switched off (its `..._ENABLED`
 //! constant) returns the graph unchanged, bit for bit. Steps 1 (sidepaths), 2 (stubs and specks) and 3 (close
-//! junctions) and 4 (bridge approaches) are done.
+//! junctions) and 4 (bridge approaches) are done. With lots, [`clean_with`] runs a step 0 first: the roads inside a
+//! lot are taken out and its access roads cut at the edge (module [`lot`]).
 
 mod approach;
+pub mod lot;
 mod sidepath;
+
+use lot::components_each;
+pub use lot::{
+    CutAccess, DroppedInLot, LotGroup, LotStep, components_with, drop_lot_roads,
+    entries_without_road, lost_entries, surviving_entries,
+};
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -185,11 +193,36 @@ pub struct CleanReport {
     pub no_approach: Vec<NoApproach>,
     /// Roundabouts that were turned into plain junctions (set by the caller that collapses them).
     pub roundabouts: Vec<Ring>,
-    /// The connected components of the graph before the clean-up.
+    /// Stretches wholly inside a lot that were removed (step 0, only with lot groups).
+    pub lot_roads: Vec<DroppedInLot>,
+    /// Access roads that were cut at the edge of a lot.
+    pub lot_access: Vec<CutAccess>,
+    /// Stretches inside a lot that stay because they are part of a road through it (between two nodes that roads
+    /// leave the lot from).
+    pub lot_through_kept: usize,
+    /// The ids of those stretches, sorted.
+    pub lot_through: Vec<String>,
+    /// The groups whose removal would have split a component and that were left as they are.
+    pub lots_split: Vec<usize>,
+    /// Access roads that get no entry junction at all: those whose entry node a later step of the clean-up took away
+    /// (a junction merge or a bridge approach moved it) and those whose remainder behind the cut the placement
+    /// dropped (shorter than half a piece is wide, or ending under other roads, see
+    /// [`CleanReport::lot_access_unplaced`]). Each is a `road_in_lot_dropped` finding and the lot loses that access
+    /// road.
+    pub lot_entries_lost: usize,
+    /// Access roads whose remainder behind the cut the placement dropped (shorter than half a piece is wide, or
+    /// ending under other roads): they get no entry junction, so the lot loses this access road. The build counts
+    /// them in [`CleanReport::lot_entries_lost`] and keeps them here for the finding.
+    pub lot_access_unplaced: Vec<CutAccess>,
+    /// The junctions (three or more stretch ends) at which a removed stretch ended and that are no junction after
+    /// the lot step.
+    pub junctions_in_lots: usize,
+    /// The connected components of the graph before the clean-up (with lot groups, each counted as one node).
     pub components_before: usize,
     /// The connected components of the graph after it.
     pub components_after: usize,
-    /// The connected components after each step, in the order of the steps (no step makes more).
+    /// The connected components after each step, in the order of the steps (no step makes more): 4 entries (sidepaths,
+    /// stubs, merge, approaches) without lot groups, 5 with them, the lot step's first.
     pub components_by_step: Vec<usize>,
     /// The length of the drivable stretches before the clean-up, in metres.
     pub drivable_m_before: f64,
@@ -198,7 +231,7 @@ pub struct CleanReport {
 }
 
 /// The root of `i` in the union-find `parent`.
-fn root(parent: &mut [usize], mut i: usize) -> usize {
+pub(super) fn root(parent: &mut [usize], mut i: usize) -> usize {
     while let Some(&p) = parent.get(i) {
         if p == i {
             break;
@@ -363,7 +396,7 @@ pub fn drop_stubs(
     graph: &RoadGraph,
     widths: &dyn Fn(Family) -> f64,
 ) -> (RoadGraph, Vec<DroppedStub>) {
-    let (out, stubs, _) = stubs_and_specks_if(STUBS_ENABLED, graph, widths);
+    let (out, stubs, _) = stubs_and_specks_if(STUBS_ENABLED, graph, widths, &BTreeSet::new());
     (out, stubs)
 }
 
@@ -372,6 +405,7 @@ fn stubs_and_specks_if(
     enabled: bool,
     graph: &RoadGraph,
     widths: &dyn Fn(Family) -> f64,
+    protected: &BTreeSet<i64>,
 ) -> (RoadGraph, Vec<DroppedStub>, Vec<DroppedSpeck>) {
     if !enabled {
         return (graph.clone(), Vec::new(), Vec::new());
@@ -393,9 +427,11 @@ fn stubs_and_specks_if(
         }
         let was = |n: i64| input.get(&n).copied().unwrap_or(0);
         // a free end that is a node of the map: a negative id is a road cut at the edge, which goes on outside
-        let hangs_on = if was(s.start) == 1 && s.start > 0 {
+        // (and the new end of an access road that was cut at the edge of a lot: it goes on into the lot)
+        let free = |n: i64| was(n) == 1 && n > 0 && !protected.contains(&n);
+        let hangs_on = if free(s.start) {
             s.end
-        } else if was(s.end) == 1 && s.end > 0 {
+        } else if free(s.end) {
             s.start
         } else {
             continue;
@@ -426,10 +462,13 @@ fn stubs_and_specks_if(
             stretch: s.id.clone(),
             at,
         }));
-        stretches.push(Stretch {
-            points,
-            ..s.clone()
-        });
+        stretches.push(
+            Stretch {
+                points,
+                ..s.clone()
+            }
+            .rescaled(polyline_length(&s.points)),
+        );
     }
     if stubs.is_empty() && specks.is_empty() {
         return (graph.clone(), stubs, specks);
@@ -656,6 +695,7 @@ fn mean_of(places: &[(f64, f64)]) -> (f64, f64) {
 /// stretch as it is after: its ends at the kept nodes, the last [`JUNCTION_MERGE_M`] at each straight, in the order of
 /// its node ids.
 fn moved_stretch(s: &Stretch, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> Stretch {
+    let before = polyline_length(&s.points);
     let mut s = s.clone();
     if let Some(&(node, at)) = moved.get(&s.start) {
         s.start = node;
@@ -672,7 +712,7 @@ fn moved_stretch(s: &Stretch, moved: &BTreeMap<i64, (i64, (f64, f64))>) -> Stret
         std::mem::swap(&mut s.start, &mut s.end);
         s.points.reverse();
     }
-    s
+    s.rescaled(before)
 }
 
 /// Whether straightening the ends of the stretches that meet the nodes in `moved` makes one of them cross a road it
@@ -831,10 +871,54 @@ pub fn clean(
     widths: &dyn Fn(Family) -> f64,
     cell_m: f64,
 ) -> (RoadGraph, CleanReport) {
-    let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(graph, widths, cell_m);
-    let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths);
+    clean_with(graph, widths, cell_m, &[])
+}
+
+/// [`clean`] with lots: the roads inside the `groups` are taken out first and the access roads cut at the lot's edge
+/// (step 0, see [`drop_lot_roads`]); the stub step then leaves every node the lot step left with one stretch alone
+/// ([`LotStep::entries`]: the new ends of the cut access roads and the nodes where a removed road met one road). The
+/// connected components are counted with each group as one node ([`components_with`]), and
+/// [`CleanReport::components_by_step`] has the lot step as its first entry. Without groups this is [`clean`]
+/// exactly: the lot step is not run and the report has no lot entry.
+#[must_use]
+pub fn clean_with(
+    graph: &RoadGraph,
+    widths: &dyn Fn(Family) -> f64,
+    cell_m: f64,
+    groups: &[LotGroup],
+) -> (RoadGraph, CleanReport) {
+    let step = if groups.is_empty() {
+        LotStep {
+            graph: graph.clone(),
+            dropped: Vec::new(),
+            access: Vec::new(),
+            unchanged: Vec::new(),
+            through: Vec::new(),
+            entries: BTreeSet::new(),
+        }
+    } else {
+        drop_lot_roads(graph, groups)
+    };
+    let graph0 = &step.graph;
+    let protected = &step.entries;
+    let (graph1, sidepaths, sidepaths_kept) = drop_sidepaths(graph0, widths, cell_m);
+    let (graph2, stubs, specks) = stubs_and_specks_if(STUBS_ENABLED, &graph1, widths, protected);
     let (graph3, merged, not_merged) = merge_junctions(&graph2);
     let (graph4, approaches, no_approach) = make_approaches(&graph3);
+    let steps: Vec<&RoadGraph> = if groups.is_empty() {
+        vec![&graph1, &graph2, &graph3, &graph4]
+    } else {
+        vec![graph0, &graph1, &graph2, &graph3, &graph4]
+    };
+    // the graph before, the graph after, then the graph after each step
+    let counted = components_each(
+        &[graph, &graph4]
+            .into_iter()
+            .chain(steps)
+            .collect::<Vec<_>>(),
+        groups,
+    );
+    let (components_before, components_after) = (counted.first().copied(), counted.get(1).copied());
     let report = CleanReport {
         sidepaths,
         sidepaths_kept,
@@ -845,12 +929,17 @@ pub fn clean(
         approaches,
         no_approach,
         roundabouts: Vec::new(),
-        components_before: components(graph),
-        components_after: components(&graph4),
-        components_by_step: [&graph1, &graph2, &graph3, &graph4]
-            .iter()
-            .map(|g| components(g))
-            .collect(),
+        junctions_in_lots: lot::junctions_removed(graph, graph0, &step.dropped),
+        lot_through_kept: step.through.len(),
+        lot_through: step.through.clone(),
+        lot_roads: step.dropped.clone(),
+        lot_access: step.access.clone(),
+        lots_split: step.unchanged.clone(),
+        lot_entries_lost: lost_entries(&graph4, &step.access),
+        lot_access_unplaced: Vec::new(),
+        components_before: components_before.unwrap_or_default(),
+        components_after: components_after.unwrap_or_default(),
+        components_by_step: counted.iter().skip(2).copied().collect(),
         drivable_m_before: drivable_m(graph),
         drivable_m_after: drivable_m(&graph4),
     };
@@ -878,6 +967,8 @@ mod tests {
                 bridge_kind: None,
                 bridge_offset: 0.0,
                 use_sidepath: false,
+                paved_m: 0.0,
+                unpaved_m: 0.0,
             }],
             crossings: Vec::new(),
         }
@@ -955,9 +1046,9 @@ mod tests {
     fn a_step_that_is_switched_off_returns_the_graph_unchanged_though_it_would_change_it() {
         let g = with_stub_and_close_junctions();
         let w = |f: Family| f.width_m();
-        let (out, stubs, specks) = stubs_and_specks_if(true, &g, &w);
+        let (out, stubs, specks) = stubs_and_specks_if(true, &g, &w, &BTreeSet::new());
         assert_eq!((stubs.len(), specks.len(), out.stretches.len()), (1, 0, 5));
-        let (out, stubs, specks) = stubs_and_specks_if(false, &g, &w);
+        let (out, stubs, specks) = stubs_and_specks_if(false, &g, &w, &BTreeSet::new());
         assert_eq!((&out, stubs.len(), specks.len()), (&g, 0, 0));
         let (out, merged, _) = merge_junctions_if(true, &g);
         assert_eq!((merged.len(), out.stretches.len()), (1, 5));

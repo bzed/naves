@@ -34,18 +34,22 @@ pub enum SurfaceClass {
     Forest,
     /// Soil: fields, built-up areas, water beds (slot 3, blue).
     Soil,
+    /// Tarmac: the ground of a paved lot (slot 4, selected by alpha 128 in the mask).
+    Tarmac,
 }
 
 impl SurfaceClass {
     /// Every class, in slot order.
-    pub const ALL: [SurfaceClass; 4] = [
+    pub const ALL: [SurfaceClass; 5] = [
         SurfaceClass::Grass,
         SurfaceClass::Rock,
         SurfaceClass::Forest,
         SurfaceClass::Soil,
+        SurfaceClass::Tarmac,
     ];
 
-    /// The colour the class has on the satellite image and in the surface overlay.
+    /// The colour the class has on the satellite image and in the surface overlay. Tarmac has the average colour of
+    /// its texture (`en_tarmac_old_ca`, the `AVGC` tag of the PAA).
     #[must_use]
     pub const fn rgb(self) -> [u8; 3] {
         match self {
@@ -53,6 +57,19 @@ impl SurfaceClass {
             SurfaceClass::Rock => [0x8a, 0x87, 0x80],
             SurfaceClass::Forest => [0x2e, 0x4d, 0x2a],
             SurfaceClass::Soil => [0x7a, 0x68, 0x4e],
+            SurfaceClass::Tarmac => [66, 68, 70],
+        }
+    }
+
+    /// The stable lowercase name of the class, for `build/report.json` and the findings.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            SurfaceClass::Grass => "grass",
+            SurfaceClass::Rock => "rock",
+            SurfaceClass::Forest => "forest",
+            SurfaceClass::Soil => "soil",
+            SurfaceClass::Tarmac => "tarmac",
         }
     }
 
@@ -64,10 +81,11 @@ impl SurfaceClass {
             SurfaceClass::Rock => "Rock",
             SurfaceClass::Forest => "Forest",
             SurfaceClass::Soil => "Soil",
+            SurfaceClass::Tarmac => "Tarmac",
         }
     }
 
-    /// The layer slot, 0 to 3.
+    /// The layer slot, 0 to 4.
     #[must_use]
     pub fn slot(self) -> usize {
         match self {
@@ -75,6 +93,7 @@ impl SurfaceClass {
             SurfaceClass::Rock => 1,
             SurfaceClass::Forest => 2,
             SurfaceClass::Soil => 3,
+            SurfaceClass::Tarmac => 4,
         }
     }
 }
@@ -141,6 +160,69 @@ impl SurfaceGrid {
 }
 
 impl SurfaceGrid {
+    /// Paints `class` on every cell whose centre lies inside the polygon: inside the `outer` ring and in none of the
+    /// `holes`, as [`lot::contains`](crate::lot::contains) says (each ring even-odd on its own, so a ring that crosses
+    /// itself fills each of its loops, a hole outside the outer ring does nothing and overlapping holes leave the
+    /// union empty). Rings are closed implicitly. Parts off the map are clipped; a ring with a coordinate that is not
+    /// finite paints nothing at all.
+    pub fn fill_polygon(
+        &mut self,
+        outer: &[(f64, f64)],
+        holes: &[Vec<(f64, f64)>],
+        class: SurfaceClass,
+    ) {
+        if std::iter::once(outer)
+            .chain(holes.iter().map(Vec::as_slice))
+            .any(|ring| ring.iter().any(|p| !p.0.is_finite() || !p.1.is_finite()))
+        {
+            return;
+        }
+        let outer_edges = ring_edges(outer);
+        let hole_edges: Vec<Vec<Edge>> = holes.iter().map(|h| ring_edges(h)).collect();
+        let side = usize::try_from(self.size).unwrap_or(0);
+        let cell_m = self.cell_m;
+        let Some((first_row, end_row)) = row_range(&outer_edges, cell_m, side) else {
+            return;
+        };
+        let mut crossings: Vec<f64> = Vec::new();
+        for row in first_row..end_row {
+            let mut cut: Vec<(usize, usize)> = hole_edges
+                .iter()
+                .flat_map(|edges| row_spans(edges, row, cell_m, side, &mut crossings))
+                .collect();
+            cut.sort_unstable();
+            // the holes' union as disjoint spans
+            let mut merged: Vec<(usize, usize)> = Vec::new();
+            for (from, to) in cut {
+                match merged.last_mut() {
+                    Some(last) if from <= last.1 => last.1 = last.1.max(to),
+                    _ => merged.push((from, to)),
+                }
+            }
+            for (from, to) in row_spans(&outer_edges, row, cell_m, side, &mut crossings) {
+                let mut at = from;
+                for &(hole_from, hole_to) in &merged {
+                    if hole_to <= at || hole_from >= to {
+                        continue;
+                    }
+                    self.paint_span(row, at, hole_from.min(to), class);
+                    at = at.max(hole_to);
+                }
+                self.paint_span(row, at, to, class);
+            }
+        }
+    }
+
+    /// Paints the cells `from..to` of `row`.
+    fn paint_span(&mut self, row: usize, from: usize, to: usize, class: SurfaceClass) {
+        let side = usize::try_from(self.size).unwrap_or(0);
+        for col in from..to {
+            if let Some(cell) = self.cells.get_mut(row * side + col) {
+                *cell = class;
+            }
+        }
+    }
+
     /// Paints `class` on every cell whose centre lies within half of `width_m` of the polyline `line`
     /// (map metres). A line thinner than a cell paints a trace one cell wide. Parts outside the map are
     /// clipped; a line with fewer than two points, or a number that is not finite, paints nothing.
@@ -355,6 +437,69 @@ fn clamp_to(v: f64, max: usize) -> usize {
     }
 }
 
+/// The edges of a ring, closed (a zero-length closing edge crosses no row).
+fn ring_edges(ring: &[(f64, f64)]) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = ring
+        .windows(2)
+        .filter_map(|pair| match *pair {
+            [a, b] => Some((a, b)),
+            _ => None,
+        })
+        .collect();
+    if let (Some(&first), Some(&last)) = (ring.first(), ring.last()) {
+        edges.push((last, first));
+    }
+    edges
+}
+
+/// The rows `first..end` (cell indices on a grid of `side` cells) whose centre lies within the vertical extent of
+/// `edges`; `None` if the extent is not a number.
+fn row_range(edges: &[Edge], cell_m: f64, side: usize) -> Option<(usize, usize)> {
+    let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &((_, ya), (_, yb)) in edges {
+        low = low.min(ya.min(yb));
+        high = high.max(ya.max(yb));
+    }
+    if !(low.is_finite() && high.is_finite()) {
+        return None;
+    }
+    Some((
+        clamp_to((low / cell_m - 0.5).ceil(), side),
+        clamp_to((high / cell_m - 0.5).ceil(), side),
+    ))
+}
+
+/// The columns `from..to` of row `row` whose centre lies inside the area that `edges` enclose, even-odd over all of
+/// them: the scanline that [`SurfaceGrid::fill_polygon`] (one ring at a time) and the land-cover layer (all rings of a
+/// polygon at once) share. `crossings` is scratch space.
+fn row_spans(
+    edges: &[Edge],
+    row: usize,
+    cell_m: f64,
+    side: usize,
+    crossings: &mut Vec<f64>,
+) -> Vec<(usize, usize)> {
+    #[expect(clippy::cast_precision_loss, reason = "row indices are below 2^13")]
+    let y = (row as f64 + 0.5) * cell_m;
+    crossings.clear();
+    for &((xa, ya), (xb, yb)) in edges {
+        if (ya <= y) != (yb <= y) {
+            crossings.push(xa + (y - ya) / (yb - ya) * (xb - xa));
+        }
+    }
+    crossings.sort_by(f64::total_cmp);
+    crossings
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .filter_map(|&[x0, x1]| {
+            let from = clamp_to((x0 / cell_m - 0.5).ceil(), side);
+            let to = clamp_to((x1 / cell_m - 0.5).ceil(), side);
+            (to > from).then_some((from, to))
+        })
+        .collect()
+}
+
 /// A polygon edge in map metres, from one (x, y) point to the next.
 type Edge = ((f64, f64), (f64, f64));
 
@@ -399,33 +544,13 @@ impl OsmLayer {
     }
 
     fn fill(&mut self, edges: &[Edge], polygon: &LandPolygon, cell_m: f64) {
-        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
-        for &((_, ya), (_, yb)) in edges {
-            low = low.min(ya.min(yb));
-            high = high.max(ya.max(yb));
-        }
-        if !(low.is_finite() && high.is_finite()) {
+        let Some((first_row, end_row)) = row_range(edges, cell_m, self.size) else {
             return;
-        }
-        let last = self.size.saturating_sub(1);
-        let first_row = clamp_to((low / cell_m - 0.5).ceil(), self.size);
-        let end_row = clamp_to((high / cell_m - 0.5).ceil(), self.size);
+        };
         let mut crossings: Vec<f64> = Vec::new();
-        for row in first_row..end_row.min(last + 1) {
-            #[expect(clippy::cast_precision_loss, reason = "row indices are below 2^13")]
-            let y = (row as f64 + 0.5) * cell_m;
-            crossings.clear();
-            for &((xa, ya), (xb, yb)) in edges {
-                if (ya <= y) != (yb <= y) {
-                    crossings.push(xa + (y - ya) / (yb - ya) * (xb - xa));
-                }
-            }
-            crossings.sort_by(f64::total_cmp);
-            for pair in crossings.as_chunks::<2>().0 {
-                let [x0, x1] = *pair;
-                let first_col = clamp_to((x0 / cell_m - 0.5).ceil(), self.size);
-                let end_col = clamp_to((x1 / cell_m - 0.5).ceil(), self.size);
-                for col in first_col..end_col {
+        for row in first_row..end_row {
+            for (from, to) in row_spans(edges, row, cell_m, self.size, &mut crossings) {
+                for col in from..to {
                     let at = row * self.size + col;
                     if let (Some(p), Some(c)) = (self.priority.get_mut(at), self.class.get_mut(at))
                         && polygon.priority > *p
