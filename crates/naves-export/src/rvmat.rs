@@ -29,9 +29,13 @@ fn tex_gen(index: u8, repeat: u8, dir: u8) -> String {
     )
 }
 
-/// The two stages (`_nopx`, `_ca`) of layer `slot`; a slot without a surface has empty textures.
-fn layer_stages(slot: usize) -> String {
-    let (nopx, ca) = SURFACES.get(slot).map_or(("", ""), |s| (s.nopx, s.ca));
+/// The two stages (`_nopx`, `_ca`) of layer `slot`; a slot without a surface, or one that is not `listed`, has
+/// empty textures.
+fn layer_stages(slot: usize, listed: bool) -> String {
+    let (nopx, ca) = SURFACES
+        .get(slot)
+        .filter(|_| listed)
+        .map_or(("", ""), |s| (s.nopx, s.ca));
     let first = 3 + 2 * slot;
     format!(
         "class Stage{first} {{\n    texture = \"{nopx}\";\n    texGen = 1;\n}};\n\
@@ -40,10 +44,18 @@ fn layer_stages(slot: usize) -> String {
     )
 }
 
+/// The first layer slot that a tile material lists only if the tile's mask uses it (slot 4, tarmac): the slots below
+/// are always listed, as in Livonia's materials of tiles that use fewer.
+const FIRST_OPTIONAL_SLOT: usize = 4;
+
 /// The text of the tile material of tile (`tx`, `ty`); `prefix` is the world's in-game path, for example
-/// `naves\worlds\berchtesgaden`.
+/// `naves\worlds\berchtesgaden`; `used` holds the layer slots that the tile's mask uses.
+///
+/// Slots 0 to 3 are always written with their textures. Slot 4 (tarmac) has its textures only if `used` contains 4:
+/// a tile without tarmac is written exactly as it was before the tarmac layer, with empty stages for the slot. Slot 5
+/// is never used and stays empty.
 #[must_use]
-pub fn tile_material(grid: &TileGrid, tx: u32, ty: u32, prefix: &str) -> String {
+pub fn tile_material(grid: &TileGrid, tx: u32, ty: u32, prefix: &str, used: &[usize]) -> String {
     let aside = grid.aside();
     let pos = grid.uv_pos(tx, ty);
     let layers = format!("{prefix}\\data\\layers");
@@ -56,7 +68,8 @@ pub fn tile_material(grid: &TileGrid, tx: u32, ty: u32, prefix: &str) -> String 
          class Stage2 {{\n    texture = \"#(rgb,1,1,1)color(0.5,0.5,0.5,1,cdt)\";\n    texGen = 0;\n}};\n"
     );
     for slot in 0..LAYER_SLOTS {
-        text.push_str(&layer_stages(slot));
+        let listed = slot < FIRST_OPTIONAL_SLOT || used.contains(&slot);
+        text.push_str(&layer_stages(slot, listed));
     }
     text.push_str(&world_tex_gen(3, aside, pos));
     text.push_str(&world_tex_gen(4, aside, pos));

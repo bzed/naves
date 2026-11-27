@@ -13,6 +13,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or grass surface and
+  smooth ground; the roads inside them are no longer built, and their access roads end just inside them (an access road keeps at least 15 m, so that one that leaves a T beside the lot is still
+  laid). **The lot stage is now on**
+  (`LOTS_ENABLED`); a paved lot is painted with the soil surface (the game
+  ignores the mask alpha that would select a fifth, tarmac layer, so there is no tarmac ground; the generator still
+  knows the layer, `TARMAC_PAINTED`). Switching it on is a **breaking** change for user edits: edits on removed or cut
+  roads are orphaned (`orphaned_edit`); on the example about 85 roads are removed and 21 cut. New findings
+  `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited` and `road_in_lot_dropped`, a
+  `roads.lots` section in `build/report.json`, a line in the build summary and a progress line with the time of the
+  stage.
 - A stage that smooths road lines before bridges are fitted is in the code and switched off in this release
   (`SMOOTH_ENABLED`; the road planning is built first, then it is decided whether the stage is still needed), so nothing
   moves and no edits are orphaned by it. Properties of the stage when it is on: each chain of stretches that merely continue each
@@ -78,6 +88,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A lot entry holds the access road's end and only those joints inward that lie over the lot and within the entry's
+  reach (its patch plus 1.5 terrain cells), to the lot's height there. A joint outside the lot, or farther in than
+  that, is not held to the lot: the solve places it as it places any road joint, its target the ground there (or the
+  lot's surface where it lies over the lot) within the grade limits of its road type. Before, the inwards hold reached
+  by distance only, so it also held a joint outside the lot to the lot's steep surface, which pinned the road there
+  to the lot's grade (53 % on the steep car park of the example, and three of its `road_grade` findings).
+- An access road whose remainder behind the lot cut the placement drops (shorter than half a road piece is wide, or
+  ending under other roads) is reported: the build counts it as a lost entry (`1 entry lost` in the lot line and
+  `entries_lost` in `roads.lots`) and `road_in_lot_dropped` names it, instead of the lot silently losing the access
+  road.
+- The `LOT_ENTRY` figure of the `road-analysis` example measures the step where the game shows it: the height of the
+  joint the lot entry holds (the end of the access road, on its cap's end) against the lot's surface at that same
+  joint, not against the surface at the entry junction 4 to 6 m away. On the example the figures fall from up to
+  3.28 m to at most 0.10 m, which is the step that is really there. The height is read off the built road at that
+  joint, not the height the hold asks for, so a solve or a strip that stops honouring the hold shows as a step.
 - A road part that cannot be placed no longer takes the rest of its road with it: the next part of the placement unit
   starts from where the line is (not from the stale pose where the failed part ended), so a miss stays one `road_gap`
   and the junctions and parts behind it are placed. A part with a free end that gets no pieces is now a `road_gap`

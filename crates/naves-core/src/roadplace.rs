@@ -248,6 +248,9 @@ pub struct PlacedNetwork {
     /// What the smoothing of the graph did (set by the build after the placement, like `duplicates`); `None`
     /// when the stage is off.
     pub smooth: Option<crate::smooth::SmoothReport>,
+    /// What the lot stage found and decided (set by the build after the placement, like `duplicates`); `None` when
+    /// the stage is off.
+    pub lots: Option<crate::lot::LotReport>,
     /// What every OpenStreetMap bridge was built from (set by the build after the placement, like
     /// `duplicates`).
     pub bridge_fits: Vec<crate::bridgekind::BridgeFit>,

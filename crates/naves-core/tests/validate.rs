@@ -530,6 +530,12 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::BridgeEndAtJunction,
         Rule::RoadCurveWidened,
         Rule::RoadCurveTooTight,
+        Rule::LotSmoothed,
+        Rule::LotSurfaceOnly,
+        Rule::LotExcluded,
+        Rule::LotSteep,
+        Rule::LotMoveLimited,
+        Rule::RoadInLotDropped,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -971,6 +977,7 @@ fn a_junction_pair_too_close_for_its_heights_is_a_violation() {
     };
     let junctions = Junctions {
         rings: Vec::new(),
+        lots: Vec::new(),
         points: vec![at(100.0, 100.0), at(160.0, 112.0)],
         links: vec![Link {
             a: 0,
@@ -1141,6 +1148,7 @@ fn an_overlay_is_not_a_conflict_or_a_join_without_junction() {
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1199,6 +1207,7 @@ fn roads_that_all_end_at_a_crossing_are_still_a_join_without_junction() {
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

@@ -104,7 +104,9 @@ pub struct Surface {
 }
 
 /// The surfaces, indexed by [`naves_core::surface::SurfaceClass::slot`]: slot 0 is grass (black in the mask),
-/// 1 rock (red), 2 forest (green), 3 soil (blue). There is no snow texture among the vanilla terrain surfaces.
+/// 1 rock (red), 2 forest (green), 3 soil (blue), 4 tarmac (alpha 128). There is no snow texture among the vanilla
+/// terrain surfaces. Tarmac is `en_tarmacold` of the Livonia surface pack, whose files are `en_tarmac_old_*` (the game's
+/// `en_tarmac` has no texture files); a tile material lists it only where the tile's mask uses slot 4.
 pub const SURFACES: &[Surface] = &[
     Surface {
         name: "grass",
@@ -130,14 +132,23 @@ pub const SURFACES: &[Surface] = &[
         ca: "dz\\surfaces_bliss\\data\\terrain\\en_soil_ca.paa",
         sat_rgb: SurfaceClass::Soil.rgb(),
     },
+    Surface {
+        name: "tarmac",
+        nopx: "dz\\surfaces_bliss\\data\\terrain\\en_tarmac_old_nopx.paa",
+        ca: "dz\\surfaces_bliss\\data\\terrain\\en_tarmac_old_ca.paa",
+        sat_rgb: SurfaceClass::Tarmac.rgb(),
+    },
 ];
 
-/// The mask colour of a layer slot: black, red, green, blue at full alpha are slots 0 to 3.
+/// The mask colour of a layer slot: black, red, green, blue at full alpha are slots 0 to 3, alpha 128 is slot 4
+/// (Livonia's masks: the colour of an alpha 128 pixel is free, black is written). The game ignores that alpha on a
+/// map's masks, so nothing is painted with it (see `generate::TARMAC_PAINTED`).
 fn mask_rgba(slot: usize) -> [u8; 4] {
     match slot {
         1 => [255, 0, 0, 255],
         2 => [0, 255, 0, 255],
         3 => [0, 0, 255, 255],
+        4 => [0, 0, 0, 128],
         _ => [0, 0, 0, 255],
     }
 }
@@ -165,6 +176,8 @@ fn encode_png(img: &image::DynamicImage) -> Vec<u8> {
 struct TileImages {
     satellite: Vec<u8>,
     mask: Vec<u8>,
+    /// The layer slots the mask uses, in slot order.
+    used: Vec<usize>,
     /// Pixels inside the map that the imagery covers, and pixels inside the map.
     covered: u64,
     inside: u64,
@@ -216,12 +229,16 @@ fn render_tile(
         .transpose()?;
     let brightness = imagery.map_or(1.0, |i| i.project.imagery.brightness);
     let (mut covered, mut inside) = (0_u64, 0_u64);
+    let mut used = vec![false; SURFACES.len()];
     for py in 0..size {
         let y = north - (f64::from(py) - overlap + 0.5) * grid.px_m;
         for px in 0..size {
             let x = west + (f64::from(px) - overlap + 0.5) * grid.px_m;
             let here = hm.sample(x, y);
             let slot = surfaces.at(x, y).slot();
+            if let Some(flag) = used.get_mut(slot) {
+                *flag = true;
+            }
             let seen = painted.as_ref().and_then(|pixels| {
                 let at = usize::try_from(py * size + px).ok()?;
                 pixels.get(at).copied().flatten()
@@ -255,6 +272,11 @@ fn render_tile(
     Ok(TileImages {
         satellite: encode_png(&image::DynamicImage::ImageRgb8(sat)),
         mask: encode_png(&image::DynamicImage::ImageRgba8(mask)),
+        used: used
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, flag)| flag.then_some(slot))
+            .collect(),
         covered,
         inside,
     })
@@ -304,7 +326,7 @@ pub fn build_layers(
         ));
         files.push((
             format!("data/layers/p_{tx:03}-{ty:03}.rvmat"),
-            tile_material(&grid, tx, ty, prefix).into_bytes(),
+            tile_material(&grid, tx, ty, prefix, &images.used).into_bytes(),
         ));
     }
 

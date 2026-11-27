@@ -1178,6 +1178,7 @@ struct Outcome {
 
 /// Makes the stretch end on `at`, a node of the road, instead of on `old`.
 fn rewire(s: &mut Stretch, old: i64, new: i64, at: Point) {
+    let before = polyline_length(&s.points);
     // a connector shorter than a speck is not made: the end moves onto the road
     let short =
         |p: Option<&Point>| p.is_some_and(|p| !known_less(SPECK_M, (p.0 - at.0).hypot(p.1 - at.1)));
@@ -1199,6 +1200,7 @@ fn rewire(s: &mut Stretch, old: i64, new: i64, at: Point) {
         std::mem::swap(&mut s.start, &mut s.end);
         s.points.reverse();
     }
+    s.rescale(before);
 }
 
 impl Ctx<'_> {
@@ -1456,7 +1458,7 @@ fn node_components(graph: &RoadGraph) -> BTreeMap<i64, i64> {
 /// Whether `after` splits a component of `before`: the nodes of one component of `before` that are still nodes
 /// of `after` do not all lie in one component of `after`. A component that goes whole does not count, and
 /// does not make up for another that is split.
-fn splits(before: &RoadGraph, after: &RoadGraph) -> bool {
+pub(super) fn splits(before: &RoadGraph, after: &RoadGraph) -> bool {
     let (was, is) = (node_components(before), node_components(after));
     let mut found: BTreeMap<i64, i64> = BTreeMap::new();
     was.iter().any(|(node, component)| {
@@ -1592,6 +1594,8 @@ mod tests {
                 bridge_kind: None,
                 bridge_offset: 0.0,
                 use_sidepath: false,
+                paved_m: 0.0,
+                unpaved_m: 0.0,
             })
             .collect();
         rebuilt(stretches)

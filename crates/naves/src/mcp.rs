@@ -25,6 +25,7 @@ use naves_core::render::{
 };
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_core::validate::Rule;
+use naves_export::build::BuildOutput;
 use naves_export::generate::{Generated, generate};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
@@ -450,7 +451,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_kink, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water, road_duplicate_dropped, bridge_clearance, bridge_blocks_road, bridge_not_built, bridge_buried, bridge_post_floats, bridge_end_step, road_roundabout_collapsed, road_sidepath_dropped, road_stub_dropped, road_junctions_merged, road_junctions_not_merged, bridge_approach_made, bridge_end_at_junction, road_curve_widened, road_curve_too_tight) keeps only that rule. Generates the roads."
+        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_kink, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water, road_duplicate_dropped, bridge_clearance, bridge_blocks_road, bridge_not_built, bridge_buried, bridge_post_floats, bridge_end_step, road_roundabout_collapsed, road_sidepath_dropped, road_stub_dropped, road_junctions_merged, road_junctions_not_merged, bridge_approach_made, bridge_end_at_junction, road_curve_widened, road_curve_too_tight, lot_smoothed, lot_surface_only, lot_excluded, lot_steep, lot_move_limited, road_in_lot_dropped) keeps only that rule. Generates the roads."
     )]
     async fn validation_list(
         &self,
@@ -600,17 +601,27 @@ impl NavesMcp {
         })
         .await;
         Ok(match result.and_then(|r| r) {
-            Ok((out, progress)) => json_text(&json!({
-                "mod_dir": out.mod_dir,
-                "mission_dir": out.mission_dir,
-                "warnings": out.warnings,
-                "bridges": out.bridges,
-                "smoothing": out.smoothing,
-                "progress": progress,
-            })),
+            Ok((out, progress)) => json_text(&build_json(&out, &progress)),
             Err(e) => failure(e),
         })
     }
+}
+
+/// What the `build` tool returns: the folders, the warnings and the progress lines, and the one-line summaries of
+/// the stages. `lots` is left out when the lot stage did not run (its switch is `LOTS_ENABLED`).
+fn build_json(out: &BuildOutput, progress: &[String]) -> serde_json::Value {
+    let mut value = json!({
+        "mod_dir": out.mod_dir,
+        "mission_dir": out.mission_dir,
+        "warnings": out.warnings,
+        "bridges": out.bridges,
+        "smoothing": out.smoothing,
+        "progress": progress,
+    });
+    if let (Some(lots), Some(object)) = (&out.lots, value.as_object_mut()) {
+        object.insert("lots".to_string(), serde_json::Value::from(lots.clone()));
+    }
+    value
 }
 
 #[expect(
@@ -634,4 +645,49 @@ pub async fn serve(dir: &Path) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("cannot start the MCP server: {e}"))?;
     service.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(lots: Option<&str>) -> BuildOutput {
+        BuildOutput {
+            mod_dir: PathBuf::from("/mod"),
+            mission_dir: PathBuf::from("/mission"),
+            warnings: vec!["a warning".to_string()],
+            bridges: vec!["a bridge".to_string()],
+            smoothing: None,
+            lots: lots.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn the_build_result_has_no_lot_key_when_the_stage_did_not_run() {
+        let value = build_json(&output(None), &["a progress line".to_string()]);
+        assert!(value.get("lots").is_none(), "{value}");
+        // exactly the keys a build had before the lot stage existed
+        let keys: Vec<&String> = value
+            .as_object()
+            .expect("an object")
+            .keys()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "bridges",
+                "mission_dir",
+                "mod_dir",
+                "progress",
+                "smoothing",
+                "warnings"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_build_result_has_the_lot_line_when_the_stage_ran() {
+        let value = build_json(&output(Some("Lots: none")), &[]);
+        assert_eq!(value["lots"], "Lots: none");
+    }
 }

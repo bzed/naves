@@ -334,13 +334,26 @@ pub(super) fn junction_heights(
         } else {
             junction.patch_m + 1.5 * cell
         };
+        // the lot a lot entry leads to: it holds only the joints inward that lie over its surface within reach, not
+        // every joint within reach (a joint outside the lot is on the road, which may be steeper than the lot) and
+        // not every joint over it (the hold is the entry's plane, which the lot's surface leaves the farther a joint
+        // is from the entry)
+        let lot = (junction.kind == JunctionKind::LotEntry)
+            .then(|| {
+                junctions
+                    .lots
+                    .iter()
+                    .find(|surface| surface.contains(junction.at))
+            })
+            .flatten();
         let mut var = end;
         for _ in 0..8 {
-            let on_surface = chain
-                .at
-                .get(var)
-                .is_some_and(|p| (p.0 - junction.at.0).hypot(p.1 - junction.at.1) <= reach);
-            if var != end && (!on_surface || on_ring) {
+            // near the entry's strip and, where the entry leads into a lot, over that lot
+            let held_here = chain.at.get(var).is_some_and(|p| {
+                (p.0 - junction.at.0).hypot(p.1 - junction.at.1) <= reach
+                    && lot.is_none_or(|surface| surface.contains(*p))
+            });
+            if var != end && (!held_here || on_ring) {
                 break;
             }
             if held.get(var).is_some_and(Option::is_none) {

@@ -20,10 +20,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::heightmap::Heightmap;
-use crate::junctions::{Junction, Junctions, RingPlane};
+use crate::junctions::{Junction, JunctionKind, Junctions, RingPlane};
 use crate::limits::{
     GRADE_BREAK_HARD, GRADE_BREAK_MAX, RAMP_ZONE_M, grade_aim, grade_ceiling, min_vertical_radius,
 };
+use crate::lot::LotSurface;
 use crate::qp::{Problem, QpError, Row};
 use crate::roadplace::{PlacedKind, PlacedNetwork};
 
@@ -278,8 +279,21 @@ fn ring_height(plane: &RingPlane, at: (f64, f64)) -> Result<f64, ProfileError> {
     }
 }
 
+/// The height of a junction that holds its height and tilt itself (a lot entry), at `at`.
+fn fixed_height(junction: &Junction, at: (f64, f64)) -> Result<f64, ProfileError> {
+    let height = junction.height_at(at);
+    if height.is_finite() {
+        Ok(height)
+    } else {
+        Err(invalid(format!(
+            "the plane of the junction at ({:.1}, {:.1}) has no height at ({:.1}, {:.1})",
+            junction.at.0, junction.at.1, at.0, at.1
+        )))
+    }
+}
+
 /// Sets the source of every variable that a junction holds: the junction's plane, or a constant where the
-/// junction lies on a ring.
+/// junction lies on a ring or is a lot entry, whose height and tilt are given.
 fn hold_sources(
     sources: &mut [Source],
     holds: &[Option<holds::Hold>],
@@ -293,24 +307,42 @@ fn hold_sources(
             continue;
         };
         let drop = holds::overlay_drop(j, ids);
-        *slot = match ring_of_junction(junctions, j) {
-            Some(plane) => Source::Constant(ring_height(plane, *at)? - drop),
-            None => Source::Held {
-                junction: hold.junction,
-                lever: j
-                    .tilt_axis
-                    .map_or(0.0, |u| u.0 * (at.0 - j.at.0) + u.1 * (at.1 - j.at.1)),
-                drop,
-            },
+        *slot = if j.kind == JunctionKind::LotEntry {
+            Source::Constant(fixed_height(j, *at)?)
+        } else {
+            match ring_of_junction(junctions, j) {
+                Some(plane) => Source::Constant(ring_height(plane, *at)? - drop),
+                None => Source::Held {
+                    junction: hold.junction,
+                    lever: j
+                        .tilt_axis
+                        .map_or(0.0, |u| u.0 * (at.0 - j.at.0) + u.1 * (at.1 - j.at.1)),
+                    drop,
+                },
+            }
         };
     }
     Ok(())
 }
 
 /// The ground target of each variable of a chain; a deck is held to the ground at its abutments, not to the
-/// valley floor under it.
-fn ground_targets(chain: &Chain, hm: &Heightmap) -> Result<Vec<f64>, ProfileError> {
+/// valley floor under it. A joint over a smoothed lot is held to the lot's surface there (`target`, with the
+/// surface's `lambda`) instead of the original ground.
+fn ground_targets(
+    chain: &Chain,
+    hm: &Heightmap,
+    lots: &[LotSurface],
+) -> Result<Vec<f64>, ProfileError> {
     let ground_at = |p: (f64, f64)| f64::from(hm.sample(p.0, p.1).height);
+    let target_at = |at: (f64, f64)| {
+        let ground = ground_at(at);
+        lots.iter()
+            .find(|surface| surface.contains(at))
+            .map_or(ground, |surface| {
+                let target = surface.target(at, ground);
+                if target.is_finite() { target } else { ground }
+            })
+    };
     chain
         .at
         .iter()
@@ -318,7 +350,7 @@ fn ground_targets(chain: &Chain, hm: &Heightmap) -> Result<Vec<f64>, ProfileErro
         .map(|(at, deck)| {
             let target = match deck {
                 Some((from, to)) => f64::midpoint(ground_at(*from), ground_at(*to)),
-                None => ground_at(*at),
+                None => target_at(*at),
             };
             if target.is_finite() {
                 Ok(target)
@@ -488,7 +520,7 @@ fn drafts(
         let ground = if ring.is_some() {
             Vec::new()
         } else {
-            ground_targets(&chain, hm)?
+            ground_targets(&chain, hm, &junctions.lots)?
         };
         strips.push(strip_of(
             net,
@@ -717,10 +749,9 @@ fn junction_unknowns(
                 .flat_map(|d| &d.crossings)
                 .map(|c| c.junction)
                 .filter(|j| {
-                    junctions
-                        .points
-                        .get(*j)
-                        .is_some_and(|p| ring_of_junction(junctions, p).is_none())
+                    junctions.points.get(*j).is_some_and(|p| {
+                        ring_of_junction(junctions, p).is_none() && p.kind != JunctionKind::LotEntry
+                    })
                 }),
         )
         .collect();
@@ -814,7 +845,9 @@ fn add_crossing(
         return Ok(());
     };
     let drop = holds::overlay_drop(point, ids);
-    let plane = if let Some(ring) = ring_of_junction(junctions, point) {
+    let plane = if point.kind == JunctionKind::LotEntry {
+        Expr::constant(fixed_height(point, crossing.at)?)
+    } else if let Some(ring) = ring_of_junction(junctions, point) {
         Expr::constant(ring_height(ring, crossing.at)? - drop)
     } else {
         let lever = point.tilt_axis.map_or(0.0, |u| {

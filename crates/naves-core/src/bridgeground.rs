@@ -361,6 +361,8 @@ mod tests {
             bridge_kind: None,
             bridge_offset: 0.0,
             use_sidepath: false,
+            paved_m: 0.0,
+            unpaved_m: 0.0,
         }
     }
 

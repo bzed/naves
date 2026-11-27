@@ -245,6 +245,39 @@ road in water (`blocked_by_water` in the report), so the road keeps the line Ope
 as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of a bridge end are not widened at all.
 Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
 
+**`lot_smoothed`, `lot_surface_only`, `lot_excluded` (information)**
+The lot stage says what became of every lot. `lot_smoothed`
+names the form (a plane or a quadratic), the surface class and the largest move of the ground; `lot_surface_only` names
+the reason: `street_side` (a strip along a street) or `no_vertex` (fewer than three terrain vertices inside, too small
+for the grid to shape); `lot_excluded` names `not_at_ground` (underground, multi-storey, rooftop, a building, another
+`layer`) or `in_water` (more than half of it in water). The position is the lot's centre. Nothing to fix.
+
+**`lot_steep` (warning), `lot_move_limited` (warning)**
+A smoothed lot whose slope at its 95th percentile is above `LOT_STEEP` (20 %, the largest fall across a road a vehicle
+can take) keeps that slope: the surface follows the lie of the land, and the lot is painted like any other (terraces
+are not built). A lot whose group's surface would move a terrain vertex by more than `LOT_MAX_MOVE_M` (3 m) is not
+clipped vertex by vertex, which would bring back the local height changes the surface is there to remove; instead the
+group's whole change is scaled by one factor (λ), which the message names, so the lot is smoothed less than it could
+be. Both are places to look at in the game; nothing in the project sets heights.
+
+**`road_in_lot_dropped` (information)**
+A road stretch inside a lot is not built, or an access road is cut at the lot's edge; the message names the stretch,
+the lot and the metres. A vehicle drives across the lot instead. An access road whose remainder behind the cut the
+placement drops (shorter than half a road piece is wide, or ending under other roads) is reported as lost: the lot has
+no entry there, the road is not built, and the build's lot line counts it (`1 entry lost`).
+
+**What a lot can still show.** A road that lies on a lot reports `road_conflict` once the road's centre and the lot's
+surface at the road's edge differ by more than 0.3 m; with a flat cross-section that is a cross slope above 0.6 m
+divided by the road's width (about 6 % for a 10 m wide road, 8.6 % for a 7 m wide one), so a steep lot produces such
+findings for nearly every road over it: they are real faces at the road's uphill edge, not mistakes in the data. The
+road-lot finding is counted once per road, lot and 50 m square, at the worst place in the square, so one place next to
+a square boundary can give two records and a long parallel road gives one per 50 m. A dead end that reaches less than
+4 m into a lot is not cut: it keeps a step of about half the difference between the lot's surface and the ground, and
+the place usually reports a `road_conflict` at least that large nearby (the square keeps its worst record, so a
+boundary between the end and the lot's edge can take that record to the neighbouring square). A street directly beside
+a lot is not pulled to the lot: where the lot's surface differs from the street by more than 0.3 m at the street's
+edge, the difference stays as a face and is reported (`road_conflict`).
+
 **Other road findings: `road_not_drivable`, `path_too_steep`, `road_in_water`, `earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `road_duplicate_dropped`**
 Each finding names its rule and a position in map metres. `road_not_drivable` is explained above (steeper or more tilted
 than a vehicle manages) and `path_too_steep` is a path that is too steep to walk. `road_in_water` is a road piece

@@ -68,11 +68,16 @@ does.
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,
 `road_misses_terrain`, `path_too_steep`, `road_grade`, `road_gap`, `road_kink`, `road_in_water`, `road_conflict`,
-`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`, `road_over_water`, `road_duplicate_dropped`, `bridge_clearance`, `bridge_blocks_road`, `bridge_not_built`, `bridge_buried`, `bridge_post_floats`, `bridge_end_step`, `road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged`, `bridge_approach_made`, `bridge_end_at_junction`, `road_curve_widened`, `road_curve_too_tight`) and then lists only that rule. If
+`earthworks_capped`, `orphaned_edit`, `join_without_junction`, `tunnel_omitted`, `junction_too_steep`, `road_far_from_ground`, `road_over_water`, `road_duplicate_dropped`, `bridge_clearance`, `bridge_blocks_road`, `bridge_not_built`, `bridge_buried`, `bridge_post_floats`, `bridge_end_step`, `road_roundabout_collapsed`, `road_sidepath_dropped`, `road_stub_dropped`, `road_junctions_merged`, `road_junctions_not_merged`, `bridge_approach_made`, `bridge_end_at_junction`, `road_curve_widened`, `road_curve_too_tight`, `lot_smoothed`, `lot_surface_only`, `lot_excluded`, `lot_steep`, `lot_move_limited`, `road_in_lot_dropped`) and then lists only that rule. If
 the tools are missing, the error starts with "Roads need dayzmake" and says what is missing.
 
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the
-progress lines the build printed and `smoothing`, the one-line summary of the road smoothing (`null` while the stage is off, as it is in this release; with it on: chains, largest move, tight length before and after, zones reached; the numbers are in `roads.smoothing` of `build/report.json`). If a tool is missing, the error names it and the variable to set.
+progress lines the build printed, `smoothing`, the one-line summary of the road smoothing, and `lots`, the one-line
+summary of the lot stage. `smoothing` is `null` while its stage is off, as it is in this release; `lots` is left out of
+the result if the lot stage did not run. With the smoothing on, `smoothing` has the chains, largest move, tight length before and after and the zones
+reached, the numbers in `roads.smoothing` of `build/report.json`; `lots` has the lots by kind,
+the smoothed ones by form and surface, the steep and move-limited ones, the removed and cut roads and the entries lost, the numbers in
+`roads.lots`. If a tool is missing, the error names it and the variable to set.
 
 Errors are returned as tool errors with a message (the `isError` flag of the MCP result); the server keeps
 running. The heightmap needs DEM files in `sources.dem`; without them `heightmap_stats` and `render_topdown`

@@ -387,6 +387,7 @@ fn feature(
             roundabout: false,
             layer,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1217,4 +1218,87 @@ fn the_deck_thickness_is_the_panels_at_their_scale_or_the_model_measured() {
     let (out, _) = fit(&g);
     let model = deck_thickness(&c, bridge_of(&out)).unwrap();
     assert!(model > 0.0, "{model}");
+}
+
+#[test]
+fn joined_and_grown_bridges_carry_the_metres_of_their_parts() {
+    // the fixture of the joined bridge, every metre paved
+    let mut g = build_graph(&[
+        road(1, &[1, 2], &[(0.0, 0.0), (100.0, 0.0)]),
+        feature(
+            2,
+            Family::Asf1,
+            true,
+            1,
+            &[2, 3],
+            &[(100.0, 0.0), (110.0, 0.0)],
+        ),
+        feature(
+            3,
+            Family::Asf1,
+            true,
+            2,
+            &[3, 4],
+            &[(110.0, 0.0), (120.0, 0.0)],
+        ),
+        road(4, &[4, 5], &[(120.0, 0.0), (220.0, 0.0)]),
+    ]);
+    for s in &mut g.stretches {
+        s.paved_m = len(s);
+    }
+    let (out, fits) = fit(&g);
+    assert_eq!(fits.len(), 1);
+    // the bridge grew to 25 m and took its extra metres from the roads beside it
+    for s in &out.stretches {
+        assert!(
+            near(s.paved_m, len(s), 1e-6),
+            "{}: {} of {}",
+            s.id,
+            s.paved_m,
+            len(s)
+        );
+        assert!(s.unpaved_m.abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_lead_laid_beyond_a_bend_keeps_the_metres_of_the_road_beside_the_bridge() {
+    // the fixture of the two 30 degree bends, every metre paved: the roads beside the bridge are re-laid on its axis
+    // and change length
+    let (s30, c30) = 30.0_f64.to_radians().sin_cos();
+    let mut g = build_graph(&[
+        road(1, &[1, 2], &[(-50.0 * c30, 50.0 * s30), (0.0, 0.0)]),
+        feature(
+            2,
+            Family::Grav,
+            true,
+            1,
+            &[2, 3],
+            &[(0.0, 0.0), (13.2, 0.0)],
+        ),
+        road(3, &[3, 4], &[(13.2, 0.0), (13.2 + 50.0 * c30, 50.0 * s30)]),
+    ]);
+    for s in &mut g.stretches {
+        s.paved_m = len(s);
+    }
+    let (out, fits) = fit(&g);
+    assert!(matches!(fits[0].lead.0, Lead::Laid { .. }));
+    for s in &out.stretches {
+        let before = g.stretches.iter().find(|o| o.id == s.id).unwrap();
+        if before.id.starts_with("2:") {
+            continue;
+        }
+        assert!(
+            (len(s) - len(before)).abs() > 1e-3,
+            "{}: the lead did not change the length",
+            s.id
+        );
+        assert!(
+            near(s.paved_m, len(s), 1e-6),
+            "{}: {} of {}",
+            s.id,
+            s.paved_m,
+            len(s)
+        );
+    }
 }

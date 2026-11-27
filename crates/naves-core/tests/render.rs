@@ -409,6 +409,7 @@ fn road_feature(family: Family, points: &[(f64, f64)]) -> Feature {
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: (1..=i64::try_from(points.len()).unwrap()).collect(),
@@ -420,7 +421,10 @@ fn path_feature(points: &[(f64, f64)]) -> Feature {
         id: "p".to_string(),
         way_id: 2,
         source: Source::Osm,
-        kind: FeatureKind::Path { width_m: 1.6 },
+        kind: FeatureKind::Path {
+            width_m: 1.6,
+            street: false,
+        },
         points: points.to_vec(),
         nodes: (1..=i64::try_from(points.len()).unwrap()).collect(),
     }

@@ -49,7 +49,7 @@ Builds the mod and the server mission of the project in `<DIR>`:
    folder.
 
 Progress goes to standard error, and so do the warnings and one line per OpenStreetMap bridge that says what it was built
-from (`bridge 11:2-3 at (x, y), 9.0 m: panels 3 x 1 at scale 1.00`; the same is in `build/report.json`), and, when the road smoothing is on (it is off in this release), one line on it (chains, largest move, tight length before and after, curve zones reached; the numbers are in `roads.smoothing` of `build/report.json`, which says `{"enabled": false}` while it is off). The last two lines on standard output are the folders to use:
+from (`bridge 11:2-3 at (x, y), 9.0 m: panels 3 x 1 at scale 1.00`; the same is in `build/report.json`), one line on the road smoothing when it is on (it is off in this release; chains, largest move, tight length before and after, curve zones reached; the numbers are in `roads.smoothing` of `build/report.json`, which says `{"enabled": false}` while it is off), and one line on the lots (the lots by kind, the smoothed ones by form and surface, the steep and move-limited ones, the roads removed and cut, and the entries lost; the numbers are in `roads.lots`). The last two lines on standard output are the folders to use:
 
 ```text
 Mod:     <DIR>/build/@naves_<world>

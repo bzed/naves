@@ -138,7 +138,8 @@ fn shorten(
         start: if at_start { next_node } else { b.start },
         end: if at_start { b.end } else { next_node },
         ..b.clone()
-    };
+    }
+    .rescaled(length);
     let piece = Stretch {
         id: piece_id(work, &b.id),
         points: off,
@@ -149,7 +150,8 @@ fn shorten(
         bridge_offset: 0.0,
         layer: 0,
         ..b.clone()
-    };
+    }
+    .rescaled(length);
     // the piece runs from the junction to the cut
     let piece = Stretch {
         points: if at_start {
@@ -196,19 +198,25 @@ fn cut_continuation(
     }
     let [node, target, far] = ends;
     [
-        oriented(Stretch {
-            id: piece_id(work, &c.id),
-            points: near,
-            start: node,
-            end: target,
-            ..c.clone()
-        }),
-        oriented(Stretch {
-            points: rest,
-            start: target,
-            end: far,
-            ..c.clone()
-        }),
+        oriented(
+            Stretch {
+                id: piece_id(work, &c.id),
+                points: near,
+                start: node,
+                end: target,
+                ..c.clone()
+            }
+            .rescaled(length),
+        ),
+        oriented(
+            Stretch {
+                points: rest,
+                start: target,
+                end: far,
+                ..c.clone()
+            }
+            .rescaled(length),
+        ),
     ]
 }
 
@@ -271,7 +279,8 @@ fn move_side_roads(
                 points: back,
                 ..s.clone()
             }
-        };
+        }
+        .rescaled(polyline_length(&s.points));
         let skip = [node, other, target, far];
         if crossing_count(work, &moved.points, &skip, &s.id)
             > crossing_count(work, &s.points, &skip, &s.id)

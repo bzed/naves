@@ -1345,7 +1345,9 @@ fn smooth_graph_with(
                 if let Some(n) = fitted_points.get_mut(link.stretch) {
                     *n = line.len();
                 }
+                let before_m = polyline_length(&s.points);
                 s.points = simplify_line(&line, params.simplify);
+                s.rescale(before_m);
             }
             if let Some(e) = widen_error
                 && let Some(w) = tally.widen_failed.get_mut(link.stretch)

@@ -16,9 +16,12 @@ use naves_core::catalog::testing::synthetic_catalog;
 use naves_core::features::{Feature, FeatureKind, Source};
 use naves_core::heightmap::Heightmap;
 use naves_core::junctions::{
-    JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, find_junctions, ground_median,
+    JUNCTION_TILT_SHARE, Junction, JunctionKind, Junctions, Link, add_lot_entries, find_junctions,
+    ground_median,
 };
 use naves_core::limits::{CROSS_FALL_AIM, grade_ceiling};
+use naves_core::lot::{Form, LotSurface, Surface};
+use naves_core::netclean::CutAccess;
 use naves_core::profile::{HoldRule, chain_holds, chain_holds_unchecked};
 use naves_core::roadfit::Pose;
 use naves_core::roadnet::{RoadGraph, build_graph};
@@ -87,6 +90,7 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -212,6 +216,7 @@ fn junction(at: (f64, f64), ground: f64, rank: u8) -> Junction {
 fn two_junctions(length: f64, ceiling: f64, g0: f64, g1: f64, r0: u8, r1: u8) -> Junctions {
     Junctions {
         rings: Vec::new(),
+        lots: Vec::new(),
         points: vec![
             junction((0.0, 0.0), g0, r0),
             junction((length, 0.0), g1, r1),
@@ -1032,4 +1037,243 @@ fn an_overlay_follows_its_top_road_and_a_junction_at_the_map_edge_stays_level() 
     let small = terrain(66, 3.125, |x, _| 100.0 + 0.05 * x);
     let j = find_junctions(&net, &graph, &small);
     assert_eq!(j.points[0].gradient, (0.0, 0.0));
+}
+
+// ----- lot entries -----
+
+/// A closed rectangle, in map metres.
+fn rectangle(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<(f64, f64)> {
+    vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+}
+
+/// A lot's surface as a level plane at `height` through `at`.
+fn lot_surface(outer: Vec<(f64, f64)>, at: (f64, f64), height: f64, lambda: f64) -> LotSurface {
+    LotSurface {
+        group: 0,
+        members: vec!["osm/way/1".to_string()],
+        polygons: vec![(outer, Vec::new())],
+        surface: Surface {
+            at,
+            coeffs: [height, 0.0, 0.0, 0.0, 0.0, 0.0],
+            form: Form::Plane,
+            lambda,
+        },
+    }
+}
+
+/// An entry into the lot at the end of the road "a", which ends at (200, 300).
+fn an_entry() -> CutAccess {
+    CutAccess {
+        stretch: "a".to_string(),
+        lot: "osm/way/1".to_string(),
+        cut_m: 4.0,
+        entry: (200.0, 300.0),
+        node: 900,
+    }
+}
+
+#[test]
+fn an_entry_is_a_junction_at_the_placed_end_with_the_lots_surface() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (248.0, 300.0),
+        101.0,
+        1.0,
+    );
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    assert_eq!(junctions.points.len(), 1);
+    let entry = &junctions.points[0];
+    assert_eq!(entry.kind, JunctionKind::LotEntry);
+    assert_eq!(entry.at, (200.0, 300.0));
+    assert!((entry.height - 101.0).abs() < 1e-9, "{entry:?}");
+    // the ground is the ground, not the surface: `height - ground` is the move the entry makes
+    assert!((entry.ground - 100.0).abs() < 1e-9, "{entry:?}");
+    assert!(
+        (entry.height - entry.ground - 1.0).abs() < 1e-9,
+        "{entry:?}"
+    );
+    assert_eq!(entry.gradient, (0.0, 0.0));
+    assert!((entry.patch_m - 3.5).abs() < 1e-9, "{entry:?}");
+    assert_eq!(entry.rank, 0);
+    assert_eq!(entry.stretches, ["a".to_string()].into());
+    assert!(entry.tilt_axis.is_none());
+    // the lot is there for the ground target of through roads
+    assert_eq!(junctions.lots, [lot]);
+    // the links are made again with the entry among the junctions
+    let holds = chain_holds(&net, &net.chains[0], 6.25, &junctions);
+    assert_eq!(
+        holds.last().and_then(|(_, h)| *h).map(|h| h.junction),
+        Some(0)
+    );
+}
+
+#[test]
+fn an_entry_takes_the_scaled_surface_and_its_gradient() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    // a surface 2 m above the ground at the entry, scaled by 0.5, tilted 4 % to the east
+    let mut lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (200.0, 300.0),
+        102.0,
+        0.5,
+    );
+    lot.surface.coeffs[1] = 0.04;
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    let entry = &junctions.points[0];
+    assert!((entry.height - 101.0).abs() < 1e-9, "{entry:?}");
+    assert!((entry.gradient.0 - 0.02).abs() < 1e-12, "{entry:?}");
+    assert!(entry.gradient.1.abs() < 1e-12, "{entry:?}");
+}
+
+#[test]
+fn an_entry_of_a_lot_without_a_surface_gets_no_junction() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let mut junctions = Junctions::default();
+    add_lot_entries(&mut junctions, &net, &[], &[an_entry()], &hm);
+    assert!(junctions.points.is_empty(), "{junctions:?}");
+}
+
+#[test]
+fn an_entry_of_an_unplaced_road_or_of_a_lot_that_is_not_a_number_gets_no_junction() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = terrain(128, 6.25, |_, _| 100.0);
+    let lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (248.0, 300.0),
+        101.0,
+        1.0,
+    );
+    let missing = CutAccess {
+        stretch: "not placed".to_string(),
+        ..an_entry()
+    };
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[missing],
+        &hm,
+    );
+    assert!(junctions.points.is_empty(), "{junctions:?}");
+    let mut broken = lot;
+    broken.surface.coeffs[0] = f64::NAN;
+    let mut junctions = Junctions::default();
+    add_lot_entries(&mut junctions, &net, &[broken], &[an_entry()], &hm);
+    assert!(junctions.points.is_empty(), "{junctions:?}");
+}
+
+#[test]
+fn an_entry_gradient_uses_the_ground_where_it_is_known() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let mut hm = terrain(128, 6.25, |_, _| 100.0);
+    // the ground is missing at the low-x sample of the central difference: that component falls back to 0
+    hm.h[48 * 128 + 31] = f64::NAN as f32;
+    let mut lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (200.0, 300.0),
+        102.0,
+        0.5,
+    );
+    lot.surface.coeffs[1] = 0.04;
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    let entry = &junctions.points[0];
+    // λ·∇S alone, because the ground's x difference is unknown (and y is flat)
+    assert!((entry.gradient.0 - 0.02).abs() < 1e-12, "{entry:?}");
+    assert!(entry.gradient.1.abs() < 1e-12, "{entry:?}");
+}
+
+#[test]
+fn an_entry_of_a_heightmap_without_a_cell_takes_only_the_surface_gradient() {
+    let net = net_of(vec![run_of(
+        "a",
+        Family::City,
+        (120.0, 300.0),
+        (1.0, 0.0),
+        20.0,
+        4,
+    )]);
+    let hm = Heightmap {
+        size: 32,
+        cell_m: 0.0,
+        h: vec![100.0; 32 * 32],
+    };
+    let mut lot = lot_surface(
+        rectangle(196.0, 250.0, 300.0, 350.0),
+        (200.0, 300.0),
+        102.0,
+        0.5,
+    );
+    lot.surface.coeffs[1] = 0.04;
+    let mut junctions = Junctions::default();
+    add_lot_entries(
+        &mut junctions,
+        &net,
+        std::slice::from_ref(&lot),
+        &[an_entry()],
+        &hm,
+    );
+    let entry = &junctions.points[0];
+    assert!((entry.gradient.0 - 0.02).abs() < 1e-12, "{entry:?}");
+    assert!(entry.gradient.1.abs() < 1e-12, "{entry:?}");
 }

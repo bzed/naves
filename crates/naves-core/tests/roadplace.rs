@@ -16,6 +16,7 @@ use naves_core::catalog::testing::{synthetic_catalog, synthetic_models_with_brid
 use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::dips::{Dip, DipAction, decide};
 use naves_core::features::{Feature, FeatureKind, Source};
+use naves_core::netclean::{CutAccess, entries_without_road};
 use naves_core::roadfit::{GAP_CLOSED_M, KINK_TOLERATED_DEG};
 use naves_core::roadnet::{build_graph, collapse_small_rings, with_bridge_spans};
 use naves_core::roadplace::{PlacedKind, PlacedNetwork, PlacedRoad, bridge_for, place_network};
@@ -33,6 +34,7 @@ fn feature(way: i64, family: Family, nodes: &[i64], points: &[(f64, f64)]) -> Fe
             roundabout: false,
             layer: 0,
             use_sidepath: false,
+            paving: None,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -1211,6 +1213,30 @@ fn a_ring_smaller_than_the_tightest_arc_becomes_a_crossing() {
     assert_eq!(place_network(&big, &c).unwrap().rings.len(), 1);
 }
 
+#[test]
+fn a_collapsed_ring_leaves_the_spokes_their_paved_metres() {
+    let c = catalog();
+    let mut features = roundabout(6.0, Family::City, &[0, 8, 16]);
+    for f in &mut features {
+        if let FeatureKind::Road { paving, .. } = &mut f.kind {
+            *paving = Some(naves_core::lot::Paving::Paved);
+        }
+    }
+    let (graph, collapsed) = collapse_small_rings(&build_graph(&features), &|f| c.tightest_arc(f));
+    assert_eq!(collapsed.len(), 1);
+    assert_eq!(graph.stretches.len(), 3);
+    for s in &graph.stretches {
+        let line: f64 = s.points.windows(2).map(|w| dist(w[0], w[1])).sum();
+        assert!(
+            (s.paved_m - line).abs() < 1e-6,
+            "{}: {} of {line}",
+            s.id,
+            s.paved_m
+        );
+        assert!(s.unpaved_m.abs() < 1e-9);
+    }
+}
+
 /// Two parallel through roads `dy` m apart with a side road between their junctions; the second junction
 /// is `dx` m east of the first, so that the side road cannot always close between the ports where the
 /// crossings are.
@@ -1821,4 +1847,29 @@ fn a_road_that_ends_under_another_and_gets_no_piece_is_reported() {
     let net = place(&features);
     let gaps: Vec<_> = net.gaps.iter().filter(|g| g.nothing_placed).collect();
     assert_eq!(gaps.len(), 1, "{:?} / {:?}", net.gaps, net.overlays);
+}
+
+#[test]
+fn an_access_road_the_placement_has_no_road_for_is_an_unplaced_entry() {
+    let net = place(&[feature(
+        1,
+        Family::Grav,
+        &[1, 2],
+        &[(100.0, 100.0), (200.0, 100.0)],
+    )]);
+    let entry = |stretch: &str| CutAccess {
+        stretch: stretch.to_string(),
+        lot: "osm/way/100".to_string(),
+        cut_m: 4.0,
+        entry: (200.0, 100.0),
+        node: 9,
+    };
+    let placed = entry("1:1-2");
+    let gone = entry("7:1-2");
+    assert_eq!(
+        entries_without_road(&net, &[placed.clone(), gone.clone()]),
+        std::slice::from_ref(&gone)
+    );
+    assert_eq!(entries_without_road(&net, &[placed]), Vec::new());
+    assert_eq!(entries_without_road(&net, &[]), Vec::new());
 }

@@ -1347,7 +1347,9 @@ fn lead_beyond(
     if n.start != node_id {
         away.reverse();
     }
+    let before = crate::roadnet::polyline_length(&n.points);
     n.points = away;
+    n.rescale(before);
     Some(Lead::Laid {
         turn_deg: turn,
         straight,
@@ -1554,6 +1556,8 @@ fn join(graph: &RoadGraph, chain: &[usize]) -> Option<Stretch> {
         drivable: parts.iter().any(|p| p.drivable),
         layer: parts.iter().map(|p| p.layer).max().unwrap_or(first.layer),
         use_sidepath: parts.iter().any(|p| p.use_sidepath),
+        paved_m: parts.iter().map(|p| p.paved_m).sum(),
+        unpaved_m: parts.iter().map(|p| p.unpaved_m).sum(),
         points,
         start,
         end,
