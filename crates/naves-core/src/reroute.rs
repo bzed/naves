@@ -2858,4 +2858,127 @@ mod tests {
         assert_eq!(place, (10.0, 0.0));
         assert!((d - (5.0_f64 * 5.0_f64 + 100.0).sqrt()).abs() < 1e-9, "{d}");
     }
+
+    /// A chain of `pts` for the cross-check: only its samples and a half width are read.
+    fn check_chain(id: &str, pts: Vec<(f64, f64)>) -> ChainLine {
+        let n = pts.len();
+        ChainLine {
+            id: id.to_string(),
+            links: Vec::new(),
+            bridge_links: Vec::new(),
+            arc: (0..n)
+                .map(|i| 2.0 * f64::from(u32::try_from(i).unwrap_or(0)))
+                .collect(),
+            bounds: Vec::new(),
+            stretch_of: vec![0; n],
+            minr: vec![10.0; n],
+            half: vec![3.5; n],
+            roundabout: vec![false; n],
+            held: Vec::new(),
+            start_kind: EndKind::DeadEnd(1),
+            end_kind: EndKind::DeadEnd(2),
+            ring: false,
+            total: 2.0 * f64::from(u32::try_from(n).unwrap_or(0)),
+            pts,
+        }
+    }
+
+    /// A planned leg over the whole of its chain with the written line `points`.
+    fn check_leg(points: Vec<(f64, f64)>, samples: usize) -> LegPlan {
+        LegPlan {
+            a: 0,
+            b: samples - 1,
+            outcome: LegOutcomeKind::Planned,
+            start: AnchorKind::Line,
+            end: AnchorKind::Line,
+            states: 0,
+            budget_exhausted: false,
+            weight: Some(1.0),
+            relax_steps: 0,
+            grade_limit: 0.1,
+            drawn_grade: 0.0,
+            planned_grade: 0.0,
+            original_feasible: true,
+            fell_back: false,
+            route: Some(Route {
+                points,
+                length_m: 0.0,
+                climb_m: 0.0,
+                earthwork_m2: 0.0,
+                cut_max_m: 0.0,
+                fill_max_m: 0.0,
+                max_stray_m: 0.0,
+                max_move_m: 0.0,
+                planned_grade: 0.0,
+                grade_limit: 0.1,
+                relax_steps: 0,
+                cost: 0.0,
+                weight: 1.0,
+                states: 0,
+            }),
+        }
+    }
+
+    /// The cross-check reads the true distance between the written lines, and the written line of a straight part
+    /// is only its two ends. Route A is a straight of 100 m, written as its two ends (it is its drawn line);
+    /// route B's drawn line runs 40 m east of it, and its route bows 23 m towards the middle of A: no point of
+    /// either line is within 50 m of a point of the other, yet the lines come within the clearance of each other.
+    /// B is reverted; a check that reads only the lines' points (the vertex reading) does not see it. The
+    /// integration suite cannot build this case: the search keeps its own route away from the drawn roads, and a
+    /// straight part is displaced from its drawn line only by the arcs of its own zone, which are written with
+    /// a point every 2 m.
+    #[test]
+    fn check_routes_reverts_a_route_that_nears_the_middle_of_a_written_straight() {
+        let drawn_a: Vec<(f64, f64)> = (0..=50).map(|i| (0.0, 2.0 * f64::from(i))).collect();
+        let drawn_b: Vec<(f64, f64)> = (0..=10)
+            .map(|i| (40.0, 40.0 + 2.0 * f64::from(i)))
+            .collect();
+        let written_a = vec![(0.0, 0.0), (0.0, 100.0)];
+        let written_b = vec![(40.0, 40.0), (17.0, 50.0), (40.0, 60.0)];
+        let by_points = written_b
+            .iter()
+            .flat_map(|&p| written_a.iter().map(move |&q| dist(p, q)))
+            .fold(f64::MAX, f64::min);
+        assert!(by_points > 50.0, "{by_points}");
+        let chains = vec![
+            check_chain("a", drawn_a.clone()),
+            check_chain("b", drawn_b.clone()),
+        ];
+        let job = |zone: usize, samples: usize| LegJob {
+            zone,
+            chain: zone,
+            a: 0,
+            b: samples - 1,
+            start: EndKind::DeadEnd(1),
+            end: EndKind::DeadEnd(2),
+            tight: Vec::new(),
+        };
+        let jobs = vec![job(0, drawn_a.len()), job(1, drawn_b.len())];
+        let work = |chain: usize, id: &str| ZoneWork {
+            chain,
+            id: id.to_string(),
+            s: 0,
+            e: 0,
+            tightest: 0,
+            tight: Vec::new(),
+            fixed: None,
+            legs: Vec::new(),
+        };
+        let works = vec![work(0, "zone-a"), work(1, "zone-b")];
+        let mut results = vec![
+            check_leg(written_a, drawn_a.len()),
+            check_leg(written_b, drawn_b.len()),
+        ];
+        let reverted = check_routes(&mut results, &jobs, &chains, &works, 4.0);
+        assert_eq!(reverted, 1);
+        assert!(matches!(results[0].outcome, LegOutcomeKind::Planned));
+        match &results[1].outcome {
+            LegOutcomeKind::Kept { reason, detail } => {
+                assert_eq!(*reason, KeptReason::BlockedByRoad);
+                assert_eq!(detail, "route_of zone-a");
+            }
+            other @ LegOutcomeKind::Planned => panic!("{other:?}"),
+        }
+        assert!(results[1].route.is_none());
+    }
 }
