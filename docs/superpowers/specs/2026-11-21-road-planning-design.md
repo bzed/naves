@@ -608,16 +608,17 @@ them.
   (`drawn_was_near`). Two zones that meet at a junction therefore share the junction, where their drawn lines
   touch, and only the places near it are exempt: a route that bulges into the other route 60 m away from the
   junction is still reverted. A pair of legs is never exempted as a whole.
-- **A graze is not a conflict.** A place reverts the later route only when it comes nearer than the threshold minus
-  `PLAN_GRAZE_M` (1 m) to the accepted route and is not exempt. Without the margin the answer at the edge is decided by
-  centimetres: a place where the drawn lines run at about the threshold from each other is exempt or not by the
-  sample that happens to land there.
-- **Sampling.** The later route is read at the stage's own `SAMPLE_M` along itself (whatever the write-back kept),
-  the accepted route and both drawn lines by their segments, so every distance is a true distance to a continuous
-  line and no longer snaps to a 2 m sample. The count is not yet independent of the reading step of the later
-  route: on the 2048 map 50 reverts at 2 m, 55 at 1 m, 62 at 0.5 m, 66 at 0.25 m (Task 9 fix 3 report). The
-  difference is slivers of at most 1.75 m at the two edges of the rule (depth just over `PLAN_GRAZE_M`, drawn lines
-  just over the threshold); a rule on the length of a violating run would remove it (open decision).
+- **A graze is not a conflict.** The later route is read every `CROSS_CHECK_STEP_M` (0.25 m, a fixed internal
+  resolution, not a tuning knob) along itself. A place is violating when it comes nearer than the threshold minus
+  `PLAN_GRAZE_M` (1 m) to the accepted route and is not exempt. The route is reverted only when it has a contiguous
+  run of violating places at least `SAMPLE_M` (2 m) long, measured along the later route; a shorter run is a graze
+  and is ignored. Without the margin and the run length the answer at the edge is decided by centimetres: a place
+  where the drawn lines run at about the threshold from each other is exempt or not by the sample that happens to
+  land there, and a sliver of a few centimetres at the end of an exempt stretch reverts a whole route.
+- **The answer does not depend on sampling.** The accepted route and both drawn lines are read by their segments,
+  the later route at the fixed step whatever the write-back kept, so every distance is a true distance to a continuous
+  line. On the 2048 map the later route's input resampled at 2, 1, 0.5 and 0.25 m reverts 27, 27, 27 and 28 routes
+  (Task 9 fix 3 report, round 4); one route of difference.
 - **The diagnostic searches** of a leg without a route run at the ceiling grade with the last budget pair only:
   first without the water areas and the stream walls, then without the other roads (their earthwork, their walls
   and the decks and tunnels). A route found there gives `blocked_by_water` or `blocked_by_road` with the reason's
@@ -756,7 +757,7 @@ were not re-measured by Task 7b.
 | `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep `self_clear_m` | assistant (self-clearance) | (re-check) |
 | `self_clear_m` | `max(width, min(road clearance threshold, smallest distance of two samples of the original line more than PLAN_SELF_ALONG apart))` | what the own road's samples keep from each other; `search::self_clearance` | controller (review of Task 5) | (re-check) |
 | `DOMINANCE_TOL_M`, `PER_KEY` | 2 m, 4 | states of a cell and heading that stay alive | switchback-1 and the corridor test. Map: tolerance 0 flips 52 outcomes (net −4 legs), takes 1.8× the time and 4.4× the states p95; 16 states per key flips nothing | |
-| `PLAN_GRAZE_M` | 1.0 m | a later route reverts only where it is nearer than the cross-check threshold minus this | maintainer 2026-11-27 (with the continuous drawn distance) | |
+| `PLAN_GRAZE_M` | 1.0 m | a place counts as violating only when nearer than the cross-check threshold minus this; the run of such places must be `SAMPLE_M` long to revert | maintainer 2026-11-27 (with the continuous drawn distance) | |
 | `PLAN_CROSSING_END_M` | 10.0 m | wall crossings this near an anchor are not counted | spike: 7 check failures to 1 | |
 | raster resolution | half the terrain cell, 1 to 2.5 m | obstacle raster | notes 3.2 | |
 | `PLAN_RASTER_MAX_CELLS` | 4 000 000 | per leg; grows by 1.25 | assistant | |
