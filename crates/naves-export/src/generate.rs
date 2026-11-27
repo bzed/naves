@@ -213,7 +213,9 @@ fn ways_outside(
         .filter(|edit| edit.action != WayAction::Delete)
         .filter_map(|edit| {
             let raw = edit.id.raw()?;
-            let way = ways.ways.iter().find(|w| w.id == raw)?;
+            // `apply_way_edits` returns the ways in id order, so the edited way is found by bisection
+            let index = ways.ways.binary_search_by_key(&raw, |w| w.id).ok()?;
+            let way = ways.ways.get(index)?;
             let first = *way.points.first()?;
             (!way.points.iter().any(on_map)).then_some((edit.id, first))
         })
