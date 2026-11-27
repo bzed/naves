@@ -115,7 +115,7 @@ where
 
 /// Writes `bytes` to `path` (below an existing or new folder) atomically: they go to a temporary file in the
 /// same folder, which replaces `path` only when it is whole.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
     let io = |source: std::io::Error| FetchError::Io {
         path: path.to_path_buf(),
         source,

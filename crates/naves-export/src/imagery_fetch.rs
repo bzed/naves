@@ -241,7 +241,7 @@ pub(crate) fn too_large(url: &str, max_bytes: u64) -> FetchError {
 pub(crate) struct Limited<'a> {
     inner: &'a mut dyn Write,
     left: u64,
-    exceeded: bool,
+    pub(crate) exceeded: bool,
 }
 
 impl<'a> Limited<'a> {

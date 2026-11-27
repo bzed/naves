@@ -18,8 +18,10 @@ use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
 use naves_export::dem_fetch::{
-    DEFAULT_PIXEL_M, MARGIN_M, MAX_PIXELS, MAX_SIDE_PX, TILE_PX, TilePyramid, TileStore, dem_grid,
-    fetch_window, resample, terrarium, tile_range, world_px,
+    DEFAULT_PIXEL_M, DemFetchRequest, MAPTERHORN, MARGIN_M, MAX_PIXELS, MAX_SIDE_PX,
+    MAX_TILE_BYTES, RealTiles, TILE_PX, TerrariumSource, TileGet, TilePyramid, TileStore, Z_MIN,
+    dem_grid, describe_dem_fetch, fetch_dem, fetch_window, resample, terrarium, tile_range,
+    world_px,
 };
 use naves_export::geotiff_write::{DemMosaic, write_dem};
 use naves_export::imagery_fetch::FetchError;
@@ -548,4 +550,385 @@ fn resample_falls_back_to_ancestors_for_missing_tiles() {
         .insert((15, 17564, 11451), terrarium_webp(TILE_PX, |_, _| 777.0));
     let (mosaic, _) = resample(&store, &window, 40.0, 16).unwrap();
     assert!(mosaic.data.iter().all(|h| (h - 777.0).abs() < 1e-3));
+}
+
+// ---- the fetch itself: a fake tile source, a project in a temporary folder ----
+
+/// A tile source over a function, which records every request.
+struct Fake<F> {
+    answer: F,
+    calls: Mutex<Vec<(u8, u32, u32)>>,
+}
+
+impl<F: Fn(u8, u32, u32) -> Option<Vec<u8>> + Sync> TileGet for Fake<F> {
+    fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError> {
+        self.calls.lock().unwrap().push((z, x, y));
+        Ok((self.answer)(z, x, y))
+    }
+}
+
+fn fake<F: Fn(u8, u32, u32) -> Option<Vec<u8>> + Sync>(answer: F) -> Fake<F> {
+    Fake {
+        answer,
+        calls: Mutex::new(Vec::new()),
+    }
+}
+
+impl<F> Fake<F> {
+    fn requests(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+/// A small project (a map of 1 km, a window of about 3 km) saved in a fresh folder.
+fn small_project() -> (tempfile::TempDir, Project) {
+    let dir = tempfile::tempdir().unwrap();
+    let project = Project::new("T", 47.571_769, 12.946_451, 2048.0);
+    project.save(dir.path()).unwrap();
+    (dir, project)
+}
+
+fn toml_of(dir: &std::path::Path) -> Vec<u8> {
+    std::fs::read(dir.join("naves.toml")).unwrap()
+}
+
+/// A flat tile of `height` metres.
+fn flat(height: f64) -> Vec<u8> {
+    terrarium_webp(TILE_PX, |_, _| height)
+}
+
+/// `fetch_dem` with the notes collected.
+fn run(
+    dir: &std::path::Path,
+    tiles: &dyn TileGet,
+    request: &DemFetchRequest,
+) -> (Result<Vec<std::path::PathBuf>, FetchError>, Vec<String>) {
+    let notes = std::cell::RefCell::new(Vec::new());
+    let result = fetch_dem(dir, &MAPTERHORN, request, tiles, &|line| {
+        notes.borrow_mut().push(line.to_string());
+    });
+    (result, notes.into_inner())
+}
+
+fn at_zoom(z: u8) -> DemFetchRequest {
+    DemFetchRequest {
+        zoom: Some(z),
+        ..DemFetchRequest::default()
+    }
+}
+
+/// The ramp tile `(z, x, y)`.
+fn ramp_tile(z: u8, x: u32, y: u32) -> Vec<u8> {
+    let size = f64::from(1u32 << z) * f64::from(TILE_PX);
+    terrarium_webp(TILE_PX, |c, r| {
+        let wx = f64::from(x) * f64::from(TILE_PX) + f64::from(c) + 0.5;
+        let wy = f64::from(y) * f64::from(TILE_PX) + f64::from(r) + 0.5;
+        let lon = wx / size * 360.0 - 180.0;
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * wy / size))
+            .sinh()
+            .atan()
+            .to_degrees();
+        ramp_of(lat, lon)
+    })
+}
+
+/// The haloed tile range at `zoom` of the project's window.
+fn range_of(project: &Project, zoom: u8) -> (u32, u32, u32, u32) {
+    tile_range(&fetch_window(project).unwrap(), zoom)
+}
+
+fn tile_count(range: (u32, u32, u32, u32)) -> u32 {
+    (range.1 - range.0 + 1) * (range.3 - range.2 + 1)
+}
+
+#[test]
+fn a_fetch_writes_the_dem_and_lists_it() {
+    let (dir, project) = small_project();
+    let tiles = fake(|z, x, y| (z <= 14).then(|| ramp_tile(z, x, y)));
+    let (result, notes) = run(dir.path(), &tiles, &DemFetchRequest::default());
+    let listed = result.unwrap();
+    assert_eq!(
+        listed,
+        vec![std::path::PathBuf::from("dem/mapterhorn_dtm.tif")]
+    );
+    assert!(notes.iter().any(|n| n.contains("zoom 14")), "{notes:?}");
+    let dem = Dem::open(&[dir.path().join("dem/mapterhorn_dtm.tif")]).unwrap();
+    let (lat, lon) = (project.area.center_lat, project.area.center_lon);
+    let got = f64::from(dem.height(lat, lon).unwrap());
+    assert!(
+        (got - ramp_of(lat, lon)).abs() < 0.1,
+        "{got} vs {}",
+        ramp_of(lat, lon)
+    );
+    let reloaded = Project::load(dir.path()).unwrap();
+    assert_eq!(reloaded.sources.dem, listed);
+}
+
+#[test]
+fn a_second_fetch_requests_nothing_also_after_404s() {
+    let (dir, project) = small_project();
+    let (x0, _, y0, _) = range_of(&project, 14);
+    let tile = flat(500.0);
+    let answer = |z: u8, x: u32, y: u32| {
+        // the corner of the range is absent at z14 but there at z13
+        (z <= 14 && (z, x, y) != (14, x0, y0)).then(|| tile.clone())
+    };
+    let first = fake(answer);
+    run(dir.path(), &first, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    assert!(first.requests() > 0);
+    assert!(
+        first.calls.lock().unwrap().contains(&(14, x0, y0)),
+        "the absent tile was asked for"
+    );
+    let second = fake(answer);
+    run(dir.path(), &second, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    assert_eq!(second.requests(), 0, "{:?}", second.calls.lock().unwrap());
+}
+
+#[test]
+fn the_dem_is_listed_once_and_first() {
+    let (dir, mut project) = small_project();
+    project.sources.dem = vec![
+        "dem/cop.tif".into(),
+        "dem/mapterhorn_dtm.tif".into(),
+        "dem/other.tif".into(),
+    ];
+    project.save(dir.path()).unwrap();
+    let tiles = fake(|z, _, _| (z <= 13).then(|| flat(500.0)));
+    run(dir.path(), &tiles, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    run(dir.path(), &tiles, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    let listed = Project::load(dir.path()).unwrap().sources.dem;
+    let expect: Vec<std::path::PathBuf> = vec![
+        "dem/mapterhorn_dtm.tif".into(),
+        "dem/cop.tif".into(),
+        "dem/other.tif".into(),
+    ];
+    assert_eq!(listed, expect);
+}
+
+#[test]
+fn a_tile_missing_at_the_native_zoom_comes_from_its_parent() {
+    let (dir, project) = small_project();
+    let tiles = fake(|z, _, _| (z == 13).then(|| flat(700.0)));
+    let (result, notes) = run(dir.path(), &tiles, &at_zoom(14));
+    result.unwrap();
+    assert!(
+        !notes.iter().any(|n| n.contains("world fallback")),
+        "z13 is not the fallback: {notes:?}"
+    );
+    let dem = Dem::open(&[dir.path().join("dem/mapterhorn_dtm.tif")]).unwrap();
+    let got = dem
+        .height(project.area.center_lat, project.area.center_lon)
+        .unwrap();
+    assert!((got - 700.0).abs() < 1e-3, "{got}");
+}
+
+#[test]
+fn the_sidecar_has_the_four_fixed_lines() {
+    let (dir, _) = small_project();
+    let tiles = fake(|z, _, _| (z <= 13).then(|| flat(500.0)));
+    run(dir.path(), &tiles, &DemFetchRequest::default())
+        .0
+        .unwrap();
+    let text =
+        std::fs::read_to_string(dir.path().join("dem/mapterhorn_dtm.attribution.txt")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "{text}");
+    assert_eq!(
+        lines[0],
+        "Terrain elevation: Mapterhorn \u{2014} https://mapterhorn.com"
+    );
+    assert_eq!(
+        lines[1],
+        "Source list and licences: https://mapterhorn.com/attribution"
+    );
+    assert!(lines[2].starts_with("Retrieved: 20"), "{}", lines[2]);
+    assert!(lines[2].contains("  Window: 47."), "{}", lines[2]);
+    assert!(
+        lines[2].ends_with("  Native zoom: up to z13"),
+        "{}",
+        lines[2]
+    );
+    assert_eq!(
+        lines[3],
+        "The national data is bare-earth (CC BY 4.0, Etalab 2.0, DL-DE, OGL where present); the world fallback is Copernicus GLO-30."
+    );
+}
+
+const REFUSAL: &str = "Mapterhorn has nothing finer than Copernicus GLO-30 here; sources.dem is unchanged. Other sources exist (national portals, Sonny's 20 m, FABDEM if non-commercial), but none is implemented \u{2014} TileGet sources slot into dem_fetch.rs, other formats need their own fetcher. Pass --force to fetch the 30 m world fallback anyway.";
+
+#[test]
+fn a_region_with_only_the_world_fallback_is_refused_unless_forced() {
+    let (dir, _) = small_project();
+    let before = toml_of(dir.path());
+    let tiles = fake(|z, _, _| (z == Z_MIN).then(|| flat(500.0)));
+    let (result, notes) = run(dir.path(), &tiles, &DemFetchRequest::default());
+    assert_eq!(result.unwrap_err().to_string(), REFUSAL);
+    assert!(notes.iter().any(|n| n == REFUSAL), "{notes:?}");
+    assert!(!dir.path().join("dem/mapterhorn_dtm.tif").exists());
+    assert_eq!(toml_of(dir.path()), before);
+
+    let forced = DemFetchRequest {
+        force: true,
+        ..DemFetchRequest::default()
+    };
+    let (result, _) = run(dir.path(), &tiles, &forced);
+    result.unwrap();
+    assert!(dir.path().join("dem/mapterhorn_dtm.tif").exists());
+    let text =
+        std::fs::read_to_string(dir.path().join("dem/mapterhorn_dtm.attribution.txt")).unwrap();
+    assert!(text.contains("up to z12"), "{text}");
+}
+
+#[test]
+fn tiles_that_only_the_world_fallback_has_are_counted() {
+    let (dir, project) = small_project();
+    let range = range_of(&project, 14);
+    let (x0, _, y0, _) = range;
+    let tile = flat(500.0);
+    let tiles = fake(|z, x, y| match z {
+        14 => ((x, y) != (x0, y0)).then(|| tile.clone()),
+        12 => Some(tile.clone()),
+        _ => None,
+    });
+    let (result, notes) = run(dir.path(), &tiles, &DemFetchRequest::default());
+    result.unwrap();
+    let line = format!(
+        "1 of {} tiles only have the 30 m world fallback",
+        tile_count(range)
+    );
+    assert!(notes.iter().any(|n| n.contains(&line)), "{notes:?}");
+    let text =
+        std::fs::read_to_string(dir.path().join("dem/mapterhorn_dtm.attribution.txt")).unwrap();
+    assert!(text.contains(&line), "{text}");
+}
+
+#[test]
+fn an_answer_that_is_not_a_tile_fails_naming_the_tile() {
+    for bad in [b"garbage".to_vec(), terrarium_webp(64, |_, _| 5.0)] {
+        let (dir, project) = small_project();
+        let before = toml_of(dir.path());
+        let (x0, _, y0, _) = range_of(&project, 14);
+        let tile = flat(500.0);
+        let tiles = fake(|z, x, y| {
+            if (z, x, y) == (14, x0, y0) {
+                Some(bad.clone())
+            } else {
+                (z <= 14).then(|| tile.clone())
+            }
+        });
+        let err = run(dir.path(), &tiles, &at_zoom(14)).0.unwrap_err();
+        assert!(err.to_string().contains(&format!("14/{x0}/{y0}")), "{err}");
+        assert_eq!(toml_of(dir.path()), before);
+        assert!(
+            !dir.path()
+                .join(format!("dem/mapterhorn/14/{x0}/{y0}.webp"))
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn a_cached_tile_that_does_not_decode_names_the_tile() {
+    let (dir, project) = small_project();
+    let (x0, _, y0, _) = range_of(&project, 14);
+    let file = dir.path().join(format!("dem/mapterhorn/14/{x0}/{y0}.webp"));
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"garbage").unwrap();
+    let tiles = fake(|z, _, _| (z <= 14).then(|| flat(500.0)));
+    let err = run(dir.path(), &tiles, &at_zoom(14)).0.unwrap_err();
+    assert!(err.to_string().contains(&format!("14/{x0}/{y0}")), "{err}");
+}
+
+/// A server on this machine that answers one request with `status` and `body`; returns the URL template's
+/// source and what was asked.
+fn serve_status(
+    status: &'static str,
+    body: Vec<u8>,
+) -> (&'static TerrariumSource, std::sync::Arc<Mutex<String>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = std::sync::Arc::new(Mutex::new(String::new()));
+    let seen = std::sync::Arc::clone(&received);
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0_u8; 4096];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend(buf.iter().take(n));
+        }
+        *seen.lock().unwrap() = String::from_utf8_lossy(&request).into_owned();
+        let head = format!(
+            "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        // the client may have stopped reading already
+        let _ = stream.write_all(&body);
+    });
+    let source = Box::leak(Box::new(TerrariumSource {
+        id: "local",
+        name: "Local",
+        tile_url: Box::leak(format!("http://{addr}/{{z}}/{{x}}/{{y}}.webp").into_boxed_str()),
+        attribution_url: "http://localhost/",
+    }));
+    (source, received)
+}
+
+#[test]
+fn real_tiles_read_an_answer_and_send_the_user_agent() {
+    let (source, received) = serve_status("200 OK", b"tile".to_vec());
+    let got = RealTiles::plain_for_tests(source).tile(5, 6, 7).unwrap();
+    assert_eq!(got, Some(b"tile".to_vec()));
+    let head = received.lock().unwrap().to_lowercase();
+    assert!(head.starts_with("get /5/6/7.webp"), "{head}");
+    assert!(
+        head.contains(&format!("user-agent: naves/{}", env!("CARGO_PKG_VERSION"))),
+        "{head}"
+    );
+}
+
+#[test]
+fn real_tiles_turn_a_404_into_none() {
+    let (source, _) = serve_status("404 Not Found", b"nope".to_vec());
+    assert_eq!(
+        RealTiles::plain_for_tests(source).tile(1, 2, 3).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn real_tiles_refuse_an_answer_above_the_limit() {
+    let big = vec![0_u8; usize::try_from(MAX_TILE_BYTES).unwrap() + 1000];
+    let (source, _) = serve_status("200 OK", big);
+    let err = RealTiles::plain_for_tests(source)
+        .tile(1, 2, 3)
+        .unwrap_err();
+    assert!(err.to_string().contains("larger than"), "{err}");
+}
+
+#[test]
+fn describe_names_zoom_tiles_and_size() {
+    let (dir, project) = small_project();
+    let n = tile_count(range_of(&project, 14));
+    let tiles = fake(|z, _, _| (z <= 14).then(|| flat(500.0)));
+    let text =
+        describe_dem_fetch(dir.path(), &MAPTERHORN, &DemFetchRequest::default(), &tiles).unwrap();
+    assert!(text.contains("zoom 14"), "{text}");
+    assert!(text.contains(&format!("{n} tiles")), "{text}");
+    assert!(text.contains(" MB"), "{text}");
+    assert!(text.contains("already cached"), "{text}");
 }

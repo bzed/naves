@@ -9,6 +9,9 @@
 //! `naves build` calls this module.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rayon::prelude::*;
 
@@ -16,8 +19,8 @@ use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
 
-use crate::geotiff_write::DemMosaic;
-use crate::imagery_fetch::FetchError;
+use crate::geotiff_write::{DemMosaic, write_atomic, write_dem};
+use crate::imagery_fetch::{FetchError, Limited, http_error, today, too_large, with_tries};
 
 /// Tile pixels per side.
 pub const TILE_PX: u32 = 512;
@@ -34,6 +37,13 @@ pub const DEFAULT_PIXEL_M: f64 = 2.5;
 pub const MAX_PIXELS: u64 = 1 << 26;
 /// Most pixels along either side of the raster (`dem.rs`'s limit).
 pub const MAX_SIDE_PX: u32 = 16_384;
+
+/// Parallel tile requests (be polite to the server).
+const TILE_JOBS: usize = 4;
+/// Largest answer accepted for one tile, in bytes.
+pub const MAX_TILE_BYTES: u64 = 8 << 20;
+/// Bytes per tile that the size note of [`describe_dem_fetch`] assumes.
+pub const TILE_BYTES_ESTIMATE: u64 = 160_000;
 
 /// Latitude limit of Web Mercator, in degrees.
 const MERCATOR_LAT: f64 = 85.0511;
@@ -329,7 +339,7 @@ fn load_band(
     for y in ty.saturating_sub(1).max(rows.0)..=ty.saturating_add(1).min(rows.1) {
         for x in cols.0..=cols.1 {
             if let Some(bytes) = store.load(zoom_max, x, y)? {
-                pyramid.insert(zoom_max, x, y, &bytes)?;
+                insert_tile(&mut pyramid, zoom_max, x, y, &bytes)?;
             } else {
                 for z in (Z_MIN..zoom_max).rev() {
                     let shift = u32::from(zoom_max - z);
@@ -340,10 +350,23 @@ fn load_band(
     }
     for (z, x, y) in ancestors {
         if let Some(bytes) = store.load(z, x, y)? {
-            pyramid.insert(z, x, y, &bytes)?;
+            insert_tile(&mut pyramid, z, x, y, &bytes)?;
         }
     }
     Ok(pyramid)
+}
+
+/// [`TilePyramid::insert`], with the tile named in the error.
+fn insert_tile(
+    pyramid: &mut TilePyramid,
+    z: u8,
+    x: u32,
+    y: u32,
+    bytes: &[u8],
+) -> Result<(), FetchError> {
+    pyramid
+        .insert(z, x, y, bytes)
+        .map_err(|e| FetchError::Other(format!("tile {z}/{x}/{y}: {e}")))
 }
 
 /// Samples the tiles at the centre of every pixel of the grid of `window` at `pixel_m` real metres (see
@@ -440,4 +463,486 @@ fn uncovered(lat: f64, lon: f64, zoom_max: u8) -> FetchError {
     FetchError::Other(format!(
         "no tile covers {lat} N {lon} E (tile {zoom_max}/{tx}/{ty} and its parents are missing)"
     ))
+}
+
+/// A remote Terrarium-encoded XYZ tile source. Sources with the same shape plug in as new
+/// constants; sources with other wire formats (COG, .hgt, WMS) get their own fetch later --
+/// the imagery catalogue (`naves_core::imagery::catalog`) is the pattern that grows into.
+#[derive(Debug)]
+pub struct TerrariumSource {
+    /// The id used in file names and messages.
+    pub id: &'static str,
+    /// The human name.
+    pub name: &'static str,
+    /// The XYZ template with `{z}`, `{x}`, `{y}`.
+    pub tile_url: &'static str,
+    /// Where the source list and licences live.
+    pub attribution_url: &'static str,
+}
+
+/// The only source v1 speaks.
+pub const MAPTERHORN: TerrariumSource = TerrariumSource {
+    id: "mapterhorn",
+    name: "Mapterhorn",
+    tile_url: "https://tiles.mapterhorn.com/{z}/{x}/{y}.webp",
+    attribution_url: "https://mapterhorn.com/attribution",
+};
+
+/// Where tiles come from. `Ok(None)` is a 404: absent at this zoom.
+pub trait TileGet: Sync {
+    /// The bytes of tile `(z, x, y)`; `Ok(None)` if the source has no such tile.
+    ///
+    /// # Errors
+    ///
+    /// [`FetchError`] if the request fails or the answer cannot be used.
+    fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError>;
+}
+
+/// Production source: a `ureq` agent like `RealHttp` (https only, user agent `naves/<version>`, connect
+/// timeout 30 s, 2 minutes per tile), 404 is `Ok(None)`, other failures go through three tries, answers are
+/// capped at [`MAX_TILE_BYTES`].
+pub struct RealTiles {
+    agent: ureq::Agent,
+    source: &'static TerrariumSource,
+}
+
+impl RealTiles {
+    fn with_agent(source: &'static TerrariumSource, https_only: bool) -> RealTiles {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .https_only(https_only)
+            .max_redirects(5)
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_mins(2)))
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .user_agent(concat!("naves/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        RealTiles { agent, source }
+    }
+
+    /// The real network, `https` only.
+    #[must_use]
+    pub fn new(source: &'static TerrariumSource) -> RealTiles {
+        Self::with_agent(source, true)
+    }
+
+    /// For tests against a server on the local machine, which speaks plain `http`.
+    #[cfg(any(test, feature = "test-util"))]
+    #[must_use]
+    pub fn plain_for_tests(source: &'static TerrariumSource) -> RealTiles {
+        Self::with_agent(source, false)
+    }
+}
+
+impl TileGet for RealTiles {
+    fn tile(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError> {
+        let url = self
+            .source
+            .tile_url
+            .replace("{z}", &z.to_string())
+            .replace("{x}", &x.to_string())
+            .replace("{y}", &y.to_string());
+        let response = with_tries(&url, || {
+            let response = self.agent.get(&url).call()?;
+            match response.status().as_u16() {
+                200 | 404 => Ok(response),
+                code => Err(ureq::Error::StatusCode(code)),
+            }
+        })?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let mut body = response.into_body();
+        let mut reader = body
+            .with_config()
+            .limit(MAX_TILE_BYTES.saturating_add(1))
+            .reader();
+        let mut bytes = Vec::new();
+        let mut limited = Limited::new(&mut bytes, MAX_TILE_BYTES);
+        std::io::copy(&mut reader, &mut limited).map_err(|e| {
+            if limited.exceeded {
+                too_large(&url, MAX_TILE_BYTES)
+            } else {
+                http_error(&url, e)
+            }
+        })?;
+        Ok(Some(bytes))
+    }
+}
+
+/// What to fetch: `None` and `false` mean "discover the zoom", "2.5 m" and "refuse when only the world
+/// fallback exists".
+#[derive(Debug, Clone, Default)]
+pub struct DemFetchRequest {
+    /// The zoom to fetch at; skips the discovery and the refusal.
+    pub zoom: Option<u8>,
+    /// Target pixel in real metres (a floor: it grows until the raster fits).
+    pub pixel_m: Option<f64>,
+    /// Write the 30 m world fallback even when nothing finer covers the project.
+    pub force: bool,
+}
+
+/// The refusal for a region with nothing finer than the world fallback.
+const GLO_ONLY: &str = "Mapterhorn has nothing finer than Copernicus GLO-30 here; sources.dem is unchanged. \
+Other sources exist (national portals, Sonny's 20 m, FABDEM if non-commercial), but none is implemented \u{2014} \
+TileGet sources slot into dem_fetch.rs, other formats need their own fetcher. Pass --force to fetch the 30 m \
+world fallback anyway.";
+
+/// The project's tile cache, `<project>/dem/<id>/{z}/{x}/{y}.webp`, with an empty `{y}.404` for a tile the
+/// source does not have. As a [`TileStore`] it never asks the network: a tile that is neither cached nor
+/// marked reads as absent.
+struct TileCache {
+    root: PathBuf,
+    source_id: &'static str,
+}
+
+impl TileCache {
+    fn path(&self, z: u8, x: u32, y: u32, extension: &str) -> PathBuf {
+        self.root
+            .join(z.to_string())
+            .join(x.to_string())
+            .join(format!("{y}.{extension}"))
+    }
+
+    /// `Some(true)` if cached, `Some(false)` if marked absent, `None` if never asked.
+    fn known(&self, z: u8, x: u32, y: u32) -> Option<bool> {
+        if self.path(z, x, y, "webp").is_file() {
+            Some(true)
+        } else if self.path(z, x, y, "404").is_file() {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Whether tile `(z, x, y)` exists, asking `tiles` (and caching the answer) only when the cache does not know.
+    fn ensure(&self, tiles: &dyn TileGet, z: u8, x: u32, y: u32) -> Result<bool, FetchError> {
+        if let Some(known) = self.known(z, x, y) {
+            return Ok(known);
+        }
+        if let Some(bytes) = tiles.tile(z, x, y)? {
+            self.check(z, x, y, &bytes)?;
+            write_atomic(&self.path(z, x, y, "webp"), &bytes)?;
+            Ok(true)
+        } else {
+            write_atomic(&self.path(z, x, y, "404"), &[])?;
+            Ok(false)
+        }
+    }
+
+    /// Checks an answer before it is cached: a webp header of [`TILE_PX`] squared pixels, not too large.
+    fn check(&self, z: u8, x: u32, y: u32, bytes: &[u8]) -> Result<(), FetchError> {
+        let bad = |why: String| FetchError::Service {
+            source_id: self.source_id.to_string(),
+            why: format!("tile {z}/{x}/{y}: {why}"),
+        };
+        if u64::try_from(bytes.len()).is_ok_and(|n| n > MAX_TILE_BYTES) {
+            return Err(bad(format!("larger than {MAX_TILE_BYTES} bytes")));
+        }
+        let size =
+            image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::WebP)
+                .into_dimensions()
+                .map_err(|e| bad(format!("not a webp image: {e}")))?;
+        if size != (TILE_PX, TILE_PX) {
+            return Err(bad(format!(
+                "an image of {} x {} pixels, not {TILE_PX} x {TILE_PX}",
+                size.0, size.1
+            )));
+        }
+        Ok(())
+    }
+}
+
+impl TileStore for TileCache {
+    fn load(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, FetchError> {
+        let path = self.path(z, x, y, "webp");
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(FetchError::Io { path, source }),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_TILE_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|source| FetchError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        if u64::try_from(bytes.len()).is_ok_and(|n| n > MAX_TILE_BYTES) {
+            return Err(FetchError::Other(format!(
+                "{}: larger than {MAX_TILE_BYTES} bytes",
+                path.display()
+            )));
+        }
+        Ok(Some(bytes))
+    }
+}
+
+/// The tiles containing the window's four corners and its centre at `z`.
+fn probe_tiles(window: &GeoWindow, z: u8) -> BTreeSet<(u32, u32)> {
+    let tiles = 1u32 << z;
+    let tile = f64::from(TILE_PX);
+    let centre = (
+        f64::midpoint(window.south, window.north),
+        f64::midpoint(window.west, window.east),
+    );
+    [
+        (window.north, window.west),
+        (window.north, window.east),
+        (window.south, window.west),
+        (window.south, window.east),
+        centre,
+    ]
+    .into_iter()
+    .map(|(lat, lon)| {
+        let (px, py) = world_px(lat, lon, z);
+        (tile_index(px / tile, tiles), tile_index(py / tile, tiles))
+    })
+    .collect()
+}
+
+/// The zoom to fetch at: the requested one, or the finest at which the probes all exist.
+fn choose_zoom(
+    cache: &TileCache,
+    tiles: &dyn TileGet,
+    window: &GeoWindow,
+    request: &DemFetchRequest,
+    name: &str,
+) -> Result<u8, FetchError> {
+    if let Some(z) = request.zoom {
+        if !(Z_MIN..=Z_MAX).contains(&z) {
+            return Err(FetchError::Other(format!(
+                "zoom {z} is outside {Z_MIN}..={Z_MAX}"
+            )));
+        }
+        return Ok(z);
+    }
+    for z in (Z_MIN..=Z_MAX).rev() {
+        let mut all = true;
+        for (x, y) in probe_tiles(window, z) {
+            if !cache.ensure(tiles, z, x, y)? {
+                all = false;
+                break;
+            }
+        }
+        if all {
+            return Ok(z);
+        }
+    }
+    Err(FetchError::Other(format!(
+        "{name} has no tiles for this area, not even at zoom {Z_MIN}"
+    )))
+}
+
+/// The tiles of `range` as a list of `(x, y)`.
+fn coords(range: (u32, u32, u32, u32)) -> Vec<(u32, u32)> {
+    let (x0, x1, y0, y1) = range;
+    (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
+        .collect()
+}
+
+/// What a fetch will do, for the user before anything is downloaded: zoom, tile count, how many are
+/// cached, the expected download size ([`TILE_BYTES_ESTIMATE`] per missing tile), the grid and pixel. The
+/// discovery may request, and cache, a few probe tiles.
+///
+/// # Errors
+///
+/// [`FetchError`] if the project cannot be read, the request is not valid or the discovery fails.
+pub fn describe_dem_fetch(
+    project_dir: &Path,
+    source: &'static TerrariumSource,
+    request: &DemFetchRequest,
+    tiles: &dyn TileGet,
+) -> Result<String, FetchError> {
+    let project = Project::load(project_dir)?;
+    let window = fetch_window(&project)?;
+    let (cols, rows, pixel_m) = dem_grid(&window, request.pixel_m)?;
+    let cache = TileCache {
+        root: project_dir.join("dem").join(source.id),
+        source_id: source.id,
+    };
+    let zoom = choose_zoom(&cache, tiles, &window, request, source.name)?;
+    let all = coords(tile_range(&window, zoom));
+    let cached = all
+        .iter()
+        .filter(|(x, y)| cache.known(zoom, *x, *y).is_some())
+        .count();
+    let total = u64::try_from(all.len()).unwrap_or(u64::MAX);
+    let missing = total.saturating_sub(u64::try_from(cached).unwrap_or(u64::MAX));
+    let megabytes = missing
+        .saturating_mul(TILE_BYTES_ESTIMATE)
+        .saturating_add(500_000)
+        / 1_000_000;
+    Ok(format!(
+        "zoom {zoom}: {total} tiles, {cached} already cached, about {megabytes} MB to download; \
+         a raster of {cols} x {rows} pixels at {pixel_m:.2} m"
+    ))
+}
+
+/// Fetches the tiles `wanted` at zoom `z` into the cache on a pool of [`TILE_JOBS`] threads and returns which
+/// of them exist.
+fn fetch_level(
+    pool: &rayon::ThreadPool,
+    cache: &TileCache,
+    tiles: &dyn TileGet,
+    z: u8,
+    wanted: &[(u32, u32)],
+) -> Result<Vec<bool>, FetchError> {
+    pool.install(|| {
+        wanted
+            .par_iter()
+            .map(|&(x, y)| cache.ensure(tiles, z, x, y))
+            .collect()
+    })
+}
+
+/// Fetches every tile of the range at `zoom` and, for the missing ones, their ancestors (once each) down to
+/// [`Z_MIN`]. Returns how many tiles of the range are served only at [`Z_MIN`], below `zoom`.
+fn fetch_tiles(
+    cache: &TileCache,
+    tiles: &dyn TileGet,
+    window: &GeoWindow,
+    zoom: u8,
+    note: &dyn Fn(&str),
+) -> Result<(usize, usize), FetchError> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(TILE_JOBS)
+        .build()
+        .map_err(|e| FetchError::Other(format!("cannot start the download threads: {e}")))?;
+    let all = coords(tile_range(window, zoom));
+    let wanted: Vec<(u32, u32)> = all
+        .iter()
+        .copied()
+        .filter(|&(x, y)| cache.known(zoom, x, y).is_none())
+        .collect();
+    note(&format!(
+        "fetching {} of {} tiles at zoom {zoom}",
+        wanted.len(),
+        all.len()
+    ));
+    fetch_level(&pool, cache, tiles, zoom, &wanted)?;
+    // (tile of the range, its ancestor at the level being looked at) of the tiles absent so far
+    let mut pending: Vec<((u32, u32), (u32, u32))> = all
+        .iter()
+        .copied()
+        .filter(|&(x, y)| cache.known(zoom, x, y) != Some(true))
+        .map(|c| (c, c))
+        .collect();
+    let mut fallback = 0usize;
+    for z in (Z_MIN..zoom).rev() {
+        if pending.is_empty() {
+            break;
+        }
+        for item in &mut pending {
+            item.1 = (item.1.0 >> 1, item.1.1 >> 1);
+        }
+        let parents: Vec<(u32, u32)> = pending
+            .iter()
+            .map(|item| item.1)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let missing: Vec<(u32, u32)> = parents
+            .iter()
+            .copied()
+            .filter(|&(x, y)| cache.known(z, x, y).is_none())
+            .collect();
+        note(&format!(
+            "fetching {} tiles at zoom {z} for tiles missing at zoom {}",
+            missing.len(),
+            z + 1
+        ));
+        fetch_level(&pool, cache, tiles, z, &missing)?;
+        let before = pending.len();
+        pending.retain(|&(_, (x, y))| cache.known(z, x, y) != Some(true));
+        if z == Z_MIN {
+            fallback = before - pending.len();
+        }
+    }
+    Ok((fallback, all.len()))
+}
+
+/// Today as `YYYY-MM-DD`.
+fn today_text() -> String {
+    let (y, m, d) = today();
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Fetches the bare-earth DEM of a project into `dem/<id>_dtm.tif` and lists it first in `sources.dem` of
+/// `naves.toml`. Sequence: discover the zoom (probes, cached), refuse a region with only the world fallback
+/// unless forced, fetch the missing tiles (four at a time, each cached atomically), resample from the cache,
+/// write the file, write the attribution sidecar, upsert `sources.dem` and save the project. `note` gets short
+/// progress lines; it is only called from the calling thread. Returns the paths listed in `naves.toml`
+/// (relative, `/`-separated).
+///
+/// A failed fetch leaves `naves.toml` as it was (the tile cache may keep what was downloaded).
+///
+/// # Errors
+///
+/// [`FetchError`] if the project cannot be read or saved, the request is not valid, the source has no tiles for
+/// the area (or only the world fallback and `force` is not set), a request fails or an answer is not a tile,
+/// or the raster cannot be written.
+pub fn fetch_dem(
+    project_dir: &Path,
+    source: &'static TerrariumSource,
+    request: &DemFetchRequest,
+    tiles: &dyn TileGet,
+    note: &dyn Fn(&str),
+) -> Result<Vec<PathBuf>, FetchError> {
+    let project = Project::load(project_dir)?;
+    let window = fetch_window(&project)?;
+    let (_, _, pixel_m) = dem_grid(&window, request.pixel_m)?;
+    let cache = TileCache {
+        root: project_dir.join("dem").join(source.id),
+        source_id: source.id,
+    };
+    let zoom = choose_zoom(&cache, tiles, &window, request, source.name)?;
+    note(&format!("zoom {zoom}"));
+    if request.zoom.is_none() && zoom == Z_MIN && !request.force {
+        note(GLO_ONLY);
+        return Err(FetchError::Other(GLO_ONLY.to_string()));
+    }
+    let (fallback, total) = fetch_tiles(&cache, tiles, &window, zoom, note)?;
+    if fallback > 0 {
+        note(&format!(
+            "{fallback} of {total} tiles only have the 30 m world fallback"
+        ));
+    }
+    note("resampling");
+    let (mosaic, bounds) = resample(&cache, &window, pixel_m, zoom)?;
+    let tif = format!("dem/{}_dtm.tif", source.id);
+    write_dem(&project_dir.join(&tif), &mosaic, bounds)?;
+
+    let extra = if fallback > 0 {
+        format!("{fallback} of {total} tiles only have the 30 m world fallback.\n")
+    } else {
+        String::new()
+    };
+    let credit = format!(
+        "Terrain elevation: {name} \u{2014} https://mapterhorn.com\n\
+         Source list and licences: {url}\n\
+         Retrieved: {date}  Window: {s:.6} {w:.6} to {n:.6} {e:.6}  Native zoom: up to z{zoom}\n\
+         The national data is bare-earth (CC BY 4.0, Etalab 2.0, DL-DE, OGL where present); \
+         the world fallback is Copernicus GLO-30.\n{extra}",
+        name = source.name,
+        url = source.attribution_url,
+        date = today_text(),
+        s = window.south,
+        w = window.west,
+        n = window.north,
+        e = window.east,
+    );
+    write_atomic(
+        &project_dir.join(format!("dem/{}_dtm.attribution.txt", source.id)),
+        credit.as_bytes(),
+    )?;
+
+    let listed = PathBuf::from(&tif);
+    let mut project = Project::load(project_dir)?;
+    project.sources.dem.retain(|p| *p != listed);
+    project.sources.dem.insert(0, listed.clone());
+    project.save(project_dir)?;
+    note(&format!("wrote {tif}"));
+    Ok(vec![listed])
 }
