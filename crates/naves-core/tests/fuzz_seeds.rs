@@ -138,6 +138,15 @@ fn overrides_parse_seeds() {
 }
 
 #[test]
+fn way_edits_parse_seeds() {
+    for (name, data) in seeds("way_edits_parse") {
+        let text = String::from_utf8(data).unwrap();
+        let result = naves_core::edits::WayEdits::parse(&text);
+        assert_eq!(result.is_ok(), name == "valid", "seed {name}: {result:?}");
+    }
+}
+
+#[test]
 fn imagery_catalog_seeds() {
     for (name, data) in seeds("imagery_catalog") {
         let text = String::from_utf8(data).unwrap();

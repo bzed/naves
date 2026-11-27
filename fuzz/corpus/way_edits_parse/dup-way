@@ -1,0 +1,12 @@
+format = 1
+next_id = 1
+
+[[ways]]
+id = 8421
+action = "modify"
+nodes = [1, 2]
+
+[[ways]]
+id = 8421
+action = "modify"
+nodes = [1, 3]

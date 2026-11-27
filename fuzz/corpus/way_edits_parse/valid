@@ -1,0 +1,22 @@
+format = 1
+next_id = 3
+
+[[nodes]]
+id = "u1"
+lat = 47.5
+lon = 12.9
+
+[[nodes]]
+id = 812
+lat = 47.6
+lon = 13.0
+base = [47.59, 12.99]
+
+[[ways]]
+id = "u2"
+action = "add"
+nodes = ["u1", 812]
+
+[ways.tags]
+highway = "track"
+"naves:keep" = "yes"
