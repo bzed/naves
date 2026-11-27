@@ -29,3 +29,20 @@ fn stac_response_seeds() {
     }
     assert!(seen >= 3, "seeds in {}", dir.display());
 }
+
+#[test]
+fn dem_terrarium_seeds() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/dem_terrarium");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let result = naves_export::dem_fetch::terrarium(&std::fs::read(&path).unwrap());
+        match name.as_str() {
+            "valid" => assert_eq!(result.unwrap().len(), 512 * 512),
+            _ => assert!(result.is_err(), "seed {name}"),
+        }
+        seen += 1;
+    }
+    assert!(seen >= 4, "seeds in {}", dir.display());
+}

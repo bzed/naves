@@ -4,11 +4,19 @@
 //! Writing a fetched DEM as one-band Float32 GeoTIFF and reading it back with `naves_core::dem`: no network,
 //! every file lives under a temporary directory.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "test helper code; failing loudly is the point"
+)]
+
+use image::ImageEncoder as _;
 use naves_core::dem::Dem;
 use naves_core::heightmap::MapGeo;
 use naves_core::landcover::GeoWindow;
 use naves_core::project::Project;
-use naves_export::dem_fetch::{MARGIN_M, TILE_PX, fetch_window, tile_range, world_px};
+use naves_export::dem_fetch::{
+    MARGIN_M, TILE_PX, TilePyramid, fetch_window, terrarium, tile_range, world_px,
+};
 use naves_export::geotiff_write::{DemMosaic, write_dem};
 use naves_export::imagery_fetch::FetchError;
 
@@ -105,7 +113,7 @@ fn example_project() -> Project {
     p
 }
 
-/// Latitude and longitude of the north-west corner of tile `(x, y)` at zoom `z` (Web Mercator).
+/// Latitude and longitude of the north-east corner (inside the z15 parent) of tile `(x, y)` at zoom `z` (Web Mercator).
 fn tile_corner(z: u32, x: u32, y: u32) -> (f64, f64) {
     let n = f64::from(1u32 << z);
     let lon = f64::from(x) / n * 360.0 - 180.0;
@@ -218,4 +226,114 @@ fn the_example_map_needs_about_two_thousand_tiles_at_z16() {
         (2000..=2300).contains(&unhaloed),
         "{unhaloed} tiles without the halo"
     );
+}
+
+/// A lossless webp tile of `TILE_PX` squared pixels whose height at (column, row) is `height(column, row)`.
+fn terrarium_webp(side: u32, height: impl Fn(u32, u32) -> f64) -> Vec<u8> {
+    let mut rgb = Vec::new();
+    for row in 0..side {
+        for col in 0..side {
+            let v = height(col, row) + 32768.0;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "test data in range"
+            )]
+            rgb.extend([
+                (v / 256.0).floor() as u8,
+                (v.floor() % 256.0) as u8,
+                (v.fract() * 256.0).floor() as u8,
+            ]);
+        }
+    }
+    let mut out = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut out)
+        .write_image(&rgb, side, side, image::ExtendedColorType::Rgb8)
+        .unwrap();
+    out
+}
+
+#[test]
+fn terrarium_decodes_the_real_lake_tile() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/dem/mapterhorn_z16_35130_22901.webp");
+    let heights = terrarium(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(heights.len(), (TILE_PX * TILE_PX) as usize);
+    assert!(
+        (heights[0] - 603.156_25).abs() < 1e-3,
+        "first was {}",
+        heights[0]
+    );
+    for h in &heights {
+        assert!((603.031..=603.407).contains(h), "height {h}");
+    }
+}
+
+#[test]
+fn terrarium_round_trips_a_ramp() {
+    let ramp = |c: u32, r: u32| -50.0 + f64::from(c) * 3.37 + f64::from(r) * 0.011;
+    let heights = terrarium(&terrarium_webp(TILE_PX, ramp)).unwrap();
+    for (row, col) in [(0u32, 0u32), (0, 511), (511, 0), (200, 300), (511, 511)] {
+        let got = f64::from(heights[(row * TILE_PX + col) as usize]);
+        assert!(
+            (got - ramp(col, row)).abs() <= 1.0 / 256.0 + 1e-3,
+            "{row},{col}: {got}"
+        );
+    }
+}
+
+#[test]
+fn terrarium_rejects_wrong_size_and_garbage() {
+    assert!(matches!(
+        terrarium(&terrarium_webp(256, |_, _| 10.0)),
+        Err(FetchError::Other(_))
+    ));
+    assert!(terrarium(b"not a webp at all, some random bytes 1234567890").is_err());
+    assert!(terrarium(&[]).is_err());
+}
+
+/// Both tiles of a pyramid for the z16 tile 35130/22901 and its z15 parent, constant 1000 and 2000 m.
+fn two_zoom_pyramid() -> TilePyramid {
+    let mut pyramid = TilePyramid::default();
+    pyramid
+        .insert(16, 35130, 22901, &terrarium_webp(TILE_PX, |_, _| 1000.0))
+        .unwrap();
+    pyramid
+        .insert(15, 17565, 11450, &terrarium_webp(TILE_PX, |_, _| 2000.0))
+        .unwrap();
+    pyramid
+}
+
+#[test]
+fn sample_prefers_native_zoom_and_falls_back_on_an_incomplete_quad() {
+    let pyramid = two_zoom_pyramid();
+    let (lat0, lon0) = tile_corner(16, 35130, 22901);
+    let (lat1, lon1) = tile_corner(16, 35131, 22902);
+    // the middle of the z16 tile: the native value
+    let inner = pyramid
+        .sample(f64::midpoint(lat0, lat1), f64::midpoint(lon0, lon1), 16)
+        .unwrap();
+    assert!((inner - 1000.0).abs() < 1e-3, "inner {inner}");
+    // the north-east corner (inside the z15 parent): the quad needs absent z16 neighbours, so the parent answers
+    let edge = pyramid.sample(lat0, lon1, 16).unwrap();
+    assert!((edge - 2000.0).abs() < 1e-3, "edge {edge}");
+    // a coarser zoom_max never looks at z16
+    let coarse = pyramid
+        .sample(f64::midpoint(lat0, lat1), f64::midpoint(lon0, lon1), 15)
+        .unwrap();
+    assert!((coarse - 2000.0).abs() < 1e-3, "coarse {coarse}");
+}
+
+#[test]
+fn sample_of_an_uncovered_point_is_none() {
+    let pyramid = two_zoom_pyramid();
+    assert!(pyramid.sample(-30.0, 100.0, 16).is_none());
+    assert!(pyramid.sample(f64::NAN, 10.0, 16).is_none());
+    assert!(TilePyramid::default().sample(47.0, 12.0, 18).is_none());
+}
+
+#[test]
+fn insert_refuses_a_bad_tile() {
+    let mut pyramid = TilePyramid::default();
+    assert!(pyramid.insert(16, 1, 1, b"garbage").is_err());
 }
