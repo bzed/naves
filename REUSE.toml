@@ -90,6 +90,13 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved"
 SPDX-License-Identifier = "LicenseRef-Copernicus-DEM"
 
+# A Mapterhorn tile of the Bavarian DGM1 (tests/fixtures/README.md), and fuzz seeds copied from it.
+[[annotations]]
+path = ["tests/fixtures/dem/*.webp", "fuzz/corpus/dem_terrarium/valid", "fuzz/corpus/dem_terrarium/truncated"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Mapterhorn (https://mapterhorn.com), from data of the Bayerische Vermessungsverwaltung (www.geodaten.bayern.de)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
 # Renders of the Copernicus DEM test crop (docs/manual/src/gui.md).
 [[annotations]]
 path = "docs/manual/src/images/*.png"
