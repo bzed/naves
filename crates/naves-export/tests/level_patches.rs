@@ -154,6 +154,8 @@ fn way(id: i64, nodes: &[i64], points: &[(f64, f64)]) -> Feature {
             layer: 0,
             use_sidepath: false,
             paving: None,
+            held: false,
+            plan: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

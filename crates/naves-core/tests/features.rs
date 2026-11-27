@@ -43,6 +43,8 @@ fn road(family: Family, drivable: bool) -> Option<FeatureKind> {
         layer: 0,
         use_sidepath: false,
         paving: None,
+        held: false,
+        plan: false,
     })
 }
 
@@ -90,6 +92,8 @@ fn road_on(family: Family, drivable: bool, paving: Paving) -> Option<FeatureKind
             layer,
             use_sidepath,
             paving: Some(paving),
+            held: false,
+            plan: false,
         }),
         other => other,
     }
@@ -870,4 +874,54 @@ fn foot_use_sidepath_sets_its_flag_and_nothing_else_changes() {
         }
     };
     assert_eq!(rest(&[]), rest(&[("foot", "use_sidepath")]));
+}
+
+#[test]
+fn keep_tag_makes_held_road() {
+    let flags = |extra: &[(&str, &str)]| {
+        let mut t = vec![("highway", "service")];
+        t.extend_from_slice(extra);
+        match classify(&tags(&t)) {
+            Some(FeatureKind::Road { held, plan, .. }) => (held, plan),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(flags(&[]), (false, false));
+    assert_eq!(flags(&[("naves:keep", "yes")]), (true, false));
+    assert_eq!(flags(&[("naves:keep", "no")]), (false, false));
+    assert_eq!(
+        flags(&[("naves:keep", "yes"), ("naves:plan", "yes")]),
+        (true, true)
+    );
+    assert_eq!(flags(&[("naves:plan", "yes")]), (false, true));
+}
+
+#[test]
+fn user_way_gets_user_feature_id() {
+    use naves_core::edits::USER_ID_BASE;
+    let frame = MapGeo::new(&project(2000.0, 1.0)).unwrap();
+    let way = |id| {
+        let (lat, lon) = frame.to_geo(100.0, 100.0).unwrap();
+        let (lat2, lon2) = frame.to_geo(300.0, 100.0).unwrap();
+        OsmWay {
+            id,
+            tags: tags(&[("highway", "service")]),
+            nodes: vec![1, 2],
+            points: vec![(lat, lon), (lat2, lon2)],
+        }
+    };
+    let ways = OsmWays {
+        ways: vec![way(USER_ID_BASE + 3), way(7)],
+        skipped: 0,
+    };
+    let features = road_features(&ways, &frame, 2000.0);
+    let user = features
+        .iter()
+        .find(|f| f.way_id == USER_ID_BASE + 3)
+        .unwrap();
+    assert_eq!(user.id, "user/way/3/0");
+    assert_eq!(user.source, Source::User);
+    let osm = features.iter().find(|f| f.way_id == 7).unwrap();
+    assert_eq!(osm.id, "osm/way/7/0");
+    assert_eq!(osm.source, Source::Osm);
 }

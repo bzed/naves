@@ -67,6 +67,11 @@ pub struct Stretch {
     pub paved_m: f64,
     /// The metres of the line whose way is tagged with an unpaved `surface` (see [`Stretch::paved_m`]).
     pub unpaved_m: f64,
+    /// A hand-made road kept as drawn (`naves:keep=yes`): the network steps must not drop it, merge it in a way
+    /// that moves its nodes, smooth it or reroute it. A held run is its own stretch.
+    pub held: bool,
+    /// `naves:plan=yes`: road planning may improve this stretch although it is held.
+    pub plan: bool,
 }
 
 impl Stretch {
@@ -153,6 +158,8 @@ struct Attrs {
     tunnel: bool,
     roundabout: bool,
     layer: i8,
+    held: bool,
+    plan: bool,
 }
 
 /// The piece of a way between two consecutive nodes.
@@ -181,6 +188,8 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             layer,
             use_sidepath,
             paving,
+            held,
+            plan,
         } = feature.kind
         else {
             continue;
@@ -192,6 +201,8 @@ fn segments(features: &[Feature]) -> Vec<Seg> {
             tunnel,
             roundabout,
             layer,
+            held,
+            plan,
         };
         let pairs = feature.nodes.iter().zip(&feature.points);
         for ((&a, &pa), (&b, &pb)) in pairs.clone().zip(pairs.skip(1)) {
@@ -378,6 +389,8 @@ fn walk(
             tunnel: false,
             roundabout: false,
             layer: 0,
+            held: false,
+            plan: false,
         }),
         way,
         use_sidepath: seq
@@ -438,6 +451,8 @@ fn canonical(mut w: Walked) -> Option<Stretch> {
         use_sidepath: w.use_sidepath,
         paved_m: w.paved_m,
         unpaved_m: w.unpaved_m,
+        held: w.attrs.held,
+        plan: w.attrs.plan,
     })
 }
 
@@ -1911,6 +1926,8 @@ mod tests {
             use_sidepath: false,
             paved_m,
             unpaved_m: 0.0,
+            held: false,
+            plan: false,
         }
     }
 

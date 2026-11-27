@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::Family;
+use crate::edits::ElementId;
 use crate::heightmap::MapGeo;
 use crate::lot::{Paving, paving};
 use crate::osm::{OsmWay, OsmWays};
@@ -24,7 +25,7 @@ use crate::osm::{OsmWay, OsmWays};
 /// and a little more.
 pub const CLIP_INSET_M: f64 = 13.0;
 
-/// Where a feature comes from (spec 5.2). Only `Osm` is produced so far.
+/// Where a feature comes from (spec 5.2). `Osm` and `User` are produced so far.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
     /// Read from OpenStreetMap.
@@ -62,6 +63,12 @@ pub enum FeatureKind {
         /// unknown one. It never changes the family.
         #[serde(default)]
         paving: Option<Paving>,
+        /// Tagged `naves:keep=yes` (a hand-made road): the later network steps keep its line as drawn.
+        #[serde(default)]
+        held: bool,
+        /// Tagged `naves:plan=yes`: road planning may improve the road although it is held.
+        #[serde(default)]
+        plan: bool,
     },
     /// A footpath, painted on the ground and never given road pieces.
     Path {
@@ -76,7 +83,7 @@ pub enum FeatureKind {
 /// One stretch of a road or path on the map.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Feature {
-    /// Stable identity: `osm/way/<id>/<part>`; a way that leaves the map and comes back has several parts.
+    /// Stable identity: `osm/way/<id>/<part>`, or `user/way/<n>/<part>` for a way drawn by the user; a way that leaves the map and comes back has several parts.
     pub id: String,
     /// The OSM way this comes from.
     pub way_id: i64,
@@ -149,6 +156,8 @@ pub fn classify(tags: &BTreeMap<String, String>) -> Option<FeatureKind> {
                 .map_or(0, |v| v.clamp(-5, 5)),
             use_sidepath: get("foot") == Some("use_sidepath"),
             paving: get("surface").and_then(paving),
+            held: get("naves:keep") == Some("yes"),
+            plan: get("naves:plan") == Some("yes"),
         })
     };
     match highway {
@@ -348,11 +357,16 @@ pub fn road_features(ways: &OsmWays, frame: &MapGeo, map_size_m: f64) -> Vec<Fea
         let Some(runs) = clipped_runs(way, frame, lo, hi) else {
             continue;
         };
+        let (source, prefix) = match ElementId::from_raw(way.id) {
+            Some(ElementId::User(n)) => (Source::User, format!("user/way/{n}")),
+            _ => (Source::Osm, format!("osm/way/{}", way.id)),
+        };
         for (part, (points, nodes)) in runs.into_iter().enumerate() {
+            let id = format!("{prefix}/{part}");
             features.push(Feature {
-                id: format!("osm/way/{}/{part}", way.id),
+                id,
                 way_id: way.id,
-                source: Source::Osm,
+                source,
                 kind,
                 points,
                 nodes,

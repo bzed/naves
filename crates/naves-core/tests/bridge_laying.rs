@@ -35,6 +35,8 @@ fn feature(way: i64, family: Family, bridge: bool, nodes: &[i64], pts: &[(f64, f
             layer: 0,
             use_sidepath: false,
             paving: None,
+            held: false,
+            plan: false,
         },
         points: pts.to_vec(),
         nodes: nodes.to_vec(),

@@ -1596,6 +1596,8 @@ mod tests {
                 use_sidepath: false,
                 paved_m: 0.0,
                 unpaved_m: 0.0,
+                held: false,
+                plan: false,
             })
             .collect();
         rebuilt(stretches)

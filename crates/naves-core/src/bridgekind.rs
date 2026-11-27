@@ -1558,6 +1558,8 @@ fn join(graph: &RoadGraph, chain: &[usize]) -> Option<Stretch> {
         use_sidepath: parts.iter().any(|p| p.use_sidepath),
         paved_m: parts.iter().map(|p| p.paved_m).sum(),
         unpaved_m: parts.iter().map(|p| p.unpaved_m).sum(),
+        held: parts.iter().any(|p| p.held),
+        plan: parts.iter().any(|p| p.plan),
         points,
         start,
         end,

@@ -39,6 +39,8 @@ fn feature(
             layer: 0,
             use_sidepath: false,
             paving: None,
+            held: false,
+            plan: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),
@@ -114,6 +116,21 @@ fn two_ways_between_the_same_crossings_stay_two_stretches() {
     let between: Vec<&str> = ids(&g).into_iter().filter(|i| i.ends_with("1-9")).collect();
     assert_eq!(between.len(), 2, "{:?}", ids(&g));
     assert_ne!(between[0], between[1]);
+}
+
+#[test]
+fn held_part_is_its_own_stretch() {
+    let mut held = road(2, &[3, 4, 5], &[(100.0, 0.0), (150.0, 0.0), (200.0, 0.0)]);
+    if let FeatureKind::Road { held, .. } = &mut held.kind {
+        *held = true;
+    }
+    let g = build_graph(&[
+        road(1, &[1, 2, 3], &[(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)]),
+        held,
+    ]);
+    assert_eq!(g.stretches.len(), 2);
+    let flags: Vec<(bool, bool)> = g.stretches.iter().map(|s| (s.held, s.plan)).collect();
+    assert_eq!(flags, vec![(false, false), (true, false)]);
 }
 
 #[test]

@@ -54,6 +54,8 @@ fn feature(
             layer,
             use_sidepath: false,
             paving: None,
+            held: false,
+            plan: false,
         },
         points: points.to_vec(),
         nodes: nodes.to_vec(),

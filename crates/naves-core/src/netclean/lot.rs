@@ -783,6 +783,8 @@ fn thin(s: &Stretch, start: i64, end: i64) -> Stretch {
         use_sidepath: false,
         paved_m: 0.0,
         unpaved_m: 0.0,
+        held: s.held,
+        plan: s.plan,
     }
 }
 
@@ -1037,6 +1039,8 @@ mod tests {
                 layer: 0,
                 use_sidepath: false,
                 paving: None,
+                held: false,
+                plan: false,
             },
             points: points.to_vec(),
             nodes: nodes.to_vec(),

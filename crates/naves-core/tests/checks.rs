@@ -529,6 +529,8 @@ fn a_track_that_is_not_drivable_is_checked_like_a_path() {
         layer: 0,
         use_sidepath: false,
         paving: None,
+        held: false,
+        plan: false,
     };
     assert_ne!(check_walkable(&[track.clone()], &ramp(steep)).len(), 0);
     // a drivable road is not a path

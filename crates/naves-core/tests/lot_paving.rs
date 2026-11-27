@@ -81,6 +81,8 @@ fn road(way: i64, points: &[Pt], family: Family, paving: Option<Paving>) -> Feat
             layer: 0,
             use_sidepath: false,
             paving,
+            held: false,
+            plan: false,
         },
         points: points.to_vec(),
         nodes: (0..points.len())
