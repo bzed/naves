@@ -1,0 +1,866 @@
+<!--
+SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
+# Road planning: re-routing curves the pieces cannot build
+
+Status: design, 2026-11-21, amended the same day after the spike (plan Task 1,
+`.superpowers/sdd/2026-11-21-naves-road-planning/spike/answers.md`). Written by the assistant on the controller's
+brief, within the maintainer's decisions. Decisions the maintainer made are marked **(maintainer)**, rulings of the
+controller **(controller)**; everything else is the assistant's call and easy to change. The constants that carried a
+**(re-check)** mark were re-measured on the map with the grade rule before they were frozen (plan Task 7b,
+2026-11-23); the constants table carries the figures. Only the three self-clearance constants, which Task 7b did not
+measure, still carry the **(re-check)** mark. The constants without a mark (the step, the arrival reach, the junction
+straight, the longest zone, the raster and field limits and the rest) were not re-measured there.
+
+The method comes from the clean-room notes `docs/research/2026-11-21-road-tools-clean-room-notes.md`, sections 3.2 to
+3.6 (obstacles, profile band, cost field, arc search, margins) and 5.1 (the two-pass profile, used here to measure
+earthwork). Where this design departs from the notes it says so. No third-party code is used or sought.
+
+Figures are Berchtesgaden at half scale (`scale.horizontal = 0.5`), terrain size 2048, 4 m cells, on `main` at
+5137948; the spike ran on bc5ea8a, which has the same code.
+
+## Why
+
+The road pieces have fixed real sizes. The tightest curve piece of every family has a radius of 10 m on the map. Most
+projects scale the world down (1:2 or similar) **(maintainer)**, so a real curve of 15 m becomes 7.5 m on the map,
+and the pieces cannot build it.
+
+On the example today:
+
+- 16 135 m of road is tighter than the pieces (the smoothing's measure, on a 2 m resample of the drawn line). On the
+  drawn lines that is 2261 tight zones at the lead of this design (1700 at a lead of four radii; the smoothing found
+  873 on its fitted line, which had removed many OSM kinks).
+- The placement meets these places and does what it can. What it cannot do shows up as `road_gap` (389, 1618 m in
+  total, the largest 131 m), `road_not_drivable` (141), `road_conflict` (797) and `road_misses_terrain` (3752).
+
+The smoothing stage (`2026-11-17-road-smoothing-design.md`) tried to fix this by pushing samples sideways inside a
+corridor. It brought the tight length to 4088 m, but 254 zones still could not be built (mostly town corners between
+junctions), it does not look at the terrain, it has no guard against running into another road, and it made the
+placement 44 % slower. It is switched off **(maintainer)**.
+
+A curve that cannot be built has to be built somewhere else: moved outward or sideways until it has the radius the
+pieces need. Moving a road for that is "no problem at all", and the earthwork for it is fine **(maintainer)**. A
+road that ends up steeper than it was meant to be is not fine **(controller, on the maintainer's question about the
+switchback pictures)**. To do it well the stage must see the terrain, the water and the other roads. That is route
+planning.
+
+## Goal
+
+Every curve that the pieces cannot build, and that can be built nearby, is re-routed as a chain of arcs and straights
+that the pieces can build. Roads stay drivable and usable; that is the only goal for roads **(maintainer)**.
+
+- Only the places where the drawn line cannot be built are planned; everything else keeps its OpenStreetMap line
+  **(controller)**.
+- A planned curve is not steeper than the road was meant to be, stays out of water, does not cross a stream it did
+  not cross, keeps away from other roads' earthworks and from its own road elsewhere, stays off the map edge, and
+  stays as near the drawn line as the radius allows.
+- A bend that cannot be planned keeps its line and is reported with the reason. That list is where the concrete-plate
+  task and the curved-bridge task start **(maintainer)**.
+- The stage is judged at half scale **(maintainer)**.
+
+## Non-goals
+
+- Whole roads are not routed between junctions. That is a possible v2.
+- No bridges inside the search (notes section 4). A bend blocked by water is reported as a curved-bridge candidate
+  **(maintainer)**.
+- No concrete plates. A bend that cannot be built as a curve is reported as a plate candidate **(maintainer)**.
+- No car parks (their own task) **(maintainer)**.
+- No railways.
+- The height solve is not replaced. The planning's band and profile only decide whether a route is feasible and what
+  it costs; the existing height solve still sets every height **(controller)**.
+- No change to how pieces are chosen or fitted.
+- No user option. The values are named constants.
+
+## Anti-goals
+
+- A junction, a dead end or a bridge end that moves.
+- A planned road that runs into water, across a new stream, onto a bridge deck, into the earthwork of another road it
+  did not touch before, or into its own road elsewhere.
+- A planned road that is steeper than the drawn one and steeper than its family's aim: a switchback cut short is not a
+  better switchback.
+- A planned road that strays so far from the drawn one that a player who knows the place no longer recognises it.
+- A route with a sudden very short change of steepness that a car cannot take **(maintainer)**.
+- Output that depends on thread timing, map iteration order or wall-clock time.
+- A zone's failure that changes anything outside that zone.
+
+## Approaches
+
+1. **Plan the tight zones only (chosen).** Find the zones where the line is tighter than the pieces, exactly as the
+   smoothing stage does, and search a new line for each zone between two anchors on the same road where the drawn line
+   is fine. The search is small, the rest of the road keeps its OpenStreetMap line, and a failure stays local. It
+   cannot improve a road that is buildable but badly placed on the terrain, and it cannot move a junction to give a
+   hairpin room.
+2. **Route whole roads between junctions.** The search sees the whole road and could lay a switchback stack better
+   than zone by zone. But every road moves, the search space is a hundred times larger, roads stop being recognisable,
+   every user edit keyed by slot is orphaned, and the waypoints that keep a road on its course would have to be
+   invented. Kept as a possible v2.
+3. **Keep the widening of the smoothing stage and add a road guard.** The smallest change. But the widening is a
+   convex fit of sideways offsets: it cannot see terrain, it cannot go round an obstacle (only revert), it shrinks
+   curves before it widens them, and on the example it still left 254 bends unbuilt.
+
+Zones only gives roads that stay recognisable, a search small enough to run on every zone of the map, and failures
+that stay local, at the price of leaving bends that need a moved junction to the plate task. The spike confirmed it:
+2046 of 2227 searched zones planned, the whole map in 5.3 s on 16 threads. The widening stays in the code, switched
+off; after this stage is judged it is decided whether it is still needed **(maintainer)**.
+
+## Design
+
+### Where it runs, what it receives and returns
+
+In `generate::fitted_graph_with`:
+
+`build_graph` → `collapse_small_rings` → `drop_duplicates` → `netclean::clean` → **road planning** →
+`smooth_graph_in_water` (off) → `fit_bridges`.
+
+The stage lives in a new module `naves-core/src/reroute.rs` (with sub-modules). The name `plan_roads` is taken: it is
+the export crate's function that places the roads (`generate::plan_roads`, returning `RoadPlan`). The stage is
+therefore called *re-routing* in the code (`reroute_graph`, `RerouteReport`, `REROUTE_ENABLED`) and *road planning*
+in the manual and the report (`roads.planning`).
+
+It receives:
+
+- the cleaned road graph (`RoadGraph`: stretches with their points in map metres, node ids at both ends, the
+  crossings);
+- the original terrain (`Heightmap`, the one bridges are fitted on);
+- the minimum radius of each stretch's family (the catalog's tightest arc piece, `PieceCatalog::tightest_arc`;
+  none means the family is never planned);
+- the water test (`validate::water_test`, the definition of `road_in_water`);
+- the stream lines: `features::water_lines` (ways tagged `waterway=stream`, `river` or `canal`, not culverts, cut
+  at the map), the same lines `generate` already reads as `Read::water` and passes to `plan_roads` as `water` for the
+  dips. `fitted_graph_with` gains them as a parameter;
+- the parameters (the constants below, as a struct so tests can change them).
+
+It returns a new `RoadGraph` and a `RerouteReport`. Stretch ids and node ids never change. Stretches outside zones are
+equal bit for bit. With the switch off (`REROUTE_ENABLED = false`) the stage is not called and the graph is the
+cleaned graph, bit for bit. The four combinations (planning off/on × smoothing off/on) can be chosen per call
+without recompiling, so that `road-analysis` can compare them with the same code.
+
+### Chains and tight zones
+
+Zones are found as the smoothing stage finds them **(controller)**, but on the cleaned graph's lines, not on a fitted
+line:
+
+- A **chain** is the smoothing's chain: a maximal run of stretches joined at nodes where exactly two stretches meet,
+  turning by at most `CHAIN_TURN_MAX_DEG` (150°), with the same tunnel flag. It ends at a junction (three or more
+  stretches), a dead end, a tunnel end or a sharper two-stretch node. A ring is cut at its node with the lowest id.
+  The smoothing's chain code is reused, not copied.
+- Each chain is resampled at `SAMPLE_M` (2 m) per stretch; nodes are samples.
+- A **tight run** is a run of samples whose three-point radius is below the minimum radius of the stretch they belong
+  to.
+- A **zone** is a tight run plus `PLAN_LEAD` minimum radii (2, about 21 m) of chain before and after it. Zones that
+  touch are one zone. A zone that reaches the end of its chain within one lead of the tight run is anchored at that
+  end node.
+
+On the example: 2261 zones; 34 are not searched (27 with the tight run inside a held part, 4 roundabouts, 2 longer
+than `PLAN_MAX_ZONE_M`, 1 tunnel). A lead of 4 merged zones into long ones (30 longer than 400 m) and left 3495 m
+tight instead of 1518 m; a lead of 1 adds 77 routes that touch an earlier route.
+
+Not planned at all (listed in the report as skipped, with the reason): a tunnel chain, a roundabout stretch, a
+stretch whose line has a non-finite coordinate or collapses to one point, a family with no arc piece, and a zone longer
+than `PLAN_MAX_ZONE_M`.
+
+### What is fixed, anchors and legs
+
+What never moves **(controller)**:
+
+- a junction node, and the direction in which each of its arms leaves it;
+- a dead end's position (its direction is free);
+- a bridge end node, the bridge stretch itself and the first `PLAN_BRIDGE_HOLD_M` (25 m) of road on each side of it
+  along the chain;
+- a tunnel end node and its first 25 m, held like a bridge end;
+- the node where a ring chain is cut, with the line's heading there.
+
+An **anchor** is a pose: a point on the original line and the line's heading there, measured over one sample step on
+each side of the point (at a chain end, over the first step). Each zone has an anchor at each end:
+
+- where the zone ends inside the chain: the sample at the zone's end (by construction not in a tight run);
+- where the zone reaches a junction: the junction node with its arm's direction. The leg's route begins with a
+  straight of `PLAN_JUNCTION_STRAIGHT_M` (6.25 m) along the arm, so that the junction piece has a straight arm to sit
+  on. It costs 45 (at 3 m) to 65 (at 0 m) zones of the map; it stays until the junction piece's real arm is measured
+  (open points);
+- where it reaches a dead end: the dead end's position with a free heading;
+- where it reaches a held part (bridge, tunnel, ring cut): the end of the held part, with the line's heading there.
+
+A held part inside a zone splits the zone into **legs**, each between two anchors. A leg is planned on its own. A bend
+whose apex is a junction gives two zones on two chains, both anchored at that junction with their arm directions
+kept **(controller)**; they are planned independently and reported as one bend (each zone names the junction and its
+partner zone).
+
+A leg whose anchors are closer than two sample steps, or (both anchors at junctions) closer than two junction
+straights, is not searched (`held`, detail `anchors_close`; 49 zones on the example).
+
+### The grade a leg may have
+
+**A planned leg must not be steeper than the road was meant to be (controller).** For each leg:
+
+- `Δz` is the terrain height at the end anchor minus that at the start anchor (bilinear, `Heightmap::sample`);
+- the **drawn grade** is `|Δz|` over the drawn length between the anchors (along the original line, 2 m resample);
+- the **grade limit** of the leg is `g_leg = min(grade_ceiling(family), max(grade_aim(family), drawn grade))`
+  (`limits.rs`); in a zone of several families, the smallest aim and ceiling of them.
+
+The drawn grade is the mean between the anchors, not the steepest window. The steepest 20 m window is measured and
+reported (`drawn_grade_20m`) but not used: the drawn line has never been graded, so a short window measures the
+terrain the line cuts across, not the road. On switchback-2 the mean is 7.4 % and the 20 m window 26.4 % (10 m:
+35.4 %, against a ceiling of 27 %); a limit from the window would let the planned road go to the ceiling. The
+height solve grades the drawn road to about its mean anyway. The aim is the floor, so a leg that is flat on the mean
+but steep in places may still be planned at what the family is built for.
+
+The band (below) keeps `g_leg` at every sample and pins the road to the terrain at both anchors within
+`PLAN_ANCHOR_TOL_M`. A route therefore cannot be shorter than `(|Δz| − 2 · PLAN_ANCHOR_TOL_M) / g_leg`: a switchback
+cannot be cut short. It has to keep its length, which means a wider loop.
+
+**If no route exists within `g_leg`,** the leg is searched again with the limit raised by a third of the gap to the
+ceiling, then two thirds, then the ceiling (`PLAN_GRADE_RELAX_STEPS` = 3). A route found at a raised limit is
+planned, and its finding says how much steeper than drawn it is. A leg that has no route at the ceiling either keeps
+its line and is reported as any other kept leg.
+
+Every planned leg reports its drawn grade, its planned grade (`|Δz|` over the route's length), the limit it was
+found at, and how many relaxation steps it needed. The report counts the legs planned steeper than drawn by more than
+`PLAN_STEEPER_MARGIN` (2 points of grade) and names the worst.
+
+Is the limit alone enough? A route is still drawn towards the limit, because the cost counts length: a gravel
+switchback drawn at 15 % will come out near the aim of 18 %, not at 15 %. That is within what the family is built
+for, so v1 has no extra cost term for grade above the drawn grade. Open points has the term and when to add it.
+
+What the rule does to the six spike sites (from the spike's routes and the example's terrain, see the plan's Task 1
+record): switchback-1 (gravel, `Δz` 21.4 m, drawn 145.6 m, 14.7 %; planned 90.8 m, 23.6 %) breaks it and must grow to
+at least `(21.4 − 2 · 0.5) / 0.18 = 114` m (119 m with the anchors exactly on the terrain); switchback-2 (narrow asphalt, `Δz` 7.6 m, drawn 103.8 m, 7.4 %; planned 65.7 m, 11.6 %) is under its
+aim of 12 % and stays; the two town corners (`Δz` 1.5 m), the junction hairpin (13.6 % against a dirt-track aim of
+25 %) and the water bend (9.3 %) are not touched by the rule. On the whole map, 239 of the 2046 legs the spike planned
+break it: half of them need less than 1.7 m more road, the worst 80 m; 15 of them are even above the ceiling on their
+mean, which the spike's band allowed (see the band). The rule may push switchbacks against the stray cap; the re-check
+(plan Task 7b) measured that: the cap binds on no leg of the map (largest true move 28.47 m against the smallest cap of
+30 m), and no cap of 3, 4 or 5 plans the two switchbacks, which are kept and reported.
+
+### Obstacles and the distance raster
+
+Notes section 3.2, built once per leg over its box: the bounding box of the leg's original line, grown by
+`PLAN_STRAY_MAX · R` (the stray cap, with the planning radius `R` of the margin), the largest clearance and two raster
+cells.
+
+- **Resolution:** half the terrain cell, clamped to 1 to 2.5 m (2 m at 4 m cells), multiplied by 1.25 until the
+  raster has at most `PLAN_RASTER_MAX_CELLS` cells.
+- **Water:** a raster cell whose centre is in water by `water_test`.
+- **Streams:** a stream line (above) that the leg's original line does not cross may not be crossed by the route
+  (tested exactly, segment against segment, as a wall line). A stream the original line crosses `n` times must be
+  crossed `n` times, counted away from the anchors (below). The spike: without the rule 10 of 1466 planned legs
+  newly crossed a stream; with it, 0, at the cost of 3 to 6 zones.
+- **Other roads:** every stretch of the graph that is not part of the leg's chain. Each is stamped with its earthwork:
+  every cell within `core_reach_m(half its width, terrain cell)` of its centre line (`conform::core_reach_m`, the
+  clean-up's measure). Cells a segment touches are found by an exact grid traversal (Amanatides–Woo).
+- **Exemption, per place (controller, replacing the spike's per-road rule).** Where the leg's original line already
+  comes near another road, the route may come as near: the samples (every 2 m) of another road that lie within its
+  own reach plus the road clearance threshold of the original line, extended by `PLAN_EXEMPT_EXTEND_M` (10 m) along
+  that road on each side, are not stamped; the rest of that road is. An exempt road's centre line is a wall line: the
+  route crosses it as often as the original line does, counted away from the anchors. The spike exempted a whole road
+  as soon as the original line came within about 31 m of it anywhere (its reach plus the test's threshold), and
+  then a route could run in that road's earthwork far from where the original did; that rule is not used.
+- **The own road outside the leg (self-clearance, controller).** The leg's own chain outside the leg is another road
+  for this purpose, never exempt, except its first `PLAN_SELF_FREE` (the road clearance threshold plus its own reach,
+  about 26 m for a town street) along the chain from each anchor, which is the road the leg continues into. Inside the
+  route: two samples more than `PLAN_SELF_ALONG = π · R + 2 · road clearance` apart along the route must be at least
+  `self_clear_m` apart (the bend itself and the spread of its legs are one road; a loop that comes back onto itself
+  is not). **`self_clear_m` is not the road clearance (controller, review of Task 5):** with the road clearance a
+  hairpin whose legs are 8 m apart has no route at all, because the first and the last samples of every route are more
+  than `PLAN_SELF_ALONG` apart along it and 8 m apart on the ground. The caller gives it as a field of the leg's input,
+  `min(road clearance, the smallest distance between two samples of the original line, every 2 m, that are more than
+  PLAN_SELF_ALONG apart along it, the distance between the leg's two anchors, whatever their distance along the line)`,
+  but not less than the road's width, which `search::self_clearance` computes. The anchors count because a route
+  between close anchors is longer than `PLAN_SELF_ALONG` (a radius-10.5 hairpin between anchors 8 m apart is 66.9 m)
+  even where the drawing is shorter (a knot of 52 m), and its first and last samples are then a pair. The value for the road
+  clearance is the true distance `c` (about 13 m), not the raster's threshold `thr(c)` (18 to 21 m): the samples are
+  compared by their true distance. A route is thereby asked to keep apart what the original line kept apart, as the
+  per-place exemption does for other roads. The spike had no self-clearance at all: the own chain outside the leg touches
+  the leg at its anchors, so its per-road exemption always exempted it.
+- **Bridge decks and tunnels:** stamped like other roads and never exempt, with one exception that is gated and
+  measured along the deck. A deck or tunnel belongs to a fixed anchor (junction, dead end, held part) only when it
+  itself comes within `PLAN_DECK_ANCHOR_M` (12 m) of it; a deck 12 to 44 m away is a full obstacle. Of a qualifying
+  one, the part within `PLAN_DECK_ANCHOR_M + reach + the leg's road threshold` **along the deck or tunnel** from its
+  point nearest the anchor is not stamped (its earthwork and the leg's clearance could reach the anchor); everything
+  further is stamped in full. The exempt part keeps a hard core: the deck's own width (half width each side of its
+  centre line) blocks its cells, so that a route never runs onto the deck; only the earthwork halo is freed. A fixed
+  anchor that lies inside that core (a junction at a bridge end) frees the core within the leg's own road reach of
+  it, or the anchor itself would be blocked. Every deck's or tunnel's centre line is a wall of kind
+  `WallKind::Deck`, with the crossings of the drawn line (away from the leg's anchors) as its allowance; a route
+  crosses it no more often than the drawn road does. Reason: the clean-up puts a junction 8 m from a bridge end, so
+  the deck stamped its own anchor; about 75 of the 170 legs whose original line failed the test in the spike's first
+  run were this. A leg whose original line passes over or under a deck or a tunnel elsewhere is not planned (`held`,
+  detail `crosses_deck`).
+- **Map edge:** cells outside the map, and cells within `core_reach_m(own half width)` of the edge, are obstacle
+  cells. The edge has no clearance on top of that (it is not in the road distance map). If the leg's original line
+  already lies within that margin (a road that runs to the edge), only the cells outside the map are obstacles. A
+  dead end on the map edge (a stretch cut there) is a fixed anchor whose first segment is not tested against the edge.
+  Reason: margin plus clearance blocked roads running to the edge and a leg 28 m from it.
+- **Distance maps:** a two-pass chamfer transform (orthogonal weight = resolution, diagonal = resolution · √2), stored
+  in decimetres in 16 bits, saturating: one for water, one for roads (decks and tunnels in it), one of the distance to
+  the leg's original line (for the stray term and the cap).
+- **One threshold for every test.** A segment is blocked if a cell it touches is an obstacle cell, or its chamfer
+  distance is below `thr(c) = (c + res) · CHAMFER_ERROR + res · √2` for the clearance `c` (notes 3.2). The same
+  `thr` is used for the exemption above; the water cap below is in the same stored measure. Reason: in the spec as first written the test
+  used `thr` but the exemption and the water cap used the bare clearance, so 170 of 1645 original lines failed their
+  own test (the anchor lay in blocked space). The spike's alternative, the bare clearance plus half a cell, left 68 of
+  1645 failing and planned 22 more zones (1485 against 1463, at lead 4); it lets the true distance fall about 8 %
+  short of the clearance (1.2 m at 15 m), which the one-cell gap in the road clearance absorbs. Measured again at
+  lead 2 with the per-place exemption (open points): 28 more planned legs (1613), but the exact distance check puts two
+  routes inside another road's clearance by the stage's own exemption (0.55 and 0.70 m, base 0), so the padded
+  threshold is kept.
+- **Clearances:**
+  - roads: `core_reach_m(own half width) + one terrain cell` (12.5 to 15 m); with the stamped earthwork of the other
+    road this is the clean-up's "earthworks touch" test (two reaches and a cell);
+  - water: the threshold `min(thr(core_reach_m(own half width)), d_orig)`, where `d_orig` is the smallest stored
+    chamfer distance to water of the cells the original line touches. The cap is taken in the map's own measure (the
+    stored value), not by inverting `thr`: the inverse `(d_orig − res · √2) / CHAMFER_ERROR − res` is not positive for
+    an original line nearer than about 5 m to the water, and the cap then collapsed to "no clearance", letting a route
+    go nearer to the water than the original was. With the cap in the stored measure the original line passes its
+    own test exactly, and a riverside road may stay as near the water as it already was, however near that is. The raster keeps the cap itself (computed when the original line is set and the maps
+    are finished), so a caller can neither forget it nor pass a wrong one; an original that touches water has
+    stored distance 0, so the leg gets cap 0 and only water cells block there.
+- **Crossings near the anchors.** Wall crossings (exempt roads, streams) are counted, and block a segment of the
+  route when the wall allows none, only farther than `PLAN_CROSSING_END_M` (10 m) from either anchor. Reason: an exempt road that shares geometry with the original line
+  near its node made the counts unstable; 7 good routes failed their check, 1 with the rule.
+
+**What remains.** With these rules, 84 of the 2227 legs on the example still have an original line that fails the
+test. The spike's diagnostics name the first blocking kind: 72 another road's earthwork (54 within the first or last
+three segments, at the anchor), 8 water, 4 the map edge (dead ends on the edge, which the edge rule above now
+exempts). In the cases inspected, the road is a bridge deck or tunnel 9 to 22 m from the line that is not within 12 m
+of a fixed anchor (never exempt), or a road the anchor sits beside. Their outcomes in the spike: 34 kept `held` (no
+route from the fixed pose), 24 kept because the junction straight was blocked, 11 `blocked_by_road`, 7 anchors too
+close, 2 `blocked_by_water`, 2 deck crossings, 4 planned.
+
+**A leg whose original line fails the test (controller):** it is still searched. A route is accepted if it passes the
+test, although the original would not; if no route is found, the leg is kept and reported like any other, with
+`original_feasible: false`.
+
+The search, the band and the field ask one question of the raster: is this segment clear, and if not, of what (water,
+road, edge, wall). The answer's kind is what the failure reasons are built from.
+
+### The feasibility band and the profile
+
+Notes section 3.3 for feasibility, with three changes found by checking the spike's "earthwork 0".
+
+What the spike (and this spec as first written) computed: the reachable interval starts as the whole band at the start
+anchor, `[z₀ − cut, z₀ + fill]`; it propagates by `± g · ds`, intersected with the band at each sample; the nominal
+height is the terrain clamped into the interval; climb is `Σ|h − h_prev|` and earthwork `Σ|h − z| · ds`. Two things
+follow:
+
+- The nominal height is not a profile that keeps the grade; it is the terrain wherever the terrain lies inside the
+  set of heights that some grade-keeping profile could reach. Its earthwork is a lower bound: it is 0 as long as the
+  terrain stays inside a set that starts 12 m wide and widens. Its climb is the terrain's rise and fall along the
+  route (switchback-1: 21.9 m, against a net 21.4 m).
+- The anchors' road height floats within ±6 m, so up to 12 m of climb can be put into embankments at the anchors,
+  where the untouched road meets the route.
+
+At switchback-1 the planned route (90.8 m, mean 23.6 %, ceiling 36 %) is climbable on the mean, but the terrain along
+it is steeper than the ceiling on 18.2 m of its 2 m samples, steepest 20 m window 54.9 %. A real profile there (the
+notes' two-pass profile, section 5.1, closest to the terrain, anchors pinned within 1 m) needs 46 m² of earthwork, a
+cut of 1.6 m and a fill of 2.3 m; with the anchors free in the band 64 m² and 3.9 m of fill. The drawn line needs
+4 m². The spike reported 0. At switchback-2: 23 m², cut 1.8 m (reported 0). The spike's band is the spec's band, so
+the spec changes, not just the code:
+
+1. **Pinned anchors.** The start interval is `[z₀ − PLAN_ANCHOR_TOL_M, z₀ + PLAN_ANCHOR_TOL_M]`; a route arrives only
+   if its final interval meets `[z_end − tol, z_end + tol]`. In the code a start is made only by
+   `Reach::at_anchor(z, &Band)`, whose tolerance is the band's own, and the other reaches come out of the propagation.
+   The spike's floating start `[z − 6, z + 6]` cannot be built except from a band with that tolerance; acceptance does
+   not depend on it.
+2. **The grade is the leg's limit** `g_leg`, not the ceiling (above).
+3. **Real earthwork at arrival.** When an arrival candidate has passed the forward band, the two-pass profile of notes
+   5.1 (forward and backward passes over the whole candidate route from anchor to anchor, then the profile closest to
+   the terrain) is computed once, and its earthwork `Σ|h − z| · ds` replaces the lower bound in the route's cost. Its
+   deepest cut and highest fill are reported. Because the lower bound never exceeds the real earthwork, the
+   correction only raises the cost of an arrived state: its earthwork cost is `W_EARTH · max(sum of the steps' lower bounds, real earthwork)`, because the steps are sampled each by itself and the profile samples the whole route. The search is not claimed to be exact at weight 1 either: the field is not strictly admissible (see its section). `arrive` is the only
+   way to accept a route (it pins both ends at the terrain of the route's own ends, and a `Profile` can only come from
+   it; its fields are read through accessors); `band_step` and `arrives` only prune.
+
+Otherwise as the notes: every segment passes the segment test; the step is sampled at half the terrain cell, clamped to
+0.1 to 5 m (2 m); the band at a sample is `[z − PLAN_CUT_M, z + PLAN_FILL_M]`; empty (lo > hi by more than 10⁻⁹)
+fails the step; a sample with no terrain (outside the map, non-finite) fails the step. A band with a NaN or negative
+grade, or a cut, fill or anchor tolerance that is NaN, negative or infinite, or a start that is not finite or is empty,
+is refused (`BandFail::Invalid`); only the grade may be infinite (the cost field removes the grade limit). `leg_limit`
+gives `(limit, ceiling)` and `None` without families; `relaxed_limits` gives `None` for a NaN.
+
+The band and the profile keep the grade only. The height solve later sets the heights and keeps the vertical radius
+and the grade-break rules. If the judging shows planned routes that the height solve can only make with sharp grade
+breaks, that is an open point.
+
+### The cost-to-go field
+
+Notes section 3.4, one field per leg, over the leg's box:
+
+- Grid resolution `max(PLAN_STEP_M, terrain cell)` (6 m), multiplied by 1.25 until there are at most
+  `PLAN_FIELD_MAX_CELLS` cells.
+- The grid is laid out so that the end anchor is the centre of a cell (it covers the leg's box and the anchor), so the
+  start cost of the Dijkstra from that cell is 0, not a distance inside the cell. 8-connected; the heap is ordered by
+  cost (`total_cmp`), then cell index. A target that is not a number, or a box too large to fit, gives an empty field; a box that is not a number gives the
+  target's cell, and a band or stray cap that refuses every edge the target's cell alone (estimate 0 in each case).
+- An edge between neighbouring cell centres is allowed if the segment test passes (obstacles, clearances), there is
+  terrain at the band's samples along it (placed by the one helper that `band_step` also uses), no wall that allows no crossing blocks it, and both cells are within the
+  stray cap (tested at the cell centres). It is run in the direction of travel. This is the band with the grade limit
+  removed: at an infinite grade every sample is reachable from the one before it, so cut and fill never bind, and the
+  code does not call `band_step` but does exactly this (a test pins that the answers agree).
+- Edge cost: since cut + fill > 0, it is the distance (the notes' rule for that case).
+- Estimate at a point: the cell's value divided by `CHAMFER_ERROR`, minus one field cell, not below 0. A cell without
+  a value (water, a wall, missing terrain or the stray cap cut it off), a point outside the grid, an empty field and a
+  target inside an obstacle all give 0: 0 does not mean reached, and the search must not prune on it. The estimate is
+  a lower bound on heights, and in the plane only up to the grid: a corridor no 6 m segment fits, and the stray cap
+  tested at centres, can make it too high in narrow places.
+
+### The search for one leg
+
+A hybrid A* over poses (notes section 3.5), from the start anchor's pose to the end anchor's pose.
+
+**State:** position, heading, cost so far, the reachable height interval, the parent, whether it has arrived.
+
+**Steps:** from each state, five arcs of length `s = PLAN_STEP_M` (6 m), with heading changes `0, ±θ/2, ±θ`,
+`θ = min(s / R, 45°)`. `R` is the planning radius: the family's tightest arc times `PLAN_RADIUS_MARGIN` (1.05, notes
+3.6). An arc is sampled about every 2° (at least one segment, at most 2 m apart). In a zone of several families, `R`
+is the largest of their radii. The spike: step 6 plans the same legs as step 4 (1468 against 1466 of 1645) at a third
+of the CPU time; step 2 loses legs inside the budgets; seven arcs (±θ/4 added) find nothing more.
+
+**Arrival at a pose (a departure from the notes).** The end anchor has a heading the untouched line continues with.
+From every state within `PLAN_ARRIVE_REACH` (`max(3 · s, 4 · R)`) of the end anchor the search tries the six Dubins
+paths of radius `R` from the state's pose to the end pose, in order of length. The first that passes the band
+(arriving inside the end anchor's height tolerance), the obstacle and wall tests, the self-clearance and the stray cap
+is an *arrived* successor, with its full step cost (real earthwork, above) and its position and heading set exactly
+to the anchor's. The spike verified the construction on 90 816 paths: worst end-pose error 2.5·10⁻¹³; 89 % of the legs
+that end at a junction were planned. At a dead-end anchor (free heading) the notes' single arc through the point is
+tried instead (angle α to the point under 90°, radius `c / (2 · sin|α|) ≥ R`). The start of a leg at a junction pose
+first takes the junction straight as a fixed first step.
+
+**Start:** one state at the start anchor with its heading and the pinned interval. At a dead-end start (free heading),
+one state per heading bin.
+
+**Cost of a step** (in metres of road):
+
+```
+length + W_SLOPE · climb + W_CURVE · |δ| · R + W_EARTH · earthwork + W_STRAY · Σ d · ds
+```
+
+`δ` is the step's heading change; `d` is the distance of a step sample from the leg's original line (from the
+distance map). The curvature term prefers straight runs (notes). The stray term keeps the planned road near the
+OpenStreetMap line **(controller)**. The earthwork of a step is the band's lower bound; at arrival it is replaced by
+the real earthwork of the whole route.
+
+**How `W_STRAY` was chosen (the rule that was applied).** On the six spike sites, over every combination of the other
+constants (81 per site): the largest candidate at which every site is found in every combination and no route is more
+than 10 % longer than at the smallest candidate (0.05). 0.1 and 0.25 pass 486 of 486 (worst +1.8 % and +6.0 %), 0.5
+passes 405. So 0.25. On a broader set of 112 harder legs the same rule picks 0.05, because there 0.05 cuts across an
+apex that the larger weights follow; the controller ruled for 0.25, because it halves the stray of switchbacks (p95
+27.6 m at 0.05, 13.9 m at 0.25) and the maintainer wants planned roads to stay recognisable: moving outward is fine,
+not something to maximise **(controller)**. 0.05 is the alternative in open points.
+
+**Stray cap:** a step with a sample further than `PLAN_STRAY_MAX · R` (3 radii, 31.5 m) from the leg's original line
+is not taken. The spike: cap 2 loses 3 of 34 town corners, caps 4 to 6 find none more; on the map the largest move was
+28.5 m, p95 16.6 m. The grade rule makes switchbacks longer, so the cap may now bite there; the re-check measured it:
+on the map the largest true move is 28.47 m against the smallest cap of 30 m (no leg at the cap), and no cap of 3, 4
+or 5 plans the two switchbacks (plan Task 5 measured the switchbacks, Task 7b the map).
+
+**Heuristic** (0 for an arrived state): the larger of the field estimate and the analytic bound
+`max(distance, Δ / g_leg) + W_SLOPE · Δ`, where `Δ` is the gap between the state's reachable interval and the end
+anchor's heights (`[z_end − PLAN_ANCHOR_TOL_M, z_end + PLAN_ANCHOR_TOL_M]`): 0 where they meet. This replaces the notes'
+`Δ = max(0, |z_end − z_here| − PLAN_CUT_M − PLAN_FILL_M)`, which throws away the 12 m of the band at every state (at the
+start of switchback-1 it gave 52 m of road to go against 113 m). It is a lower bound: the road at the state is inside
+its interval, the road at the end within the tolerance of the terrain, the grade limit bounds the length, and the
+nominal height (the terrain clamped into the interval) is in the interval at the state and within the tolerance of the
+terrain at the end, so its climb is at least `Δ`.
+
+**Duplicates:** the state key is (position in cells of `s / 2`, heading bin); bins `⌈2π / (θ / 4)⌉`, clamped to 32 to
+180. Arrivals have no key: each is its own candidate (see End). A state is dropped if a stored state with the same key
+costs no more **and** reaches as far towards the end anchor's height: its reachable interval is not lower at the top
+(where the state is below the end's heights), not higher at the bottom (above them), and not narrower at either end
+(where it meets them), each within `DOMINANCE_TOL_M` (2 m). Otherwise it lives beside the stored ones, and it removes
+those it dominates itself. At most 4 states live per key (`PER_KEY`): the dearest goes, ties by insertion order. A
+state that left its key is stale and skipped when popped. The reason: two states of a cell come from different paths;
+in a leg bound by the grade the cheaper is the shorter, and its interval is lower, and the dearer one, which climbed
+more, is the one that can still arrive; keeping only the cheapest cuts it off (a corridor in front of the end anchor
+is enough: test `a_dearer_state_that_climbs_further_is_kept`). Comparing the whole interval exactly kept so many
+states that switchback-1 needed 58 000 to 112 000 states instead of 9 000; comparing only the end that matters, within 2 m,
+costs about nothing there. Because of the bound, and because the estimate is not admissible, an empty open set is
+**not** a proof that there is no route.
+
+**End:** an arrival is a Dubins path from a state to the end pose (or the arc through a dead end). It passes the tests of
+a step and the band's end tolerance and goes into the open set as a candidate with its lower-bound cost; a path is not
+tried where the state's cost plus its length reaches the cost of an arrival that was already checked, nor where the
+state's heights cannot reach the end anchor's within the grade over its length. The route of a candidate is built and
+checked from scratch when it is popped (see below). A route that fails is dropped and the next Dubins path of that state
+is tried: a failed check never keeps a later arrival out. A route that passes but costs more than the next entry of the
+open set (its real earthwork is above the lower bound) is put back with its real cost. The first checked route popped
+ends the search; its path is the route. There is one leg per search, so the notes' arrivals per heading sector and
+their stop rules are not needed.
+
+**Budgets:** each try is the sequence `PLAN_BUDGETS` of (heuristic weight, expanded states): (1.0, 10 000),
+(1.5, 20 000), (3.0, 40 000). The next pair runs only when the budget ran out; an empty open set ends the try
+(it does not prove that there is no route, see Duplicates). The spike: four times the largest count to the first arrival on the six sites (1745); on the
+map, the same 2046 legs are planned with these budgets, with twice them and with one try of 400 000; 9 legs needed
+weight 1.5; the largest count to a first arrival anywhere was 27 315, median 155. Budgets are counts of states, never
+wall time.
+
+**As built** (`reroute/search.rs`, `reroute/dubins.rs`, plan Task 5):
+
+- The Dubins paths are the classical closed forms written in `dubins.rs` (the crate `dubins_paths` was reviewed and
+  not used; the commit says why). A path is returned only if its closed form ends at the target within 10⁻⁹ m and
+  radians; two equal poses have one path of length 0.
+- A step and an arrival candidate pass, in this order: the stray cap at every point and every middle of a chord (the
+  raster's stored measure, as the field; by the true distance to the original line when the cap is below two raster
+  cells, where the stored measure is 0 across the cells the line touches), the walls (a wall that allows no crossing
+  blocks; **each** wall that allows some counts its own crossings along the route and may not exceed what it allows),
+  the self-clearance (samples every `SAMPLE_M` of the step against the earlier samples of the route more than
+  `PLAN_SELF_ALONG` back along it, and against each other, by `self_clear_m`), the band (`band_step`, which also tests
+  every segment against the obstacles). The polylines inside the search are sampled by length only (3 chords of 2 m per
+  step; a chord of 2 m at R 10.5 is 5 cm off the arc). The route that is returned has a point about every 2° of an arc.
+  An arrival candidate also needs `arrives`.
+- A popped arrival candidate is built on the fine points and checked from scratch: the points, the start and the end, the
+  radius on a 2 m resample, every segment, the stray cap, **every wall** (the crossings equal what the original line
+  made, wall by wall: a sum would let a route that crosses one wall twice and another not at all pass; a deck's or a
+  tunnel's wall allows no more than the original line made), the
+  self-clearance over all pairs of the route's samples, and `arrive` at the limit the route was found at. A route that
+  fails is dropped, the next Dubins path of its state is tried, and nothing is reported for it. The reported cut,
+  fill and earthwork are the profile's, the planned grade is the net rise of the terrain between the anchors over the
+  length (the road is pinned only within the tolerance, so the road's own grade differs by up to `2 · tolerance /
+  length`), the stray is the largest stored distance, and `max_move_m` the largest true distance from the original line.
+- `search_leg_relaxed` runs `search_leg` at each limit in turn on the same raster, walls and field; the states of the
+  limits that failed count in `Route::states`.
+- The end heading of a route is exact in the closed form (and tested in the Dubins paths); the polyline of an arc is
+  sampled every 2°, so its last chord differs from the heading by up to 1°. A junction end's straight is exact.
+- A crossing is a change of side of a segment's ends against the line of the other, an end exactly on the line counting
+  as on the non-positive side, the same for every segment that shares it: a route that passes through a vertex of its
+  own polyline or of the wall is counted once. (It was counted never, in the first version.) A route that only touches a
+  wall from its positive side is counted twice; that needs coordinates that agree exactly.
+- A hard bound on every allocation: a try expands at most 200 000 states whatever the budget says, and a radius or a
+  step above 1000 m, or an arrival reach above 10 000 m, is refused.
+
+**Tie-breaking:** the open set is ordered by priority, then cost, then the state key, then the order of insertion, all
+floats compared with `total_cmp`. States live in an arena indexed by insertion order. The key table is a sorted map,
+a dense array over the leg's box, or a hash map that is only looked up, never iterated.
+
+### Writing the route back into the graph
+
+A planned leg's route is written as points: every arc sampled at `SAMPLE_M` (2 m) or finer, a straight as its two
+ends. The route is not simplified: a coarser polyline of an arc measures tighter than the arc.
+
+- The chain's line from the start anchor to the end anchor is replaced by the route. An anchor that lies between two
+  original vertices is inserted as a point; outside the legs, every original point stays.
+- A node where the road merely continues and that lies inside a leg moves to the route point at the same fraction of
+  the leg's length as it had on the original line. Its two stretches are cut there; the node keeps its id.
+- The crossing list is rebuilt from the stretches (`crossings_of`).
+- Every attribute stays on its stretch. No stretch is added or removed.
+
+Before it is accepted, every route is checked: every three-point radius on its 2 m samples at least
+`PLAN_REACHED_FRACTION` of the tightest arc; the end pose met within 10⁻⁶ m and 10⁻⁶ rad; every sample within the stray
+cap; every segment clear; wall crossings equal away from the anchors; self-clearance; the two-pass profile feasible at
+the limit it was found at. A route that fails is a bug: the leg keeps its line with reason `no_route`, detail
+`check_failed` (1 leg in the spike).
+
+**As built** (`reroute.rs`, plan Task 6):
+
+- The chain line is resampled per stretch at `SAMPLE_M`; a chain whose line is not finite, or would have more than
+  `smooth::MAX_CHAIN_SAMPLES` samples (a stretch of about 10⁹ m), is not built at all and its stretch is listed in the
+  report's skipped list (as is every tunnel chain).
+- A zone whose tight run lies wholly in a held part, on a roundabout, longer than `PLAN_MAX_ZONE_M`, or without an arc
+  piece is reported as a zone with outcome `kept` (detail `tight_run_held`, `roundabout`, `too_long`, `no_arc`) and
+  listed in the skipped list; a leg whose anchors are too close is `kept` with detail `anchors_close`, and one whose
+  drawn line crosses a never-exempt deck or tunnel with detail `crosses_deck`.
+- `PlannedZone::max_stray_m` is the larger true measure, the search's `Route::max_move_m`, not the raster's stored
+  stray (which is 0 across the cells the drawn line touches). `planned_grade` is the steepest step of the accepted
+  route's two-pass profile (`Profile::max_grade`), so it is bounded by the limit the route was found at up to
+  `2 · PLAN_ANCHOR_TOL_M / length`.
+- The report's `tight_before_m` and `tight_after_m` are measured on the 2 m chain lines with the same half-segment
+  rule as the smoothing (`tight_lengths`), before the write-back and on the written graph.
+- A bend across a junction is paired when exactly two zones have an anchor at that junction; each names the other in
+  `partner`. More than two zones at one junction are not paired (a junction piece's arms are not resolved yet).
+- Every chain sample carries the **true arc** of the drawn polyline (the resampling step's position, not the chord
+  length of the resampled points). The holds, the zone growth, the leg anchors and the write-back all use that one
+  measure, so an original vertex maps to the same point from either stretch, no vertex is written after the route's
+  end or before its start, and a held approach is kept bit for bit.
+- The grown zones are merged in sample space after rounding down/up to the 2 m samples, so two grown zones that
+  would share a sample are one zone and no two legs overlap.
+- A ring is closed for the cut: the radius at the cut is measured over the last segment and the first. A tight bend
+  there is `kept` with reason `held` and detail `ring_cut`, anchored at `RingCut`; the route cannot change the angle
+  of a fixed cut.
+- `PLAN_SELF_FREE` is the first stretch of the own chain **along the chain** from each anchor, measured on its 2 m
+  samples, not the straight-line distance from the anchor.
+- A bridge or tunnel stretch at the chain end of a `BridgeHold`/`TunnelHold` is within `PLAN_DECK_ANCHOR_M` of the
+  anchor that holds it (the hold's other end) and is exempt per place there, not stamped as an obstacle beside it.
+- The write-back replaces the planned part of each stretch and keeps every other point bit for bit; a node inside a
+  leg is the same route point in both stretches because both compute it from the same fraction of the leg's length.
+  A zone with one planned and one kept leg is reported as `kept` (the first kept leg's reason) and its planned leg is
+  still written; `grade_limit` and `weight` are those of the first planned leg.
+
+**Routes against each other (controller).** Legs are searched independently against the original graph, in parallel.
+Then, in zone order (by the chain's first stretch id, then along the chain, then leg order), each planned route is
+checked against the routes accepted before it: a route that comes within the road clearance threshold of an earlier
+accepted route, where the two original lines did not, is reverted, kept with reason `blocked_by_road`, detail
+`route_of <zone id>`. Its original line then stays, and later routes are checked against it as they were in the
+search. This is sequential and deterministic. The spike counted 26 such routes (1.3 % of 2046) and did not revert
+them.
+
+**As built** (`reroute.rs`, plan Task 7):
+
+- **The threshold of the cross-check** is the true distance at which the two roads' earthwork touches: the
+  earlier route's reach (`core_reach_m` of its own half width) plus this leg's clearance (its own reach plus one
+  terrain cell), about 26 m for two City stretches. It is not the raster's `thr(c)` (in chamfer metres, about 32 m
+  centre to centre for two City roads), which is the measure the *search* keeps from a stamped road.
+- **The exemption is per place.** A place of the later route is exempt when the drawn lines were already as near at
+  that place: `p` is a point of the later route and `q` the nearest place of the accepted route (by its segments);
+  the foot of `p` on the later leg's drawn line and the foot of `q` on the accepted leg's drawn line (each the
+  nearest place of that drawn line by its segments, not a 2 m sample) are themselves nearer than the threshold
+  (`drawn_was_near`). Two zones that meet at a junction therefore share the junction, where their drawn lines
+  touch, and only the places near it are exempt: a route that bulges into the other route 60 m away from the
+  junction is still reverted. A pair of legs is never exempted as a whole.
+- **A graze is not a conflict.** The later route is read every `CROSS_CHECK_STEP_M` (0.25 m, a fixed internal
+  resolution, not a tuning knob) along itself. A place is violating when it comes nearer than the threshold minus
+  `PLAN_GRAZE_M` (1 m) to the accepted route and is not exempt. The route is reverted only when it has a contiguous
+  run of violating places at least `SAMPLE_M` (2 m) long, measured along the later route; a shorter run is a graze
+  and is ignored. Without the margin and the run length the answer at the edge is decided by centimetres: a place
+  where the drawn lines run at about the threshold from each other is exempt or not by the sample that happens to
+  land there, and a sliver of a few centimetres at the end of an exempt stretch reverts a whole route.
+- **The answer does not depend on sampling.** The accepted route and both drawn lines are read by their segments,
+  the later route at the fixed step whatever the write-back kept, so every distance is a true distance to a continuous
+  line. On the 2048 map the later route's input resampled at 2, 1, 0.5 and 0.25 m reverts 27, 27, 27 and 28 routes
+  (Task 9 fix 3 report, round 4); one route of difference.
+- **The diagnostic searches** of a leg without a route run at the ceiling grade with the last budget pair only:
+  first without the water areas and the stream walls, then without the other roads (their earthwork, their walls
+  and the decks and tunnels). A route found there gives `blocked_by_water` or `blocked_by_road` with the reason's
+  own id as the detail; the states of both are added to the leg's. The own chain outside the leg is not "other
+  roads" and stays an obstacle in both.
+- **`check_failed` is the caller's check of a route the search returned**, not the search's routine drops.
+  Candidates the search drops on the way (a wall crossed the wrong number of times, a profile that does not arrive)
+  are expected and nothing is reported for them. A leg whose search ends without a route goes through the ordinary
+  order of reasons: `held` (detail `fixed_anchor`) first where the tight run lies within the lead of a fixed pose,
+  then the diagnostic searches, else `no_route`. A route the search *returns* is checked again by the caller
+  (`search::check_route`: the ends, the radius on a 2 m resample, the segments, the stray cap, every wall's count,
+  the self-clearance over all pairs and the profile at the limit it was found at) with a radius of
+  `RerouteParams::reached_fraction` times the family's tightest arc (0.99 by default); a failure is a bug and the
+  leg keeps its line with reason `no_route`, detail `check_failed`. Its `budget_exhausted` is the search's answer:
+  a returned route is only returned by a try that did not run out, so it is false — not a default.
+- **`RerouteReport`**: `kept(reason)` counts the zones that kept their line for a reason and `summary()` is the
+  build's one line (`Road planning: <n> zones, ...`, whole metres for the tight lengths, one decimal for the largest
+  move). `skipped` is only what was not planned at all (a tunnel chain, a roundabout, a zone longer than
+  `PLAN_MAX_ZONE_M`, a zone whose tight run is held, a chain that is not finite or too long); a zone that was
+  searched and kept its line is in `kept_zones` with its detail, and `reverted` counts the cross-check's routes.
+- **A deck near a fixed anchor is exempt per place, along the deck, and keeps its core and its wall.** The gate:
+  only a deck that comes within `PLAN_DECK_ANCHOR_M` of a fixed anchor of the leg qualifies at all (a deck 12 to
+  44 m away is a full obstacle, as before Task 7). Of a qualifying deck, the exempt part is measured **along** it,
+  from its point nearest the anchor, up to `PLAN_DECK_ANCHOR_M + reach + threshold(clearance)` (about 49 m for
+  City, the `PLAN_SELF_FREE` measure for the own road); everything beyond is stamped in full. Inside the exempt
+  part the deck's own width stays stamped as a hard core (half width each side of its centre line, `F_CORE` cells
+  that block themselves and are not in the road distance map), so only the earthwork halo is freed and no route
+  runs onto the deck; if the anchor itself lies inside the core (a junction at a bridge end), the core is freed
+  within the leg's own road reach of the anchor. Every deck's or tunnel's centre line is a wall whose allowance is
+  the drawn line's crossings away from the leg's anchors; the route may cross it no more often (`Wall::is_kept`).
+  Without the along-deck part the anchor's own neighbourhood would be stamped (a deck that begins 8 m from a
+  junction stamps cells 1 m from it, far inside the 21 m the segment test keeps), and the spec's own case of a
+  junction 8 m from a bridge end could not be planned at all. A crossing of the drawn line with the deck farther
+  than `PLAN_CROSSING_END_M` from the leg's anchors and farther than `PLAN_DECK_ANCHOR_M` from every fixed anchor
+  is `crosses_deck` (review M8).
+- **A bridge hold's bridge end** is the nearest bridge end within the hold on the anchor's side (plus one sample),
+  not only the one that lies exactly at `bridge_end + hold`: the leg starts at the first sample outside the hold,
+  which is up to 2 m further (review N2').
+
+### Failure and reporting
+
+A leg that is not planned keeps its original line. Nothing else changes. Nothing panics.
+
+Reasons **(controller)**:
+
+- `held`: a junction, a bridge or tunnel end, a dead end or the ring cut leaves no room. Used when the leg could not be
+  searched (anchors too close, a deck crossing), when the junction straight itself is blocked, and when a search that
+  starts or ends at a fixed pose fails (all relaxation steps) and the tight run lies within `PLAN_LEAD` of that pose.
+- `blocked_by_water`: no route was found, and a diagnostic search without water (areas and streams) finds one.
+- `blocked_by_road`: no route was found, and a diagnostic search without other roads finds one; or the route was
+  reverted against an earlier accepted route.
+- `no_route`: none of the above, with `budget_exhausted` or with the open set empty (never called proven: see Duplicates).
+
+The diagnostic searches run only for failed legs, at the ceiling grade, with the last budget pair only.
+
+On the example the spike (without the grade rule) kept 167 `held` (49 anchors too close, 25 junction straight blocked,
+91 no route from a fixed pose, 2 deck crossings), 11 `blocked_by_road` (all open country, original line inside another
+road's earthwork), 2 `blocked_by_water`, 1 `check_failed`.
+
+Each zone in the report has: its id (`<first stretch id of the chain>#<n>`), where it is (its tightest sample), its
+stretches, its legs, the anchor kinds at both ends, the junction and partner zone where the bend passes a junction, the
+outcome (`planned`, or `kept` with the reason and a detail), the radius before, wanted and after, the length before
+and after, the largest distance from the original line, the drawn grade (mean and 20 m window), the planned grade, the
+grade limit used and the relaxation steps, the climb, the real earthwork with the deepest cut and highest fill, the
+states expanded (with retries, relaxations and diagnostics), the heuristic weight that found the route,
+`original_feasible`, and the candidate the bend is for: `plate` for `held` and `no_route`, `curved_bridge` for
+`blocked_by_water`, none for `blocked_by_road` or a planned zone.
+
+Totals: zones by outcome and reason, tight length before and after, the largest and p95 distance from the original
+line, the legs planned steeper than drawn by more than `PLAN_STEEPER_MARGIN` and the worst of them, the routes reverted
+against earlier routes, states expanded, the chains and stretches skipped with reasons. The stage's time is measured by
+the caller beside the report (like `smooth_time`), never in it.
+
+Outputs:
+
+- `build/report.json`: `roads.planning`, with the totals and every zone; `{"enabled": false}` when the stage is off.
+- Build summary: one line, for example `Road planning: 2227 zones, 2046 planned, 181 kept (no_route 1, held 167,
+  blocked_by_water 2, blocked_by_road 11), tight length 16135 m -> 1547 m, largest move 28.5 m, <n> steeper than
+  drawn` (the figures of the spike, which had no grade rule).
+- A progress line with the stage's time.
+- Findings: `road_curve_planned` (information) for a planned zone, at its tightest point, with the radius before and
+  after, the largest move and, when a relaxation was needed, how much steeper than drawn it is; `road_curve_not_planned`
+  (warning) for a kept zone, with the reason and the radius it has. New rules rather than `road_curve_too_tight`, so
+  that planning and smoothing do not report the same bend twice when both are on.
+- `road-analysis` prints `PLAN …` lines (totals, every kept zone, every leg planned steeper than drawn) and
+  `TIMING reroute`.
+- The manual (getting started, troubleshooting, the MCP rule list) and `CHANGELOG.md`.
+
+### Determinism
+
+- Same input, same graph, bit for bit, on repeated runs and with any thread count **(controller)**. The spike's
+  per-leg output was identical at 1, 10 and 16 threads.
+- Zones are found in chain order. Legs are searched in parallel with `rayon` and collected in zone order; each search
+  is single-threaded. The cross-check of routes is sequential in zone order.
+- All budgets are counts of states. No wall time enters a decision.
+- Floats are compared with `total_cmp`; sums are taken in a fixed order; no hash-map iteration.
+
+## Constants
+
+All in `reroute.rs`, all `pub const`, collected in `RerouteParams::default()`. Every constant that carried a
+**(re-check)** mark was re-measured on the map with the grade rule (plan Task 7b, 2026-11-23), except the three
+self-clearance ones; `supported by` carries the figures, and only those three rows are still open. The unmarked rows
+were not re-measured by Task 7b.
+
+| name | value | meaning | supported by | re-check |
+|---|---|---|---|---|
+| `REROUTE_ENABLED` | `false` until judged | the switch | controller | |
+| `SAMPLE_M` | 2.0 m | resample for zones; the sampling a written route carries | `smooth::SAMPLE_M`, reused | |
+| `CHAIN_TURN_MAX_DEG` | 150° | a two-stretch node that turns more ends a chain | `smooth`, reused | |
+| `PLAN_LEAD` | 2.0 minimum radii | road beside a tight run that belongs to its zone | spike: tight after 1518 m (lead 4: 3495 m), zones planned 2050 of 2227, median states 144 (lead 4: 430); lead 1 adds 77 route conflicts. Map: 1585 legs, tight 5176 m; lead 3 plans 1299 legs, tight 5945 m; lead 4 1146 legs, 6626 m (the switchbacks: neither at lead 2, switchback #1 at lead 3, both at lead 4) | |
+| `PLAN_RADIUS_MARGIN` | 1.05 | planning radius over the tightest arc | notes 3.6; routes 10.41 to 10.50 m | |
+| `PLAN_REACHED_FRACTION` | 0.99 | a written route's tightest sample, of the tightest arc | smoothing's reached rule | |
+| `PLAN_WRITE_TOL_M` | 0.02 m | the drop of a route's write-back over the `SAMPLE_M` sampling of it: the search's straight parts lose every interior point, an arc keeps the sampling (`written_line`) | measured: the smoothing's own 0.20 m drop over the sampled arcs leaves 4 m chords whose joints the stage's 2 m measures read at 5 m, not at the arc's 10.5 m, so the tolerance has to stay below the 0.05 m sagitta of a `SAMPLE_M` chord; the Task 9 tuning record has the table | |
+| `PLAN_STEP_M` | 6.0 m | search step | same legs as 4 m (1468 / 1466), a third of the CPU; 2 m loses legs | |
+| `PLAN_MAX_TURN_DEG` | 45° | largest heading change of a step | notes 3.5 | |
+| heading bins | 32 to 180 | `⌈2π / (θ/4)⌉`, clamped | notes 3.5 | |
+| `PLAN_ARRIVE_REACH` | `max(3 · s, 4 · R)` | Dubins arrivals tried from here | (2s, 3R) and (4s, 6R) give the same outcomes, ±12 to 20 % time | |
+| `PLAN_JUNCTION_STRAIGHT_M` | 6.25 m | straight at a junction anchor | half a junction piece; 0 m plans 65 more zones, 3 m 45 more | revisit with the piece |
+| `PLAN_BRIDGE_HOLD_M` | 25.0 m | road held beside a bridge or tunnel end | `smooth::WIDEN_BRIDGE_HOLD_M`; controller | |
+| `PLAN_DECK_ANCHOR_M` | 12.0 m | a deck this near a fixed anchor belongs to it | spike: clean-up's 8 m approach | |
+| `PLAN_STRAY_MAX` | 3.0 minimum radii | furthest a route strays | spike: cap 2 loses 3 of 34 town corners, 4 to 6 find none more. Map: 3 binds on no leg (largest move 28.47 m); 4 and 5 plan the same 1585 legs, move 5 to reverted and raise the largest move to 33.3 m; no value plans the two switchbacks, which are kept and reported to the maintainer | |
+| `PLAN_CUT_M`, `PLAN_FILL_M` | 6.0 m each | band around the terrain | spike: equal at 3, 6 and 12 on the lower-bound earthwork. Map, real earthwork: 3 plans 1578 legs, 6 1585, 12 1584; the profile's deepest cut and highest fill follow the band (3.00/3.00, 6.00/6.00, 10.58/12.00); 12 overrules the set rule (9 legs differ) and is worse on the leg count, the earthwork and the time | |
+| `PLAN_ANCHOR_TOL_M` | 0.5 m | road height at an anchor within this of the terrain | assistant, from the switchback check. Map: 0.25 / 0.5 / 1.0 plan 1589 / 1585 / 1586 legs, 48 / 56 / 73 more than 2 points steeper than drawn and 3 / 4 / 5 above the ceiling (1.0: largest earthwork 458 m² against 305); the profile never exceeds a leg's limit at any of the three, so the rule's profile test is vacuous and 1.0 was overruled | |
+| grade limit `g_leg` | `min(ceiling, max(aim, drawn mean))` | grade of the band for a leg | controller; `limits.rs` | |
+| `PLAN_GRADE_RELAX_STEPS` | 3 | thirds of the gap to the ceiling, tried in turn | assistant. Map: 20 of 1585 planned legs (1.26 %) needed one step, 15 at the first, 3 at the second and 2 at the third; 293 legs failed all four limits and kept their line | |
+| `PLAN_STEEPER_MARGIN` | 0.02 | a planned leg this much steeper than drawn is counted | assistant | |
+| `PLAN_DRAWN_WINDOW_M` | 20.0 m | window of the reported (not used) steepest drawn grade | controller's example | |
+| `W_SLOPE` | 4.0 | metres of road per metre of climb | notes 3.5 | |
+| `W_CURVE` | 0.1 | times `|δ| · R` | notes 3.5 | |
+| `W_EARTH` | 1.0 | metres of road per m² of earthwork | spike: −38 % lower-bound earthwork against 0.5 at equal length. Map, real earthwork: 0.5 plans 1590 legs, 1.0 1585, 2.0 1591 at −23 % earthwork (19 013 against 24 537 m²) and 50.8 s; 2.0 was chosen, but the combined gate gave 58 legs more than 2 points steeper than drawn against the bar of 56 (1.0: 56), so 1.0 stays | |
+| `W_STRAY` | 0.25 | metres of road per m² between route and original line | the selection rule above; spike: switchback stray p95 13.9 m (0.05: 27.6 m). Map: 0.05 plans 19 fewer legs (1566), reverts 21 more, lowers the earthwork sum to 19 591 m² and raises the states p95 to 11 836 (6 365) | |
+| `PLAN_BUDGETS` | (1.0, 10 000), (1.5, 20 000), (3.0, 40 000) | weight and expanded states per try | spike: 4 × 1745; whole map plans the same legs as with 400 000. Map: the literal rule (4 × the six-site maximum of 400 = 1600) would move 215 of the 1730 weight-1 arrivals to the 1.5 try (p99 7 843, max 9 934), so 10 000 is kept (ruling); doubled budgets plan 3 fewer legs (1582) and revert 4 more | |
+| `PLAN_MAX_ZONE_M` | 400 m | a longer zone is not planned | at lead 2 only 2 zones are longer; 1000 m plans 2 more | |
+| `PLAN_EXEMPT_EXTEND_M` | 10.0 m | exempt part of a road beyond where the original comes near | assistant (per-place exemption). Map: 0 plans 1574 legs (282 fixed anchors, 179 reverts), 20 plans 1589 (209 reverts) and would need the exact distance check; 10 kept | |
+| `PLAN_SELF_FREE` | road clearance threshold + own reach | own road beyond an anchor that is not an obstacle | assistant (self-clearance) | (re-check) |
+| `PLAN_SELF_ALONG` | `π · R + 2 · road clearance` | samples further apart along the route must keep `self_clear_m` | assistant (self-clearance) | (re-check) |
+| `self_clear_m` | `max(width, min(road clearance threshold, smallest distance of two samples of the original line more than PLAN_SELF_ALONG apart))` | what the own road's samples keep from each other; `search::self_clearance` | controller (review of Task 5) | (re-check) |
+| `DOMINANCE_TOL_M`, `PER_KEY` | 2 m, 4 | states of a cell and heading that stay alive | switchback-1 and the corridor test. Map: tolerance 0 flips 52 outcomes (net −4 legs), takes 1.8× the time and 4.4× the states p95; 16 states per key flips nothing | |
+| `PLAN_GRAZE_M` | 1.0 m | a place counts as violating only when nearer than the cross-check threshold minus this; the run of such places must be `SAMPLE_M` long to revert | maintainer 2026-11-27 (with the continuous drawn distance) | |
+| `PLAN_CROSSING_END_M` | 10.0 m | wall crossings this near an anchor are not counted | spike: 7 check failures to 1 | |
+| raster resolution | half the terrain cell, 1 to 2.5 m | obstacle raster | notes 3.2 | |
+| `PLAN_RASTER_MAX_CELLS` | 4 000 000 | per leg; grows by 1.25 | assistant | |
+| field resolution | `max(s, terrain cell)` (6 m) | cost-to-go grid | notes 3.4 | |
+| `PLAN_FIELD_MAX_CELLS` | 1 000 000 | per leg; grows by 1.25 | notes 3.4 | |
+| `CHAMFER_ERROR` | 1.0824 | chamfer and octile excess | notes 3.2, 3.4 | |
+| test threshold `thr(c)` | `(c + res) · CHAMFER_ERROR + res · √2` | one threshold for test, exemption, water cap | notes 3.2; spike 8.1. Map: `c + res/2` plans 28 more legs (1613) but leaves 2 routes inside another road's clearance (0.55 and 0.70 m by the stage's own exemption; `thr(c)`: 0) | |
+| road clearance | `core_reach_m(own half) + cell` | earthworks touch, with the other road stamped at its reach | `netclean`, `conform::core_reach_m` | |
+| water threshold | `min(thr(core_reach_m(own half)), d_orig)`, `d_orig` the stored chamfer distance of the original line | the cap is in the map's measure, not an inverted `thr`; kept by the raster, not passed by the caller. An original that touches water (stored distance 0) gives cap 0 for that leg: only water cells block there | spike 8.1; review of Task 2 | |
+
+## How it is judged
+
+Berchtesgaden at half scale, terrain size 2048. Four runs of `road-analysis` with the same binary: planning off/on ×
+smoothing off/on. Compared on:
+
+- road length tighter than the pieces, before and after (16 135 m; smoothing alone 4088 m; the spike without the grade
+  rule 1547 m);
+- zones by outcome and reason; the full list of bends that could not be built, with their candidate;
+- the largest and p95 distance of a planned route from the original line (spike: 28.5 m, 16.6 m);
+- **planned legs steeper than drawn**: the count above `PLAN_STEEPER_MARGIN`, the count that needed a relaxation, and
+  the worst (drawn grade, planned grade, family aim and ceiling);
+- **drivability on planned legs**: `road_not_drivable`, `road_grade`, `road_gap` and `road_misses_terrain` inside
+  planned zones, against the same places with planning off;
+- the routes reverted against earlier routes (spike: 26 would be);
+- `road_gap` (count, total length, largest; baseline 389, 1618 m, 131 m), `road_not_drivable` (141), `road_conflict`
+  (797), `road_misses_terrain` (3752), and every other rule count;
+- that no junction, dead end, bridge end or tunnel end moved (must be 0);
+- placement time (baseline about 550 s) and the planning's own time, separately (spike: 5.3 s on 16 threads, 53.5 s
+  on one, without the grade rule and the real earthwork).
+
+Proposed bar for switching the stage on (the maintainer decides), with the spike's figures beside it:
+
+| criterion | bar | spike (no grade rule) |
+|---|---|---|
+| tight length with planning alone | at most half the baseline, 8068 m | 1547 m of 16 135 m |
+| `road_gap`, `road_not_drivable`, `road_conflict`, `road_misses_terrain` | none worse than off by more than 5 % without a reason that can be named | not measured (no placement) |
+| planned legs steeper than drawn by more than 2 points | at most 1 % of planned legs, none above the ceiling | 239 of 2046 above the new limit, 15 above the ceiling: the reason for the grade rule |
+| planning time | under 60 s on the machine's threads | 5.3 s on 16 threads |
+| placement time | not more than 10 % slower | not measured |
+
+Then a game check with `tools/ingame-check` on about ten sites, planning off against on: the two switchbacks, two town
+corners, the junction hairpin, the bend beside water, two kept zones (one plate, one curved-bridge candidate), one zone
+with a moved two-stretch node, one straight road as a control. The switchbacks are driven up, not only photographed.
+
+## Effects on other stages
+
+- **The clean-up before it.** Planning sees the cleaned graph. The clean-up's new nodes are junctions like any other
+  and become anchors. A bridge approach made by the clean-up is within the 25 m hold and within `PLAN_DECK_ANCHOR_M`.
+- **Smoothing after it.** When both are on, the smoothing sees the planned lines. Its fit pulls curves inward and can
+  make a planned arc tighter again. The four-run comparison shows how much (open points).
+- **Bridges.** No bridge stretch and no road within 25 m of a bridge end moves; `fit_bridges` sees the bridges as
+  before.
+- **Placement.** It fits pieces to the planned line as to any line. Planned arcs have 1.05 times the tightest arc's
+  radius. The line inside planned zones is the route at the stage's own `SAMPLE_M` sampling with the straight parts
+  collapsed to what bounds them (the write-back of every sample of the search, one every 2° of an arc, was measured
+  2.2× slower at placement and wrote a route ten times as dense as the drawn network); the written arcs still read
+  their radius on the stage's 2 m measures, whatever the phase of the samples, the anchors stay bit for bit, and a
+  written line that fails the route's checks from scratch again keeps every sample of the search for that leg and is
+  counted in the report.
+- **Height solve.** Unchanged. It receives the placed pieces and sets every height. A planned route had a feasible
+  two-pass profile at its grade limit, with its anchors on the terrain, so the solve should find it; its vertical
+  curvature is watched in the judging (`road_grade`, `road_not_drivable`).
+- **Dips and bridges over dips** run on the placed planned roads as before. A planned route crosses no stream its
+  drawn line did not.
+- **User edits** are keyed by stretch id, preset and slot. Ids do not change, but slots on a stretch whose line moved
+  shift, so edits there can be orphaned (`orphaned_edit`). Switching the stage on is a **breaking** change for such
+  edits and the changelog says so in the release that switches it on.
+
+## Open points
+
+- **Buildings.** Náves places no buildings yet, so a planned town corner can move into where a house stands in
+  reality. When buildings come, they must be obstacles here or avoid planned roads.
+- **Smoothing over planned roads.** If the four runs show the smoothing's fit tightening planned arcs, the smoothing
+  should hold planned legs fixed. One input (the planned ranges) and a test; decided after the judging.
+- **Vertical curvature.** The band and the profile keep the grade only. If routes come out that the height solve can
+  only follow with grade breaks above `GRADE_BREAK_HARD`, the profile needs a curvature limit (the notes' profile
+  smoothing, section 5.1 step 6, is the starting point).
+- **The junction straight** costs 45 (3 m) to 65 (0 m) zones. Revisit when the junction piece's straight arm is
+  measured.
+- **`W_STRAY` 0.05.** The selection rule applied to the 112 harder legs picks 0.05: more routes stay within +10 % of
+  their shortest length there (at 0.25, 24 legs are over +10 %, the worst +180 %), at the price of twice the stray on
+  switchbacks (p95 27.6 m against 13.9 m) and up to twice the states. 0.25 is the controller's ruling; 0.05 is the
+  alternative if the game check finds roads that wander where a straighter line was possible.
+- **Grade above the drawn grade.** v1 lets a planned leg go up to the family's aim even where the drawn leg was
+  flatter. If the game check shows switchbacks that feel steeper than they should, add a cost term charged at arrival:
+  `W_GRADE · max(0, |Δz| − drawn grade · L)` (with `W_GRADE · drawn grade > 1`, so that lengthening the route to the
+  drawn grade pays for itself).
+- **The test threshold.** The spike's alternative (bare clearance plus half a cell) plans 22 more zones and leaves 68
+  original lines failing instead of 87 (lead 4). At lead 2 with the per-place exemption the re-check measured 28 more
+  planned legs (1613), but the exact distance check puts two routes inside another road's clearance by the stage's own
+  exemption (0.55 and 0.70 m, base 0), so the padded `thr(c)` is kept and the bare threshold stays the alternative if
+  the exact check is ever satisfied.
+- **Town corners between junctions.** Decided: they are planned (the spike found 44 of 56 City corners of 60 to 120°
+  between junctions planned at the first settings, 21 of 32 at the recommended ones; no flag is needed). The smaller
+  share at the recommended settings is a selection effect of the lead, not a loss: at lead 2 only corners whose
+  junctions are within about 21 m of the bend count as "between junctions"; those with the junctions 21 to 42 m away
+  now have line anchors and are planned in another class. That is not a reason for a longer lead at junctions: a zone
+  that reaches a junction within one lead is anchored at it already, and a longer lead would only replace free line
+  anchors by the fixed junction pose and straight, which is more constrained. By position the re-check planned 33 of
+  the 56 at lead 2 (33 at lead 3, 34 at lead 4), and 10 of the 56 have a leg that the search planned and the
+  cross-check reverted; the spike's 44 of 56 does not reproduce by position.
+- **Default of the switch.** The stage lands switched off and is switched on after the judging, on the maintainer's
+  word.
+- **Cell-size dependence.** The step, the raster and the field follow the terrain cell where the notes do; the lead,
+  the cap, the anchor tolerance and the junction straight are in radii or metres. At other terrain sizes they may need
+  to follow the cell.

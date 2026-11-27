@@ -77,10 +77,12 @@ fn smoothing_runs_before_the_bridges_are_fitted() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     let fitted = fitted_graph_with(
@@ -88,10 +90,12 @@ fn smoothing_runs_before_the_bridges_are_fitted() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: true,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     let report = fitted.smooth.as_ref().expect("smoothing ran");
@@ -119,10 +123,12 @@ fn a_corner_in_the_approach_of_a_bridge_is_held_and_needs_its_lead() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: true,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert!(lead_is_laid(&fitted.bridges), "{:?}", fitted.bridges);
@@ -144,10 +150,12 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert!(off.smooth.is_none());
@@ -163,10 +171,12 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: true,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert_ne!(on.built, cleaned);
@@ -176,7 +186,7 @@ fn the_switch_off_leaves_the_graph_as_it_was_and_says_so() {
     assert_eq!(off.graph, graph);
     assert_eq!(off.bridges, bridges);
     // and `fitted_graph` follows the constant
-    let default = fitted_graph(&features, &catalog, &base, &|_| false, &[]);
+    let default = fitted_graph(&features, &catalog, &base, &|_| false, &[], &[]);
     assert_eq!(default.smooth.is_some(), SMOOTH_ENABLED);
     if !SMOOTH_ENABLED {
         // the build's graph is bitwise the cleaned graph

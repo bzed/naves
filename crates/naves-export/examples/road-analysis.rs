@@ -6,6 +6,13 @@
 //! the DayZ tools.
 //!
 //! `cargo run --release -p naves-export --example road-analysis [terrain_size]`
+//!
+//! `STAGES=off|plan|smooth|plan+smooth` chooses the optional stages of the road graph; the build's own
+//! switches decide when it is not set. With planning on, the stage runs **twice**: once here for its
+//! reports and the node check, and once inside the placement (`plan_roads_with` fits its own graph), so
+//! `TIMING placement with dips` includes a second full planning run (35 to 42 s on the 512 example)
+//! and the placement times are **not comparable across `STAGES`**; `TIMING reroute` is measured once,
+//! cleanly. `PLAN_STEEP` is per planned zone, not per leg (see its comment below).
 
 #![expect(
     clippy::indexing_slicing,
@@ -55,6 +62,7 @@ use naves_core::profile::{
 };
 use naves_core::project::Project;
 use naves_core::render::{Overlay, RenderRequest, render_topdown};
+use naves_core::reroute::{KeptReason, PLAN_STEEPER_MARGIN, ZoneOutcome};
 use naves_core::roadplace::PlacedKind;
 use naves_core::surface::LoadedSources;
 use naves_core::validate::{Rule, bridge_end_steps, check_roads, lot_violations};
@@ -135,6 +143,49 @@ struct Seg {
     bridge: bool,
 }
 
+/// The stages of the road graph from `STAGES` (`off`, `plan`, `smooth` or `plan+smooth`): the build's own
+/// switches when the variable is not set.
+fn stages_from_env() -> Stages {
+    // the lot stage: `LOTS=on` or `LOTS=off` overrides the constant
+    let lots = match std::env::var("LOTS").ok().as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => LOTS_ENABLED,
+    };
+    let Ok(value) = std::env::var("STAGES") else {
+        return Stages {
+            lots,
+            ..Stages::DEFAULT
+        };
+    };
+    match value.as_str() {
+        "off" => Stages {
+            reroute: false,
+            smooth: false,
+            lots,
+        },
+        "plan" => Stages {
+            reroute: true,
+            smooth: false,
+            lots,
+        },
+        "smooth" => Stages {
+            reroute: false,
+            smooth: true,
+            lots,
+        },
+        "plan+smooth" => Stages {
+            reroute: true,
+            smooth: true,
+            lots,
+        },
+        other => {
+            eprintln!("STAGES must be off, plan, smooth or plan+smooth, not {other:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
     let t0 = Instant::now();
     let size: Option<u32> = std::env::args().nth(1).and_then(|s| s.parse().ok());
@@ -185,18 +236,15 @@ fn main() {
         .as_ref()
         .map_or(&[][..], |o| o.polygons.as_slice());
     let in_water = naves_core::validate::water_test(lakes, &frame);
-    // the lot stage: its own switch (`LOTS=on` or `LOTS=off` overrides the constant), and the lot areas of the same
-    // extract the ground is decided from
-    let lots_on = match std::env::var("LOTS").ok().as_deref() {
-        Some("on") => true,
-        Some("off") => false,
-        _ => LOTS_ENABLED,
-    };
-    let stages = Stages {
-        smooth: naves_core::smooth::SMOOTH_ENABLED,
-        lots: lots_on,
-    };
-    println!("STAGES lots={lots_on}");
+    let streams = water_lines(&ways, &frame, project.map_size_m());
+    // the stages (`STAGES`, and `LOTS` for the lot stage), and the lot areas of the same extract the ground is
+    // decided from
+    let stages = stages_from_env();
+    let lots_on = stages.lots;
+    println!(
+        "STAGES reroute={} smooth={} lots={lots_on}",
+        stages.reroute, stages.smooth
+    );
     let (lot_areas, skipped_lots) = sources
         .osm
         .as_ref()
@@ -217,33 +265,104 @@ fn main() {
         clean,
         smooth,
         smooth_time,
+        reroute,
+        reroute_time,
         lots: _,
         lots_time,
         bridges,
-    } = fitted_graph_with(&features, &catalog, &base, stages, &in_water, &lot_areas);
-    if smooth.is_some() {
-        println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
-    }
+    } = fitted_graph_with(
+        &features, &catalog, &base, stages, &in_water, &streams, &lot_areas,
+    );
     if lots_on {
         // the lot stage's own work (the assessment, the groups and the surface decision), not the clean-up, the
         // shaping or the painting: see `FittedGraph::lots_time`
         println!("TIMING lots {:.1} s", lots_time.as_secs_f64());
     }
-    if let Some(report) = &smooth {
-        // the nodes of the graph against the graph without the smoothing: by how many stretch ends meet there
+    if reroute.is_some() {
+        println!("TIMING reroute {:.1} s", reroute_time.as_secs_f64());
+    }
+    if let Some(report) = &reroute {
+        // the point count of the graph before and after the stage: the write-back changes the density of the
+        // moved lines as well as their shape, and this is the number to watch against the placement time
+        println!(
+            "PLAN_POINTS before the stage {} after the stage {}",
+            report.points_before, report.points_after
+        );
+        println!(
+            "PLAN_SAMPLE_ROUTES {} (planned routes the write-back keeps at every sample of the search)",
+            report.kept_sampled_routes
+        );
+    }
+    if smooth.is_some() {
+        println!("TIMING smooth {:.1} s", smooth_time.as_secs_f64());
+    }
+    if let Some(report) = &reroute {
+        // what the planning did: the totals, every kept zone and the zones planned steeper than drawn by
+        // more than the margin. `PLAN_STEEP` is **per zone, not per leg**: the report carries the zone's
+        // grades (the steepest step of its planned profiles against the zone's *mean* drawn grade) and no
+        // per-leg records, so kept zones with a planned leg are skipped and the count can differ from the
+        // summary's steeper legs.
+        println!("PLAN {}", report.summary());
+        for reason in [
+            KeptReason::NoRoute,
+            KeptReason::BlockedByWater,
+            KeptReason::BlockedByRoad,
+            KeptReason::Held,
+        ] {
+            println!("PLAN_REASON {} {}", reason.id(), report.kept(reason));
+        }
+        for z in &report.zones {
+            if let ZoneOutcome::Kept { reason, .. } = &z.outcome {
+                // `radius_after_m` covers only the planned legs: a kept zone where part moved is shown
+                // with the tighter of the drawn and planned radii, one that stood still with the drawn one
+                let radius = if z.max_stray_m <= 0.0 {
+                    z.radius_before_m
+                } else {
+                    z.radius_before_m.min(z.radius_after_m)
+                };
+                println!(
+                    "PLAN_KEPT {} {} {:.1} {:.1} {:.1}",
+                    z.id,
+                    reason.id(),
+                    z.at.0,
+                    z.at.1,
+                    radius
+                );
+            }
+        }
+        for z in &report.zones {
+            if matches!(z.outcome, ZoneOutcome::Planned)
+                && z.planned_grade - z.drawn_grade > PLAN_STEEPER_MARGIN
+            {
+                println!(
+                    "PLAN_STEEP {} {:.1} {:.1} drawn {:.3} planned {:.3} limit {:.3} relax {}",
+                    z.id,
+                    z.at.0,
+                    z.at.1,
+                    z.drawn_grade,
+                    z.planned_grade,
+                    z.grade_limit,
+                    z.relax_steps
+                );
+            }
+        }
+    }
+    if smooth.is_some() || reroute.is_some() {
+        // the nodes of the graph against the graph without the stages: by how many stretch ends meet there
         // (a node where only two meet may move with the road inside a curve zone; junctions, dead ends and bridge
-        // ends must not), and the point counts
+        // and tunnel ends must not), and the point counts
         let ends = |g: &naves_core::roadnet::RoadGraph| {
-            let mut at: BTreeMap<i64, ((f64, f64), usize, bool)> = BTreeMap::new();
+            let mut at: BTreeMap<i64, ((f64, f64), usize, bool, bool)> = BTreeMap::new();
             for s in &g.stretches {
                 for (node, p) in [
                     (s.start, s.points.first().copied()),
                     (s.end, s.points.last().copied()),
                 ] {
                     if let Some(p) = p {
-                        let e = at.entry(node).or_insert((p, 0, false));
+                        let e = at.entry(node).or_insert((p, 0, false, false));
                         e.1 += 1;
                         e.2 |= s.bridge;
+                        e.3 |= s.tunnel;
                     }
                 }
             }
@@ -254,20 +373,24 @@ fn main() {
             &catalog,
             &base,
             Stages {
+                reroute: false,
                 smooth: false,
-                lots: false,
+                lots: stages.lots,
             },
             &in_water,
-            &[],
+            &streams,
+            &lot_areas,
         );
         let (after, before) = (ends(&built), ends(&plain.built));
-        // classes: two-stretch, junction, dead end, bridge end
-        let mut totals = [0_usize; 4];
-        let mut moved = [0_usize; 4];
+        // classes: two-stretch, junction, dead end, bridge end, tunnel end
+        let mut totals = [0_usize; 5];
+        let mut moved = [0_usize; 5];
         let mut furthest = 0.0_f64;
-        for (node, (p, count, bridge)) in &after {
+        for (node, (p, count, bridge, tunnel)) in &after {
             let class = if *bridge {
                 3
+            } else if *tunnel {
+                4
             } else if *count >= 3 {
                 1
             } else if *count == 1 {
@@ -276,36 +399,55 @@ fn main() {
                 0
             };
             totals[class] += 1;
-            if let Some((q, _, _)) = before.get(node) {
+            if let Some((q, _, _, _)) = before.get(node) {
                 let d = (p.0 - q.0).hypot(p.1 - q.1);
                 if d > 1e-6 {
                     moved[class] += 1;
                     furthest = furthest.max(d);
-                    println!(
-                        "SMOOTH_NODE {node} class {class} at ({:.1}, {:.1}) moved {d:.2} m",
-                        q.0, q.1
-                    );
+                    if smooth.is_some() {
+                        println!(
+                            "SMOOTH_NODE {node} class {class} at ({:.1}, {:.1}) moved {d:.2} m",
+                            q.0, q.1
+                        );
+                    }
                 }
             }
         }
-        println!(
-            "SMOOTH_NODES two_stretch {} moved {} furthest_m {furthest:.2}",
-            totals[0], moved[0]
-        );
-        println!(
-            "SMOOTH_FIXED junctions {} moved {}, dead ends {} moved {}, bridge ends {} moved {} (all must be 0)",
-            totals[1], moved[1], totals[2], moved[2], totals[3], moved[3]
-        );
-        let points = |g: &naves_core::roadnet::RoadGraph| -> usize {
-            g.stretches.iter().map(|s| s.points.len()).sum()
-        };
-        println!(
-            "SMOOTH_POINTS before {} (graph without the stage) fitted {} after the drop {} (graph {})",
-            report.points_before,
-            report.points_fitted,
-            report.points_after,
-            points(&built)
-        );
+        if smooth.is_some() {
+            println!(
+                "SMOOTH_NODES two_stretch {} moved {} furthest_m {furthest:.2}",
+                totals[0], moved[0]
+            );
+            println!(
+                "SMOOTH_FIXED junctions {} moved {}, dead ends {} moved {}, bridge ends {} moved {} (all must be 0)",
+                totals[1], moved[1], totals[2], moved[2], totals[3], moved[3]
+            );
+        }
+        if reroute.is_some() {
+            // with both stages on the counts cover the stages together: the nodes are compared with the
+            // graph without either stage, so a move cannot be told apart by which stage made it
+            let both = if smooth.is_some() {
+                "; both stages were on, the smoothing's moves are in these counts too"
+            } else {
+                ""
+            };
+            println!(
+                "PLAN_FIXED junctions moved {}, dead ends moved {}, bridge ends moved {}, tunnel ends moved {} (all must be 0{both})",
+                moved[1], moved[2], moved[3], moved[4]
+            );
+        }
+        if let Some(report) = &smooth {
+            let points = |g: &naves_core::roadnet::RoadGraph| -> usize {
+                g.stretches.iter().map(|s| s.points.len()).sum()
+            };
+            println!(
+                "SMOOTH_POINTS before {} (graph without the stage) fitted {} after the drop {} (graph {})",
+                report.points_before,
+                report.points_fitted,
+                report.points_after,
+                points(&built)
+            );
+        }
     }
     if let Ok(spot) = std::env::var("NEARDUMP") {
         // NEARDUMP=x,y: every stretch of the graph before the clean-up (PRE), after it (OSM) and fitted (FIT) within 40 m
@@ -577,7 +719,6 @@ fn main() {
             );
         }
     }
-    let streams = water_lines(&ways, &frame, project.map_size_m());
     if std::env::var("TIME_BEFORE").is_ok() {
         // the placement as it was before dips: the graph with the bridges of OpenStreetMap, once
         let started = Instant::now();

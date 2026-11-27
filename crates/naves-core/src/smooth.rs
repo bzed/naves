@@ -33,6 +33,8 @@ use crate::qp::{Problem, Row, solve};
 use crate::roadnet::{RoadGraph, Stretch, crossings_of, polyline_length};
 
 mod widen;
+/// The tight runs of a road line: the road planning finds its zones the same way the widening does.
+pub(crate) use widen::tight_runs;
 
 /// The step of a resampled line, in metres.
 pub const SAMPLE_M: f64 = 2.0;
@@ -591,19 +593,19 @@ fn end_point(s: &Stretch, at_start: bool) -> Option<(f64, f64)> {
 
 /// One stretch of a chain, in the chain's direction.
 #[derive(Clone, Copy)]
-struct Link {
-    stretch: usize,
-    reversed: bool,
+pub(crate) struct Link {
+    pub(crate) stretch: usize,
+    pub(crate) reversed: bool,
 }
 
-struct ChainPlan {
-    links: Vec<Link>,
+pub(crate) struct ChainPlan {
+    pub(crate) links: Vec<Link>,
     /// A junction (three or more stretches) at the first and at the last node.
-    junction: (bool, bool),
+    pub(crate) junction: (bool, bool),
 }
 
 /// The chains of the graph, in the order of their first stretch.
-fn plan_chains(graph: &RoadGraph) -> Vec<ChainPlan> {
+pub(crate) fn plan_chains(graph: &RoadGraph) -> Vec<ChainPlan> {
     let mut arms_at: BTreeMap<i64, Vec<Arm>> = BTreeMap::new();
     for (i, s) in graph.stretches.iter().enumerate() {
         arms_at.entry(s.start).or_default().push((i, true));

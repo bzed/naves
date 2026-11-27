@@ -28,6 +28,7 @@ pub mod project;
 pub mod projection;
 pub mod qp;
 pub mod render;
+pub mod reroute;
 pub mod roadfit;
 pub mod roadnet;
 pub mod roadplace;

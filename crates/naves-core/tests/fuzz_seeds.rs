@@ -17,6 +17,8 @@ use naves_core::landcover::{GeoWindow, LandCover};
 use naves_core::prefs::Preferences;
 use naves_core::project::Project;
 
+include!("../../../fuzz/case/reroute_search.rs");
+
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fuzz/corpus")
@@ -208,5 +210,63 @@ fn smooth_line_seeds() {
         assert_eq!(result.is_ok(), good, "seed {name}: {:?}", result.err());
         let line: Vec<(f64, f64)> = samples.iter().map(|s| s.at).collect();
         let _ = resample(&line, 2.0);
+    }
+}
+
+#[test]
+fn reroute_raster_seeds() {
+    use naves_core::reroute::raster::{Clearance, Obstacles, chamfer, exempt_samples, samples};
+    for (name, data) in seeds("reroute_raster") {
+        let mut road = Vec::new();
+        let mut original = Vec::new();
+        let mut probes = Vec::new();
+        for c in data.as_chunks::<17>().0 {
+            let p = (
+                f64::from_le_bytes(c[0..8].try_into().unwrap()),
+                f64::from_le_bytes(c[8..16].try_into().unwrap()),
+            );
+            match c[16] {
+                0 => road.push(p),
+                1 => original.push(p),
+                3 => probes.push(p),
+                _ => {}
+            }
+        }
+        let mut o = Obstacles::new((-50.0, -50.0), (250.0, 250.0), 4.0, 200.0, 3.0, 20_000);
+        o.stamp_water(&|p| p.0 > 100.0 && p.0 < 120.0 && p.1 > 100.0 && p.1 < 120.0);
+        let flags: Vec<bool> = samples(&road).iter().map(|p| p.0 < 100.0).collect();
+        o.stamp_road(&road, 6.0, &flags);
+        o.set_original(&original);
+        o.finish();
+        let clear = Clearance::new(5.0, 12.0).unwrap();
+        for pair in probes.windows(2) {
+            let blocked = o.segment(pair[0], pair[1], clear);
+            if name == "scene" {
+                assert!(
+                    blocked.is_err(),
+                    "seed {name}: a probe through the lake is free"
+                );
+                break;
+            }
+        }
+        let _ = (samples(&road), exempt_samples(&road, &original, 20.0, 10.0));
+        let _ = o.water_cap_m();
+        let _ = chamfer(&[true, false, true], 3, 1, 2.0);
+    }
+}
+
+#[test]
+fn reroute_search_seeds() {
+    let mut found = std::collections::BTreeMap::new();
+    for (name, data) in seeds("reroute_search") {
+        found.insert(name, reroute_search_case::run(&data));
+    }
+    // the plain legs have a route (twice: the search and the relaxed search, within the tiny budgets of the
+    // target); the bad ones none and no panic
+    for name in ["straight", "dead_ends"] {
+        assert_eq!(found.get(name), Some(&2), "{name}: {found:?}");
+    }
+    for name in ["nan", "huge", "radius_zero", "same_anchor", "short"] {
+        assert_eq!(found.get(name), Some(&0), "{name}: {found:?}");
     }
 }

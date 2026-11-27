@@ -169,6 +169,9 @@ fn build_project(dir: &Path) -> Result<()> {
     for bridge in &out.bridges {
         output::note(bridge);
     }
+    if let Some(line) = &out.planning {
+        output::note(line);
+    }
     if let Some(line) = &out.smoothing {
         output::note(line);
     }

@@ -13,6 +13,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Road planning re-routes curves tighter than the road pieces. A zone of tight road (plus two minimum radii of road
+  on each side) is re-routed inside a curve the pieces can build, **not steeper than the road as drawn or its type's
+  aim** (or, where a route needs more, at a raised limit up to the type's ceiling, reported), not further than three
+  minimum radii from the drawn line, crossing a stream only as often as the drawn line
+  does and keeping out of another road's earthwork; junctions, dead ends, deck ends and the cut of a closed loop stay
+  where they are. It is **switched off in this release** (`REROUTE_ENABLED`), so nothing moves and `roads.planning` in
+  `build/report.json` is `{"enabled": false}`. With it on, roads inside planned curves move by up to three minimum
+  radii (about 30 m), so edits that are keyed by slot can be orphaned (`orphaned_edit`). With it on: new findings
+  `road_curve_planned` and `road_curve_not_planned`, `roads.planning` in `build/report.json` with the totals and every
+  zone, a line in the build summary and a progress line with the time of the stage; the `road-analysis` example runs
+  the stage with `STAGES=plan` (and `plan+smooth` together with the smoothing).
 - Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or grass surface and
   smooth ground; the roads inside them are no longer built, and their access roads end just inside them (an access road keeps at least 15 m, so that one that leaves a T beside the lot is still
   laid). **The lot stage is now on**

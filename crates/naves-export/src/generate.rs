@@ -35,6 +35,7 @@ use naves_core::objects::{
 use naves_core::osm::{LandPolygon, OsmWays, read_ways};
 use naves_core::profile::{Profiles, solve_clearing};
 use naves_core::project::Project;
+use naves_core::reroute::{REROUTE_ENABLED, RerouteParams, RerouteReport, reroute_graph};
 use naves_core::roadnet::{
     DroppedDuplicate, RoadGraph, build_graph, collapse_small_rings, drop_duplicates,
     with_bridge_spans,
@@ -58,30 +59,6 @@ const UNCOVERED_WARN_SHARE: f64 = 0.01;
 const ROAD_BED_MARGIN_M: f64 = 2.0;
 /// Margin around the map in which OSM ways are read, in metres.
 const WAY_MARGIN_M: f64 = 100.0;
-
-/// Which of the stages that change the roads run. The switches are constants, not project settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Stages {
-    /// Smooth the lines of the roads before the bridges are fitted (see [`SMOOTH_ENABLED`]).
-    pub smooth: bool,
-    /// Give the lots (car parks, camp sites and similar areas) their surface and smooth ground, and take the roads
-    /// inside them out (see [`LOTS_ENABLED`]).
-    pub lots: bool,
-}
-
-impl Stages {
-    /// The switches of this release: the lot stage is on, the smoothing stage is off until it was judged.
-    pub const DEFAULT: Stages = Stages {
-        smooth: SMOOTH_ENABLED,
-        lots: LOTS_ENABLED,
-    };
-}
-
-impl Default for Stages {
-    fn default() -> Stages {
-        Stages::DEFAULT
-    }
-}
 
 /// What the road network came to.
 #[derive(Debug, Clone, PartialEq, Default, Serialize)]
@@ -146,6 +123,8 @@ pub struct Generated {
     pub bridges: Vec<BridgeFit>,
     /// What the smoothing of the road graph did; `None` when the stage is off or there are no roads.
     pub smooth: Option<SmoothReport>,
+    /// What road planning did to the road graph; `None` when the stage is off or there are no roads.
+    pub reroute: Option<RerouteReport>,
     /// What the lot stage found and decided; `None` when the stage is off.
     pub lots: Option<LotReport>,
     /// What the clean-up of the road graph did (empty when there are no roads).
@@ -270,6 +249,10 @@ pub struct FittedGraph {
     pub smooth: Option<SmoothReport>,
     /// How long the smoothing took (zero when the stage is off); a measurement, not part of any output.
     pub smooth_time: std::time::Duration,
+    /// What road planning did to the graph; `None` when the stage is off ([`REROUTE_ENABLED`]).
+    pub reroute: Option<RerouteReport>,
+    /// How long road planning took (zero when the stage is off); a measurement, not part of any output.
+    pub reroute_time: std::time::Duration,
     /// What the lot stage found and decided; `None` when the stage is off ([`LOTS_ENABLED`]).
     pub lots: Option<LotReport>,
     /// How long the lot stage's own work took (zero when the stage is off): the assessment of the lots (the surface
@@ -281,26 +264,68 @@ pub struct FittedGraph {
     pub bridges: Vec<BridgeFit>,
 }
 
+/// Which of the stages that change the roads run: road planning (`reroute_graph`), the smoothing of the road lines
+/// (`smooth_graph_in_water`) and the lot stage. Each is on or off as its switch says, but they can be chosen per
+/// call, so `road-analysis` runs the combinations with the same binary. The switches are constants, not project
+/// settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stages {
+    /// Road planning: re-route the tight curves (`REROUTE_ENABLED`).
+    pub reroute: bool,
+    /// The smoothing of the road lines (`SMOOTH_ENABLED`).
+    pub smooth: bool,
+    /// The lot stage: car parks, camp sites and similar areas (`LOTS_ENABLED`).
+    pub lots: bool,
+}
+
+impl Stages {
+    /// The stages as their switches say: road planning and the smoothing are off until they were judged, the lot
+    /// stage is on (`REROUTE_ENABLED`, `SMOOTH_ENABLED`, `LOTS_ENABLED`).
+    pub const DEFAULT: Stages = Stages {
+        reroute: REROUTE_ENABLED,
+        smooth: SMOOTH_ENABLED,
+        lots: LOTS_ENABLED,
+    };
+}
+
+impl Default for Stages {
+    fn default() -> Stages {
+        Stages::DEFAULT
+    }
+}
+
 /// The graph of `features` as it is placed: small roundabouts collapsed, roads drawn twice dropped, the graph
 /// cleaned ([`netclean::clean_with`], with the groups of the lots), the lots judged ([`naves_core::lot::assess`] and
-/// [`naves_core::lot::surfaces_with_sources`]), smoothed ([`smooth_graph_in_water`], unless [`SMOOTH_ENABLED`] is
-/// off) and every OpenStreetMap bridge built from the part that fits it on the original ground `base`.
+/// [`naves_core::lot::surfaces_with_sources`]), road planning the tight curves ([`reroute_graph`], unless
+/// [`REROUTE_ENABLED`] is off), smoothed ([`smooth_graph_in_water`], unless [`SMOOTH_ENABLED`] is off) and every
+/// OpenStreetMap bridge built from the part that fits it on the original ground `base`.
 #[must_use]
 ///
-/// `in_water` tells whether a point of the map is in water: the smoothing does not widen a curve into it and a lot
-/// mostly in water is excluded (see [`naves_core::validate::water_test`]). `lots` are the lot areas of the project
-/// ([`naves_core::lot::areas`]); they are read only when [`LOTS_ENABLED`] is on.
+/// `in_water` tells whether a point of the map is in water: neither the planning nor the smoothing puts a road into
+/// water and a lot mostly in water is excluded (see [`naves_core::validate::water_test`]). `streams` are the stream
+/// lines in map metres ([`water_lines`]): a route of the planning crosses one only as often as the drawn line does.
+/// `lots` are the lot areas of the project ([`naves_core::lot::areas`]); they are read only when [`LOTS_ENABLED`] is
+/// on.
 pub fn fitted_graph(
     features: &[Feature],
     catalog: &PieceCatalog,
     base: &Heightmap,
     in_water: WaterTest<'_>,
+    streams: &[Vec<(f64, f64)>],
     lots: &[LotArea],
 ) -> FittedGraph {
-    fitted_graph_with(features, catalog, base, Stages::DEFAULT, in_water, lots)
+    fitted_graph_with(
+        features,
+        catalog,
+        base,
+        Stages::DEFAULT,
+        in_water,
+        streams,
+        lots,
+    )
 }
 
-/// [`fitted_graph`] with the stages switched on or off: with both off, the graph is the cleaned graph with the
+/// [`fitted_graph`] with the stages switched on or off: with all off, the graph is the cleaned graph with the
 /// bridges fitted, as it was before the stages existed, and `lots` is `None`.
 #[must_use]
 pub fn fitted_graph_with(
@@ -309,6 +334,7 @@ pub fn fitted_graph_with(
     base: &Heightmap,
     stages: Stages,
     in_water: WaterTest<'_>,
+    streams: &[Vec<(f64, f64)>],
     lots: &[LotArea],
 ) -> FittedGraph {
     // a roundabout smaller than `ROUNDABOUT_KEEP_M` or than the tightest arc of its surface is a plain crossing
@@ -358,18 +384,30 @@ pub fn fitted_graph_with(
         sources,
     });
     // a family without a curve piece has nothing that counts as tight
-    let started = std::time::Instant::now();
-    let (built, smooth) = if stages.smooth {
-        let radius = |s: &naves_core::roadnet::Stretch| {
-            min_radius(catalog, s.family).unwrap_or(f64::INFINITY)
-        };
+    let radius =
+        |s: &naves_core::roadnet::Stretch| min_radius(catalog, s.family).unwrap_or(f64::INFINITY);
+    let (built, reroute, reroute_time) = if stages.reroute {
+        let started = std::time::Instant::now();
+        let (planned, report) = reroute_graph(
+            &built,
+            base,
+            &radius,
+            in_water,
+            streams,
+            &RerouteParams::default(),
+        );
+        (planned, Some(report), started.elapsed())
+    } else {
+        (built, None, std::time::Duration::ZERO)
+    };
+    let (built, smooth, smooth_time) = if stages.smooth {
+        let started = std::time::Instant::now();
         let (smoothed, report) =
             smooth_graph_in_water(&built, &radius, in_water, &SmoothParams::default());
-        (smoothed, Some(report))
+        (smoothed, Some(report), started.elapsed())
     } else {
-        (built, None)
+        (built, None, std::time::Duration::ZERO)
     };
-    let smooth_time = started.elapsed();
     let ground = |p: (f64, f64)| f64::from(base.sample(p.0, p.1).height);
     let (graph, bridges) = fit_bridges(&built, &|site| choose(catalog, site), &ground);
     FittedGraph {
@@ -379,6 +417,8 @@ pub fn fitted_graph_with(
         clean,
         smooth,
         smooth_time,
+        reroute,
+        reroute_time,
         lots: lot_report,
         lots_time,
         bridges,
@@ -465,6 +505,8 @@ pub fn plan_roads_with(
         clean,
         smooth,
         smooth_time,
+        reroute,
+        reroute_time,
         lots: lot_report,
         lots_time,
         bridges,
@@ -475,8 +517,15 @@ pub fn plan_roads_with(
         base,
         stages,
         &water_test(lakes, frame),
+        water,
         lots,
     );
+    if reroute.is_some() {
+        progress(&format!(
+            "Planning the tight curves ({:.1} s)",
+            reroute_time.as_secs_f64()
+        ));
+    }
     if smooth.is_some() {
         progress(&format!(
             "Smoothing the road lines ({:.1} s)",
@@ -544,6 +593,7 @@ pub fn plan_roads_with(
     clean.lot_access_unplaced = unplaced;
     placed.net.clean = clean;
     placed.net.smooth = smooth;
+    placed.net.reroute = reroute;
     placed.net.lots = lot_report;
     placed.net.bridge_fits = bridges;
     mark_placed(&mut placed.net.bridge_fits, &placed.net.roads);
@@ -1245,6 +1295,7 @@ pub fn generate_with(
         used_osm: sources.osm.is_some(),
         bridges: roads.net.bridge_fits.clone(),
         smooth: roads.net.smooth.clone(),
+        reroute: roads.net.reroute.clone(),
         lots: roads.net.lots.clone(),
         clean: roads.net.clean.clone(),
     })

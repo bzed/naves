@@ -451,7 +451,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_kink, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water, road_duplicate_dropped, bridge_clearance, bridge_blocks_road, bridge_not_built, bridge_buried, bridge_post_floats, bridge_end_step, road_roundabout_collapsed, road_sidepath_dropped, road_stub_dropped, road_junctions_merged, road_junctions_not_merged, bridge_approach_made, bridge_end_at_junction, road_curve_widened, road_curve_too_tight, lot_smoothed, lot_surface_only, lot_excluded, lot_steep, lot_move_limited, road_in_lot_dropped) keeps only that rule. Generates the roads."
+        description = "What is wrong with the generated roads: a list of violations, each with its rule, a position in map metres and a message. Optional rule (road_not_drivable, road_misses_terrain, path_too_steep, road_grade, road_gap, road_kink, road_in_water, road_conflict, earthworks_capped, orphaned_edit, join_without_junction, tunnel_omitted, junction_too_steep, road_far_from_ground, road_over_water, road_duplicate_dropped, bridge_clearance, bridge_blocks_road, bridge_not_built, bridge_buried, bridge_post_floats, bridge_end_step, road_roundabout_collapsed, road_sidepath_dropped, road_stub_dropped, road_junctions_merged, road_junctions_not_merged, bridge_approach_made, bridge_end_at_junction, road_curve_widened, road_curve_too_tight, road_curve_planned, road_curve_not_planned, lot_smoothed, lot_surface_only, lot_excluded, lot_steep, lot_move_limited, road_in_lot_dropped) keeps only that rule. Generates the roads."
     )]
     async fn validation_list(
         &self,
@@ -615,6 +615,7 @@ fn build_json(out: &BuildOutput, progress: &[String]) -> serde_json::Value {
         "mission_dir": out.mission_dir,
         "warnings": out.warnings,
         "bridges": out.bridges,
+        "planning": out.planning,
         "smoothing": out.smoothing,
         "progress": progress,
     });
@@ -657,6 +658,7 @@ mod tests {
             mission_dir: PathBuf::from("/mission"),
             warnings: vec!["a warning".to_string()],
             bridges: vec!["a bridge".to_string()],
+            planning: None,
             smoothing: None,
             lots: lots.map(str::to_string),
         }
@@ -678,6 +680,7 @@ mod tests {
                 "bridges",
                 "mission_dir",
                 "mod_dir",
+                "planning",
                 "progress",
                 "smoothing",
                 "warnings"

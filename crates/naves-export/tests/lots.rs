@@ -102,6 +102,7 @@ fn with_the_stage_off_a_lot_changes_nothing_and_no_report_is_made() {
     let base = flat();
     let features = camp_site_roads();
     let stages = Stages {
+        reroute: false,
         smooth: false,
         lots: false,
     };
@@ -111,9 +112,10 @@ fn with_the_stage_off_a_lot_changes_nothing_and_no_report_is_made() {
         &base,
         stages,
         &|_| false,
+        &[],
         &[camp_site()],
     );
-    let without = fitted_graph_with(&features, &catalog, &base, stages, &|_| false, &[]);
+    let without = fitted_graph_with(&features, &catalog, &base, stages, &|_| false, &[], &[]);
     assert_eq!(with_lot.built, without.built);
     assert_eq!(with_lot.graph, without.graph);
     assert_eq!(with_lot.clean, without.clean);
@@ -141,10 +143,12 @@ fn a_camp_site_holding_a_t_of_service_roads_loses_both_stretches_and_gets_one_ac
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: true,
         },
         &|_| false,
+        &[],
         &[camp_site()],
     );
     let report = fitted.lots.as_ref().expect("the lot stage ran");
@@ -184,7 +188,7 @@ fn the_defaults_follow_the_constants() {
     let catalog = synthetic_catalog();
     let base = flat();
     let features = camp_site_roads();
-    let fitted = fitted_graph(&features, &catalog, &base, &|_| false, &[camp_site()]);
+    let fitted = fitted_graph(&features, &catalog, &base, &|_| false, &[], &[camp_site()]);
     assert_eq!(fitted.lots.is_some(), LOTS_ENABLED);
     assert_eq!(fitted.smooth.is_some(), SMOOTH_ENABLED);
 }
@@ -195,13 +199,22 @@ fn with_the_stage_off_per_call_no_lot_is_looked_at() {
     let base = flat();
     let features = camp_site_roads();
     let off = Stages {
+        reroute: false,
         smooth: false,
         lots: false,
     };
-    let fitted = fitted_graph_with(&features, &catalog, &base, off, &|_| false, &[camp_site()]);
+    let fitted = fitted_graph_with(
+        &features,
+        &catalog,
+        &base,
+        off,
+        &|_| false,
+        &[],
+        &[camp_site()],
+    );
     assert!(fitted.lots.is_none());
     // off, the graph is the one without the lots
-    let without = fitted_graph_with(&features, &catalog, &base, off, &|_| false, &[]);
+    let without = fitted_graph_with(&features, &catalog, &base, off, &|_| false, &[], &[]);
     assert_eq!(fitted.built, without.built);
     assert_eq!(fitted.clean, without.clean);
 }
@@ -216,10 +229,12 @@ fn the_components_are_counted_per_step_with_the_lot_step_first() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: true,
         },
         &|_| false,
+        &[],
         &[camp_site()],
     );
     assert_eq!(with.clean.components_by_step.len(), 5);
@@ -228,10 +243,12 @@ fn the_components_are_counted_per_step_with_the_lot_step_first() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: false,
         },
         &|_| false,
+        &[],
         &[],
     );
     assert_eq!(without.clean.components_by_step.len(), 4);
@@ -249,10 +266,12 @@ fn surviving_entries_keeps_the_cuts_whose_node_the_graph_has() {
         &catalog,
         &base,
         Stages {
+            reroute: false,
             smooth: false,
             lots: true,
         },
         &|_| false,
+        &[],
         &[camp_site()],
     );
     let entry = fitted.clean.lot_access[0].clone();
@@ -813,6 +832,7 @@ fn plan_roads_places_the_roads_without_the_lots() {
         &[],
         &frame,
         Stages {
+            reroute: false,
             smooth: false,
             lots: false,
         },
@@ -877,6 +897,7 @@ fn the_smoothing_stage_has_its_own_progress_line_when_it_is_on() {
         &[],
         &frame,
         Stages {
+            reroute: false,
             smooth: true,
             lots: false,
         },

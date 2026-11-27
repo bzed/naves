@@ -94,7 +94,7 @@ fn wait_for_the_roads(app: &mut NavesApp) {
 }
 
 /// Steps the harness until `done` holds or a generous deadline passes.
-fn step_until(harness: &mut Harness<'_>, done: impl Fn(&Harness<'_>) -> bool) {
+fn step_until<S>(harness: &mut Harness<'_, S>, done: impl Fn(&Harness<'_, S>) -> bool) {
     let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
     while !done(harness) {
         assert!(Instant::now() < deadline, "timed out waiting for the GUI");
@@ -340,7 +340,9 @@ fn the_map_is_drawn_with_roads_once_they_are_there() {
     harness.run_steps(8);
     let before = harness.state().views.active().renders();
     harness.state_mut().panel.on.insert(MapLayer::Drivable);
-    harness.run_steps(4);
+    step_until(&mut harness, |h| {
+        h.state().views.active().renders() > before
+    });
     let after = harness.state().views.active().renders();
     assert!(
         after > before,
