@@ -531,8 +531,8 @@ async fn build_runs_and_reports_the_paths() {
             .ends_with("dayzOffline.test")
     );
     assert!(out["warnings"].is_array());
-    // the lot stage is off in this release: its key is not added to the result
-    assert!(out.get("lots").is_none(), "{out}");
+    // the lot stage is on in this release: its line is in the result
+    assert!(out["lots"].is_string(), "{out}");
     assert!(out.get("smoothing").is_some(), "{out}");
     assert!(
         f.proj

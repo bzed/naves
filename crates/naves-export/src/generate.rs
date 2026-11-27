@@ -70,7 +70,7 @@ pub struct Stages {
 }
 
 impl Stages {
-    /// The switches of this release: both stages are off until they were judged.
+    /// The switches of this release: the lot stage is on, the smoothing stage is off until it was judged.
     pub const DEFAULT: Stages = Stages {
         smooth: SMOOTH_ENABLED,
         lots: LOTS_ENABLED,

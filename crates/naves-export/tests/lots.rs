@@ -29,7 +29,7 @@ use naves_core::surface::SurfaceClass;
 use naves_core::validate::Rule;
 use naves_export::build::build_with;
 use naves_export::generate::{
-    Stages, fitted_graph, fitted_graph_with, generate_with, plan_roads, plan_roads_with,
+    Stages, fitted_graph, fitted_graph_with, generate_with, plan_roads_with,
 };
 use naves_export::testing::FakeEnv;
 use tiff::encoder::{TiffEncoder, colortype};
@@ -187,12 +187,23 @@ fn the_defaults_follow_the_constants() {
     let fitted = fitted_graph(&features, &catalog, &base, &|_| false, &[camp_site()]);
     assert_eq!(fitted.lots.is_some(), LOTS_ENABLED);
     assert_eq!(fitted.smooth.is_some(), SMOOTH_ENABLED);
-    // off, the graph is the one without the lots and no lot is looked at
-    if !LOTS_ENABLED {
-        let without = fitted_graph(&features, &catalog, &base, &|_| false, &[]);
-        assert_eq!(fitted.built, without.built);
-        assert_eq!(fitted.clean, without.clean);
-    }
+}
+
+#[test]
+fn with_the_stage_off_per_call_no_lot_is_looked_at() {
+    let catalog = synthetic_catalog();
+    let base = flat();
+    let features = camp_site_roads();
+    let off = Stages {
+        smooth: false,
+        lots: false,
+    };
+    let fitted = fitted_graph_with(&features, &catalog, &base, off, &|_| false, &[camp_site()]);
+    assert!(fitted.lots.is_none());
+    // off, the graph is the one without the lots
+    let without = fitted_graph_with(&features, &catalog, &base, off, &|_| false, &[]);
+    assert_eq!(fitted.built, without.built);
+    assert_eq!(fitted.clean, without.clean);
 }
 
 #[test]
@@ -794,13 +805,17 @@ fn plan_roads_places_the_roads_without_the_lots() {
     let base = flat();
     let project = Project::new("P", 47.55, 12.975, 1000.0);
     let frame = MapGeo::new(&project).unwrap();
-    let plan = plan_roads(
+    let plan = plan_roads_with(
         &camp_site_roads(),
         &catalog,
         &base,
         &[],
         &[],
         &frame,
+        Stages {
+            smooth: false,
+            lots: false,
+        },
         &[],
         &quiet,
     )

@@ -99,9 +99,8 @@ hundred megabytes, a country-sized one several gigabytes. Prefer the smallest ex
 Several extracts are merged before the areas are built, so an area that each of them cuts at its border is still
 whole.
 
-**Lots get one surface (switched off in this release).** With the lot stage on (`LOTS_ENABLED`, see
-[Roads](#roads)), every lot that is not excluded is painted as one area: after the decided ground, before the paths
-and the road beds.
+**Lots get one surface.** Every lot (car park, camp site and the like, see [Roads](#roads)) that is not excluded is
+painted as one area: after the decided ground, before the paths and the road beds.
 - **Paved or grass.** The lot's own `surface` tag wins; a camp site is grass unless it is tagged paved; otherwise the
   roads that serve the lot decide (the roads removed inside it, its access roads and the roads that pass through it),
   each metre by its way's `surface` tag and, without one, by its road type (asphalt 1 to 3 and street paved, gravel and
@@ -332,11 +331,12 @@ not be moved off it). The tag `foot=use_sidepath` on a road is read from
 OpenStreetMap for the sidepath step. The program does not print a severity: "information" means there is nothing to
 fix, "warning" means a place worth a look.
 
-**Lots: a car park or a camp site gets one surface and smooth ground (switched off in this release).** Car parks,
+**Lots: a car park or a camp site gets one surface and smooth ground .** Car parks,
 camp sites and similar areas are *lots*: an area tagged `amenity=parking`, `amenity=tourist_bus_parking`,
-`highway=rest_area`, `tourism=camp_site` or `tourism=caravan_site`. The stage exists but is off (`LOTS_ENABLED`), so
-nothing below happens in a build of this release, and `roads.lots` in `build/report.json` says `{"enabled": false}`.
-With it on, the lot step runs before every other step of the clean-up:
+`highway=rest_area`, `tourism=camp_site` or `tourism=caravan_site`. In short: a lot gets one surface (grass, or paved,
+which is painted as soil because the fifth ground layer for tarmac does not show in the game), the roads inside it are
+removed, and an access road is kept and ends just inside it. The lot step runs before every other step of the
+clean-up:
 - The streets inside a lot are not built, whatever their tags: aisles, driveways and yard roads become neither road
   pieces nor painted paths. A footway or cycleway through a lot stays painted, on top of the lot's surface, and a
   bridge or a tunnel in a lot keeps its stretch.

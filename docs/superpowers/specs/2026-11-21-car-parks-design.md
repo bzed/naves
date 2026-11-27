@@ -5,7 +5,9 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Car parks, camp sites and similar: a surface and smooth ground instead of a knot of roads
 
-Status: design, 2026-11-21, amended the same day after three decisions of the maintainer (the area kinds and "no
+Status, 2026-11-27: built, judged and game-checked; **the stage is on** (`LOTS_ENABLED = true`) on the maintainer's
+decision. Paved lots are painted soil, because the fifth ground layer does not show in the game. Open points below.
+Original status: design, 2026-11-21, amended the same day after three decisions of the maintainer (the area kinds and "no
 streets inside", the full surface, and "not bumpy"). Written by the assistant on the controller's brief, within the
 maintainer's decisions. Decisions the maintainer made are marked **(maintainer)**, readings of the controller
 **(controller)**; everything else is the assistant's call and easy to change. Numbers marked **(judge)** are
@@ -627,9 +629,9 @@ judged there.
   through-road joints over a lot could replace it where the surface's slope is under the road's ceiling.
 - **The look of a large smoothed lot.** A 16 000 m² camp site on one gently curved surface may look artificially
   even in the game; the game check shows it. No terraces are added for it.
-- **The slot-4 mask value.** Alpha 128 is fitted to Livonia's masks but not yet seen in the game; if the game check
-  disproves it, paved lots are painted soil until it is known.
+- **The slot-4 mask value.** Resolved 2026-11-27: the game ignores the mask alpha, so the fifth layer does not show;
+  paved lots are painted soil (`TARMAC_PAINTED`).
+- **Real tarmac.** Give a tile with a paved lot a free slot 0 to 3 for the tarmac texture.
 - **Cell-size dependence.** `LOT_ENTRY_M`, `LOT_RELIEF_LENGTH_M` and `LOT_MIN_VERTICES` follow the 4 m cell at
   2048; at other terrain sizes they should follow the cell.
-- **Default of the switch.** The stage lands switched off and is switched on after the game check, on the
-  maintainer's word.
+- **Default of the switch.** Done 2026-11-27: the stage is on, on the maintainer's word.

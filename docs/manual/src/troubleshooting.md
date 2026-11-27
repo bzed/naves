@@ -246,7 +246,7 @@ as a curve**: the pieces will leave a kink or a gap there. Curves within 25 m of
 Look at the place; change the data (OpenStreetMap) so that the curve is wider or has a junction.
 
 **`lot_smoothed`, `lot_surface_only`, `lot_excluded` (information)**
-The lot stage (switched off in this release, so these findings do not appear) says what became of every lot. `lot_smoothed`
+The lot stage says what became of every lot. `lot_smoothed`
 names the form (a plane or a quadratic), the surface class and the largest move of the ground; `lot_surface_only` names
 the reason: `street_side` (a strip along a street) or `no_vertex` (fewer than three terrain vertices inside, too small
 for the grid to shape); `lot_excluded` names `not_at_ground` (underground, multi-storey, rooftop, a building, another

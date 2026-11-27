@@ -608,8 +608,7 @@ impl NavesMcp {
 }
 
 /// What the `build` tool returns: the folders, the warnings and the progress lines, and the one-line summaries of
-/// the stages. `lots` is left out while the lot stage is off (its switch is `LOTS_ENABLED`), so a build of this release
-/// answers exactly like one before the stage existed.
+/// the stages. `lots` is left out when the lot stage did not run (its switch is `LOTS_ENABLED`).
 fn build_json(out: &BuildOutput, progress: &[String]) -> serde_json::Value {
     let mut value = json!({
         "mod_dir": out.mod_dir,
@@ -664,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn the_build_result_has_no_lot_key_while_the_stage_is_off() {
+    fn the_build_result_has_no_lot_key_when_the_stage_did_not_run() {
         let value = build_json(&output(None), &["a progress line".to_string()]);
         assert!(value.get("lots").is_none(), "{value}");
         // exactly the keys a build had before the lot stage existed

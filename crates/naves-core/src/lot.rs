@@ -21,10 +21,10 @@ pub use surface::{
 use crate::netclean::CleanReport;
 use crate::surface::SurfaceClass;
 
-/// The switch of the lot stage: off until the judging runs and the game check confirm it; the maintainer switches it
-/// on. Off ([`crate::lot::LOTS_ENABLED`] is `false`), the stage does nothing: no lot is assessed, no road is removed
-/// and no ground is shaped.
-pub const LOTS_ENABLED: bool = false;
+/// The switch of the lot stage: on since the judging and the game check confirmed it. Off (a build with
+/// [`crate::lot::LOTS_ENABLED`] set to `false`, or `Stages { lots: false, .. }` per call), the stage does nothing: no
+/// lot is assessed, no road is removed and no ground is shaped.
+pub const LOTS_ENABLED: bool = true;
 /// Digitising tolerance of "inside", and of "touching" for groups, in metres.
 pub const LOT_INSIDE_TOL_M: f64 = 1.0;
 /// A lot whose plane is within this of its ground (95th percentile) gets the plane, in metres.

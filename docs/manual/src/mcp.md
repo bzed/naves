@@ -74,9 +74,8 @@ the tools are missing, the error starts with "Roads need dayzmake" and says what
 **`build`** runs the same build as [`naves build`](cli.md), which can take minutes. The result lists the
 progress lines the build printed, `smoothing`, the one-line summary of the road smoothing, and `lots`, the one-line
 summary of the lot stage. `smoothing` is `null` while its stage is off, as it is in this release; `lots` is left out of
-the result altogether while the lot stage is off, so such a build answers with the keys it had before the stage
-existed. With the smoothing on, `smoothing` has the chains, largest move, tight length before and after and the zones
-reached, the numbers in `roads.smoothing` of `build/report.json`; with the lot stage on, `lots` has the lots by kind,
+the result if the lot stage did not run. With the smoothing on, `smoothing` has the chains, largest move, tight length before and after and the zones
+reached, the numbers in `roads.smoothing` of `build/report.json`; `lots` has the lots by kind,
 the smoothed ones by form and surface, the steep and move-limited ones, the removed and cut roads and the entries lost, the numbers in
 `roads.lots`. If a tool is missing, the error names it and the variable to set.
 
