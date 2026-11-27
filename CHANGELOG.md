@@ -29,6 +29,11 @@ All notable changes to this project are documented here. The format follows
   `road_curve_planned` and `road_curve_not_planned`, `roads.planning` in `build/report.json` with the totals and every
   zone, a line in the build summary and a progress line with the time of the stage; the `road-analysis` example runs
   the stage with `STAGES=plan` (and `plan+smooth` together with the smoothing).
+- Hand-made road edits in `edits/ways.toml`: nodes and ways in latitude and longitude, OpenStreetMap style (add, modify,
+  delete; ids `u<n>` for what you drew). The build applies them to the OpenStreetMap roads, or builds a map without
+  OpenStreetMap files from them alone; edits always win and a drawn way is kept as drawn (`naves:keep`, `naves:plan`).
+  New findings `edit_broken`, `edit_original_changed` and `edit_outside_map`, an `edits` section in
+  `build/report.json`, and a line in the build summary and the MCP `build` result.
 - Lots — car parks, camp sites, caravan sites, rest areas and coach parks — get a full paved or grass surface and
   smooth ground; the roads inside them are no longer built, and their access roads end just inside them (an access road keeps at least 15 m, so that one that leaves a T beside the lot is still
   laid). **The lot stage is now on**

@@ -219,6 +219,9 @@ fn build_project(dir: &Path) -> Result<()> {
     if let Some(line) = &out.lots {
         output::note(line);
     }
+    if let Some(line) = &out.edits {
+        output::note(line);
+    }
     output::result(&format!("Mod:     {}", out.mod_dir.display()));
     output::result(&format!("Mission: {}", out.mission_dir.display()));
     Ok(())

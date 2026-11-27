@@ -20,6 +20,7 @@ use naves_core::checks::{DriveState, PieceCheck, check_roads_on_terrain, check_w
 use naves_core::conform::{AreaPatch, Conformed, LevelPatch, conform_areas};
 use naves_core::dem::Dem;
 use naves_core::dips::{Dip, DipAction, decide, find_dips};
+use naves_core::edits::{EditReport, ElementId, WayAction, WayEdits, apply_way_edits};
 use naves_core::features::{Feature, FeatureKind, road_features, water_lines};
 use naves_core::heightmap::{Heightmap, HeightmapError, MapGeo, build_heightmap};
 use naves_core::junctions::{Junction, JunctionKind, Junctions, add_lot_entries, find_junctions};
@@ -46,7 +47,9 @@ use naves_core::smooth::{
     SMOOTH_ENABLED, SmoothParams, SmoothReport, WaterTest, min_radius, smooth_graph_in_water,
 };
 use naves_core::surface::{LoadedSources, SurfaceClass, SurfaceError, SurfaceGrid, build_surfaces};
-use naves_core::validate::{Violation, check_roads, lot_violations, sort_violations, water_test};
+use naves_core::validate::{
+    Violation, check_roads, edit_violations, lot_violations, sort_violations, water_test,
+};
 use serde::Serialize;
 
 use crate::build::BuildError;
@@ -121,6 +124,10 @@ pub struct Generated {
     pub used_osm: bool,
     /// What every OpenStreetMap bridge was built from, and why, in the order of their stretches.
     pub bridges: Vec<BridgeFit>,
+    /// What the hand-made edits of `edits/ways.toml` did.
+    pub edits: EditReport,
+    /// The edited ways that lie outside the map, with the `(lat, lon)` of their first node.
+    pub edits_outside: Vec<(ElementId, (f64, f64))>,
     /// What the smoothing of the road graph did; `None` when the stage is off or there are no roads.
     pub smooth: Option<SmoothReport>,
     /// What road planning did to the road graph; `None` when the stage is off or there are no roads.
@@ -143,11 +150,15 @@ struct Roads {
     dips: Vec<(Dip, DipAction)>,
 }
 
-/// The roads and streams read from OpenStreetMap.
+/// The roads and streams read from OpenStreetMap, with the hand-made edits applied.
 struct Read {
     features: Vec<Feature>,
     /// Streams, rivers and canals in map metres, for the dips.
     water: Vec<Vec<(f64, f64)>>,
+    /// What the edits of `edits/ways.toml` did.
+    edits: EditReport,
+    /// The added or modified ways none of whose nodes lies on the map, with the `(lat, lon)` of their first node.
+    outside: Vec<(ElementId, (f64, f64))>,
 }
 
 fn read_features(
@@ -156,25 +167,57 @@ fn read_features(
     frame: &MapGeo,
     progress: &dyn Fn(&str),
 ) -> Result<Read, BuildError> {
-    if project.sources.osm.is_empty() {
-        return Ok(Read {
-            features: Vec::new(),
-            water: Vec::new(),
-        });
-    }
-    progress("Reading the roads");
-    let window = frame.window(WAY_MARGIN_M).map_err(HeightmapError::from)?;
-    let files: Vec<PathBuf> = project
-        .sources
-        .osm
-        .iter()
-        .map(|p| project_dir.join(p))
-        .collect();
-    let ways: OsmWays = read_ways(&files, window).map_err(SurfaceError::from)?;
+    let extract = if project.sources.osm.is_empty() {
+        OsmWays::default()
+    } else {
+        progress("Reading the roads");
+        let window = frame.window(WAY_MARGIN_M).map_err(HeightmapError::from)?;
+        let files: Vec<PathBuf> = project
+            .sources
+            .osm
+            .iter()
+            .map(|p| project_dir.join(p))
+            .collect();
+        read_ways(&files, window).map_err(SurfaceError::from)?
+    };
+    let edits = WayEdits::load(project_dir).map_err(|source| BuildError::Edits {
+        path: project_dir.join("edits/ways.toml"),
+        source,
+    })?;
+    let (ways, report) = apply_way_edits(&extract, &edits);
+    let map_size = project.map_size_m();
     Ok(Read {
-        features: road_features(&ways, frame, project.map_size_m()),
-        water: water_lines(&ways, frame, project.map_size_m()),
+        features: road_features(&ways, frame, map_size),
+        water: water_lines(&ways, frame, map_size),
+        outside: ways_outside(&ways, &edits, frame, map_size),
+        edits: report,
     })
+}
+
+/// The ways that `edits` add or modify, as they are in `ways`, none of whose nodes lies on the map (a node that
+/// cannot be projected does not), each with the `(lat, lon)` of its first node.
+fn ways_outside(
+    ways: &OsmWays,
+    edits: &WayEdits,
+    frame: &MapGeo,
+    map_size_m: f64,
+) -> Vec<(ElementId, (f64, f64))> {
+    let on_map = |&(lat, lon): &(f64, f64)| {
+        frame
+            .to_map(lat, lon)
+            .is_ok_and(|(x, y)| (0.0..=map_size_m).contains(&x) && (0.0..=map_size_m).contains(&y))
+    };
+    edits
+        .ways
+        .iter()
+        .filter(|edit| edit.action != WayAction::Delete)
+        .filter_map(|edit| {
+            let raw = edit.id.raw()?;
+            let way = ways.ways.iter().find(|w| w.id == raw)?;
+            let first = *way.points.first()?;
+            (!way.points.iter().any(on_map)).then_some((edit.id, first))
+        })
+        .collect()
 }
 
 /// One placement of a graph: the pieces, the junction heights and the profiles of the roads.
@@ -1195,6 +1238,7 @@ pub fn generate_with(
     };
     let roads = place_roads(&read, &lots, lakes, &base, &frame, tools, stages, progress)?;
     let features = read.features;
+    let (edits, edits_outside) = (read.edits, read.outside);
 
     let heightmap = roads
         .conformed
@@ -1275,6 +1319,11 @@ pub fn generate_with(
         violations.extend(lot_violations(report, &roads.net.clean));
         sort_violations(&mut violations);
     }
+    let found = edit_violations(&edits, &edits_outside, &frame);
+    if !found.is_empty() {
+        violations.extend(found);
+        sort_violations(&mut violations);
+    }
     if let Some(catalog) = roads.catalog.as_ref() {
         warnings.extend(catalog.warnings().iter().cloned());
     }
@@ -1294,6 +1343,8 @@ pub fn generate_with(
         used_land_cover: sources.land_cover.is_some(),
         used_osm: sources.osm.is_some(),
         bridges: roads.net.bridge_fits.clone(),
+        edits,
+        edits_outside,
         smooth: roads.net.smooth.clone(),
         reroute: roads.net.reroute.clone(),
         lots: roads.net.lots.clone(),

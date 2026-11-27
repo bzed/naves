@@ -538,6 +538,9 @@ fn the_rule_ids_are_distinct_snake_case_words() {
         Rule::LotSteep,
         Rule::LotMoveLimited,
         Rule::RoadInLotDropped,
+        Rule::EditBroken,
+        Rule::EditOriginalChanged,
+        Rule::EditOutsideMap,
     ];
     assert_eq!(rules, Rule::ALL);
     let mut ids: Vec<&str> = rules.iter().map(|r| r.id()).collect();
@@ -1846,4 +1849,67 @@ fn the_water_test_follows_the_rule_of_road_in_water() {
     assert!(!with_hole((250.0, 250.0)), "inside the hole");
     // the map is half the size of the real ground: 80 map metres from the centre is within the lake
     assert!(with_hole((250.0 + 80.0, 250.0)), "between hole and shore");
+}
+
+#[test]
+fn the_edit_rules_have_their_ids() {
+    use naves_core::edits::{EditIssue, EditReport, ElementId};
+    use naves_core::heightmap::MapGeo;
+    use naves_core::project::Project;
+    use naves_core::validate::edit_violations;
+
+    assert_eq!(Rule::EditBroken.id(), "edit_broken");
+    assert_eq!(Rule::EditOriginalChanged.id(), "edit_original_changed");
+    assert_eq!(Rule::EditOutsideMap.id(), "edit_outside_map");
+
+    let frame = MapGeo::new(&Project::new("E", 47.55, 12.975, 1000.0)).unwrap();
+    let centre = (47.55, 12.975);
+    let report = EditReport {
+        applied: 1,
+        issues: vec![
+            (
+                EditIssue::Broken {
+                    way: ElementId::User(3),
+                    node: ElementId::Osm(77),
+                },
+                centre,
+            ),
+            (
+                EditIssue::OriginalChanged {
+                    way: ElementId::Osm(8421),
+                },
+                centre,
+            ),
+            (
+                EditIssue::OriginalGone {
+                    way: ElementId::Osm(9),
+                },
+                (f64::NAN, 0.0),
+            ),
+        ],
+    };
+    let outside = [(ElementId::User(4), (47.60, 12.975))];
+    let found = edit_violations(&report, &outside, &frame);
+    assert_eq!(found.len(), 4);
+    assert_eq!(found[0].rule, Rule::EditBroken);
+    assert!(found[0].message.contains("way u3"), "{}", found[0].message);
+    assert!(found[0].message.contains("77"), "{}", found[0].message);
+    assert!(
+        (found[0].at.0 - 250.0).abs() < 1.0 && (found[0].at.1 - 250.0).abs() < 1.0,
+        "{:?}",
+        found[0].at
+    );
+    assert_eq!(found[1].rule, Rule::EditOriginalChanged);
+    assert!(found[1].message.contains("way 8421"));
+    assert!(
+        found[1]
+            .message
+            .contains("the OSM original changed since the edit; the edit is applied")
+    );
+    assert_eq!(found[2].rule, Rule::EditOriginalChanged);
+    assert_eq!(found[2].at, (0.0, 0.0));
+    assert!(found[2].message.contains("cannot be projected"));
+    assert_eq!(found[3].rule, Rule::EditOutsideMap);
+    assert!(found[3].message.contains("way u4"));
+    assert!(found[3].at.1 > 1000.0, "{:?}", found[3].at);
 }

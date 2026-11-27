@@ -385,6 +385,7 @@ impl NavesApp {
                         smoothing,
                         planning,
                         lots,
+                        edits,
                     }) => {
                         self.build_problems
                             .extend(warnings.iter().cloned().map(problems::Problem::note));
@@ -393,6 +394,7 @@ impl NavesApp {
                         self.log.extend(planning.into_iter().map(Line::Info));
                         self.log.extend(smoothing.into_iter().map(Line::Info));
                         self.log.extend(lots.into_iter().map(Line::Info));
+                        self.log.extend(edits.into_iter().map(Line::Info));
                         self.log.push(Line::Result(format!(
                             "Mod: {}\nMission: {}",
                             mod_dir.display(),

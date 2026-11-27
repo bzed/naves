@@ -12,6 +12,7 @@ use crate::bridgekind::Fallback;
 use crate::checks::{DriveState, PieceCheck, SteepPathSection};
 use crate::conform::{Buried, Conformed, Holder, POST_FLOATS_M, PostFloat};
 use crate::dips::{Dip, DipAction};
+use crate::edits::{EditIssue, EditReport, ElementId};
 use crate::heightmap::MapGeo;
 use crate::junctions::{HOLD_M, JunctionKind, Junctions};
 use crate::limits::{CROSS_FALL_LIMIT, RAMP_JOINT_MIN_M, earthwork_allowance_m};
@@ -130,11 +131,17 @@ pub enum Rule {
     LotMoveLimited,
     /// A road inside a lot that is not built, and an access road cut at a lot's edge.
     RoadInLotDropped,
+    /// An edited way that uses a node with no position; the way is left out of the build.
+    EditBroken,
+    /// An edit whose OSM original changed or is gone since the edit was made; the edit is applied anyway.
+    EditOriginalChanged,
+    /// An edited or added way none of whose nodes lies on the map.
+    EditOutsideMap,
 }
 
 impl Rule {
     /// Every rule, in the order violations are sorted.
-    pub const ALL: [Rule; 39] = [
+    pub const ALL: [Rule; 42] = [
         Rule::RoadNotDrivable,
         Rule::RoadMissesTerrain,
         Rule::PathTooSteep,
@@ -174,6 +181,9 @@ impl Rule {
         Rule::LotSteep,
         Rule::LotMoveLimited,
         Rule::RoadInLotDropped,
+        Rule::EditBroken,
+        Rule::EditOriginalChanged,
+        Rule::EditOutsideMap,
     ];
 
     /// The stable id of the rule.
@@ -219,6 +229,9 @@ impl Rule {
             Rule::LotSteep => "lot_steep",
             Rule::LotMoveLimited => "lot_move_limited",
             Rule::RoadInLotDropped => "road_in_lot_dropped",
+            Rule::EditBroken => "edit_broken",
+            Rule::EditOriginalChanged => "edit_original_changed",
+            Rule::EditOutsideMap => "edit_outside_map",
         }
     }
 }
@@ -236,6 +249,65 @@ pub struct Violation {
 
 fn violation(rule: Rule, at: (f64, f64), message: String) -> Violation {
     Violation { rule, at, message }
+}
+
+/// The findings about the hand-made road edits: `edit_broken` (a way that uses a node with no position, left out),
+/// `edit_original_changed` (the OSM original changed or is gone; the edit is applied anyway) and, for each way in
+/// `outside` (its id and the `(lat, lon)` of its first node), `edit_outside_map`. The position is the one in the
+/// report projected with `frame`; one that cannot be projected is placed at `(0.0, 0.0)` and the message says so.
+#[must_use]
+pub fn edit_violations(
+    report: &EditReport,
+    outside: &[(ElementId, (f64, f64))],
+    frame: &MapGeo,
+) -> Vec<Violation> {
+    let place = |(lat, lon): (f64, f64)| match frame.to_map(lat, lon) {
+        Ok(at) => (at, String::new()),
+        Err(_) => (
+            (0.0, 0.0),
+            " (its position cannot be projected, so it is shown at 0, 0)".to_string(),
+        ),
+    };
+    let mut out = Vec::new();
+    for (issue, position) in &report.issues {
+        let (at, note) = place(*position);
+        let (rule, message) = match issue {
+            EditIssue::Broken { way, node } => (
+                Rule::EditBroken,
+                format!(
+                    "Edited way {way} is left out: its node {node} has no position (no node edit and no way of \
+                     the extract has it); draw the way again or remove the edit{note}"
+                ),
+            ),
+            EditIssue::OriginalChanged { way } => (
+                Rule::EditOriginalChanged,
+                format!(
+                    "Edited way {way}: the OSM original changed since the edit; the edit is applied, look at the \
+                     way if it still is what you meant{note}"
+                ),
+            ),
+            EditIssue::OriginalGone { way } => (
+                Rule::EditOriginalChanged,
+                format!(
+                    "Edited way {way}: the OSM original is not in the extract any more; the edit is applied, \
+                     remove it if the way is not wanted{note}"
+                ),
+            ),
+        };
+        out.push(violation(rule, at, message));
+    }
+    for (way, position) in outside {
+        let (at, note) = place(*position);
+        out.push(violation(
+            Rule::EditOutsideMap,
+            at,
+            format!(
+                "Edited way {way} lies outside the map: none of its nodes is on it, so it is not built; move \
+                 it onto the map or remove the edit{note}"
+            ),
+        ));
+    }
+    out
 }
 
 /// The roads that miss what they have to meet (`road_gap`) and the ones that meet a bridge turned (`road_kink`).

@@ -47,6 +47,7 @@ use crate::generate::{Generated, Stages, generate_with};
 use crate::layers::{LayerSet, build_layers};
 use crate::mission::{MissionError, write_mission};
 use crate::tools::{ToolError, Tools};
+use naves_core::edits::EditIssue;
 
 /// How long one `dayzmake` call may take.
 const DAYZMAKE_TIMEOUT: Duration = Duration::from_mins(30);
@@ -71,6 +72,8 @@ pub struct BuildOutput {
     /// One line on what the lot stage did; `None` when the stage is off, `Some` with its own line ("Lots: none"
     /// included) whenever the stage is on.
     pub lots: Option<String>,
+    /// One line on what the hand-made road edits did; `None` when there is nothing to say (no edits, no findings).
+    pub edits: Option<String>,
 }
 
 /// Errors from the build.
@@ -106,6 +109,14 @@ pub enum BuildError {
     /// The edits cannot be read.
     #[error(transparent)]
     Overrides(#[from] OverridesError),
+    /// The hand-made road edits cannot be read.
+    #[error("{}: {source}", path.display())]
+    Edits {
+        /// The edit file.
+        path: PathBuf,
+        /// The cause.
+        source: naves_core::edits::EditsError,
+    },
     /// An imagery file cannot be read or merged.
     #[error(transparent)]
     Imagery(#[from] ImageryError),
@@ -801,6 +812,45 @@ fn smoothing_json(smooth: Option<&SmoothReport>) -> serde_json::Value {
     })
 }
 
+/// The counts of the hand-made road edits: `(applied, broken, changed, outside)`. `changed` is the edits whose OSM
+/// original changed or is gone.
+fn edit_counts(generated: &Generated) -> (usize, usize, usize, usize) {
+    let (mut broken, mut changed) = (0, 0);
+    for (issue, _) in &generated.edits.issues {
+        match issue {
+            EditIssue::Broken { .. } => broken += 1,
+            EditIssue::OriginalChanged { .. } | EditIssue::OriginalGone { .. } => changed += 1,
+        }
+    }
+    (
+        generated.edits.applied,
+        broken,
+        changed,
+        generated.edits_outside.len(),
+    )
+}
+
+/// `edits` of `build/report.json`: what the hand-made road edits did.
+fn edits_json(generated: &Generated) -> serde_json::Value {
+    let (applied, broken, changed, outside) = edit_counts(generated);
+    serde_json::json!({
+        "applied": applied,
+        "broken": broken,
+        "changed": changed,
+        "outside": outside,
+    })
+}
+
+/// The one line the build prints about the hand-made road edits; `None` when all four counts are zero.
+fn edits_summary(generated: &Generated) -> Option<String> {
+    let (applied, broken, changed, outside) = edit_counts(generated);
+    (applied + broken + changed + outside > 0).then(|| {
+        format!(
+            "Edits: {applied} applied, {broken} broken, {changed} changed since the edit, {outside} outside the map"
+        )
+    })
+}
+
 /// `roads.lots` of `build/report.json`: what the lot stage did, or that it is off. `clean` is the clean-up of the
 /// same graph: it holds the roads the lot step removed, the access roads it cut and the stretches that stay as through
 /// roads. Figures that need a surface are `null` for a lot that has none.
@@ -949,6 +999,7 @@ fn write_report(layout: &Layout, generated: &Generated) -> Result<(), BuildError
     let report = serde_json::json!({
         "roads": roads,
         "bridges": bridges,
+        "edits": edits_json(generated),
         "violations": violations,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|e| BuildError::Io {
@@ -1186,6 +1237,7 @@ pub fn build_with(
             .lots
             .as_ref()
             .map(|report| report.summary(&generated.clean)),
+        edits: edits_summary(&generated),
     })
 }
 

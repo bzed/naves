@@ -203,3 +203,83 @@ field.
 If the object an edit was made for is gone, has become another model, or is more than 25 m from where it was, the edit
 was made for something else. It is **kept exactly as it is**, as an object of its own, and the build warns about it.
 A deletion with no object left to delete is dropped without a warning.
+
+## `edits/ways.toml`
+
+Not part of `naves.toml` either: the roads you drew or changed, in the way OpenStreetMap itself stores them (nodes and
+ways). A map without OpenStreetMap files is a map whose roads are all in this file. A missing file means no edits. The
+editor writes it; you can also edit it by hand or let an AI client write it through MCP.
+
+```toml
+format = 1
+next_id = 4
+
+# a node you drew: the program writes `u1` as a user id
+[[nodes]]
+id = "u1"
+lat = 47.5500
+lon = 12.9700
+
+[[nodes]]
+id = "u2"
+lat = 47.5510
+lon = 12.9720
+
+# an OpenStreetMap node you moved (`base` is where OpenStreetMap has it)
+[[nodes]]
+id = 3141592
+lat = 47.5502
+lon = 12.9710
+base = [47.5501, 12.9710]
+
+# a road you drew
+[[ways]]
+id = "u3"
+action = "add"
+nodes = ["u1", "u2"]
+by = "user"
+
+[ways.tags]
+highway = "track"
+tracktype = "grade2"
+"naves:keep" = "yes"
+
+# an OpenStreetMap road you removed
+[[ways]]
+id = 8421
+action = "delete"
+base = "0123456789abcdef"
+```
+
+| Field | Valid values |
+|---|---|
+| `format` | `1` |
+| `next_id` | the number the next element you draw gets; greater than every `u<n>` in the file, so ids are never reused |
+| `nodes.id` | `u<n>` for a node you drew, an OpenStreetMap node id (an integer) for one you moved |
+| `nodes.lat`, `nodes.lon` | WGS84 degrees, never map metres |
+| `nodes.base` | `[lat, lon]`, where OpenStreetMap has a moved node; left out for a node you drew |
+| `ways.id` | `u<n>` for `add`, the OpenStreetMap way id (an integer) for `modify` and `delete` |
+| `ways.action` | `add`, `modify` (the tags and nodes replace the original's) or `delete` |
+| `ways.tags` | OpenStreetMap tags of the way after the edit, as for any road (`highway`, `bridge`, `layer`, `surface`, ...); none for `delete` |
+| `ways.nodes` | the node ids of the way after the edit, in order; a closed way repeats its first node at the end; none for `delete` |
+| `ways.base` | a fingerprint of the OpenStreetMap original (`modify` and `delete`), which the program writes |
+| `by` | `user` (default) or `ai`: who made the edit |
+
+**Ids.** An integer is an OpenStreetMap id; `u<n>` (`n` of 1 or more) is an element you drew. A drawn way builds as
+`user/way/<n>/<part>`. Every position is a latitude and longitude, so moving the centre or changing the extent or the
+scale of the project keeps every edit where it was in the world.
+
+**Edits always win.** The build applies the file to what the OpenStreetMap files hold: moved nodes replace the
+positions of that node in every way, `delete` removes a way, `modify` replaces its tags and nodes, `add` inserts a way.
+If the OpenStreetMap original of a `modify` or `delete` has changed or is gone since you made the edit, the edit is
+still applied and the build reports `edit_original_changed` (see [Troubleshooting](troubleshooting.md)).
+
+**`naves:keep` and `naves:plan`.** Every way you draw or change gets `naves:keep=yes`: Náves keeps the line as drawn.
+The network clean-up does not remove it or move its nodes, the smoothing and the junction merge leave it alone, and
+no lot removes or cuts it. It still gets pieces, heights, junction pieces and earthwork like any road, and a bend that
+is too tight for the pieces is reported, not rebuilt. `naves:keep=no` hands the way back to the generator, and
+`naves:plan=yes` lets the road planning improve the line anyway (draw it roughly and let Náves route it).
+
+Every number must be finite, the counts and lengths are limited, and ids must be as above. A file that breaks this
+stops the build with a message that names the file and the element.
+

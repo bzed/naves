@@ -366,6 +366,21 @@ The Sakhal archive (`sakhal/addons/structures_sakhal.pbo`) or the industrial arc
 (`addons/structures_industrial.pbo`) is missing, or a model in it; the build goes on without those parts.
 
 
+**`edit_broken` (warning)**
+A way in `edits/ways.toml` uses a node that has no position: no node edit in the file and no way of the OpenStreetMap
+files has it, for example because the extract was replaced by a smaller one. The message names the way and the node.
+The way is left out of the build; the rest builds. Draw the way again, or remove it from the file.
+
+**`edit_original_changed` (information)**
+The OpenStreetMap original of a `modify` or `delete` in `edits/ways.toml` is not what it was when you made the edit, or
+is not in the OpenStreetMap files any more. The edit is applied anyway (edits always win); the message names the way
+and the position. Look at the place: if the change in OpenStreetMap is what you wanted, remove the edit.
+
+**`edit_outside_map` (information)**
+A way you drew or changed has none of its nodes on the map, for example after you moved the centre or made the map
+smaller. It is kept in `edits/ways.toml` and not built; the message names the way. Move the map back or remove the
+edit.
+
 ## Server mission
 
 **`source mission not found: .../dayzOffline.enoch`**
