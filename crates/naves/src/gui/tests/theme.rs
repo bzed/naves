@@ -142,3 +142,31 @@ fn the_dark_chrome_paints_the_slate_palette() {
     assert_eq!(word, letter);
     assert!(contrast(letter, active(&visuals)) >= 4.5);
 }
+
+/// An unticked checkbox or radio button has an edge you can see: its box (the widget fill) is 3:1 against the
+/// panel, and the check mark (the widget text) is 3:1 against the box, on both themes and also when hovered.
+#[test]
+fn unticked_boxes_read() {
+    for (name, choice, theme) in [
+        ("dark", ThemeChoice::Dark, egui::Theme::Dark),
+        ("light", ThemeChoice::Light, egui::Theme::Light),
+    ] {
+        let ctx = egui::Context::default();
+        crate::gui::theme::apply_theme(&ctx, choice);
+        let v = ctx.style_of(theme).visuals.clone();
+        for (state, w) in [
+            ("inactive", v.widgets.inactive),
+            ("hovered", v.widgets.hovered),
+        ] {
+            let edge = if w.bg_stroke.width > 0.0 {
+                w.bg_stroke.color
+            } else {
+                w.bg_fill
+            };
+            let box_on_panel = contrast(edge, v.panel_fill);
+            assert!(box_on_panel >= 3.0, "{name} {state}: box {box_on_panel:.2}");
+            let mark = contrast(w.fg_stroke.color, w.bg_fill);
+            assert!(mark >= 3.0, "{name} {state}: check mark {mark:.2}");
+        }
+    }
+}

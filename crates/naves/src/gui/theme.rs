@@ -28,6 +28,12 @@ pub mod tokens {
     pub const PROBLEM: Color32 = Color32::from_rgb(0xd5, 0x5e, 0x00);
     /// What needs a look; always with `●`.
     pub const NOTICE: Color32 = Color32::from_rgb(0xf0, 0xe4, 0x42);
+    /// The box of a checkbox or radio button.
+    pub const BOX: Color32 = Color32::from_rgb(0x75, 0x80, 0x8c);
+    /// [`BOX`] under the pointer.
+    pub const BOX_HOVERED: Color32 = Color32::from_rgb(0x7a, 0x85, 0x91);
+    /// The box of a checkbox or radio button on the light theme.
+    pub const BOX_LIGHT: Color32 = Color32::from_rgb(0x85, 0x8d, 0x96);
     /// [`ACTIVE`] on the light theme, where the sky blue would be under 3:1 on white.
     pub const ACTIVE_LIGHT: Color32 = Color32::from_rgb(0x00, 0x72, 0xb2);
 }
@@ -83,10 +89,17 @@ pub fn apply_theme(ctx: &egui::Context, choice: ThemeChoice) {
     v.selection.stroke = egui::Stroke::new(1.0, tokens::ACTIVE);
     v.widgets.active.bg_stroke = egui::Stroke::new(1.0, tokens::ACTIVE);
     v.widgets.noninteractive.fg_stroke.color = tokens::INK;
+    // the design system draws no edge on a widget, so the box of an unticked checkbox or radio button is its
+    // fill: a slate that is 3:1 against the panel and keeps the check mark 3:1 against it
+    v.widgets.inactive.bg_fill = tokens::BOX;
+    v.widgets.hovered.bg_fill = tokens::BOX_HOVERED;
+    v.widgets.inactive.fg_stroke.color = tokens::INK;
     v.weak_text_color = Some(tokens::INK_QUIET);
     v.warn_fg_color = tokens::NOTICE;
     ctx.set_style_of(egui::Theme::Dark, dark);
     let mut light = std::sync::Arc::unwrap_or_clone(ctx.style_of(egui::Theme::Light));
+    light.visuals.widgets.inactive.bg_fill = tokens::BOX_LIGHT;
+    light.visuals.widgets.hovered.bg_fill = tokens::BOX_LIGHT;
     light.visuals.selection.stroke = egui::Stroke::new(1.0, tokens::ACTIVE_LIGHT);
     ctx.set_style_of(egui::Theme::Light, light);
     set_choice(ctx, choice);
