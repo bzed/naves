@@ -257,7 +257,8 @@ fn rows_are_grouped_by_level_in_the_stack_s_order_and_only_what_exists() {
         h.query_by_label("Terrain").is_none(),
         "Terrain has no keys of its own yet"
     );
-    assert!(h.query_by_label("Undo").is_none(), "not built");
+    assert!(h.query_by_label("Duplicate").is_none(), "not built");
+    assert!(h.query_by_label("Undo").is_some());
     assert!(h.query_by_label("Go to Terrain").is_some());
 }
 
@@ -273,7 +274,7 @@ fn pressing_a_key_rebinds_and_saves() {
     h.key_press_modifiers(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::B);
     h.run_steps(3);
     assert_eq!(saved(&path).shortcuts["build"], "Ctrl+Shift+B");
-    assert!(h.query_by_label_contains("changed").is_some());
+    assert!(h.query_by_label("changed").is_some());
 }
 
 #[test]

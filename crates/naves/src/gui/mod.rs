@@ -126,6 +126,8 @@ pub struct NavesApp {
     /// The edit session: the ways with the hand-made edits.
     edit: edit::EditState,
     source_job: Option<SourceJob>,
+    /// The last edit error, or why the map data for editing could not be read.
+    edit_problems: Vec<problems::Problem>,
     /// What is wrong with the roads, with positions.
     road_problems: Vec<problems::Problem>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -204,6 +206,7 @@ impl NavesApp {
             roads_job: None,
             edit: edit::EditState::None,
             source_job: None,
+            edit_problems: Vec::new(),
             road_problems: Vec::new(),
             job: None,
             reload_wanted: false,
@@ -314,6 +317,7 @@ impl NavesApp {
     /// Reads the source layer again; the session of the editor starts anew.
     fn reload_source(&mut self) {
         self.source_job = None;
+        self.edit_problems.clear();
         if self.form.project.sources.dem.is_empty() {
             self.edit = edit::EditState::None;
             return;
@@ -346,16 +350,26 @@ impl NavesApp {
         ) -> Result<(), naves_core::edits::EditsError>,
     ) -> Result<(), String> {
         let dir = self.form.dir().to_path_buf();
-        let result = match self.edit.session_mut() {
-            Some(session) => session.apply(&dir, op),
-            None => Err(match &self.edit {
+        let Some(session) = self.edit.session_mut() else {
+            // the reason is already a problem when the map data could not be read
+            let text = match &self.edit {
                 edit::EditState::Failed(error) => {
                     format!("The edit cannot be made: the map data could not be read: {error}")
                 }
                 _ => "The edit cannot be made: the map is not ready".to_string(),
-            }),
+            };
+            self.log.push(Line::Warning(text.clone()));
+            return Err(text);
         };
+        let result = session.apply(&dir, op);
         self.edit_result(result)
+    }
+
+    fn set_edit_problem(&mut self, text: String) {
+        self.edit_problems = vec![problems::Problem {
+            level: Some(levels::Level::Roads),
+            ..problems::Problem::note(text)
+        }];
     }
 
     fn undo(&mut self) {
@@ -375,8 +389,12 @@ impl NavesApp {
     }
 
     fn edit_result(&mut self, result: Result<(), String>) -> Result<(), String> {
-        if let Err(text) = &result {
-            self.log.push(Line::Warning(text.clone()));
+        match &result {
+            Ok(()) => self.edit_problems.clear(),
+            Err(text) => {
+                self.log.push(Line::Warning(text.clone()));
+                self.set_edit_problem(text.clone());
+            }
         }
         result
     }
@@ -439,9 +457,9 @@ impl NavesApp {
         self.edit = match result {
             Ok(source) => edit::EditState::Ready(Box::new(edit::EditSession::new(source))),
             Err(error) => {
-                self.log.push(Line::Warning(format!(
-                    "The map data for editing could not be read: {error}"
-                )));
+                let text = format!("The map data for editing could not be read: {error}");
+                self.log.push(Line::Warning(text.clone()));
+                self.set_edit_problem(text);
                 edit::EditState::Failed(error)
             }
         };
@@ -626,6 +644,7 @@ impl NavesApp {
         let mut rows: Vec<problems::Problem> = self.build_problems.clone();
         rows.extend(self.merge_problems.iter().cloned());
         rows.extend(self.road_problems.iter().cloned());
+        rows.extend(self.edit_problems.iter().cloned());
         if let Some(error) = &self.form.error {
             rows.push(problems::Problem::note(format!("Not saved: {error}")));
         }

@@ -132,6 +132,49 @@ fn an_edit_that_cannot_be_made_changes_nothing() {
 
 #[cfg(unix)]
 #[test]
+fn a_failed_save_is_a_problem_until_the_next_edit() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_session(&mut app);
+    let way = app.edit.session().unwrap().source.extract.ways[0].clone();
+    std::fs::create_dir_all(dir.join("edits")).unwrap();
+    std::fs::set_permissions(dir.join("edits"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let result = app.edit_way(|edits, _| edits.delete_way(&way, By::User));
+    std::fs::set_permissions(dir.join("edits"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    app.refresh_problems();
+    assert!(
+        app.problems
+            .rows
+            .iter()
+            .any(|p| p.message.starts_with("Could not save the edit: "))
+    );
+    app.edit_way(|edits, _| edits.delete_way(&way, By::User))
+        .unwrap();
+    app.refresh_problems();
+    assert!(
+        app.problems
+            .rows
+            .iter()
+            .all(|p| !p.message.starts_with("Could not save the edit: "))
+    );
+}
+
+#[test]
+fn undo_redo_and_regenerate_are_built() {
+    use crate::gui::shortcuts::{Action, action_built};
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let app = app(root.path(), &dir);
+    for action in [Action::Undo, Action::Redo, Action::Regenerate] {
+        assert!(action_built(action, &app), "{action:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn a_failed_save_undoes_the_edit() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
@@ -260,4 +303,9 @@ fn a_damaged_edits_file_is_reported_and_blocks_edits() {
         .edit_way(|edits, _| edits.new_node(47.5, 12.9, By::User).map(|_| ()))
         .unwrap_err();
     assert!(error.starts_with("The edit cannot be made: "), "{error}");
+    app.refresh_problems();
+    assert!(app.problems.rows.iter().any(|p| {
+        p.message
+            .starts_with("The map data for editing could not be read: ")
+    }));
 }

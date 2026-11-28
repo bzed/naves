@@ -166,7 +166,10 @@ impl EditSession {
     /// The way with this raw id, with the edits applied.
     #[must_use]
     pub fn way(&self, raw: i64) -> Option<&OsmWay> {
-        self.source.ways.ways.iter().find(|w| w.id == raw)
+        let ways = &self.source.ways.ways;
+        ways.binary_search_by_key(&raw, |w| w.id)
+            .ok()
+            .and_then(|i| ways.get(i))
     }
 
     /// The way as the extract has it (for an OSM id), or as drawn (for a user id).
@@ -175,7 +178,10 @@ impl EditSession {
         if raw >= USER_ID_BASE {
             self.way(raw)
         } else {
-            self.source.extract.ways.iter().find(|w| w.id == raw)
+            let ways = &self.source.extract.ways;
+            ways.binary_search_by_key(&raw, |w| w.id)
+                .ok()
+                .and_then(|i| ways.get(i))
         }
     }
 

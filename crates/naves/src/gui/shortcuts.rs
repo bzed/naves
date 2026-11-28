@@ -1215,19 +1215,19 @@ pub fn action_built(action: Action, app: &NavesApp) -> bool {
         | Action::PreviousProblem
         | Action::Help
         | Action::Settings
-        | Action::CommandPalette => true,
+        | Action::CommandPalette
+        | Action::Undo
+        | Action::Redo
+        | Action::Regenerate => true,
         Action::EarthworkShape
         | Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
         | Action::Duplicate
-        | Action::Undo
-        | Action::Redo
         | Action::BrushSmaller
         | Action::BrushLarger
         | Action::BrushWeaker
         | Action::BrushStronger
-        | Action::Finish
-        | Action::Regenerate => false,
+        | Action::Finish => false,
     }
 }
