@@ -58,6 +58,16 @@ pub fn on_active(visuals: &egui::Visuals) -> Color32 {
     }
 }
 
+/// The frame of a side panel, the rail and the dock: the panel colour of the theme (dark: [`tokens::PANEL`]).
+pub fn panel_frame(visuals: &egui::Visuals) -> egui::Frame {
+    egui::Frame::new().fill(visuals.panel_fill)
+}
+
+/// The frame behind the map and the status line: the ground colour of the theme (dark: [`tokens::GROUND`]).
+pub fn ground_frame(visuals: &egui::Visuals) -> egui::Frame {
+    egui::Frame::new().fill(visuals.extreme_bg_color)
+}
+
 /// Sets the theme: the design system installs its tokens (fills, text, spacing, the Inter font) for both
 /// themes, then the dark one gets the chrome palette and `choice` picks the one in use. Call it once; to
 /// change the choice later call [`set_choice`].

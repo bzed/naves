@@ -118,3 +118,27 @@ fn light_can_be_chosen_in_the_map_tab() {
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("theme = \"light\""), "{text}");
 }
+
+/// The panels are painted with the palette: egui's `Frame::new()` is transparent, which showed the window's
+/// clear colour (#080808) instead of the slate chrome.
+#[test]
+fn the_dark_chrome_paints_the_slate_palette() {
+    let mut harness = Harness::builder()
+        .with_context_setup(|ctx| crate::gui::theme::apply_theme(ctx, ThemeChoice::Dark))
+        .build_ui(|ui| {
+            ui.label("probe");
+        });
+    harness.run();
+    let visuals = harness.ctx.global_style().visuals.clone();
+    assert!(visuals.dark_mode);
+    assert_eq!(crate::gui::theme::panel_frame(&visuals).fill, tokens::PANEL);
+    assert_eq!(
+        crate::gui::theme::ground_frame(&visuals).fill,
+        tokens::GROUND
+    );
+    // the active tool is the accent with the text that reads on it
+    let (letter, word) = crate::gui::rail::tool_ink(true, Level::Roads, &visuals);
+    assert_eq!(letter, crate::gui::theme::on_active(&visuals));
+    assert_eq!(word, letter);
+    assert!(contrast(letter, active(&visuals)) >= 4.5);
+}

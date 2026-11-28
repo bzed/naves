@@ -630,7 +630,7 @@ impl NavesApp {
         egui::Panel::bottom("build")
             .resizable(!fold.dock)
             .default_size(if fold.dock { 40.0 } else { 150.0 })
-            .frame(egui::Frame::new().inner_margin(10.0))
+            .frame(theme::panel_frame(ui.visuals()).inner_margin(10.0))
             .show(ui, |ui| {
                 dock::tab_row(ui, dock::TABS, self);
                 if !fold.dock {
@@ -644,7 +644,7 @@ impl NavesApp {
             egui::Panel::left("settings-strip")
                 .resizable(false)
                 .exact_size(22.0)
-                .frame(egui::Frame::new())
+                .frame(theme::panel_frame(ui.visuals()))
                 .show(ui, |ui| {
                     if ui
                         .button("›")
@@ -658,7 +658,7 @@ impl NavesApp {
             egui::Panel::left("settings")
                 .resizable(false)
                 .exact_size(SETTINGS_WIDTH)
-                .frame(egui::Frame::new().inner_margin(12.0))
+                .frame(theme::panel_frame(ui.visuals()).inner_margin(12.0))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -669,13 +669,13 @@ impl NavesApp {
             egui::Panel::left("rail")
                 .resizable(false)
                 .exact_size(rail::RAIL_WIDTH)
-                .frame(egui::Frame::new())
+                .frame(theme::panel_frame(ui.visuals()))
                 .show(ui, |ui| rail::rail_ui(self, ui));
         }
         egui::Panel::right("stack")
             .resizable(false)
             .exact_size(RIGHT_WIDTH)
-            .frame(egui::Frame::new().inner_margin(12.0))
+            .frame(theme::panel_frame(ui.visuals()).inner_margin(12.0))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -685,7 +685,7 @@ impl NavesApp {
                     });
             });
         egui::CentralPanel::default()
-            .frame(egui::Frame::new())
+            .frame(theme::ground_frame(ui.visuals()))
             .show(ui, |ui| self.middle(ui));
         if self.help_open {
             self.help_ui(ui.ctx());

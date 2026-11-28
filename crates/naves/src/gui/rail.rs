@@ -14,15 +14,16 @@ use super::theme::active as accent;
 pub const RAIL_WIDTH: f32 = 56.0;
 const BUTTON_HEIGHT: f32 = 50.0;
 
-/// The colours of a tool's letter and word: the level's band text on its band when active, the ink of the chrome
+/// The colours of a tool's letter and word: the text on the accent when active, the ink of the chrome
 /// (readable on the panel in both themes) otherwise.
 pub(super) fn tool_ink(
     active: bool,
-    level: super::levels::Level,
+    _level: super::levels::Level,
     visuals: &egui::Visuals,
 ) -> (egui::Color32, egui::Color32) {
     if active {
-        (level.band_text(), level.band_text())
+        let ink = super::theme::on_active(visuals);
+        (ink, ink)
     } else {
         (visuals.text_color(), visuals.text_color())
     }
@@ -50,7 +51,7 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
             .widget_info(|| WidgetInfo::selected(egui::Role::Button, true, active, label.clone()));
         let painter = ui.painter();
         if active {
-            painter.rect_filled(rect, 0.0, level.colour());
+            painter.rect_filled(rect, 0.0, accent(ui.visuals()));
         }
         let (letter_colour, word_colour) = tool_ink(active, level, ui.visuals());
         painter.text(
@@ -75,7 +76,7 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
                 egui::Stroke::new(
                     2.0,
                     if active {
-                        level.band_text()
+                        crate::gui::theme::on_active(ui.visuals())
                     } else {
                         accent(ui.visuals())
                     },
