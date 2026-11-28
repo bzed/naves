@@ -41,7 +41,17 @@ pub enum OverlayShape {
     },
 }
 
-/// The shapes for the ways of the session, the selected one with its handles, and the line being drawn. The
+/// The way under the pointer, whose nodes a node tool shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hovered {
+    /// The raw id of the way.
+    pub way: i64,
+    /// Show only the two end nodes (Join).
+    pub ends_only: bool,
+}
+
+/// The shapes for the ways of the session, the selected one and the `hovered` one with their handles, and the
+/// line being drawn. The
 /// order is the paint order: source lines at the bottom, then edited ones, the selected one, the line being drawn,
 /// and the ticks and handles on top.
 #[must_use]
@@ -49,6 +59,7 @@ pub fn overlay(
     session: &EditSession,
     selection: Option<&Target>,
     drawing: &[WorldPoint],
+    hovered: Option<Hovered>,
 ) -> Vec<OverlayShape> {
     let selected = selection.map(|target| match *target {
         Target::Way(way) | Target::Node { way, .. } => way,
@@ -67,6 +78,13 @@ pub fn overlay(
         }
         if is_selected {
             handles.extend(points.iter().copied().map(OverlayShape::Handle));
+        } else if let Some(h) = hovered.filter(|h| h.way == way.id) {
+            if h.ends_only {
+                handles.extend(points.first().copied().map(OverlayShape::Handle));
+                handles.extend(points.last().copied().map(OverlayShape::Handle));
+            } else {
+                handles.extend(points.iter().copied().map(OverlayShape::Handle));
+            }
         }
         let (list, style) = if is_selected {
             (&mut chosen, LineStyle::Selected)
@@ -162,7 +180,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let shapes = overlay(&s, None, &[]);
+        let shapes = overlay(&s, None, &[], None);
         assert_eq!(count(&shapes, LineStyle::Source), 1);
         assert_eq!(count(&shapes, LineStyle::Edited), 2);
         assert_eq!(ticks(&shapes), 4);
@@ -174,7 +192,7 @@ mod tests {
             (1, &[(500.0, 500.0), (600.0, 500.0)]),
             (2, &[(500.0, 600.0), (550.0, 650.0), (600.0, 600.0)]),
         ]);
-        let shapes = overlay(&s, Some(&Target::Way(2)), &[]);
+        let shapes = overlay(&s, Some(&Target::Way(2)), &[], None);
         assert_eq!(count(&shapes, LineStyle::Selected), 1);
         assert_eq!(count(&shapes, LineStyle::Source), 1);
         let handles = shapes
@@ -184,7 +202,7 @@ mod tests {
         assert_eq!(handles, 3);
         let node = Target::Node { node: 200, way: 2 };
         assert_eq!(
-            count(&overlay(&s, Some(&node), &[]), LineStyle::Selected),
+            count(&overlay(&s, Some(&node), &[], None), LineStyle::Selected),
             1
         );
     }
@@ -193,7 +211,7 @@ mod tests {
     fn the_line_being_drawn_has_a_handle_per_point() {
         let s = session(&[]);
         let drawing = [WorldPoint { x: 1.0, y: 1.0 }, WorldPoint { x: 5.0, y: 1.0 }];
-        let shapes = overlay(&s, None, &drawing);
+        let shapes = overlay(&s, None, &drawing, None);
         assert_eq!(count(&shapes, LineStyle::Drawing), 1);
         assert_eq!(shapes.len(), 3);
     }

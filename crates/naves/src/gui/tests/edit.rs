@@ -59,7 +59,7 @@ fn the_projected_ways_are_built_once_per_change_of_the_edits() {
     let at = session.projected()[0].points[0].1;
     // frames and clicks read the cache
     for _ in 0..5 {
-        let _ = overlay(&session, None, &[]);
+        let _ = overlay(&session, None, &[], None);
         let _ = hit(&session, at, tolerance_m(100.0, 1000.0));
     }
     assert_eq!(session.projection_builds(), 1);
@@ -89,7 +89,7 @@ fn a_moved_node_marks_its_way_as_changed() {
     .unwrap();
     assert_eq!(s.origin(7), Origin::EditedOsm, "the road is changed");
     assert_eq!(s.origin(8), Origin::Osm);
-    let ticks = overlay(&s, None, &[])
+    let ticks = overlay(&s, None, &[], None)
         .iter()
         .filter(|shape| matches!(shape, OverlayShape::Tick { .. }))
         .count();
@@ -974,6 +974,46 @@ mod tools {
             .find(|w| tag(w, "bridge") == Some("yes"))
             .expect("the bridge was made on way 7");
         assert_eq!(bridge.nodes, osm(&[700, 701, 702, 703, 704]));
+    }
+
+    fn handles(s: &Setup) -> usize {
+        s.h.state()
+            .overlay_shapes()
+            .iter()
+            .filter(|shape| matches!(shape, crate::gui::edit::overlay::OverlayShape::Handle(_)))
+            .count()
+    }
+
+    fn hover(s: &mut Setup, x: f64, y: f64) {
+        s.send(&[ViewEvent::Hover(at(x, y))]);
+    }
+
+    #[test]
+    fn the_node_tools_show_the_nodes_of_the_road_under_the_pointer() {
+        let mut s = setup(false);
+        s.roads();
+        for (modifiers, key, shown) in [
+            (Modifiers::NONE, Key::G, 5),
+            (Modifiers::NONE, Key::R, 5),
+            (Modifiers::SHIFT, Key::T, 5),
+            (Modifiers::NONE, Key::T, 2),
+        ] {
+            s.key_with(modifiers, key);
+            assert_eq!(handles(&s), 0, "no handles away from the roads");
+            hover(&mut s, 575.0, 500.0);
+            assert_eq!(handles(&s), shown, "{key:?}");
+            hover(&mut s, 575.0, 530.0);
+            assert_eq!(handles(&s), 0, "the pointer left the road");
+        }
+        // the pointer leaves the map
+        s.key(Key::G);
+        hover(&mut s, 575.0, 500.0);
+        s.send(&[ViewEvent::Left]);
+        assert_eq!(handles(&s), 0);
+        // the other tools show none
+        s.key(Key::C);
+        hover(&mut s, 575.0, 500.0);
+        assert_eq!(handles(&s), 0);
     }
 
     #[test]

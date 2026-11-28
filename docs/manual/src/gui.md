@@ -197,6 +197,9 @@ drops what a tool holds (a line, a drag, a first click) and, with nothing held, 
 
 ![The Roads level: the item list in Everything scope, the rail, a road drawn by you selected, and its properties](images/roads-editing.png)
 
+With Move, Cut, Join or Bridge the nodes of the road under the pointer show as small square handles (Join shows
+the two ends), so you can see where to click.
+
 Where roads meet at a node, a click on that node works with the road the tool can use: Cut takes the road that
 passes through the node, Join the roads that end there (two roads that already touch are joined by clicking the
 shared node twice).

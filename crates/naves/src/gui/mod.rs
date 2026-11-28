@@ -139,6 +139,8 @@ pub struct NavesApp {
     drawing: edit::tools::Drawing,
     /// What Move, Join and Bridge hold between two events.
     pending: edit::tools::Pending,
+    /// Where the pointer is over the map, in map metres.
+    hover: Option<viewport::WorldPoint>,
     source_job: Option<SourceJob>,
     /// The last edit error, or why the map data for editing could not be read.
     edit_problems: Vec<problems::Problem>,
@@ -227,6 +229,7 @@ impl NavesApp {
             edit: edit::EditState::None,
             drawing: edit::tools::Drawing::default(),
             pending: edit::tools::Pending::default(),
+            hover: None,
             source_job: None,
             edit_problems: Vec::new(),
             road_problems: Vec::new(),
@@ -1197,6 +1200,11 @@ impl NavesApp {
         self.draw_markers(ui, rect);
         self.draw_selection(ui, rect);
         for event in &events {
+            match *event {
+                ViewEvent::Hover(at) => self.hover = Some(at),
+                ViewEvent::Left => self.hover = None,
+                _ => {}
+            }
             self.route(event);
         }
         #[cfg(test)]
@@ -1255,7 +1263,8 @@ impl NavesApp {
             return Vec::new();
         };
         let target = self.selection.as_ref().and_then(|s| s.target.as_ref());
-        let mut shapes = edit::overlay::overlay(session, target, &drawing);
+        let mut shapes =
+            edit::overlay::overlay(session, target, &drawing, self.hovered_way(session));
         shapes.extend(
             self.pending
                 .marks()
@@ -1263,6 +1272,27 @@ impl NavesApp {
                 .map(edit::overlay::OverlayShape::Handle),
         );
         shapes
+    }
+
+    /// The way under the pointer, when the tool in use needs to see the nodes of the road it is about to work on.
+    fn hovered_way(&self, session: &edit::EditSession) -> Option<edit::overlay::Hovered> {
+        let ends_only = self.tool == shortcuts::ToolId::JOIN;
+        if !(ends_only
+            || [
+                shortcuts::ToolId::MOVE,
+                shortcuts::ToolId::CUT,
+                shortcuts::ToolId::BRIDGE,
+            ]
+            .contains(&self.tool))
+        {
+            return None;
+        }
+        let at = self.hover?;
+        match edit::hit::hit(session, at, self.hit_tolerance_m())? {
+            edit::hit::Target::Way(way) | edit::hit::Target::Node { way, .. } => {
+                Some(edit::overlay::Hovered { way, ends_only })
+            }
+        }
     }
 
     /// How many metres a click may be off the line it means, from the zoom of the view.

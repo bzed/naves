@@ -23,6 +23,7 @@ All notable changes to this project are documented here. The format follows
   rebuilds. A project without OpenStreetMap files shows the roads of its edits.
 - On the Roads level roads can be drawn (C), moved (G), cut (R), joined (T), made a bridge (Shift+T) and deleted (X).
   Cut, Join and Bridge also work on a node where roads meet.
+  The node tools show the nodes of the road under the pointer.
   A right click or a double click finishes a line. Space no longer pans the map; it finishes a line.
 - The properties of a road can be changed in the GUI — class, surface, bridge, layer, keep as drawn, let road planning
   route it — and an edited OpenStreetMap road can be reset. A road with a moved node counts as edited (blue, with
