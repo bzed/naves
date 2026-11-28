@@ -606,3 +606,26 @@ Your own changes to what was generated are kept in `edits/overrides.toml`
 
 **The terrain changes where there are roads, so a [navigation mesh](navmesh.md) made earlier no longer fits.**
 `naves build` warns about that when the project has one.
+
+## Fix a road
+
+When the generator got a road wrong, or the map has none, you fix it in the [GUI](gui.md). Every change is saved at
+once to `edits/ways.toml` and kept when OpenStreetMap files change. The project needs the elevation data of
+[step 2](#2-add-elevation-data); the game's road pieces need the tools of [External tools](settings.md).
+
+```
+naves gui <project>
+```
+
+1. Press **4** for the Roads level. The roads from OpenStreetMap are drawn as thin grey lines over the map.
+2. To add a road, pick its class in the list on the left (for example *Secondary*), press **C** (picking the class
+   already does), click the points along the road on the map and press **Space**. The line you drew is a blue line
+   with a small square at each end.
+3. Press **Ctrl+R**. The roads are built again with your line in them; the status line says when it is done.
+4. To change a road, press **Esc** and click it. The properties on the right show its class, surface and whether
+   it is a bridge. Press **G** and drag one of its nodes to move it, **R** and a click on a node to cut it, **X** to
+   delete it. Press **Ctrl+Z** to take back what you did (and **Ctrl+Shift+Z** to do it again), then **Ctrl+R**
+   again.
+
+The road you drew is kept as drawn: the build does not move its nodes. The full list of tools is in
+[Editing road lines](gui.md#editing-road-lines).

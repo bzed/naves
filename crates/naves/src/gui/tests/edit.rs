@@ -433,6 +433,11 @@ mod tools {
     }
 
     fn setup(extra: bool) -> Setup {
+        setup_with(extra, true)
+    }
+
+    /// With `fixture` the session holds three drawn ways; without it the project's own (empty) session.
+    fn setup_with(extra: bool, fixture: bool) -> Setup {
         let root = tempfile::tempdir().unwrap();
         let dir = project(root.path());
         let mut app = app(root.path(), &dir);
@@ -440,7 +445,9 @@ mod tools {
             app = app.with_extra_level(&FAKE_LEVEL);
         }
         wait_for_the_session(&mut app);
-        app.edit = EditState::Ready(Box::new(fixture_session(&[(7, A), (8, B), (9, C)])));
+        if fixture {
+            app.edit = EditState::Ready(Box::new(fixture_session(&[(7, A), (8, B), (9, C)])));
+        }
         let (fake, handle) = FakeViewport::new();
         let views: Vec<Box<dyn Viewport>> = vec![Box::new(fake)];
         let mut h = state_harness(app.with_views(views));
@@ -614,6 +621,38 @@ mod tools {
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(s.h.state().drawing.points.len(), 0);
         assert!(s.session().can_undo());
+    }
+
+    #[test]
+    fn draw_save_rebuild() {
+        let mut s = setup_with(false, false);
+        s.roads();
+        s.pick_class("Secondary");
+        s.clicks(&[(300.0, 300.0), (500.0, 400.0), (700.0, 400.0)]);
+        s.key(Key::Space);
+        assert_eq!(s.saved().ways.len(), 1);
+        s.key_with(Modifiers::CTRL, Key::R);
+        step_until(&mut s.h, |h| {
+            !matches!(h.state().roads, RoadsState::Generating)
+        });
+        let RoadsState::Ready(generated) = &s.h.state().roads else {
+            panic!("the roads are not ready");
+        };
+        let roads: Vec<_> = generated
+            .features
+            .iter()
+            .filter(|f| f.id.starts_with("user/way/"))
+            .collect();
+        assert_eq!(
+            roads.len(),
+            1,
+            "{:?}",
+            generated.features.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+        assert!(roads[0].id.ends_with("/0"), "{}", roads[0].id);
+        // held: the way is kept as drawn (the build's `Stretch::held` comes from this tag)
+        assert_eq!(tag(&s.saved().ways[0], "naves:keep"), Some("yes"));
+        assert_ne!(generated.pieces.len(), 0);
     }
 
     #[test]
