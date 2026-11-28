@@ -8,13 +8,12 @@
 > (AGENTS.md) and follows the design notes below.
 
 **Goal:** Draw, move, cut, join, delete and retag roads on the map in the GUI, using a reusable item selector that
-shows what fits the active level or everything. Each edit is saved at once to `edits/ways.toml`, can be undone, and
-F5 rebuilds.
+shows what fits the active level or everything. Each edit is saved at once to `edits/ways.toml`, can be undone, and Ctrl+R rebuilds.
 
 **Architecture:** The GUI edits the *source layer*: the OSM ways with the edits applied (`apply_way_edits`), held in
 an `EditSession` beside the built roads. A background job reads the extract once. Every edit runs one
 `WayEdits` operation from phase 1, saves the file atomically, re-applies the edits and redraws the overlay; the built
-roads stay as they were until F5. The selector is one widget fed by `PaletteItem`s that say which levels they `fit`;
+roads stay as they were until Ctrl+R. The selector is one widget fed by `PaletteItem`s that say which levels they `fit`;
 its scope switch filters them.
 
 **Tech Stack:** Rust 1.99, egui/eframe with the vendored `naves-ui` design system, `egui_kittest` for widget tests,
@@ -35,8 +34,11 @@ spec `docs/superpowers/specs/2026-11-06-naves-editor-ui.md` (levels, rail, short
   `e4e8ec`, ink-quiet `9aa4ae`, active `56b4e9`, problem `d55e00` (always with ▲ and a word), notice `f0e442`
   (always with ●). Level bands: Terrain `cc79a7`, Ground `009e73`, Water `0072b2`, Roads `e4e8ec`; the others keep
   their hue but pass 3:1 against ground. Colour is never the only cue. Map items keep the DayZ look.
-- Keys come from the existing shortcut table only: Q select, W move, N line (draw), K cut, J join, G mark a bridge,
-  Delete, Ctrl+Z, Ctrl+Shift+Z, Enter finish, Esc cancel, F5 regenerate, Ctrl+F search. No new keys in this phase.
+- Keys: the UI spec section 4 as revised on 2026-11-28 (Task 1 makes the table match it). Left hand on the keyboard,
+  right hand on the mouse: WASD pan (3D: move), Q/E zoom (3D: down/up), Shift ×3 faster, Ctrl ×3 slower; Esc
+  select/cancel, G move, C draw (line), X delete, Roads R cut, T join, Shift+T bridge; Space finish (Enter, right
+  click, double click too); Ctrl+Z / Ctrl+Shift+Z undo/redo (Ctrl+Z while drawing takes back the last point);
+  Ctrl+R regenerate (F5 too); Ctrl+F search. A set that does not fit moves to the right half whole.
 - Copy rules: sentence case, plain verbs, no all-caps labels, the action word stays the same through a flow ("Draw"
   in the rail, "Drawn by you" in the properties).
 - Tests are deterministic: no sleeps (poll with `HANG_GUARD`), synthetic or the existing fixtures only, temp dirs.
@@ -46,17 +48,17 @@ spec `docs/superpowers/specs/2026-11-06-naves-editor-ui.md` (levels, rail, short
 ## Review Focus
 
 1. **The extract changes under a session** (the user swaps `sources.osm` or moves the area while edits are loaded):
-   the session reloads from disk and keeps the edits file as it is. Test in Task 3
+   the session reloads from disk and keeps the edits file as it is. Test in Task 4
    (`a_source_change_reloads_the_session_and_keeps_the_edits`).
 2. **Saving fails** (read-only project folder): the in-memory set returns to the state before the operation, the
-   problem list says "Could not save the edit: …", and undo still works. Test in Task 3 (`a_failed_save_undoes_the_edit`).
+   problem list says "Could not save the edit: …", and undo still works. Test in Task 4 (`a_failed_save_undoes_the_edit`).
 3. **A map without OSM** (no `sources.osm`): the Roads level still has the selector and Draw, and the first drawn
-   way builds. Test in Task 6 (`drawing_works_without_osm`).
+   way builds. Test in Task 7 (`drawing_works_without_osm`).
 4. **A click with nothing near it** in Cut, Join, Bridge or Move: nothing changes, nothing is saved, the status line
-   says what to click. Test in Task 7 (`a_click_on_nothing_changes_nothing`).
+   says what to click. Test in Task 8 (`a_click_on_nothing_changes_nothing`).
 5. **Picking an item of another level** in Everything scope: the active level stays, the tool works with the item
    (a road class picked on Buildings still draws a road), and Esc goes back to Select on the active level. Test in
-   Task 5 (`an_item_of_another_level_keeps_the_active_level`).
+   Task 6 (`an_item_of_another_level_keeps_the_active_level`).
 
 ## Design notes (frontend-design pass)
 
@@ -76,21 +78,21 @@ fills, no glows.
 
 ```
 +-- left panel (300) ----------+-rail-+------------- map ---------------+-- right (230) ------+
-| [ Search roads      Ctrl+F ] |  Q   |                                 | stack               |
+| [ Search roads      Ctrl+F ] | Esc  |                                 | stack               |
 | ( Roads | Everything )       |Select|      built roads (DayZ look)    |                     |
-| Last used                    |  W   |      source line, ink-quiet     | Properties          |
+| Last used                    |  G   |      source line, ink-quiet     | Properties          |
 |  ━━━━  Secondary             | Move |      edited line, active +ticks | Secondary road      |
-| Roads                        |  N   |      ■──■──■ selected           | Drawn by you        |
+| Roads                        |  C   |      ■──■──■ selected           | Drawn by you        |
 |  ━━━━━ Primary        12 m   | Draw |                                 | Class   [Secondary] |
-|  ━━━━  Secondary       9 m   |  K   |                                 | Surface [asphalt  ] |
+|  ━━━━  Secondary       9 m   |  R   |                                 | Surface [asphalt  ] |
 |  ──    Track, grade 2  5 m   | Cut  |                                 | Bridge  [ ]  Layer 0|
-| Pieces                       |  J   |                                 | Keep as drawn [x]   |
+| Pieces                       |  T   |                                 | Keep as drawn [x]   |
 |  ▭▭    asf2 12 m straight    | Join |                                 | Let planning route [ ]
-|  ◠     asf2 arc 25 m         |  G   |                                 | [Reset to OSM]      |
+|  ◠     asf2 arc 25 m         |  ⇧T  |                                 | [Reset to OSM]      |
 | Bridges                      |Bridge|                                 |                     |
 |  ▭▭▭▭  bridge_concrete3 32 m |      |                                 |                     |
 +------------------------------+------+---------------------------------+---------------------+
-status: Edited: press F5 to rebuild.
+status: Edited: press Ctrl+R to rebuild.
 ```
 
 Left-aligned throughout. The scope switch is a two-segment control directly under search, labelled with the active
@@ -127,7 +129,52 @@ models" checkbox; it was changed to the named two-segment switch because a check
 
 ---
 
-### Task 1: Dark theme and the chrome tokens
+### Task 1: Left-hand default shortcuts and moving the view with WASD
+
+**Files:**
+- Modify: `crates/naves/src/gui/shortcuts.rs` (`SHORTCUTS`, new actions), `crates/naves/src/gui/mod.rs` (held-key
+  movement each frame), `crates/naves/src/gui/viewport/mod.rs` (movement through `focus`/`set_focus`),
+  `docs/manual/src/shortcuts.md`, `docs/manual/src/gui.md`, `CHANGELOG.md`
+- Test: `crates/naves/src/gui/tests/shortcuts.rs`, `crates/naves/src/gui/tests/viewport.rs`
+
+**Interfaces:**
+- Produces: the table of the UI spec section 4 (2026-11-28) exactly; `Action::{PanNorth, PanWest, PanSouth,
+  PanEast, ZoomOut, ZoomIn}` as **held** actions (they act every frame while down, not once); `pub const
+  PAN_VIEWS_PER_S: f64 = 0.75` (fraction of the view's span per second), `pub const ZOOM_PER_S: f64 = 2.0` (factor
+  per second), `pub const FAST: f64 = 3.0`, `pub const SLOW: f64 = 1.0 / 3.0`; a second row per action where the spec
+  names a second key (ids `<id>.alt`, e.g. `finish.alt`, `edit.delete.alt`, `regenerate.alt`, `level.objects.alt`).
+  Select has no letter: Esc is Select. Shortcut ids of existing rows stay, so a user's saved changes still apply.
+
+- [ ] **Step 1: Write the failing tests**
+  - `every_default_used_with_the_mouse_is_on_the_left_half`: `LEFT = Num1..=Num6, Q W E R T A S D F G X C V B,
+    Escape, Tab, Space`; every row that is not an `.alt` row and whose action is not in a right-half set
+    (`HideLevel`, `ShowOthersInFull`, `BrushSmaller`, `BrushLarger`, `BrushWeaker`, `BrushStronger`, `NextProblem`,
+    `PreviousProblem`, `Help`, `Settings`, `CommandPalette`) has its key in `LEFT`.
+  - `a_right_half_set_moves_whole`: for each set (`HideLevel`/`ShowOthersInFull`, the four brush keys,
+    `NextProblem`/`PreviousProblem`) the keys are all left or all right.
+  - `the_table_is_the_spec` (replaces `every_key_of_the_spec_is_in_the_table`): the spec's rows, typed out in the
+    test, equal the table's defaults.
+  - `holding_d_pans_east`: hold D for 30 frames → the view's centre x grew by `30 × dt × PAN_VIEWS_PER_S × span`
+    (within 1 %), y unchanged; with Shift held the move is `FAST` times that, with Ctrl `SLOW` times.
+  - `q_and_e_zoom`: holding E for 30 frames makes the span smaller by the factor `ZOOM_PER_S^(30 dt)`; Q the inverse.
+  - `wasd_does_nothing_while_typing`: with the project name field focused, holding W moves nothing and types "w".
+  - `esc_is_select`: in Draw, Esc → tool Select; the rail shows "Esc" over "Select".
+  - `alt_digits_reach_the_upper_levels`: Alt+1 goes to level 7 when it is built and does nothing while it is not.
+  - existing and still green: `no_key_is_assigned_twice_in_a_scope`, `no_level_key_repeats_an_everywhere_key`,
+    `ids_are_unique_and_pinned` (with the new `.alt` ids), `no_default_needs_shift_or_altgr_on_qwertz`,
+    `the_manual_lists_every_shortcut`.
+- [ ] **Step 2: Run** `cargo test -p naves --bin naves gui::tests::shortcuts gui::tests::viewport`: FAIL.
+- [ ] **Step 3: Implement.** Held actions are read with `ctx.input(|i| i.key_down(..))` once per frame, skipped
+  while `typing(ctx)`, scaled by `i.stable_dt` and applied to the active view through `focus()`/`set_focus()`, so the
+  map and the 3D view both move and the fake view in tests sees it. Request a repaint while a movement key is down.
+  Shift and Ctrl change the speed only for the movement keys.
+- [ ] **Step 4: Run**: PASS. **Step 5: Docs** (`shortcuts.md` is the table; `gui.md` "Moving around") + CHANGELOG
+  ("Changed: the default shortcuts are on the left half of the keyboard, so the right hand stays on the mouse; WASD
+  pans, Q and E zoom, Shift and Ctrl make it faster and slower. Select is Esc, Move is G, Line is C, Area is V,
+  Delete is X. Shortcuts you changed in the settings stay.").
+- [ ] **Step 6: Commit** `feat: left-hand default shortcuts, WASD and Q/E move the view`.
+
+### Task 2: Dark theme and the chrome tokens
 
 **Files:**
 - Modify: `crates/naves/src/gui/theme.rs`, `crates/naves/src/gui/levels/mod.rs` (`Level::colour`),
@@ -162,7 +209,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
   default; light and the system theme are in Settings, Map.").
 - [ ] **Step 6: Commit** `feat: the GUI is dark by default, with colour-blind safe chrome`.
 
-### Task 2: The source layer as a library call
+### Task 3: The source layer as a library call
 
 **Files:**
 - Modify: `crates/naves-export/src/generate.rs`
@@ -187,7 +234,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
 - [ ] **Step 4: Run**: PASS, and `cargo test -p naves-export` still passes. **Step 5: Commit**
   `refactor: the build reads its source layer through read_source` (no user-visible change, no changelog).
 
-### Task 3: The edit session: operations, save, undo and redo
+### Task 4: The edit session: operations, save, undo and redo
 
 **Files:**
 - Create: `crates/naves/src/gui/edit/mod.rs`
@@ -196,7 +243,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
 - Test: `crates/naves/src/gui/tests/edit.rs` (new, add `mod edit;` in `tests/mod.rs`)
 
 **Interfaces:**
-- Consumes: `read_source`, `Source::reapply` (Task 2); `WayEdits::{new_node, move_node, add_way, modify_way,
+- Consumes: `read_source`, `Source::reapply` (Task 3); `WayEdits::{new_node, move_node, add_way, modify_way,
   delete_way, reset_way, save}` (phase 1).
 - Produces:
   - `pub enum EditState { None, Loading, Ready(EditSession), Failed(String) }`;
@@ -211,8 +258,8 @@ models" checkbox; it was changed to the named two-segment switch because a check
   - `pub fn way(&self, raw: i64) -> Option<&OsmWay>` (in `source.ways`), `pub fn original(&self, raw: i64) ->
     Option<&OsmWay>` (the extract's way for an OSM id, else `way`), `pub fn origin(&self, raw: i64) -> Origin` with
     `pub enum Origin { Osm, EditedOsm, Drawn }`.
-  - `NavesApp::regenerate()` (F5): sets `dirty = false` and calls `reload_roads()`; status after an edit:
-    "Edited: press F5 to rebuild."
+  - `NavesApp::regenerate()` (Ctrl+R, F5): sets `dirty = false` and calls `reload_roads()`; status after an edit:
+    "Edited: press Ctrl+R to rebuild."
 
 - [ ] **Step 1: Write the failing tests** (on `EditSession` directly, with a temp project; and one in the harness)
   - `an_edit_is_saved_at_once`: `apply` with `delete_way`, then `WayEdits::load(dir)` has the delete edit.
@@ -226,7 +273,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
   - `a_source_change_reloads_the_session_and_keeps_the_edits` (Review Focus 1): with a session ready, change
     `form.project.sources.osm` and save the project → `EditState::Loading`, then `Ready` with the same
     `edits/ways.toml` content byte for byte.
-  - `f5_rebuilds_after_an_edit`: after an edit the status line reads "Edited: press F5 to rebuild."; F5 →
+  - `ctrl_r_rebuilds_after_an_edit`: after an edit the status line reads "Edited: press Ctrl+R to rebuild."; Ctrl+R →
     `RoadsState::Generating`, `dirty == false`.
 - [ ] **Step 2: Run** `cargo test -p naves --bin naves gui::tests::edit`: FAIL.
 - [ ] **Step 3: Implement.** `SourceJob` mirrors `RoadJob` (thread + channel, `read_source` on the saved project);
@@ -234,9 +281,9 @@ models" checkbox; it was changed to the named two-segment switch because a check
   `action_exists` while the session is `Ready` (Undo/Redo also need a non-empty stack).
 - [ ] **Step 4: Run**: PASS. **Step 5: Commit** `feat: the GUI keeps an edit session with save, undo and redo`
   (CHANGELOG: "Edits made in the GUI are saved at once to `edits/ways.toml`; Ctrl+Z and Ctrl+Shift+Z undo and redo
-  them, F5 rebuilds."; `gui.md`, `shortcuts.md`).
+  them, Ctrl+R rebuilds."; `gui.md`, `shortcuts.md`).
 
-### Task 4: Hit-testing and the editing overlay
+### Task 5: Hit-testing and the editing overlay
 
 **Files:**
 - Create: `crates/naves/src/gui/edit/hit.rs`, `crates/naves/src/gui/edit/overlay.rs`
@@ -245,7 +292,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
 - Test: `crates/naves/src/gui/tests/edit.rs`, unit tests in `hit.rs`
 
 **Interfaces:**
-- Consumes: `EditSession` (Task 3).
+- Consumes: `EditSession` (Task 4).
 - Produces:
   - `pub const HIT_PX: f64 = 8.0;` `pub fn tolerance_m(view_span_m: f64, view_width_px: f64) -> f64` (= `HIT_PX` ×
     metres per pixel, at least 0.5 m);
@@ -275,7 +322,7 @@ models" checkbox; it was changed to the named two-segment switch because a check
 - [ ] **Step 4: Run**: PASS. **Step 5: Commit** `feat: the Roads level draws the source ways and picks them`
   (`gui.md`: what the lines and ticks mean).
 
-### Task 5: The reusable selector: fits, scope and footprints
+### Task 6: The reusable selector: fits, scope and footprints
 
 Start with `/frontend-design:frontend-design`; the design notes are the brief.
 
@@ -295,7 +342,7 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
     keeps items whose `fits` contains `level`; `Everything` keeps all, ordered: items fitting `level` first, then by
     the first level of `fits` in stack order, then group, then name;
   - `LevelDef::items` stays the level's own items; the list for Everything is the union of every built level's
-    `items` plus `app.models()` (Task 6), deduplicated by `id`;
+    `items` plus `app.models()` (Task 7), deduplicated by `id`;
   - `NavesApp::item_level: Option<Level>`: the level of the picked item when it is not the active level;
     `has_tool` and the rail consult that level's `tools` too; Esc clears it.
 - [ ] **Step 1: Write the failing tests** (the fake level and two fake items with `fits: [Roads]` and
@@ -320,7 +367,7 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
   item list can show what fits the level or everything; an item of another level can be used without leaving the
   level."). **Step 6: Commit** `feat: one item selector for every level, with level and everything scopes`.
 
-### Task 6: Roads items: road classes and catalog models
+### Task 7: Roads items: road classes and catalog models
 
 **Files:**
 - Modify: `crates/naves/src/gui/levels/roads.rs` (`items`), `crates/naves/src/gui/worker.rs` (`CatalogJob`),
@@ -328,7 +375,7 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
 - Test: `crates/naves/src/gui/tests/roads.rs`
 
 **Interfaces:**
-- Consumes: `palette` (Task 5), `road_catalog(tools, &tools.cache_dir)`.
+- Consumes: `palette` (Task 6), `road_catalog(tools, &tools.cache_dir)`.
 - Produces:
   - `pub struct RoadClass { pub id: &'static str, pub name: &'static str, pub group: &'static str, pub tags: &'static
     [(&'static str, &'static str)] }` and `pub const ROAD_CLASSES: &[RoadClass]`: Primary (`highway=primary`),
@@ -347,8 +394,7 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
   - `the_roads_level_lists_the_road_classes`: the item names in group "Roads" start with Primary, Secondary,
     Tertiary; every class item's `size_m` equals the width of what `classify(tags)` gives for its tags (computed in
     the test, not written as constants).
-  - `picking_a_class_switches_to_draw`: tool becomes `ToolId::LINE`, status "Draw: click to add points, click a
-    node to join, Enter to finish, Backspace to take one back."
+  - `picking_a_class_switches_to_draw`: tool becomes `ToolId::LINE`, status "Draw: click to add points, click a node to join, Space to finish, Ctrl+Z to take one back."
   - `catalog_models_are_listed_once_the_catalog_is_read` (the `FakeEnv` tools): groups "Pieces" and "Bridges" exist
     and every model item has a `Footprint`.
   - `picking_a_model_shows_its_card`.
@@ -361,7 +407,7 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
 - [ ] **Step 4: Run**: PASS. **Step 5: Docs** + CHANGELOG. **Step 6: Commit**
   `feat: the Roads level lists road classes and the game's road pieces and bridges`.
 
-### Task 7: The tools: Move, Draw, Cut, Join, Bridge, Delete
+### Task 8: The tools: Move, Draw, Cut, Join, Bridge, Delete
 
 **Files:**
 - Create: `crates/naves/src/gui/edit/tools.rs`
@@ -370,39 +416,41 @@ Start with `/frontend-design:frontend-design`; the design notes are the brief.
 - Test: `crates/naves/src/gui/tests/edit.rs`
 
 **Interfaces:**
-- Consumes: `EditSession::apply` (Task 3), `hit` and `Target` (Task 4), the picked `RoadClass` (Task 6).
+- Consumes: `EditSession::apply` (Task 4), `hit` and `Target` (Task 5), the picked `RoadClass` (Task 7).
 - Produces: `ToolDef`s for `MOVE` ("Move"), `LINE` ("Draw"), `CUT` ("Cut"), `JOIN` ("Join"), `BRIDGE` ("Bridge"),
   each `on_event: Some(..)`; `pub struct Drawing { pub points: Vec<(WorldPoint, Option<i64>)> }` in `NavesApp`
   (the node id when a point joins an existing node).
 
 Behaviour, one rule each (the status lines are the exact copy):
 
-- **Move (W):** press on a node, drag, release → one `move_node` (lat/lon from `frame.to_geo`; `osm_at` = the
+- **Move (G):** press on a node, drag, release → one `move_node` (lat/lon from `frame.to_geo`; `osm_at` = the
   extract's position for an OSM node). The handle follows the drag; Esc during the drag cancels. Status: "Move: drag
   a node."
-- **Draw (N):** each click adds a point; a click within tolerance of a node uses that node (join). Backspace removes
-  the last point; Enter with two points or more → `new_node` for each new point and `add_way` with the class tags;
-  Esc discards. Without a picked class, Draw uses Residential street. Status as in Task 6.
-- **Cut (K):** click an inner node of a way → the way ends at that node (`modify_way`) and a new way with the same
+- **Draw (C):** each click adds a point; a click within tolerance of a node uses that node (join). Ctrl+Z (and
+  Backspace) removes the last point; Space, Enter, a right click or a double click with two points or more →
+  `new_node` for each new point and `add_way` with the class tags;
+  Esc discards. Without a picked class, Draw uses Residential street. Status as in Task 7.
+- **Cut (R):** click an inner node of a way → the way ends at that node (`modify_way`) and a new way with the same
   tags starts there (`add_way`), in one `apply` (one undo step). Status: "Cut: click a node inside a road."
-- **Join (J):** click an end node of one way, then an end node of another. Same tags → one way (`modify_way` on
+- **Join (T):** click an end node of one way, then an end node of another. Same tags → one way (`modify_way` on
   the first with the nodes joined through the shared end, `delete_way` on the second); different tags → the second
   way's end is replaced by the first way's end node (`modify_way`), both kept. Status: "Join: click the end of a
   road, then the end of another."
-- **Bridge (G):** click two nodes of one way → the part between them is split out (as Cut, twice) and tagged
+- **Bridge (Shift+T):** click two nodes of one way → the part between them is split out (as Cut, twice) and tagged
   `bridge=yes`, `layer=1`; on a way that already has `bridge=yes` one click removes both tags. Status: "Bridge:
   click two nodes of a road to make the part between them a bridge."
-- **Delete:** a selected way → `delete_way`; a selected node of a drawn way → the node is taken out of its way
+- **Delete (X, the Delete key too):** a selected way → `delete_way`; a selected node of a drawn way → the node is taken out of its way
   (`modify_way`; a way left with fewer than two nodes is deleted). OSM nodes are not deleted, only moved.
 
 - [ ] **Step 1: Write the failing tests** (queued `ViewEvent`s through the fake view, with a session on a synthetic
   extract of three ways; every test also asserts the saved file with `WayEdits::load`)
   - `move_drags_a_node`; `esc_during_a_drag_moves_nothing`.
-  - `draw_adds_a_way_with_the_class_tags`: three clicks, Enter → one `add` way with `highway=secondary`,
+  - `draw_adds_a_way_with_the_class_tags`: three clicks, Space → one `add` way with `highway=secondary`,
     `naves:keep=yes`, three user nodes.
   - `draw_joins_an_existing_node`: the first click on an OSM node → the new way's first node is that OSM id, and no
     node edit is made for it.
-  - `backspace_takes_a_point_back`; `enter_with_one_point_draws_nothing`.
+  - `ctrl_z_takes_a_point_back` (Ctrl+Z while drawing changes no file); `space_with_one_point_draws_nothing`;
+    `right_click_and_double_click_finish`.
   - `cut_splits_a_way_in_one_undo_step`: two ways after, one undo → one way.
   - `join_with_the_same_tags_makes_one_way`; `join_with_other_tags_connects_the_ends`.
   - `bridge_splits_out_the_part_and_tags_it`; `bridge_on_a_bridge_untags_it`.
@@ -411,14 +459,14 @@ Behaviour, one rule each (the status lines are the exact copy):
     (file mtime and content unchanged), undo stack unchanged, status line unchanged.
 - [ ] **Step 2: Run**: FAIL. **Step 3: Implement** in `edit/tools.rs`; every tool turns its events into at most
   one `EditSession::apply` call. **Step 4: Run**: PASS.
-- [ ] **Step 5: Docs** (`gui.md`: each tool with its key; `shortcuts.md`: the Roads row) + CHANGELOG ("On the Roads
-  level roads can be drawn (N), moved (W), cut (K), joined (J), made a bridge (G) and deleted."). **Step 6: Commit**
+- [ ] **Step 5: Docs** (`gui.md`: each tool with its key; `shortcuts.md`: the Roads row from Task 1) + CHANGELOG ("On the Roads
+  level roads can be drawn (C), moved (G), cut (R), joined (T), made a bridge (Shift+T) and deleted (X)."). **Step 6: Commit**
   `feat: draw, move, cut, join, bridge and delete roads in the GUI`.
 
-### Task 8: Properties of a selected way
+### Task 9: Properties of a selected way
 
 **Files:**
-- Create: `crates/naves/src/gui/edit/properties.rs` (the way part; the model card from Task 6 lives here too)
+- Create: `crates/naves/src/gui/edit/properties.rs` (the way part; the model card from Task 7 lives here too)
 - Modify: `crates/naves/src/gui/stack.rs` (or wherever the properties are drawn today) to call it for a
   `Target::Way`
 - Test: `crates/naves/src/gui/tests/edit.rs`
@@ -443,7 +491,7 @@ Behaviour, one rule each (the status lines are the exact copy):
 - [ ] **Step 5: Docs** (`gui.md`: the properties) + CHANGELOG. **Step 6: Commit**
   `feat: the properties of a road can be changed and reset to OSM`.
 
-### Task 9: The whole flow, checked once by hand
+### Task 10: The whole flow, checked once by hand
 
 **Files:**
 - Modify: `docs/manual/src/gui.md` (screenshots if the chapter has them), `docs/manual/src/getting-started.md`
@@ -451,11 +499,11 @@ Behaviour, one rule each (the status lines are the exact copy):
 - Test: `crates/naves/src/gui/tests/edit.rs`
 
 - [ ] **Step 1: Write the failing test** `draw_save_rebuild`: a project without OSM; pick Secondary, draw three
-  points, Enter, F5; wait for `RoadsState::Ready` (poll with `HANG_GUARD`) → `generated.features` has one road with
+  points, Space, Ctrl+R; wait for `RoadsState::Ready` (poll with `HANG_GUARD`) → `generated.features` has one road with
   id `user/way/<n>/0` and `held == true`, `generated.pieces` is not empty.
-- [ ] **Step 2: Run**: FAIL until Tasks 1–8 are in; then PASS.
+- [ ] **Step 2: Run**: FAIL until Tasks 2–9 are in; then PASS.
 - [ ] **Step 3: Run the GUI by hand** (`cargo run -p naves -- gui <a copy of the Berchtesgaden project in
-  /var/tmp>`, under the CPU and memory caps): draw a road, move a node, cut, join, bridge, undo, F5. Take one
+  /var/tmp>`, under the CPU and memory caps): draw a road, move a node, cut, join, bridge, undo, Ctrl+R; pan with WASD and zoom with Q/E. Take one
   screenshot of the Roads level with a selected edited way and the selector in Everything scope; look at it against
   the design notes (one accent, ticks visible, no colour-only cue) and fix what does not hold.
 - [ ] **Step 4: Docs** (getting-started "Fix a road"). **Step 5: Commit** `docs: fixing a road in the GUI, start to
@@ -466,4 +514,4 @@ Behaviour, one rule each (the status lines are the exact copy):
 ## After this plan
 
 Phase 3 (terrain and earthwork) adds the Terrain tools and the earthwork switch to these properties; phase 4 adds
-the Place tool (A) that the model items of Task 6 switch to, through the same selector and its Everything scope.
+the Place tool (T) that the model items of Task 7 switch to, through the same selector and its Everything scope.

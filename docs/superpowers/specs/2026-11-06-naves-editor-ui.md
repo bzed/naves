@@ -73,49 +73,65 @@ The left panel holds what the active level adds. One item model for all levels, 
 The rail between the left panel and the map shows the tools of the active level. **Each tool is drawn as its key**, a
 letter with its word below it, so the rail teaches the keyboard and needs no icon set. 56 px wide.
 
+**The left hand works the keyboard, the right hand stays on the mouse (maintainer, 2026-11-28).** Every default
+used while working with the mouse is on the left half of the keyboard as an ergonomic split board has it: `1`–`6`,
+`Q W E R T`, `A S D F G`, `X C V B` (not `Z`/`Y`, which swap on QWERTZ), Esc, Tab, Space, Shift, Ctrl and Alt. When
+the left half runs out, a **complete set** of operations moves to the right half together (the problem keys, the
+level visibility, the brush size, help and settings), never half of a set. Function keys stay only as second keys,
+because many split boards have none.
+
+Moving the view:
+
+| Keys | Action |
+|---|---|
+| W, A, S, D (held) | Pan the map north, west, south, east; in the 3D view move forward, left, back, right |
+| Q, E (held) | Zoom out, in; in the 3D view move down, up |
+| Shift, Ctrl with these | Three times faster; three times slower |
+| Middle button drag, wheel | Pan; zoom |
+
 The same letter always means the same thing, in every level where it applies:
 
 | Keys | Tool |
 |---|---|
-| Q | Select (the default; Esc returns here) |
-| W, E, R | Move, Rotate, Scale |
-| A, N, L, B | Add as a point, Line, Area, Brush |
+| Esc | Select (the default; Esc also cancels what is in progress) |
+| G | Move (grab) |
+| C, V, B | Line, Area, Brush |
+| X | Delete (the Delete key too) |
 
-Then what a level has of its own, and only there:
+Then what a level has of its own, and only there (R and T, then Shift with a letter):
 
 | Level | Keys |
 |---|---|
-| Terrain | B raise or lower (Shift inverts), S smooth, T flatten, M ramp, O hole |
-| Ground | B paint, S soften an edge |
-| Water | L lake, N river, B shape the bed |
-| Roads and paths | N draw, K cut, J join, G mark a bridge |
-| Vegetation | L fill an area, N along a line, B brush, A one tree, K cut out |
-| Buildings | A place, C make a composition, G tag an entrance, O hole for a bunker |
-| Objects | A place, N along a line, C make a composition |
-| Life | L draw an area, A place a group or a spawn |
-| Economy | B paint a tier, A place an event |
+| Terrain | B raise or lower (Shift inverts), R smooth, T flatten, Shift+R ramp, Shift+C hole |
+| Ground | B paint, R soften an edge |
+| Water | V lake, C river, B shape the bed |
+| Roads and paths | C draw, R cut, T join, Shift+T mark a bridge |
+| Vegetation | V fill an area, C along a line, B brush, T one tree, R cut out |
+| Buildings | T place, R rotate, Shift+R scale, Shift+C make a composition, Shift+T tag an entrance, Shift+B hole for a bunker |
+| Objects | T place, R rotate, Shift+R scale, C along a line, Shift+C make a composition |
+| Life | V draw an area, T place a group or a spawn |
+| Economy | B paint a tier, T place an event |
 
 Everywhere:
 
 | Keys | Action |
 |---|---|
-| 0 to 9 | Go to a level |
-| H, Shift+H | Hide the active level; other levels faded or in full |
+| 1 to 6, Alt+1 to Alt+4 | Go to levels 1 to 6; Alt+1 to Alt+4 go to 7, 8, 9 and 0 (the digits 7, 8, 9, 0 too) |
+| H, Shift+H (right half, one set) | Hide the active level; other levels faded or in full |
 | Ctrl+Tab | Switch between map and 3D view |
 | F, Shift+F | Frame the selection; frame the whole map |
-| Space + drag, middle button | Pan (wheel zooms) |
-| X, Shift+T | World or local axes; follow the ground |
-| Delete, Ctrl+D | Delete, duplicate |
-| Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
+| Shift+X, Shift+G | World or local axes; follow the ground |
+| Ctrl+G | Duplicate |
+| Ctrl+Z, Ctrl+Shift+Z | Undo, redo (while drawing a line, Ctrl+Z takes back the last point) |
 | Ctrl+F | Search items |
-| `,` and `.` | Brush smaller, larger (or Alt+wheel) |
+| `,` and `.` (right half, one set) | Brush smaller, larger (or Alt+wheel) |
 | Ctrl+`,` and Ctrl+`.` | Brush weaker, stronger (or Ctrl+wheel) |
-| Enter, Esc | Finish a line or area; cancel and go back to Select |
-| F5 | Regenerate the active level in the changed area |
+| Space, Esc | Finish a line or area (also Enter, a right click or a double click); cancel and go back to Select |
+| Ctrl+R | Regenerate the active level in the changed area (F5 too) |
 | Ctrl+B | Build |
-| F8, Shift+F8 | Next problem, previous problem |
-| F1 | Show all shortcuts for this level |
-| F2 | Open the settings |
+| F8, Shift+F8 (right half, one set) | Next problem, previous problem |
+| F1, F2 | Show all shortcuts for this level; open the settings (both also in the command palette) |
+| Ctrl+P | Command palette |
 
 These are the defaults: every shortcut can be changed in the settings (section 8). Rules for the keyboard:
 
@@ -124,7 +140,7 @@ These are the defaults: every shortcut can be changed in the settings (section 8
 - **The maintainer's keyboard is German.** Letters are logical keys, so a tool's letter is what the keycap says. No default
   uses `Y` or `Z` as a tool (they swap on QWERTZ), or a key that needs Shift or AltGr on QWERTZ: no `[ ]`, `/`, `?`.
 - **Typing is typing.** While a text field has focus, no single-key shortcut fires.
-- Q, W, E, R and "follow ground" match what STAG.vision and most editors use (research note 6.7).
+- WASD with Q and E moves the view as in most games; G for move follows Blender.
 - Holding Shift with a brush inverts it, and a tool's status line says so.
 
 ## 5. Layout

@@ -263,19 +263,20 @@ An item says which levels it fits (`fits`), so the scope is a filter, not a seco
 kept in the settings. Phase 2 lists the catalog models with their footprint and shows them in the properties;
 placing a model is phase 4, through the same selector.
 
-**Tools.** The keys of the UI spec section 4 stay. Roads level: Q select (a way, or a node when near one), W move a
-node (drag), N draw (click points, click an existing node to join, Enter to finish), K cut at a node, J join two
-ends, G mark or unmark a bridge between two nodes, Delete. Terrain level: B raise/lower, S smooth, T flatten, M ramp,
-and the shape tools (pad, cut/fill, ditch). **Earthwork on every level**: a tool that draws an unattached shape, and
+**Tools.** The keys are those of the UI spec section 4 as revised on 2026-11-28 (left hand on the keyboard, WASD and
+Q/E move the view). Roads level: Esc select (a way, or a node when near one), G move a node (drag), C draw (click
+points, click an existing node to join, Space, Enter, a right click or a double click to finish), R cut at a node,
+T join two ends, Shift+T mark or unmark a bridge between two nodes, X delete. Terrain level: B raise/lower, R smooth,
+T flatten, Shift+R ramp, and the shape tools (pad, cut/fill, ditch). **Earthwork on every level**: a tool that draws an unattached shape, and
 in the properties of a selected feature or model an "Shape the ground to fit" switch. Its key is chosen in plan 3
-against the shortcut table (no `Y`/`Z`, nothing needing Shift or AltGr on QWERTZ).
+against the shortcut table (left half first, no `Y`/`Z`, nothing needing AltGr on QWERTZ).
 
 **Properties (right, under the stack)** for a selected way: class, surface, bridge, layer, the `naves:` switches,
 where it came from ("OSM way 8421, edited by you" / "drawn by you" / "OSM, unchanged") and **Reset to OSM** for an
 edited OSM way.
 
 **After an edit** the change is saved at once (atomic write), drawn at once as the edited line over the old build,
-and the status line says "Edited: press F5 to rebuild". F5 runs the full build in the worker (as the Build tab
+and the status line says "Edited: press Ctrl+R to rebuild". Ctrl+R (F5 too) runs the full build in the worker (as the Build tab
 does). Undo and redo (Ctrl+Z, Ctrl+Shift+Z) work on the edit set: each operation stores the edit files' state before
 it.
 
