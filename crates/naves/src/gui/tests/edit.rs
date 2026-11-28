@@ -908,6 +908,74 @@ mod tools {
         assert_eq!(s.session().source.ways.ways.len(), 3);
     }
 
+    /// Way 8 changed to run through `nodes`, so that it shares nodes with way 7.
+    fn reroute_eight(s: &mut Setup, nodes: &[i64]) {
+        let b = s.session().original(8).unwrap().clone();
+        let tags = b.tags.clone();
+        s.h.state_mut()
+            .edit_way(|edits, _| edits.modify_way(&b, tags, osm(nodes), By::User))
+            .unwrap();
+    }
+
+    #[test]
+    fn join_two_ways_that_share_an_end() {
+        let mut s = setup(false);
+        reroute_eight(&mut s, &[704, 801, 802]);
+        s.roads();
+        s.key(Key::T);
+        s.clicks(&[(700.0, 500.0), (700.0, 500.0)]);
+        let saved = s.saved();
+        let joined = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .expect("way 7 is the joined road");
+        assert_eq!(joined.nodes, osm(&[700, 701, 702, 703, 704, 801, 802]));
+        let gone = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(8))
+            .unwrap();
+        assert_eq!(gone.action, WayAction::Delete);
+        assert_eq!(s.session().source.ways.ways.len(), 2);
+    }
+
+    #[test]
+    fn cut_through_a_t_junction() {
+        let mut s = setup(false);
+        // way 8 ends on the inner node 702 of way 7
+        reroute_eight(&mut s, &[800, 801, 702]);
+        s.roads();
+        s.key(Key::R);
+        s.click(600.0, 500.0);
+        let saved = s.saved();
+        let cut = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .expect("way 7 is cut");
+        assert_eq!(cut.nodes, osm(&[700, 701, 702]));
+        let rest = saved.ways.iter().find(|w| w.id.is_user()).unwrap();
+        assert_eq!(rest.nodes, osm(&[702, 703, 704]));
+    }
+
+    #[test]
+    fn bridge_from_a_junction_node() {
+        let mut s = setup(false);
+        // way 8 ends on the end node 704 of way 7 and has the higher id
+        reroute_eight(&mut s, &[704, 801, 802]);
+        s.roads();
+        s.key_with(Modifiers::SHIFT, Key::T);
+        s.clicks(&[(500.0, 500.0), (700.0, 500.0)]);
+        let saved = s.saved();
+        let bridge = saved
+            .ways
+            .iter()
+            .find(|w| tag(w, "bridge") == Some("yes"))
+            .expect("the bridge was made on way 7");
+        assert_eq!(bridge.nodes, osm(&[700, 701, 702, 703, 704]));
+    }
+
     #[test]
     fn join_ignores_an_inner_node() {
         let mut s = setup(false);

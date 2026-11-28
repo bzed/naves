@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use naves_core::edits::{By, EditsError, ElementId, USER_ID_BASE};
 use naves_core::osm::OsmWay;
 
-use super::hit::{Target, hit};
+use super::hit::{Target, nodes_at};
 use crate::gui::NavesApp;
 use crate::gui::levels::roads::ROAD_CLASSES;
 use crate::gui::shortcuts::ToolId;
@@ -105,13 +105,25 @@ fn primary(event: &ViewEvent) -> Option<WorldPoint> {
     }
 }
 
-/// What a click at `at` hits: a node of a way, with its raw ids.
+/// The ways that have the node a click at `at` hits, as `(node, way)` in id order; empty when no node is hit.
+fn nodes_hit(app: &NavesApp, at: WorldPoint) -> Vec<(i64, i64)> {
+    app.edit
+        .session()
+        .map(|s| nodes_at(s, at, app.hit_tolerance_m()))
+        .unwrap_or_default()
+}
+
+/// The node a click at `at` hits, with the first way that has it.
 fn node_at(app: &NavesApp, at: WorldPoint) -> Option<(i64, i64)> {
-    let session = app.edit.session()?;
-    match hit(session, at, app.hit_tolerance_m())? {
-        Target::Node { node, way } => Some((node, way)),
-        Target::Way(_) => None,
-    }
+    nodes_hit(app, at).into_iter().next()
+}
+
+/// Whether `node` is the first or the last node of `way`.
+fn is_end(app: &NavesApp, way: i64, node: i64) -> bool {
+    app.edit
+        .session()
+        .and_then(|s| s.way(way))
+        .is_some_and(|w| w.nodes.first() == Some(&node) || w.nodes.last() == Some(&node))
 }
 
 /// A way of the session, with the edits applied, and as the extract has it.
@@ -293,18 +305,15 @@ pub fn cut_event(app: &mut NavesApp, event: &ViewEvent) {
     let Some(at) = primary(event) else {
         return;
     };
-    let Some((node, way)) = node_at(app, at) else {
+    // at a junction: a way the node is inside of
+    let Some((i, current, original)) = nodes_hit(app, at).into_iter().find_map(|(node, way)| {
+        let (current, original) = way_pair(app, way)?;
+        let i = current.nodes.iter().position(|&n| n == node)?;
+        // an end is no place to cut
+        (i > 0 && i + 1 < current.nodes.len()).then_some((i, current, original))
+    }) else {
         return;
     };
-    let Some((current, original)) = way_pair(app, way) else {
-        return;
-    };
-    let Some(i) = current.nodes.iter().position(|&n| n == node) else {
-        return;
-    };
-    if i == 0 || i + 1 >= current.nodes.len() {
-        return; // an end is no place to cut
-    }
     app.edit_way(|edits, _| {
         let all = ids(&current.nodes)?;
         edits.modify_way(
@@ -329,16 +338,20 @@ pub fn join_event(app: &mut NavesApp, event: &ViewEvent) {
     let Some(at) = primary(event) else {
         return;
     };
-    let Some((node, way)) = node_at(app, at) else {
-        return;
-    };
-    let Some((current, _)) = way_pair(app, way) else {
-        return;
-    };
-    if current.nodes.first() != Some(&node) && current.nodes.last() != Some(&node) {
+    // at a junction: the ways the node is an end of; the second click takes another way than the first
+    let ends: Vec<(i64, i64)> = nodes_hit(app, at)
+        .into_iter()
+        .filter(|&(node, way)| is_end(app, way, node))
+        .collect();
+    let first = app.pending.first.filter(|f| f.tool == ToolId::JOIN);
+    let Some(&(node, way)) = ends
+        .iter()
+        .find(|&&(_, way)| first.is_none_or(|f| f.way != way))
+        .or(ends.first())
+    else {
         return; // not an end
-    }
-    let Some(first) = app.pending.first.filter(|f| f.tool == ToolId::JOIN) else {
+    };
+    let Some(first) = first else {
         app.pending.first = Some(First {
             tool: ToolId::JOIN,
             node,
@@ -403,7 +416,14 @@ pub fn bridge_event(app: &mut NavesApp, event: &ViewEvent) {
     let Some(at) = primary(event) else {
         return;
     };
-    let Some((node, way)) = node_at(app, at) else {
+    // at a junction: the way of the first click if it has the node, else the first way that has it
+    let hits = nodes_hit(app, at);
+    let pending = app.pending.first.filter(|f| f.tool == ToolId::BRIDGE);
+    let Some(&(node, way)) = hits
+        .iter()
+        .find(|&&(_, way)| pending.is_some_and(|f| f.way == way))
+        .or(hits.first())
+    else {
         return;
     };
     let Some((current, original)) = way_pair(app, way) else {

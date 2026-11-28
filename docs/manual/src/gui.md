@@ -197,6 +197,10 @@ drops what a tool holds (a line, a drag, a first click) and, with nothing held, 
 
 ![The Roads level: the item list in Everything scope, the rail, a road drawn by you selected, and its properties](images/roads-editing.png)
 
+Where roads meet at a node, a click on that node works with the road the tool can use: Cut takes the road that
+passes through the node, Join the roads that end there (two roads that already touch are joined by clicking the
+shared node twice).
+
 The status line names the tool and the key it needs. When you picked a road class while another level is active, the
 Roads tools join the rail until **Esc**, and a line you draw shows on that level too.
 

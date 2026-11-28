@@ -78,6 +78,21 @@ pub fn hit(session: &EditSession, at: WorldPoint, tol_m: f64) -> Option<Target> 
     node.or(way).map(|(_, target)| target)
 }
 
+/// Every way that has the node nearest to `at` (within `tol_m`), as `(node, way)` in id order. Roads that meet
+/// share a node, so a click on a junction names all of them and each tool picks the one it can use.
+#[must_use]
+pub fn nodes_at(session: &EditSession, at: WorldPoint, tol_m: f64) -> Vec<(i64, i64)> {
+    let Some(Target::Node { node, .. }) = hit(session, at, tol_m) else {
+        return Vec::new();
+    };
+    session
+        .projected()
+        .iter()
+        .filter(|w| w.points.iter().any(|&(id, _)| id == node))
+        .map(|w| (node, w.id))
+        .collect()
+}
+
 /// What a click at `at` picks of the source layer, if anything: the way or node with its title and where it
 /// comes from. `tol_m` is [`tolerance_m`] of the view.
 #[must_use]
