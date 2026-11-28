@@ -1011,4 +1011,129 @@ mod tools {
         assert_eq!(tag(&saved.ways[0], "highway"), Some("secondary"));
         assert!(saved.ways[0].id.raw().unwrap() >= USER_ID_BASE);
     }
+
+    // ---- the properties of a selected way ----
+
+    use crate::gui::edit::properties::{WayChange, class_label, class_of, origin_line, way_title};
+
+    fn tags_of(s: &Setup, raw: i64) -> std::collections::BTreeMap<String, String> {
+        s.session().way(raw).unwrap().tags.clone()
+    }
+
+    #[test]
+    fn the_origin_line_says_where_a_way_came_from() {
+        assert_eq!(origin_line(Origin::Osm, 8421), "OSM way 8421, unchanged");
+        assert_eq!(
+            origin_line(Origin::EditedOsm, 8421),
+            "OSM way 8421, edited by you"
+        );
+        assert_eq!(origin_line(Origin::Drawn, USER_ID_BASE), "Drawn by you");
+        // the picked way says the same
+        let mut s = setup(false);
+        s.roads();
+        s.click(525.0, 500.0);
+        let selection = s.h.state().selection.clone().unwrap();
+        assert_eq!(selection.origin.as_deref(), Some("OSM way 7, unchanged"));
+    }
+
+    #[test]
+    fn changing_the_class_retags_the_way() {
+        let mut s = setup(false);
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Class("secondary")).unwrap();
+        app.change_way(7, &WayChange::Surface(Some("asphalt")))
+            .unwrap();
+        app.change_way(7, &WayChange::Class("track2")).unwrap();
+        let saved = s.saved();
+        let way = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .unwrap();
+        assert_eq!(tag(way, "highway"), Some("track"));
+        assert_eq!(tag(way, "tracktype"), Some("grade2"));
+        assert_eq!(tag(way, "surface"), Some("asphalt"));
+        // and back: the track type goes with the old class
+        s.h.state_mut()
+            .change_way(7, &WayChange::Class("primary"))
+            .unwrap();
+        let tags = tags_of(&s, 7);
+        assert_eq!(tags.get("highway").map(String::as_str), Some("primary"));
+        assert!(!tags.contains_key("tracktype"));
+        assert_eq!(way_title(&tags), "Primary");
+    }
+
+    #[test]
+    fn keep_and_plan_are_switches() {
+        let mut s = setup(false);
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Keep(true)).unwrap();
+        app.change_way(7, &WayChange::Keep(false)).unwrap();
+        app.change_way(7, &WayChange::Plan(true)).unwrap();
+        let saved = s.saved();
+        let way = &saved.ways[0];
+        assert_eq!(tag(way, "naves:keep"), Some("no"));
+        assert_eq!(tag(way, "naves:plan"), Some("yes"));
+        s.h.state_mut()
+            .change_way(7, &WayChange::Plan(false))
+            .unwrap();
+        assert!(!tags_of(&s, 7).contains_key("naves:plan"));
+    }
+
+    #[test]
+    fn bridge_layer_and_surface_write_their_tags() {
+        let mut s = setup(false);
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Bridge(true)).unwrap();
+        let tags = tags_of(&s, 7);
+        assert_eq!(tags.get("bridge").map(String::as_str), Some("yes"));
+        assert_eq!(tags.get("layer").map(String::as_str), Some("1"));
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Layer(9)).unwrap();
+        assert_eq!(tags_of(&s, 7).get("layer").map(String::as_str), Some("5"));
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Layer(0)).unwrap();
+        app.change_way(7, &WayChange::Bridge(false)).unwrap();
+        let tags = tags_of(&s, 7);
+        assert!(!tags.contains_key("layer") && !tags.contains_key("bridge"));
+        s.h.state_mut()
+            .change_way(7, &WayChange::Surface(Some("gravel")))
+            .unwrap();
+        s.h.state_mut()
+            .change_way(7, &WayChange::Surface(None))
+            .unwrap();
+        assert!(!tags_of(&s, 7).contains_key("surface"));
+    }
+
+    #[test]
+    fn reset_to_osm_removes_the_edit() {
+        let mut s = setup(false);
+        s.h.state_mut()
+            .change_way(7, &WayChange::Class("track2"))
+            .unwrap();
+        assert_eq!(s.session().origin(7), Origin::EditedOsm);
+        s.h.state_mut().change_way(7, &WayChange::Reset).unwrap();
+        assert_eq!(s.saved(), WayEdits::default());
+        assert_eq!(s.session().origin(7), Origin::Osm);
+        assert_eq!(
+            origin_line(s.session().origin(7), 7),
+            "OSM way 7, unchanged"
+        );
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.session().origin(7), Origin::EditedOsm, "one undo step");
+    }
+
+    #[test]
+    fn an_unknown_highway_is_shown_as_other() {
+        let tags = [("highway".to_string(), "cycleway".to_string())].into();
+        assert!(class_of(&tags).is_none());
+        assert_eq!(class_label(&tags), "Other: highway=cycleway");
+        assert_eq!(way_title(&tags), "Road");
+        let tags = [
+            ("highway".to_string(), "track".to_string()),
+            ("tracktype".to_string(), "grade3".to_string()),
+        ]
+        .into();
+        assert_eq!(class_label(&tags), "Track, grade 3");
+    }
 }

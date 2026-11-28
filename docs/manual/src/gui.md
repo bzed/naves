@@ -142,8 +142,8 @@ the build moved a line:
 - a dashed light line, with its handles, is the road you are drawing.
 
 A click with the Select tool picks the node under the pointer, or else the road line, within 8 screen pixels (so it
-is easier to hit when you zoom in). The properties name the road class and say where it comes from, and list the
-built piece under the click below *Built here*. A click on nothing picks nothing.
+is easier to hit when you zoom in). The properties name the road class and say where it comes from (see below), and
+list the built piece under the click below *Built here*. A click on nothing picks nothing.
 
 ## The item selector
 
@@ -197,6 +197,24 @@ drops what a tool holds (a line, a drag, a first click) and, with nothing held, 
 
 The status line names the tool and the key it needs. When you picked a road class while another level is active, the
 Roads tools join the rail until **Esc**, and a line you draw shows on that level too.
+
+## The properties of a road
+
+Select a road or one of its nodes and the properties on the right show the road and let you change it. Each change
+is one saved edit, taken back with **Ctrl+Z**.
+
+| Property | What it does |
+|---|---|
+| Class | The kind of road. Changing it replaces the `highway` and `tracktype` tags and keeps the others (surface, name, ...). A road of another kind shows *Other: highway=...*. |
+| Surface | asphalt, paved, gravel, compacted, dirt, grass, or *—* to remove the tag. |
+| Bridge | Sets `bridge=yes` (and `layer=1` when the road has no layer); unticking removes `bridge`. |
+| Layer | -5 to 5, the `layer` tag; 0 removes it. |
+| Keep as drawn | `naves:keep`. Unticked, it is written as `naves:keep=no`. |
+| Let road planning route it | `naves:plan=yes`; unticked, the tag is removed. |
+
+The last line says where the road comes from: *OSM way 8421, unchanged*, *OSM way 8421, edited by you* or *Drawn by
+you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and the road is as OpenStreetMap has it;
+**Ctrl+Z** brings the edit back.
 
 ## Edits, undo and redo
 

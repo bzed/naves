@@ -383,6 +383,40 @@ impl NavesApp {
         self.edit_result(result)
     }
 
+    /// Changes one property of the way `raw`: one edit, one undo step. A change that changes nothing is not an edit.
+    fn change_way(&mut self, raw: i64, change: &edit::properties::WayChange) -> Result<(), String> {
+        use naves_core::edits::{By, ElementId};
+        let Some(session) = self.edit.session() else {
+            return Err("The edit cannot be made: the map is not ready".to_string());
+        };
+        let (Some(way), Some(original), Some(id)) = (
+            session.way(raw),
+            session.original(raw),
+            ElementId::from_raw(raw),
+        ) else {
+            return Err("The edit cannot be made: the road is not there any more".to_string());
+        };
+        if *change == edit::properties::WayChange::Reset {
+            return self.edit_way(|edits, _| {
+                edits.reset_way(id);
+                Ok(())
+            });
+        }
+        let Some(tags) = edit::properties::changed_tags(&way.tags, change) else {
+            return Ok(());
+        };
+        if tags == way.tags {
+            return Ok(());
+        }
+        let original = original.clone();
+        let nodes: Vec<ElementId> = way
+            .nodes
+            .iter()
+            .filter_map(|&n| ElementId::from_raw(n))
+            .collect();
+        self.edit_way(|edits, _| edits.modify_way(&original, tags, nodes, By::User))
+    }
+
     fn set_edit_problem(&mut self, text: String) {
         self.edit_problems = vec![problems::Problem {
             level: Some(levels::Level::Roads),
@@ -1323,7 +1357,39 @@ impl NavesApp {
     }
 
     /// What the selection is, under the stack.
-    fn properties_ui(&self, ui: &mut egui::Ui) {
+    fn properties_ui(&mut self, ui: &mut egui::Ui) {
+        let way = self.selection.as_ref().and_then(|s| match s.target? {
+            edit::hit::Target::Way(way) => Some((way, None)),
+            edit::hit::Target::Node { node, way } => Some((way, Some(node))),
+        });
+        if let Some((raw, node)) = way
+            && let Some(session) = self.edit.session()
+            && session.way(raw).is_some()
+        {
+            if let Some(change) = edit::properties::way_properties(ui, session, raw, node) {
+                // a failure is a problem and in the log already
+                self.change_way(raw, &change).ok();
+            }
+            // the built piece under the click, listed after the way
+            let built = self.selection.as_ref().map(|s| {
+                let from = s.rows.iter().position(|(name, _)| name == "Built here");
+                from.map_or_else(Vec::new, |i| s.rows.iter().skip(i).cloned().collect())
+            });
+            if let Some(rows) = built.filter(|r| !r.is_empty()) {
+                ui.add_space(8.0);
+                egui::Grid::new("built-here")
+                    .num_columns(2)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        for (name, value) in &rows {
+                            ui.label(name);
+                            ui.label(value);
+                            ui.end_row();
+                        }
+                    });
+            }
+            return;
+        }
         let Some(selection) = &self.selection else {
             let model = self.item.as_deref().and_then(|id| {
                 self.all_items()

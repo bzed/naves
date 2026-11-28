@@ -3,11 +3,10 @@
 
 //! Hit-testing the source ways in map metres.
 
-use std::collections::BTreeMap;
-
 use naves_core::osm::OsmWay;
 
-use super::{EditSession, Origin};
+use super::EditSession;
+use super::properties::{origin_line, way_title};
 use crate::gui::levels::Level;
 use crate::gui::selection::Selection;
 use crate::gui::viewport::WorldPoint;
@@ -97,21 +96,6 @@ pub fn hit(session: &EditSession, at: WorldPoint, tol_m: f64) -> Option<Target> 
     node.or(way).map(|(_, target)| target)
 }
 
-/// The name of a road for the properties: the `highway` value with a capital and spaces, and "road" after it
-/// (Task 7 of the plan replaces this with the class names of the selector).
-#[must_use]
-pub fn way_title(tags: &BTreeMap<String, String>) -> String {
-    let class = tags
-        .get("highway")
-        .map_or("", String::as_str)
-        .replace('_', " ");
-    let mut chars = class.chars();
-    match chars.next() {
-        Some(first) => format!("{}{} road", first.to_uppercase(), chars.as_str()),
-        None => "Road".to_string(),
-    }
-}
-
 /// What a click at `at` picks of the source layer, if anything: the way or node with its title and where it
 /// comes from. `tol_m` is [`tolerance_m`] of the view.
 #[must_use]
@@ -132,11 +116,7 @@ pub fn pick_source(session: &EditSession, at: WorldPoint, tol_m: f64) -> Option<
     if let Some(class) = way.tags.get("highway") {
         rows.push(("Highway".to_string(), class.clone()));
     }
-    let origin = match session.origin(way_id) {
-        Origin::Osm => format!("OpenStreetMap way {way_id}."),
-        Origin::EditedOsm => format!("OpenStreetMap way {way_id}, edited by you."),
-        Origin::Drawn => "Drawn by you.".to_string(),
-    };
+    let origin = origin_line(session.origin(way_id), way_id);
     Some(Selection {
         level: Level::Roads,
         title: way_title(&way.tags),
