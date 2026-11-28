@@ -249,3 +249,26 @@ fn theme_round_trips() {
     }
     assert_eq!(Preferences::default().map.theme, ThemeChoice::Dark);
 }
+
+#[test]
+fn the_selector_scope_is_kept_per_level() {
+    use naves_core::prefs::SelectorScope;
+    let text = "[map.selector_scope]\n\"level.buildings\" = \"everything\"\n";
+    let parsed = Preferences::parse(text).unwrap();
+    assert_eq!(
+        parsed.map.selector_scope.get("level.buildings"),
+        Some(&SelectorScope::Everything)
+    );
+    let d = dir();
+    let path = default_path(d.path());
+    parsed.save(&path).unwrap();
+    assert_eq!(Preferences::load(&path).unwrap(), parsed);
+    // nothing is written while every level shows what fits it
+    let defaults = default_path(&d.path().join("other"));
+    Preferences::default().save(&defaults).unwrap();
+    assert!(
+        !std::fs::read_to_string(&defaults)
+            .unwrap()
+            .contains("selector_scope")
+    );
+}

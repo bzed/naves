@@ -88,6 +88,17 @@ impl NavesApp {
             tools.push((ToolId::SELECT, "Select"));
         }
         tools.extend(def.tools.iter().map(|t| (t.tool, t.word)));
+        // the tools of the picked item's level, when it is another one
+        if let Some(other) = self
+            .item_level
+            .and_then(|l| self.levels.iter().find(|d| d.level == l))
+        {
+            for t in other.tools {
+                if !tools.iter().any(|(id, _)| *id == t.tool) {
+                    tools.push((t.tool, t.word));
+                }
+            }
+        }
         tools
     }
 
@@ -95,7 +106,7 @@ impl NavesApp {
     pub(super) fn has_rail(&self) -> bool {
         self.levels
             .iter()
-            .find(|d| d.level == self.panel.active)
-            .is_some_and(|d| !d.tools.is_empty())
+            .filter(|d| d.level == self.panel.active || Some(d.level) == self.item_level)
+            .any(|d| !d.tools.is_empty())
     }
 }

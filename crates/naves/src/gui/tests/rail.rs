@@ -266,6 +266,8 @@ fn item(id: &str, name: &str, group: &str) -> PaletteItem {
         kind: crate::gui::palette::ItemKind::Preset,
         default_tool: ToolId::ADD,
         source: crate::gui::palette::ItemSource::Game,
+        fits: vec![Level::Buildings],
+        size_m: None,
     }
 }
 

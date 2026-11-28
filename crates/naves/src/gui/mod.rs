@@ -90,6 +90,8 @@ pub struct NavesApp {
     tool: shortcuts::ToolId,
     /// The item that was picked last.
     item: Option<String>,
+    /// The level of the picked item when it is not the active level: its tools join the rail until Esc.
+    item_level: Option<levels::Level>,
     /// The search and the last used items of the palette.
     palette: palette::Palette,
     /// The keys in force.
@@ -189,6 +191,7 @@ impl NavesApp {
             dock: "build",
             tool: shortcuts::ToolId::SELECT,
             item: None,
+            item_level: None,
             palette: palette::Palette::default(),
             bindings: shortcuts::Bindings::default(),
             binding_notes: Vec::new(),
@@ -739,10 +742,13 @@ impl NavesApp {
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;
-                } else if self.tool != shortcuts::ToolId::SELECT {
-                    self.tool = shortcuts::ToolId::SELECT;
                 } else {
-                    self.selection = None;
+                    let had_item_level = self.item_level.take().is_some();
+                    if self.tool != shortcuts::ToolId::SELECT {
+                        self.tool = shortcuts::ToolId::SELECT;
+                    } else if !had_item_level {
+                        self.selection = None;
+                    }
                 }
             }
             Action::FrameSelection => self.frame_selection(),
@@ -778,6 +784,7 @@ impl NavesApp {
         if self.panel.active != level {
             self.tool = shortcuts::ToolId::SELECT;
             self.item = None;
+            self.item_level = None;
         }
         self.panel.active = level;
         self.panel.hidden.remove(&level);
@@ -837,11 +844,10 @@ impl NavesApp {
         let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
             return;
         };
-        let items = (def.items)(self);
-        if items.is_empty() {
+        if (def.items)(self).is_empty() {
             (def.panel)(self, ui);
         } else {
-            palette::palette_ui(self, ui, &items);
+            palette::palette_ui(self, ui);
         }
     }
 
@@ -1095,11 +1101,13 @@ impl NavesApp {
             }
             return;
         }
-        let tool = self
-            .levels
-            .iter()
-            .find(|d| d.level == self.panel.active)
-            .and_then(|d| d.tools.iter().find(|t| t.tool == self.tool))
+        // the active level's tool wins over the picked item's level's
+        let tool = [Some(self.panel.active), self.item_level]
+            .into_iter()
+            .flatten()
+            .filter_map(|l| self.levels.iter().find(|d| d.level == l))
+            .flat_map(|d| d.tools.iter())
+            .find(|t| t.tool == self.tool)
             .and_then(|t| t.on_event);
         if let Some(on_event) = tool {
             on_event(self, event);

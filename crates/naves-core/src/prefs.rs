@@ -97,6 +97,17 @@ pub enum ThemeChoice {
     System,
 }
 
+/// What the item selector lists: the items that fit the level, or all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SelectorScope {
+    /// Only the items that fit the level (the default).
+    #[default]
+    Level,
+    /// Every item, the ones of the level first.
+    Everything,
+}
+
 /// The Map tab.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -116,6 +127,10 @@ pub struct MapPrefs {
     /// The theme of the GUI.
     #[serde(skip_serializing_if = "is_default_theme")]
     pub theme: ThemeChoice,
+    /// What the item selector lists in each level, by level id (`level.buildings`); a level that is not listed shows
+    /// what fits it.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub selector_scope: BTreeMap<String, SelectorScope>,
     /// The base map a project opens with: `hillshade`, `slope`, `height`, `surface` or `imagery`.
     #[serde(skip_serializing_if = "is_default_base")]
     pub start_base: String,
@@ -135,6 +150,7 @@ impl Default for MapPrefs {
             interface_scale: 1.0,
             no_unfold_animation: false,
             theme: ThemeChoice::Dark,
+            selector_scope: BTreeMap::new(),
             start_base: "hillshade".to_string(),
             start_layers: Vec::new(),
             other: BTreeMap::new(),

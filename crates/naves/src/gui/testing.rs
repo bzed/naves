@@ -148,7 +148,18 @@ fn fake_items(_app: &NavesApp) -> Vec<PaletteItem> {
         kind,
         default_tool: tool,
         source: ItemSource::Game,
+        fits: vec![Level::Buildings],
+        size_m: None,
     };
+    let mut road = item(
+        "road.fake",
+        "Fake road",
+        "Roads",
+        ItemKind::LineClass,
+        ToolId::ADD,
+    );
+    road.fits = vec![Level::Roads];
+    road.size_m = Some(9.0);
     vec![
         item(
             "house.small",
@@ -171,6 +182,7 @@ fn fake_items(_app: &NavesApp) -> Vec<PaletteItem> {
             ItemKind::Preset,
             ToolId::COMPOSITION,
         ),
+        road,
     ]
 }
 

@@ -22,6 +22,7 @@ mod dock;
 mod edit;
 mod layers;
 mod levels;
+mod palette;
 mod prefs_window;
 mod rail;
 mod roads;

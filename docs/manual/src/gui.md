@@ -145,6 +145,25 @@ A click with the Select tool picks the node under the pointer, or else the road 
 is easier to hit when you zoom in). The properties name the road class and say where it comes from, and list the
 built piece under the click below *Built here*. A click on nothing picks nothing.
 
+## The item selector
+
+A level that can add things (houses, trees, road classes, bridges) shows one list of items in the left panel instead
+of its settings. Every level uses the same list:
+
+- **Search** (**Ctrl+F**) narrows the list by name or group, over the items of the chosen scope.
+- Under the search a two-part switch picks the **scope**: the name of the level (for example *Buildings*) shows the
+  items that fit the level; *Everything* shows all items, the ones that fit the level first. The choice is
+  remembered for each level and kept between sessions; it is not in Settings.
+- Each row has a thumbnail, the name, what the item is, and at the right edge its width or length in metres. All
+  thumbnails share one scale (2 px per metre, cut off at the 64 px column), so a 12 m asphalt road is visibly
+  twice as thick as a 5 m track.
+- In *Everything*, an item that belongs to another level carries that level's colour chip with its number; the
+  level name shows when you rest the pointer on it.
+- *Last used* lists the items you picked last in this level.
+
+Picking an item of another level does not change the level you are working on: you keep the level and use the
+item's tool. **Esc** ends it and goes back to Select.
+
 ## Edits, undo and redo
 
 Edits to the road lines are written to `edits/ways.toml` at once; there is no Save button. If the file cannot be
