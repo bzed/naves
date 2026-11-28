@@ -137,7 +137,7 @@ fn the_dark_chrome_paints_the_slate_palette() {
         tokens::GROUND
     );
     // the active tool is the accent with the text that reads on it
-    let (letter, word) = crate::gui::rail::tool_ink(true, Level::Roads, &visuals);
+    let (letter, word) = crate::gui::rail::tool_ink(true, &visuals);
     assert_eq!(letter, crate::gui::theme::on_active(&visuals));
     assert_eq!(word, letter);
     assert!(contrast(letter, active(&visuals)) >= 4.5);

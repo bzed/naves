@@ -216,12 +216,12 @@ is one saved edit, taken back with **Ctrl+Z**.
 |---|---|
 | Class | The kind of road. Changing it replaces the `highway` and `tracktype` tags and keeps the others (surface, name, ...). A road of another kind shows *Other: highway=...*. |
 | Surface | asphalt, paved, gravel, compacted, dirt, grass, or *—* to remove the tag. |
-| Bridge | Sets `bridge=yes` (and `layer=1` when the road has no layer); unticking removes `bridge`. |
+| Bridge | Sets `bridge=yes` (and `layer=1` when the road has no layer); unticking removes `bridge` and `layer`, as the Bridge tool does on a bridge. |
 | Layer | -5 to 5, the `layer` tag; 0 removes it. Dragging the value is one edit, made when you let go. |
 | Keep as drawn | `naves:keep`. Unticked, it is written as `naves:keep=no`. |
 | Let road planning route it | `naves:plan=yes`; unticked, the tag is removed. |
 
-The last line says where the road comes from: *OSM way 8421, unchanged*, *OSM way 8421, edited by you* or *Drawn by
+The second line, under the title, says where the road comes from: *OSM way 8421, unchanged*, *OSM way 8421, edited by you* or *Drawn by
 you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and puts the nodes of the road you moved back, so the road is as OpenStreetMap has it (a node that another road you edited lists stays where it is);
 **Ctrl+Z** brings the edit back.
 
@@ -229,7 +229,8 @@ you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and pu
 
 Edits to the road lines are written to `edits/ways.toml` at once; there is no Save button. If the file cannot be
 written, the edit is not made and the log says why. **Ctrl+Z** takes back the last edit and **Ctrl+Shift+Z** does it
-again; the last 100 edits can be undone while the project is open. After an edit the status line adds, after the name of the tool, *● Edited: press
+again; the last 100 edits can be undone while the project is open and its map data is not read again (a change of the
+elevation or OpenStreetMap files in the project starts the history anew). After an edit the status line adds, after the name of the tool, *● Edited: press
 Ctrl+R to rebuild.* **Ctrl+R** (or **F5**) builds the roads again from the saved edits. A project without
 OpenStreetMap files shows the roads of its edits.
 

@@ -239,8 +239,20 @@ fn model_name(model: &str) -> String {
     file.strip_suffix(".p3d").unwrap_or(file).to_string()
 }
 
-fn model_item(model: &str, group: &str, length_m: f64, width_m: f64) -> PaletteItem {
-    PaletteItem {
+/// The item of a model; `None` when its size from the game files is not a finite size above zero.
+pub(in crate::gui) fn model_item(
+    model: &str,
+    group: &str,
+    length_m: f64,
+    width_m: f64,
+) -> Option<PaletteItem> {
+    if ![length_m, width_m]
+        .iter()
+        .all(|m| m.is_finite() && *m > 0.0)
+    {
+        return None;
+    }
+    Some(PaletteItem {
         id: format!("model.{model}"),
         name: model_name(model),
         group: group.to_string(),
@@ -250,7 +262,7 @@ fn model_item(model: &str, group: &str, length_m: f64, width_m: f64) -> PaletteI
         source: ItemSource::Game,
         fits: vec![Level::Roads],
         size_m: Some(length_m),
-    }
+    })
 }
 
 /// One item for every road piece, junction and bridge of the game's catalogue.
@@ -268,12 +280,12 @@ pub fn catalog_items(catalog: &PieceCatalog) -> Vec<PaletteItem> {
         // by family: one group of hundreds of pieces is hard to scan
         let group = format!("Pieces, {}", family_name(family).to_lowercase());
         for piece in catalog.pieces(family) {
-            items.push(model_item(&piece.model, &group, piece.chord(), piece.width));
+            items.extend(model_item(&piece.model, &group, piece.chord(), piece.width));
         }
     }
     for junction in catalog.junctions() {
         let length = (junction.end.x - junction.start.x).hypot(junction.end.z - junction.start.z);
-        items.push(model_item(
+        items.extend(model_item(
             &junction.model,
             "Junctions",
             length,
@@ -281,7 +293,7 @@ pub fn catalog_items(catalog: &PieceCatalog) -> Vec<PaletteItem> {
         ));
     }
     for bridge in catalog.bridges() {
-        items.push(model_item(
+        items.extend(model_item(
             &bridge.model,
             "Bridges",
             bridge.length,

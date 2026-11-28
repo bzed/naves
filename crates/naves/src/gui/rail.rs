@@ -16,11 +16,7 @@ const BUTTON_HEIGHT: f32 = 50.0;
 
 /// The colours of a tool's letter and word: the text on the accent when active, the ink of the chrome
 /// (readable on the panel in both themes) otherwise.
-pub(super) fn tool_ink(
-    active: bool,
-    _level: super::levels::Level,
-    visuals: &egui::Visuals,
-) -> (egui::Color32, egui::Color32) {
+pub(super) fn tool_ink(active: bool, visuals: &egui::Visuals) -> (egui::Color32, egui::Color32) {
     if active {
         let ink = super::theme::on_active(visuals);
         (ink, ink)
@@ -53,7 +49,7 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
         if active {
             painter.rect_filled(rect, 0.0, accent(ui.visuals()));
         }
-        let (letter_colour, word_colour) = tool_ink(active, level, ui.visuals());
+        let (letter_colour, word_colour) = tool_ink(active, ui.visuals());
         painter.text(
             rect.center_top() + egui::vec2(0.0, 6.0),
             Align2::CENTER_TOP,

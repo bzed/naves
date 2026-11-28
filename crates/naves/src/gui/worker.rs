@@ -169,7 +169,7 @@ impl HeightmapJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<Result<MapData, String>> {
-        self.rx.try_recv().ok()
+        poll_result(&self.rx)
     }
 }
 
@@ -250,7 +250,17 @@ impl CatalogJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<Result<PieceCatalog, String>> {
-        self.rx.try_recv().ok()
+        poll_result(&self.rx)
+    }
+}
+
+/// The result of a worker thread, once it is there. A thread that ended without a result (it panicked) is an
+/// error, so that the state does not stay "loading" for good.
+fn poll_result<T>(rx: &Receiver<Result<T, String>>) -> Option<Result<T, String>> {
+    match rx.try_recv() {
+        Ok(result) => Some(result),
+        Err(TryRecvError::Empty) => None,
+        Err(TryRecvError::Disconnected) => Some(Err("the reading stopped".to_string())),
     }
 }
 
@@ -275,7 +285,7 @@ impl SourceJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<Result<Source, String>> {
-        self.rx.try_recv().ok()
+        poll_result(&self.rx)
     }
 }
 
@@ -284,6 +294,16 @@ impl SourceJob {
 mod tests {
 
     use naves_export::testing::FakeEnv;
+
+    #[test]
+    fn a_job_whose_thread_died_is_an_error() {
+        let (tx, rx) = channel::<Result<Source, String>>();
+        let job = SourceJob { rx };
+        assert!(job.poll().is_none(), "nothing yet while the thread lives");
+        drop(tx);
+        let result = job.poll().expect("the end of the thread is reported");
+        assert!(result.is_err());
+    }
 
     use super::*;
 

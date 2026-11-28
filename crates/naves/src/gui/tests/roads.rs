@@ -20,6 +20,20 @@ fn go_to_roads(h: &mut Harness<'_, NavesApp>) {
 }
 
 #[test]
+fn a_model_with_a_size_that_is_no_size_is_not_listed() {
+    use crate::gui::levels::roads::model_item;
+    assert!(model_item("a\\b.p3d", "g", 10.0, 4.0).is_some());
+    for (length, width) in [
+        (f64::NAN, 4.0),
+        (10.0, f64::INFINITY),
+        (0.0, 4.0),
+        (10.0, -1.0),
+    ] {
+        assert!(model_item("a\\b.p3d", "g", length, width).is_none());
+    }
+}
+
+#[test]
 fn the_level_is_built_and_has_three_layers() {
     let def = BUILT.iter().find(|d| d.level == Level::Roads).unwrap();
     let names: Vec<&str> = def.layers.iter().map(|l| l.name).collect();

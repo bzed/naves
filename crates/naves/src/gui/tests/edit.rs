@@ -1090,6 +1090,34 @@ mod tools {
     }
 
     #[test]
+    fn a_road_that_is_gone_is_not_selected() {
+        let mut s = setup(false);
+        s.roads();
+        // cut way 7, select the new way, take the cut back
+        s.key(Key::R);
+        s.click(600.0, 500.0);
+        s.key(Key::Escape);
+        s.click(650.0, 500.0);
+        let picked = match s.h.state().selection.as_ref().and_then(|x| x.target) {
+            Some(crate::gui::edit::hit::Target::Node { way, .. }) => way,
+            other => panic!("the new way is picked: {other:?}"),
+        };
+        assert!(picked >= USER_ID_BASE, "{picked}");
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert!(s.session().way(picked).is_none());
+        assert!(s.h.state().selection.is_none(), "the picked road is gone");
+        // a deleted road too
+        s.key(Key::Escape);
+        s.click(525.0, 600.0);
+        assert!(s.h.state().selection.is_some());
+        let c = s.session().original(9).unwrap().clone();
+        s.h.state_mut()
+            .edit_way(|edits, _| edits.delete_way(&c, By::User))
+            .unwrap();
+        assert!(s.h.state().selection.is_none());
+    }
+
+    #[test]
     fn the_delete_key_deletes_too() {
         let mut s = setup(false);
         s.roads();
@@ -1299,8 +1327,13 @@ mod tools {
         app.change_way(7, &WayChange::Layer(9)).unwrap();
         assert_eq!(tags_of(&s, 7).get("layer").map(String::as_str), Some("5"));
         let app = s.h.state_mut();
-        app.change_way(7, &WayChange::Layer(0)).unwrap();
         app.change_way(7, &WayChange::Bridge(false)).unwrap();
+        assert!(
+            !tags_of(&s, 7).contains_key("layer"),
+            "unticking Bridge ends the layer like the Bridge tool"
+        );
+        let app = s.h.state_mut();
+        app.change_way(7, &WayChange::Layer(0)).unwrap();
         let tags = tags_of(&s, 7);
         assert!(!tags.contains_key("layer") && !tags.contains_key("bridge"));
         s.h.state_mut()

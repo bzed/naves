@@ -461,7 +461,18 @@ impl NavesApp {
 
     fn edit_result(&mut self, result: Result<(), String>) -> Result<(), String> {
         match &result {
-            Ok(()) => self.edit_problems.clear(),
+            Ok(()) => {
+                self.edit_problems.clear();
+                // a road that is gone (taken back, joined away, deleted) is no longer selected
+                let gone = self.selection.as_ref().and_then(|s| match s.target? {
+                    edit::hit::Target::Way(way) | edit::hit::Target::Node { way, .. } => Some(way),
+                });
+                if let Some(way) = gone
+                    && self.edit.session().is_some_and(|s| s.way(way).is_none())
+                {
+                    self.selection = None;
+                }
+            }
             Err(text) => {
                 self.log.push(Line::Warning(text.clone()));
                 self.set_edit_problem(text.clone());

@@ -115,7 +115,9 @@ pub fn changed_tags(
                 tags.entry("layer".to_string())
                     .or_insert_with(|| "1".to_string());
             } else {
+                // the same as the Bridge tool: the road is a plain road again
                 tags.remove("bridge");
+                tags.remove("layer");
             }
         }
         WayChange::Layer(layer) => {

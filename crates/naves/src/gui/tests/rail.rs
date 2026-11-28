@@ -332,7 +332,7 @@ fn an_idle_tool_is_readable_on_the_panel() {
         let ctx = egui::Context::default();
         crate::gui::theme::apply_theme(&ctx, choice);
         let visuals = ctx.global_style().visuals.clone();
-        let (letter, word) = crate::gui::rail::tool_ink(false, Level::Roads, &visuals);
+        let (letter, word) = crate::gui::rail::tool_ink(false, &visuals);
         for ink in [letter, word] {
             assert!(
                 crate::gui::theme::contrast(ink, visuals.panel_fill) >= 7.0,
