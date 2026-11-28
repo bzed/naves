@@ -219,3 +219,127 @@ fn space_with_the_left_button_or_the_middle_button_pans() {
     );
     assert!(!pans(Secondary, true));
 }
+
+// ---- the keys that move the view ----
+
+/// A harness whose active view is the fake 3D view, standing at a known place.
+fn standing(root: &Path) -> (Harness<'static, NavesApp>, FakeHandle) {
+    let dir = project(root);
+    let (mut app, fake) = two_views(app(root, &dir));
+    app.views.switch();
+    fake.borrow_mut().focus = Some(ViewFocus {
+        center: WorldPoint { x: 750.0, y: 750.0 },
+        span_m: 1000.0,
+    });
+    let mut h = harness(app);
+    h.run_steps(3);
+    (h, fake)
+}
+
+/// Holds `key` for `frames` frames (with `modifiers` held too) and returns the sum of the frame times.
+fn hold(
+    h: &mut Harness<'_, NavesApp>,
+    key: egui::Key,
+    modifiers: egui::Modifiers,
+    frames: u32,
+) -> f64 {
+    h.event(egui::Event::ModifiersChanged(modifiers));
+    h.key_down(key);
+    let mut seconds = 0.0;
+    for _ in 0..frames {
+        h.run_steps(1);
+        seconds += f64::from(h.ctx.input(|i| i.stable_dt));
+    }
+    h.key_up(key);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run_steps(2);
+    seconds
+}
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 0.01 * b.abs().max(1e-9)
+}
+
+#[test]
+fn holding_d_pans_east() {
+    use crate::gui::shortcuts::{FAST, PAN_VIEWS_PER_S, SLOW};
+    for (modifiers, speed) in [
+        (egui::Modifiers::NONE, 1.0),
+        (egui::Modifiers::SHIFT, FAST),
+        (egui::Modifiers::CTRL, SLOW),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut h, fake) = standing(root.path());
+        let seconds = hold(&mut h, egui::Key::D, modifiers, 30);
+        let focus = fake.borrow().focus.unwrap();
+        let want = seconds * PAN_VIEWS_PER_S * 1000.0 * speed;
+        assert!(
+            near(focus.center.x - 750.0, want),
+            "{modifiers:?}: moved {}, wanted {want}",
+            focus.center.x - 750.0
+        );
+        assert!((focus.center.y - 750.0).abs() < 1e-9, "y stays");
+        assert!((focus.span_m - 1000.0).abs() < 1e-9, "the span stays");
+    }
+}
+
+#[test]
+fn w_a_and_s_pan_the_other_ways() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, fake) = standing(root.path());
+    hold(&mut h, egui::Key::W, egui::Modifiers::NONE, 10);
+    assert!(fake.borrow().focus.unwrap().center.y > 750.0, "W is north");
+    let (mut h, fake) = standing(root.path());
+    hold(&mut h, egui::Key::S, egui::Modifiers::NONE, 10);
+    assert!(fake.borrow().focus.unwrap().center.y < 750.0, "S is south");
+    let (mut h, fake) = standing(root.path());
+    hold(&mut h, egui::Key::A, egui::Modifiers::NONE, 10);
+    assert!(fake.borrow().focus.unwrap().center.x < 750.0, "A is west");
+}
+
+#[test]
+fn q_and_e_zoom() {
+    use crate::gui::shortcuts::ZOOM_PER_S;
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, fake) = standing(root.path());
+    let seconds = hold(&mut h, egui::Key::E, egui::Modifiers::NONE, 30);
+    let span = fake.borrow().focus.unwrap().span_m;
+    assert!(
+        near(span, 1000.0 / ZOOM_PER_S.powf(seconds)),
+        "E zooms in: {span}"
+    );
+    let (mut h, fake) = standing(root.path());
+    let seconds = hold(&mut h, egui::Key::Q, egui::Modifiers::NONE, 30);
+    let span = fake.borrow().focus.unwrap().span_m;
+    assert!(
+        near(span, 1000.0 * ZOOM_PER_S.powf(seconds)),
+        "Q zooms out: {span}"
+    );
+}
+
+#[test]
+fn wasd_does_nothing_while_typing() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, fake) = standing(root.path());
+    let field = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .unwrap();
+    field.focus();
+    h.run_steps(2);
+    hold(&mut h, egui::Key::W, egui::Modifiers::NONE, 10);
+    assert_eq!(
+        fake.borrow().focus.unwrap().center,
+        WorldPoint { x: 750.0, y: 750.0 }
+    );
+}
+
+#[test]
+fn a_released_key_stops_the_move() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, fake) = standing(root.path());
+    hold(&mut h, egui::Key::D, egui::Modifiers::NONE, 5);
+    let at = fake.borrow().focus.unwrap();
+    h.run_steps(5);
+    assert_eq!(fake.borrow().focus.unwrap(), at);
+}

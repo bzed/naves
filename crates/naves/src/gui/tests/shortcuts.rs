@@ -55,63 +55,186 @@ fn no_level_key_repeats_an_everywhere_key() {
     }
 }
 
+/// The table of the editor spec, section 4 (revised 2026-11-28): id, key, scope.
+const SPEC: &[(&str, &str, &str)] = &[
+    ("level.project", "Alt+4", "all"),
+    ("level.project.alt", "0", "all"),
+    ("level.terrain", "1", "all"),
+    ("level.ground", "2", "all"),
+    ("level.water", "3", "all"),
+    ("level.roads", "4", "all"),
+    ("level.vegetation", "5", "all"),
+    ("level.buildings", "6", "all"),
+    ("level.objects", "Alt+1", "all"),
+    ("level.objects.alt", "7", "all"),
+    ("level.life", "Alt+2", "all"),
+    ("level.life.alt", "8", "all"),
+    ("level.economy", "Alt+3", "all"),
+    ("level.economy.alt", "9", "all"),
+    ("view.pan.north", "W", "all"),
+    ("view.pan.west", "A", "all"),
+    ("view.pan.south", "S", "all"),
+    ("view.pan.east", "D", "all"),
+    ("view.zoom.out", "Q", "all"),
+    ("view.zoom.in", "E", "all"),
+    ("tool.move", "G", "all"),
+    ("tool.line", "C", "all"),
+    ("tool.area", "V", "all"),
+    ("tool.brush", "B", "all"),
+    ("tool.rotate", "R", "Buildings"),
+    ("tool.scale", "Shift+R", "Buildings"),
+    ("tool.add", "T", "Buildings"),
+    ("tool.terrain.smooth", "R", "Terrain"),
+    ("tool.terrain.flatten", "T", "Terrain"),
+    ("tool.terrain.ramp", "Shift+R", "Terrain"),
+    ("tool.terrain.hole", "Shift+C", "Terrain"),
+    ("tool.ground.soften", "R", "Ground"),
+    ("tool.roads.cut", "R", "Roads"),
+    ("tool.roads.join", "T", "Roads"),
+    ("tool.roads.bridge", "Shift+T", "Roads"),
+    ("tool.vegetation.cut", "R", "Vegetation"),
+    ("tool.vegetation.add", "T", "Vegetation"),
+    ("tool.buildings.composition", "Shift+C", "Buildings"),
+    ("tool.buildings.entrance", "Shift+T", "Buildings"),
+    ("tool.buildings.hole", "Shift+B", "Buildings"),
+    ("tool.objects.rotate", "R", "Objects"),
+    ("tool.objects.scale", "Shift+R", "Objects"),
+    ("tool.objects.add", "T", "Objects"),
+    ("tool.objects.composition", "Shift+C", "Objects"),
+    ("tool.life.add", "T", "Life"),
+    ("tool.economy.add", "T", "Economy"),
+    ("level.hide", "H", "all"),
+    ("level.show_others", "Shift+H", "all"),
+    ("view.switch", "Ctrl+Tab", "all"),
+    ("frame.selection", "F", "all"),
+    ("frame.map", "Shift+F", "all"),
+    ("earthwork.shape", "Shift+V", "all"),
+    ("axes.world", "Shift+X", "all"),
+    ("follow.ground", "Shift+G", "all"),
+    ("edit.delete", "X", "all"),
+    ("edit.delete.alt", "Delete", "all"),
+    ("edit.duplicate", "Ctrl+G", "all"),
+    ("edit.undo", "Ctrl+Z", "all"),
+    ("edit.redo", "Ctrl+Shift+Z", "all"),
+    ("search.items", "Ctrl+F", "all"),
+    ("command_palette", "Ctrl+P", "all"),
+    ("brush.smaller", ",", "all"),
+    ("brush.larger", ".", "all"),
+    ("brush.weaker", "Ctrl+,", "all"),
+    ("brush.stronger", "Ctrl+.", "all"),
+    ("finish", "Space", "all"),
+    ("finish.alt", "Enter", "all"),
+    ("cancel", "Esc", "all"),
+    ("regenerate", "Ctrl+R", "all"),
+    ("regenerate.alt", "F5", "all"),
+    ("build", "Ctrl+B", "all"),
+    ("problem.next", "F8", "all"),
+    ("problem.previous", "Shift+F8", "all"),
+    ("help", "F1", "all"),
+    ("settings", "F2", "all"),
+];
+
+fn scope_name(scope: Scope) -> String {
+    match scope {
+        Scope::Everywhere => "all".to_string(),
+        Scope::Level(level) => format!("{level:?}"),
+    }
+}
+
 #[test]
-fn every_key_of_the_spec_is_in_the_table() {
-    let spec = [
-        "Q",
-        "W",
-        "E",
-        "R",
-        "A",
-        "N",
-        "L",
-        "B",
-        "S",
-        "T",
-        "M",
-        "O",
-        "K",
-        "J",
-        "G",
-        "C",
-        "0",
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-        "6",
-        "7",
-        "8",
-        "9",
-        "H",
-        "Shift+H",
-        "Ctrl+Tab",
-        "F",
-        "Shift+F",
-        "X",
-        "Shift+T",
-        "Delete",
-        "Ctrl+D",
-        "Ctrl+Z",
-        "Ctrl+Shift+Z",
-        "Ctrl+F",
-        ",",
-        ".",
-        "Ctrl+,",
-        "Ctrl+.",
-        "Enter",
-        "Esc",
-        "F5",
-        "Ctrl+B",
-        "F8",
-        "Shift+F8",
-        "F1",
-        "F2",
+fn the_table_is_the_spec() {
+    let table: Vec<(&str, String, String)> = SHORTCUTS
+        .iter()
+        .map(|s| (s.id, text(s.binding), scope_name(s.scope)))
+        .collect();
+    let spec: Vec<(&str, String, String)> = SPEC
+        .iter()
+        .map(|(id, key, scope)| (*id, (*key).to_string(), (*scope).to_string()))
+        .collect();
+    assert_eq!(table, spec);
+}
+
+const LEFT: &[egui::Key] = &[
+    egui::Key::Num1,
+    egui::Key::Num2,
+    egui::Key::Num3,
+    egui::Key::Num4,
+    egui::Key::Num5,
+    egui::Key::Num6,
+    egui::Key::Q,
+    egui::Key::W,
+    egui::Key::E,
+    egui::Key::R,
+    egui::Key::T,
+    egui::Key::A,
+    egui::Key::S,
+    egui::Key::D,
+    egui::Key::F,
+    egui::Key::G,
+    egui::Key::X,
+    egui::Key::C,
+    egui::Key::V,
+    egui::Key::B,
+    egui::Key::Escape,
+    egui::Key::Tab,
+    egui::Key::Space,
+];
+
+/// The sets that move to the right half together, and Undo and Redo (Ctrl+Z is the key everybody knows).
+const RIGHT_HALF: &[Action] = &[
+    Action::HideLevel,
+    Action::ShowOthersInFull,
+    Action::BrushSmaller,
+    Action::BrushLarger,
+    Action::BrushWeaker,
+    Action::BrushStronger,
+    Action::NextProblem,
+    Action::PreviousProblem,
+    Action::Help,
+    Action::Settings,
+    Action::CommandPalette,
+    Action::Undo,
+    Action::Redo,
+];
+
+#[test]
+fn every_default_used_with_the_mouse_is_on_the_left_half() {
+    for s in SHORTCUTS.iter().filter(|s| {
+        s.id.rsplit('.').next().is_none_or(|last| last != "alt") && !RIGHT_HALF.contains(&s.action)
+    }) {
+        assert!(
+            LEFT.contains(&s.binding.key),
+            "{} uses {}, which is not on the left half",
+            s.id,
+            text(s.binding)
+        );
+    }
+}
+
+#[test]
+fn a_right_half_set_moves_whole() {
+    let sets: [&[Action]; 3] = [
+        &[Action::HideLevel, Action::ShowOthersInFull],
+        &[
+            Action::BrushSmaller,
+            Action::BrushLarger,
+            Action::BrushWeaker,
+            Action::BrushStronger,
+        ],
+        &[Action::NextProblem, Action::PreviousProblem],
     ];
-    let table: Vec<String> = SHORTCUTS.iter().map(|s| text(s.binding)).collect();
-    for key in spec {
-        assert!(table.iter().any(|t| t == key), "{key} is missing");
+    for set in sets {
+        let left: Vec<bool> = set
+            .iter()
+            .map(|action| {
+                let s = SHORTCUTS.iter().find(|s| s.action == *action).unwrap();
+                LEFT.contains(&s.binding.key)
+            })
+            .collect();
+        assert!(
+            left.iter().all(|l| *l) || left.iter().all(|l| !*l),
+            "{set:?} is split between the halves"
+        );
     }
 }
 
@@ -124,6 +247,7 @@ fn ids_are_unique_and_pinned() {
     assert_eq!(sorted.len(), ids.len(), "an id is used twice");
     let pinned = [
         "level.project",
+        "level.project.alt",
         "level.terrain",
         "level.ground",
         "level.water",
@@ -131,16 +255,24 @@ fn ids_are_unique_and_pinned() {
         "level.vegetation",
         "level.buildings",
         "level.objects",
+        "level.objects.alt",
         "level.life",
+        "level.life.alt",
         "level.economy",
-        "tool.select",
+        "level.economy.alt",
+        "view.pan.north",
+        "view.pan.west",
+        "view.pan.south",
+        "view.pan.east",
+        "view.zoom.out",
+        "view.zoom.in",
         "tool.move",
-        "tool.rotate",
-        "tool.scale",
-        "tool.add",
         "tool.line",
         "tool.area",
         "tool.brush",
+        "tool.rotate",
+        "tool.scale",
+        "tool.add",
         "tool.terrain.smooth",
         "tool.terrain.flatten",
         "tool.terrain.ramp",
@@ -150,18 +282,26 @@ fn ids_are_unique_and_pinned() {
         "tool.roads.join",
         "tool.roads.bridge",
         "tool.vegetation.cut",
+        "tool.vegetation.add",
         "tool.buildings.composition",
         "tool.buildings.entrance",
         "tool.buildings.hole",
+        "tool.objects.rotate",
+        "tool.objects.scale",
+        "tool.objects.add",
         "tool.objects.composition",
+        "tool.life.add",
+        "tool.economy.add",
         "level.hide",
         "level.show_others",
         "view.switch",
         "frame.selection",
         "frame.map",
+        "earthwork.shape",
         "axes.world",
         "follow.ground",
         "edit.delete",
+        "edit.delete.alt",
         "edit.duplicate",
         "edit.undo",
         "edit.redo",
@@ -172,8 +312,10 @@ fn ids_are_unique_and_pinned() {
         "brush.weaker",
         "brush.stronger",
         "finish",
+        "finish.alt",
         "cancel",
         "regenerate",
+        "regenerate.alt",
         "build",
         "problem.next",
         "problem.previous",
@@ -205,10 +347,15 @@ fn no_default_needs_shift_or_altgr_on_qwertz() {
 fn esc_enter_and_f1_are_as_the_spec_says() {
     let find = |id: &str| SHORTCUTS.iter().find(|s| s.id == id).unwrap();
     assert_eq!(text(find("cancel").binding), "Esc");
-    assert_eq!(text(find("finish").binding), "Enter");
+    assert_eq!(text(find("finish").binding), "Space");
+    assert_eq!(text(find("finish.alt").binding), "Enter");
     assert_eq!(text(find("help").binding), "F1");
-    assert_eq!(find("tool.select").binding.key, egui::Key::Q);
-    assert_eq!(find("tool.select").action, Action::Tool(ToolId::SELECT));
+    assert!(
+        SHORTCUTS
+            .iter()
+            .all(|s| s.action != Action::Tool(ToolId::SELECT)),
+        "Select has no key of its own: Esc is Select"
+    );
 }
 
 // ---- behaviour ----
@@ -443,7 +590,7 @@ fn tooltips_show_the_key() {
     );
     assert_eq!(
         crate::gui::stack::tooltip(Level::Project, &Bindings::default()),
-        "Go to Project (0)"
+        "Go to Project (Alt+4)"
     );
 }
 
@@ -499,4 +646,68 @@ fn a_held_key_fires_once() {
         h.state().panel.hidden.contains(&Level::Terrain),
         "one press hid it; three repeats did not show it again and hide it again"
     );
+}
+
+#[test]
+fn esc_is_select() {
+    // the fake level (6) has Place; Draw is not built yet
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut h = state_harness(app(root.path(), &dir).with_extra_level(&FAKE_LEVEL));
+    h.run_steps(3);
+    h.key_press(egui::Key::Num6);
+    h.run_steps(3);
+    assert!(
+        h.query_by_label("Esc Select").is_some(),
+        "the rail shows Esc over Select"
+    );
+    h.key_press(egui::Key::T);
+    h.run_steps(3);
+    assert_eq!(h.state().tool, ToolId::ADD);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert_eq!(h.state().tool, ToolId::SELECT);
+}
+
+/// A level 7 that only tests build.
+static FAKE_OBJECTS: crate::gui::levels::LevelDef = crate::gui::levels::LevelDef {
+    level: Level::Objects,
+    panel: |_, ui| {
+        ui.label("The panel of the fake objects level.");
+    },
+    layers: &[],
+    status: "Fake objects level.",
+    pick: None,
+    tools: &[],
+    items: |_| Vec::new(),
+};
+
+#[test]
+fn alt_digits_reach_the_upper_levels() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut h, _) = started(root.path());
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num1);
+    h.run_steps(2);
+    assert_eq!(level(&h), Level::Project, "level 7 is not built");
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut h = state_harness(app(root.path(), &dir).with_extra_level(&FAKE_OBJECTS));
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num1);
+    h.run_steps(2);
+    assert_eq!(level(&h), Level::Objects);
+    h.key_press(egui::Key::Num1);
+    h.run_steps(2);
+    assert_eq!(
+        level(&h),
+        Level::Terrain,
+        "the plain digit is still level 1"
+    );
+    h.key_press(egui::Key::Num7);
+    h.run_steps(2);
+    assert_eq!(level(&h), Level::Objects, "7 is the second key of level 7");
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::Num4);
+    h.run_steps(2);
+    assert_eq!(level(&h), Level::Project, "Alt+4 is the Project (0)");
 }

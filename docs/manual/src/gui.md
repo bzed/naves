@@ -98,6 +98,14 @@ A top-down view of the heightmap, north up.
   the highest level that has something there and switches to it. Levels you hid (H) pick nothing. **Esc** clears it.
 - **F** centres the map on the selected point, **Shift+F** shows the whole map.
 
+### Moving around
+
+The left hand works the keyboard and the right hand stays on the mouse. Hold **W**, **A**, **S** or **D** to pan the
+view north, west, south or east, and **Q** or **E** to zoom out or in; **Shift** makes it three times faster,
+**Ctrl** three times slower. The wheel and the middle mouse button still work. **Esc** cancels what you are doing and
+goes back to Select. The digits **1** to **6** go to levels 1 to 6; **Alt+1** to **Alt+4** go to levels 7, 8, 9 and 0
+(the digits **7**, **8**, **9** and **0** work too). See [keyboard shortcuts](shortcuts.md) for the whole table.
+
 ![The map close up, with the slope hatching where the ground is steeper than 60°](images/map-slope.png)
 
 The project panel has a section **Satellite imagery files**:

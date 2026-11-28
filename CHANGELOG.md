@@ -139,6 +139,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The default shortcuts are on the left half of the keyboard, so the right hand stays on the mouse. WASD pans, Q and
+  E zoom, Shift and Ctrl make it faster and slower. Select is Esc, Move is G, Line is C, Area is V, Delete is X.
+  The digits 7, 8, 9 and 0 are also Alt+1 to Alt+4. Shortcuts you changed in the settings stay.
 - Road placement is faster at equal input: a block-wise nearest-point lookup gives bit for bit the same result
   (road placement on the Berchtesgaden example at terrain size 2048 went from about 729 s to about 550 s).
 - A roundabout with a radius below 10 m on the map (about 20 m in reality) is a plain crossing, whatever the road

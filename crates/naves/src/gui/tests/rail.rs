@@ -47,7 +47,7 @@ fn production_levels_show_no_rail_and_no_palette() {
 fn the_rail_shows_the_level_s_tools() {
     let root = tempfile::tempdir().unwrap();
     let h = started(root.path());
-    for label in ["Q Select", "A Place", "C Compose"] {
+    for label in ["Esc Select", "T Place", "Shift+C Compose"] {
         assert!(h.query_by_label(label).is_some(), "{label}");
     }
 }
@@ -56,7 +56,7 @@ fn the_rail_shows_the_level_s_tools() {
 fn only_letters_that_apply_are_drawn() {
     let root = tempfile::tempdir().unwrap();
     let h = started(root.path());
-    for label in ["W Move", "E Rotate", "R Scale"] {
+    for label in ["G Move", "R Rotate", "Shift+R Scale"] {
         assert!(h.query_by_label(label).is_none(), "{label}");
     }
 }
@@ -66,10 +66,10 @@ fn a_letter_picks_the_tool() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path());
     assert_eq!(tool(&h), ToolId::SELECT);
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     assert_eq!(tool(&h), ToolId::ADD);
-    h.key_press(egui::Key::C);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::C);
     h.run_steps(3);
     assert_eq!(tool(&h), ToolId::COMPOSITION);
     h.key_press(egui::Key::W);
@@ -81,7 +81,7 @@ fn a_letter_picks_the_tool() {
 fn a_click_on_the_rail_picks_it_too() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path());
-    h.get_by_label("A Place").click();
+    h.get_by_label("T Place").click();
     h.run_steps(3);
     assert_eq!(tool(&h), ToolId::ADD);
 }
@@ -90,7 +90,7 @@ fn a_click_on_the_rail_picks_it_too() {
 fn esc_returns_to_select() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path());
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
@@ -101,7 +101,7 @@ fn esc_returns_to_select() {
 fn changing_the_level_returns_to_select() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path());
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     h.key_press(egui::Key::Num1);
     h.run_steps(3);
@@ -113,7 +113,7 @@ fn the_status_line_follows_the_tool() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path());
     assert!(h.query_by_label_contains("Fake level:").is_some());
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     assert!(h.query_by_label_contains("Place: click").is_some());
     assert!(h.query_by_label_contains("Fake level:").is_none());
@@ -146,7 +146,7 @@ fn tool_events_arrive_in_metres_from_the_map() {
     }
     h.key_press(egui::Key::Num6);
     h.run_steps(3);
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     take_tool_events();
     let pos = h.state().seen_rect.center();
@@ -175,7 +175,7 @@ fn tool_events_arrive_in_metres_from_either_view() {
     }
     h.key_press(egui::Key::Num6);
     h.run_steps(3);
-    h.key_press(egui::Key::A);
+    h.key_press(egui::Key::T);
     h.run_steps(3);
     h.state_mut().views.switch();
     take_tool_events();
@@ -236,7 +236,7 @@ fn another_tool_can_be_picked_after() {
     h.get_by_label("Small house").click();
     h.run_steps(3);
     assert_eq!(tool(&h), ToolId::ADD);
-    h.key_press(egui::Key::C);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::C);
     h.run_steps(3);
     assert_eq!(tool(&h), ToolId::COMPOSITION);
     assert_eq!(h.state().item.as_deref(), Some("house.small"));

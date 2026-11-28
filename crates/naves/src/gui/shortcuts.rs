@@ -98,7 +98,46 @@ pub enum Action {
     Help,
     /// Open the settings.
     Settings,
+    /// Pan the view north, while the key is held.
+    PanNorth,
+    /// Pan the view west, while the key is held.
+    PanWest,
+    /// Pan the view south, while the key is held.
+    PanSouth,
+    /// Pan the view east, while the key is held.
+    PanEast,
+    /// Zoom the view out, while the key is held.
+    ZoomOut,
+    /// Zoom the view in, while the key is held.
+    ZoomIn,
+    /// Earthwork: pick the last used shape again.
+    EarthworkShape,
 }
+
+impl Action {
+    /// Whether the action acts every frame while its key is down, instead of once when it goes down.
+    #[must_use]
+    pub fn is_held(self) -> bool {
+        matches!(
+            self,
+            Action::PanNorth
+                | Action::PanWest
+                | Action::PanSouth
+                | Action::PanEast
+                | Action::ZoomOut
+                | Action::ZoomIn
+        )
+    }
+}
+
+/// How far a held pan key moves the view: this fraction of the view's span per second.
+pub const PAN_VIEWS_PER_S: f64 = 0.75;
+/// How fast a held zoom key zooms: the span changes by this factor per second.
+pub const ZOOM_PER_S: f64 = 2.0;
+/// The speed factor while Shift is held with a movement key.
+pub const FAST: f64 = 3.0;
+/// The speed factor while Ctrl is held with a movement key.
+pub const SLOW: f64 = 1.0 / 3.0;
 
 /// Where a shortcut applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +239,14 @@ const fn row(
 pub const SHORTCUTS: &[Shortcut] = &[
     row(
         "level.project",
+        Key::Num4,
+        Modifiers::ALT,
+        Action::Level(Level::Project),
+        "Go to Project",
+        Scope::Everywhere,
+    ),
+    row(
+        "level.project.alt",
         Key::Num0,
         Modifiers::NONE,
         Action::Level(Level::Project),
@@ -256,6 +303,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "level.objects",
+        Key::Num1,
+        Modifiers::ALT,
+        Action::Level(Level::Objects),
+        "Go to Objects",
+        Scope::Everywhere,
+    ),
+    row(
+        "level.objects.alt",
         Key::Num7,
         Modifiers::NONE,
         Action::Level(Level::Objects),
@@ -264,6 +319,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "level.life",
+        Key::Num2,
+        Modifiers::ALT,
+        Action::Level(Level::Life),
+        "Go to Life",
+        Scope::Everywhere,
+    ),
+    row(
+        "level.life.alt",
         Key::Num8,
         Modifiers::NONE,
         Action::Level(Level::Life),
@@ -272,6 +335,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "level.economy",
+        Key::Num3,
+        Modifiers::ALT,
+        Action::Level(Level::Economy),
+        "Go to Economy",
+        Scope::Everywhere,
+    ),
+    row(
+        "level.economy.alt",
         Key::Num9,
         Modifiers::NONE,
         Action::Level(Level::Economy),
@@ -279,48 +350,64 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Scope::Everywhere,
     ),
     row(
-        "tool.select",
+        "view.pan.north",
+        Key::W,
+        Modifiers::NONE,
+        Action::PanNorth,
+        "Pan north (hold)",
+        Scope::Everywhere,
+    ),
+    row(
+        "view.pan.west",
+        Key::A,
+        Modifiers::NONE,
+        Action::PanWest,
+        "Pan west (hold)",
+        Scope::Everywhere,
+    ),
+    row(
+        "view.pan.south",
+        Key::S,
+        Modifiers::NONE,
+        Action::PanSouth,
+        "Pan south (hold)",
+        Scope::Everywhere,
+    ),
+    row(
+        "view.pan.east",
+        Key::D,
+        Modifiers::NONE,
+        Action::PanEast,
+        "Pan east (hold)",
+        Scope::Everywhere,
+    ),
+    row(
+        "view.zoom.out",
         Key::Q,
         Modifiers::NONE,
-        Action::Tool(ToolId::SELECT),
-        "Select",
+        Action::ZoomOut,
+        "Zoom out (hold)",
+        Scope::Everywhere,
+    ),
+    row(
+        "view.zoom.in",
+        Key::E,
+        Modifiers::NONE,
+        Action::ZoomIn,
+        "Zoom in (hold)",
         Scope::Everywhere,
     ),
     row(
         "tool.move",
-        Key::W,
+        Key::G,
         Modifiers::NONE,
         Action::Tool(ToolId::MOVE),
         "Move",
         Scope::Everywhere,
     ),
     row(
-        "tool.rotate",
-        Key::E,
-        Modifiers::NONE,
-        Action::Tool(ToolId::ROTATE),
-        "Rotate",
-        Scope::Everywhere,
-    ),
-    row(
-        "tool.scale",
-        Key::R,
-        Modifiers::NONE,
-        Action::Tool(ToolId::SCALE),
-        "Scale",
-        Scope::Everywhere,
-    ),
-    row(
-        "tool.add",
-        Key::A,
-        Modifiers::NONE,
-        Action::Tool(ToolId::ADD),
-        "Add as a point",
-        Scope::Everywhere,
-    ),
-    row(
         "tool.line",
-        Key::N,
+        Key::C,
         Modifiers::NONE,
         Action::Tool(ToolId::LINE),
         "Line",
@@ -328,7 +415,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "tool.area",
-        Key::L,
+        Key::V,
         Modifiers::NONE,
         Action::Tool(ToolId::AREA),
         "Area",
@@ -343,8 +430,32 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Scope::Everywhere,
     ),
     row(
+        "tool.rotate",
+        Key::R,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ROTATE),
+        "Rotate",
+        Scope::Level(Level::Buildings),
+    ),
+    row(
+        "tool.scale",
+        Key::R,
+        Modifiers::SHIFT,
+        Action::Tool(ToolId::SCALE),
+        "Scale",
+        Scope::Level(Level::Buildings),
+    ),
+    row(
+        "tool.add",
+        Key::T,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ADD),
+        "Place",
+        Scope::Level(Level::Buildings),
+    ),
+    row(
         "tool.terrain.smooth",
-        Key::S,
+        Key::R,
         Modifiers::NONE,
         Action::Tool(ToolId::SMOOTH),
         "Smooth",
@@ -360,23 +471,23 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "tool.terrain.ramp",
-        Key::M,
-        Modifiers::NONE,
+        Key::R,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::RAMP),
         "Ramp",
         Scope::Level(Level::Terrain),
     ),
     row(
         "tool.terrain.hole",
-        Key::O,
-        Modifiers::NONE,
+        Key::C,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::HOLE),
         "Hole",
         Scope::Level(Level::Terrain),
     ),
     row(
         "tool.ground.soften",
-        Key::S,
+        Key::R,
         Modifiers::NONE,
         Action::Tool(ToolId::SOFTEN),
         "Soften an edge",
@@ -384,7 +495,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "tool.roads.cut",
-        Key::K,
+        Key::R,
         Modifiers::NONE,
         Action::Tool(ToolId::CUT),
         "Cut",
@@ -392,7 +503,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "tool.roads.join",
-        Key::J,
+        Key::T,
         Modifiers::NONE,
         Action::Tool(ToolId::JOIN),
         "Join",
@@ -400,51 +511,99 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "tool.roads.bridge",
-        Key::G,
-        Modifiers::NONE,
+        Key::T,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::BRIDGE),
         "Mark a bridge",
         Scope::Level(Level::Roads),
     ),
     row(
         "tool.vegetation.cut",
-        Key::K,
+        Key::R,
         Modifiers::NONE,
         Action::Tool(ToolId::CUT),
         "Cut out",
         Scope::Level(Level::Vegetation),
     ),
     row(
+        "tool.vegetation.add",
+        Key::T,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ADD),
+        "Place one tree",
+        Scope::Level(Level::Vegetation),
+    ),
+    row(
         "tool.buildings.composition",
         Key::C,
-        Modifiers::NONE,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::COMPOSITION),
         "Make a composition",
         Scope::Level(Level::Buildings),
     ),
     row(
         "tool.buildings.entrance",
-        Key::G,
-        Modifiers::NONE,
+        Key::T,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::ENTRANCE),
         "Tag an entrance",
         Scope::Level(Level::Buildings),
     ),
     row(
         "tool.buildings.hole",
-        Key::O,
-        Modifiers::NONE,
+        Key::B,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::BUNKER_HOLE),
         "Hole for a bunker",
         Scope::Level(Level::Buildings),
     ),
     row(
+        "tool.objects.rotate",
+        Key::R,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ROTATE),
+        "Rotate",
+        Scope::Level(Level::Objects),
+    ),
+    row(
+        "tool.objects.scale",
+        Key::R,
+        Modifiers::SHIFT,
+        Action::Tool(ToolId::SCALE),
+        "Scale",
+        Scope::Level(Level::Objects),
+    ),
+    row(
+        "tool.objects.add",
+        Key::T,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ADD),
+        "Place",
+        Scope::Level(Level::Objects),
+    ),
+    row(
         "tool.objects.composition",
         Key::C,
-        Modifiers::NONE,
+        Modifiers::SHIFT,
         Action::Tool(ToolId::COMPOSITION),
         "Make a composition",
         Scope::Level(Level::Objects),
+    ),
+    row(
+        "tool.life.add",
+        Key::T,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ADD),
+        "Place a group or a spawn",
+        Scope::Level(Level::Life),
+    ),
+    row(
+        "tool.economy.add",
+        Key::T,
+        Modifiers::NONE,
+        Action::Tool(ToolId::ADD),
+        "Place an event",
+        Scope::Level(Level::Economy),
     ),
     row(
         "level.hide",
@@ -487,16 +646,24 @@ pub const SHORTCUTS: &[Shortcut] = &[
         Scope::Everywhere,
     ),
     row(
+        "earthwork.shape",
+        Key::V,
+        Modifiers::SHIFT,
+        Action::EarthworkShape,
+        "Pick the last earthwork shape again",
+        Scope::Everywhere,
+    ),
+    row(
         "axes.world",
         Key::X,
-        Modifiers::NONE,
+        Modifiers::SHIFT,
         Action::WorldAxes,
         "World or local axes",
         Scope::Everywhere,
     ),
     row(
         "follow.ground",
-        Key::T,
+        Key::G,
         Modifiers::SHIFT,
         Action::FollowGround,
         "Follow the ground",
@@ -504,6 +671,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "edit.delete",
+        Key::X,
+        Modifiers::NONE,
+        Action::Delete,
+        "Delete",
+        Scope::Everywhere,
+    ),
+    row(
+        "edit.delete.alt",
         Key::Delete,
         Modifiers::NONE,
         Action::Delete,
@@ -512,7 +687,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "edit.duplicate",
-        Key::D,
+        Key::G,
         Modifiers::CTRL,
         Action::Duplicate,
         "Duplicate",
@@ -584,6 +759,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "finish",
+        Key::Space,
+        Modifiers::NONE,
+        Action::Finish,
+        "Finish a line or area",
+        Scope::Everywhere,
+    ),
+    row(
+        "finish.alt",
         Key::Enter,
         Modifiers::NONE,
         Action::Finish,
@@ -600,6 +783,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     row(
         "regenerate",
+        Key::R,
+        Modifiers::CTRL,
+        Action::Regenerate,
+        "Regenerate the active level in the changed area",
+        Scope::Everywhere,
+    ),
+    row(
+        "regenerate.alt",
         Key::F5,
         Modifiers::NONE,
         Action::Regenerate,
@@ -649,7 +840,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
 ];
 
 impl Scope {
-    fn applies(self, level: Level) -> bool {
+    pub(super) fn applies(self, level: Level) -> bool {
         match self {
             Scope::Everywhere => true,
             Scope::Level(l) => l == level,
@@ -665,7 +856,13 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         Action::SwitchView => app.views.can_switch(),
         Action::FrameSelection => app.selection.is_some() && ready(app),
         Action::FrameMap => ready(app),
-        Action::NextProblem
+        Action::PanNorth
+        | Action::PanWest
+        | Action::PanSouth
+        | Action::PanEast
+        | Action::ZoomOut
+        | Action::ZoomIn
+        | Action::NextProblem
         | Action::PreviousProblem
         | Action::Cancel
         | Action::Build
@@ -677,7 +874,8 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         // built by the tasks and plans that bring the tools, selection, layers, problems and settings
         Action::Tool(tool) => app.has_tool(tool),
         Action::SearchItems => app.has_palette(),
-        Action::WorldAxes
+        Action::EarthworkShape
+        | Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
         | Action::Duplicate
@@ -899,11 +1097,65 @@ pub fn action_for(
 ) -> Option<Action> {
     SHORTCUTS
         .iter()
-        .filter(|s| s.scope.applies(level))
+        .filter(|s| s.scope.applies(level) && !s.action.is_held())
         .filter_map(|s| bindings.get(s).map(|b| (s, b)))
         .filter(|(_, b)| !typing || fires_while_typing(*b))
         .find(|(_, b)| pressed_once(input, b.key) && input.modifiers.matches_exact(b.modifiers))
         .map(|(s, _)| s.action)
+}
+
+/// What the held movement keys ask for in one frame: the view moves by `pan` (fractions of its span, east and
+/// north) and its span is multiplied by `zoom`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Movement {
+    /// East and north, in fractions of the view's span.
+    pub pan: (f64, f64),
+    /// The factor for the span; below 1 zooms in.
+    pub zoom: f64,
+}
+
+/// The movement of the keys held down in this frame, scaled by the frame time. Only the key is looked at, not the
+/// modifiers: Shift makes the move [`FAST`], Ctrl [`SLOW`]. `None` while nothing moves, and while `typing`.
+#[must_use]
+pub fn held_movement(
+    input: &InputState,
+    bindings: &Bindings,
+    level: Level,
+    typing: bool,
+) -> Option<Movement> {
+    if typing {
+        return None;
+    }
+    let down = |action: Action| {
+        SHORTCUTS
+            .iter()
+            .filter(|s| s.action == action && s.scope.applies(level))
+            .filter_map(|s| bindings.get(s))
+            .any(|b| input.key_down(b.key))
+    };
+    let axis = |plus: Action, minus: Action| i8::from(down(plus)) - i8::from(down(minus));
+    let speed = {
+        let mut speed = 1.0;
+        if input.modifiers.shift {
+            speed *= FAST;
+        }
+        if input.modifiers.ctrl || input.modifiers.command {
+            speed *= SLOW;
+        }
+        speed * f64::from(input.stable_dt)
+    };
+    let (east, north) = (
+        axis(Action::PanEast, Action::PanWest),
+        axis(Action::PanNorth, Action::PanSouth),
+    );
+    let zoom = axis(Action::ZoomOut, Action::ZoomIn);
+    (east != 0 || north != 0 || zoom != 0).then(|| Movement {
+        pan: (
+            f64::from(east) * speed * PAN_VIEWS_PER_S,
+            f64::from(north) * speed * PAN_VIEWS_PER_S,
+        ),
+        zoom: ZOOM_PER_S.powf(f64::from(zoom) * speed),
+    })
 }
 
 /// Whether a text field has the keyboard. A `DragValue` being typed in counts, since it is one.
@@ -951,13 +1203,20 @@ pub fn action_built(action: Action, app: &NavesApp) -> bool {
         | Action::FrameSelection
         | Action::FrameMap
         | Action::Cancel
+        | Action::PanNorth
+        | Action::PanWest
+        | Action::PanSouth
+        | Action::PanEast
+        | Action::ZoomOut
+        | Action::ZoomIn
         | Action::Build
         | Action::NextProblem
         | Action::PreviousProblem
         | Action::Help
         | Action::Settings
         | Action::CommandPalette => true,
-        Action::WorldAxes
+        Action::EarthworkShape
+        | Action::WorldAxes
         | Action::FollowGround
         | Action::Delete
         | Action::Duplicate

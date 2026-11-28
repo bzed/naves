@@ -19,10 +19,13 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
     let level = app.panel.active;
     let tools = app.rail_tools();
     for (tool, word) in tools {
-        let key = app
-            .bindings
-            .key_text(Action::Tool(tool), level)
-            .unwrap_or_default();
+        // Select has no key of its own: Esc goes back to it
+        let action = if tool == ToolId::SELECT {
+            Action::Cancel
+        } else {
+            Action::Tool(tool)
+        };
+        let key = app.bindings.key_text(action, level).unwrap_or_default();
         let active = app.tool == tool;
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), BUTTON_HEIGHT),
@@ -42,7 +45,8 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
             rect.center_top() + egui::vec2(0.0, 6.0),
             Align2::CENTER_TOP,
             &key,
-            FontId::proportional(22.0),
+            // a letter is big; a key with a modifier or a name ("Shift+C", "Esc") has to fit the rail
+            FontId::proportional(if key.chars().count() <= 1 { 22.0 } else { 13.0 }),
             letter_colour,
         );
         painter.text(

@@ -122,7 +122,7 @@ fn escape_does_not_cancel_the_tool_behind_the_palette() {
     h.run_steps(3);
     h.key_press(Key::Num6);
     h.run_steps(3);
-    h.key_press(Key::C);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::C);
     h.run_steps(3);
     assert_eq!(h.state().tool, ToolId::COMPOSITION);
     // the palette owns the keyboard while it is open: Esc closes it and does nothing else

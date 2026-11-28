@@ -16,7 +16,7 @@ use naves_export::tools::{Origin, ToolOrigin};
 
 use super::*;
 use crate::gui::levels::Level;
-use crate::gui::shortcuts::{Action, Binding, Bindings, SHORTCUTS, ToolId};
+use crate::gui::shortcuts::{Action, Binding, Bindings, SHORTCUTS};
 use crate::gui::testing::{FAKE_LEVEL, FakeViewport};
 use crate::gui::viewport::ViewEvent;
 use crate::gui::viewport::Viewport;
@@ -70,9 +70,17 @@ fn run_until(harness: &mut Harness<'_, NavesApp>, done: impl Fn(&NavesApp) -> bo
     }
 }
 
-fn rebind(h: &mut Harness<'_, NavesApp>, row: &str, key: Key, modifiers: Modifiers) {
+/// Clicks the key of the row, after scrolling the long list to it.
+fn choose(h: &mut Harness<'_, NavesApp>, row: &str) {
+    h.get_by_label_contains(&format!("{row} shortcut"))
+        .scroll_to_me();
+    h.run_steps(6);
     h.get_by_label_contains(&format!("{row} shortcut")).click();
     h.run_steps(2);
+}
+
+fn rebind(h: &mut Harness<'_, NavesApp>, row: &str, key: Key, modifiers: Modifiers) {
+    choose(h, row);
     h.key_press_modifiers(modifiers, key);
     h.run_steps(3);
 }
@@ -180,8 +188,7 @@ fn a_click_on_the_backdrop_while_a_key_is_chosen_does_not_close_it() {
     let (mut h, _) = started(root.path(), None);
     open_window(&mut h);
     // start listening for a new key, and press none: the choice is still open
-    h.get_by_label_contains("Build shortcut").click();
-    h.run_steps(2);
+    choose(&mut h, "Build");
     // a click on the dimmed ground must not throw the window away
     let corner = egui::pos2(4.0, 4.0);
     h.hover_at(corner);
@@ -261,8 +268,7 @@ fn pressing_a_key_rebinds_and_saves() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, path) = started(root.path(), None);
     open_window(&mut h);
-    h.get_by_label_contains("Build shortcut").click();
-    h.run_steps(2);
+    choose(&mut h, "Build");
     assert!(h.query_by_label_contains("Press a key").is_some());
     h.key_press_modifiers(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::B);
     h.run_steps(3);
@@ -291,8 +297,7 @@ fn esc_cancels_a_capture() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, path) = started(root.path(), None);
     open_window(&mut h);
-    h.get_by_label_contains("Build shortcut").click();
-    h.run_steps(2);
+    choose(&mut h, "Build");
     h.key_press(Key::Escape);
     h.run_steps(3);
     assert!(is_open(&h), "the window stays");
@@ -314,8 +319,7 @@ fn esc_enter_and_f1_cannot_be_changed() {
         assert!(button.accesskit_node().is_disabled(), "{row}");
     }
     // and no other action can take them
-    h.get_by_label_contains("Build shortcut").click();
-    h.run_steps(2);
+    choose(&mut h, "Build");
     for key in [Key::Enter, Key::F1] {
         h.key_press(key);
         h.run_steps(2);
@@ -332,8 +336,7 @@ fn tab_and_shift_tab_cannot_be_assigned() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, _) = started(root.path(), None);
     open_window(&mut h);
-    h.get_by_label_contains("Build shortcut").click();
-    h.run_steps(2);
+    choose(&mut h, "Build");
     h.key_press(Key::Tab);
     h.run_steps(2);
     assert!(
@@ -366,8 +369,8 @@ fn a_used_key_asks_before_replacing() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, path) = started(root.path(), None);
     open_window(&mut h);
-    rebind(&mut h, "Build", Key::R, Modifiers::NONE);
-    assert!(h.query_by_label("R is Scale in every level.").is_some());
+    rebind(&mut h, "Build", Key::G, Modifiers::NONE);
+    assert!(h.query_by_label("G is Move in every level.").is_some());
     assert!(h.query_by_role_and_label(Role::Button, "Replace").is_some());
     assert!(
         !path.exists() || saved(&path).shortcuts.is_empty(),
@@ -380,10 +383,10 @@ fn cancel_changes_nothing() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, path) = started(root.path(), None);
     open_window(&mut h);
-    rebind(&mut h, "Build", Key::R, Modifiers::NONE);
+    rebind(&mut h, "Build", Key::G, Modifiers::NONE);
     h.get_by_role_and_label(Role::Button, "Cancel").click();
     h.run_steps(3);
-    assert!(h.query_by_label("R is Scale in every level.").is_none());
+    assert!(h.query_by_label("G is Move in every level.").is_none());
     assert!(!path.exists() || saved(&path).shortcuts.is_empty());
     assert_eq!(
         h.state()
@@ -420,12 +423,17 @@ fn the_same_key_in_two_levels_is_no_conflict() {
         .iter()
         .find(|s| s.id == "tool.terrain.smooth")
         .unwrap();
-    // K is Roads' cut and Vegetation's cut-out: neither is Terrain's
+    // R is Roads' cut and Vegetation's cut-out, and Terrain's smooth: three levels, no conflict
     let k = Binding {
-        key: Key::K,
+        key: Key::R,
         modifiers: Modifiers::NONE,
     };
-    assert!(bindings.conflict(k, smooth.id).is_none());
+    assert_eq!(smooth.binding, k);
+    let soften = SHORTCUTS
+        .iter()
+        .find(|s| s.id == "tool.ground.soften")
+        .unwrap();
+    assert!(bindings.conflict(k, soften.id).is_none());
     let cut = SHORTCUTS
         .iter()
         .find(|s| s.id == "tool.vegetation.cut")
@@ -446,8 +454,8 @@ fn a_global_key_conflicts_with_every_level() {
         modifiers: Modifiers::NONE,
     };
     let hit = bindings.conflict(q, "tool.terrain.smooth").unwrap();
-    assert_eq!(hit.action, Action::Tool(ToolId::SELECT));
-    let own = bindings.conflict(q, "tool.select");
+    assert_eq!(hit.action, Action::ZoomOut);
+    let own = bindings.conflict(q, "view.zoom.out");
     assert!(own.is_none(), "an action does not conflict with itself");
 }
 

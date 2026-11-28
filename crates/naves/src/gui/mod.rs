@@ -560,6 +560,28 @@ impl NavesApp {
         {
             self.run_action(action);
         }
+        self.move_view(ctx, typing, level);
+    }
+
+    /// Moves the active view by the movement keys that are held down, every frame.
+    fn move_view(&mut self, ctx: &egui::Context, typing: bool, level: levels::Level) {
+        let Some(movement) =
+            ctx.input(|i| shortcuts::held_movement(i, &self.bindings, level, typing))
+        else {
+            return;
+        };
+        ctx.request_repaint();
+        let view = self.views.active_mut();
+        let Some(focus) = view.focus() else {
+            return;
+        };
+        view.set_focus(viewport::ViewFocus {
+            center: viewport::WorldPoint {
+                x: focus.center.x + movement.pan.0 * focus.span_m,
+                y: focus.center.y + movement.pan.1 * focus.span_m,
+            },
+            span_m: focus.span_m * movement.zoom,
+        });
     }
 
     /// Does what a key (or a click that stands for one) asks for.

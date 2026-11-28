@@ -27,13 +27,15 @@ pub enum Command {
 
 impl Command {
     /// The shortcut id whose key is shown at the right of the row.
-    fn shortcut_id(&self) -> Option<&'static str> {
+    fn shortcut_id(&self, level: super::levels::Level) -> Option<&'static str> {
         match self {
             // The level's own id is the shortcut id ("level.terrain").
             Command::Level(level) => Some(level.id()),
+            // Select has no key of its own: Esc goes back to it
+            Command::Tool(tool) if *tool == ToolId::SELECT => Some("cancel"),
             Command::Tool(tool) => super::shortcuts::SHORTCUTS
                 .iter()
-                .find(|s| s.action == Action::Tool(*tool))
+                .find(|s| s.action == Action::Tool(*tool) && s.scope.applies(level))
                 .map(|s| s.id),
             Command::Build => Some("build"),
         }
@@ -57,7 +59,7 @@ impl Provider {
     pub fn new(app: &NavesApp) -> Self {
         let key_of = |command: &Command| {
             command
-                .shortcut_id()
+                .shortcut_id(app.panel.active)
                 .and_then(|id| app.bindings.key_of(id))
                 .map_or(String::new(), |k| k.to_string())
         };
