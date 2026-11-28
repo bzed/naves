@@ -57,7 +57,7 @@ impl EditState {
 pub enum Origin {
     /// An OpenStreetMap way as it is.
     Osm,
-    /// An OpenStreetMap way that has an edit.
+    /// An OpenStreetMap way that has an edit, or one of whose nodes was moved.
     EditedOsm,
     /// A way drawn by the user.
     Drawn,
@@ -87,6 +87,8 @@ pub struct EditSession {
     projected: Vec<ProjectedWay>,
     /// The raw ids of the OpenStreetMap ways that have an edit.
     edited: BTreeSet<i64>,
+    /// The raw ids of the nodes that were moved.
+    moved: BTreeSet<i64>,
     /// How often `projected` was built (for the tests).
     builds: usize,
 }
@@ -105,6 +107,7 @@ impl EditSession {
             dirty: false,
             projected: Vec::new(),
             edited: BTreeSet::new(),
+            moved: BTreeSet::new(),
             builds: 0,
         };
         session.project();
@@ -131,6 +134,13 @@ impl EditSession {
             .ways
             .iter()
             .filter_map(|w| w.id.raw())
+            .collect();
+        self.moved = self
+            .source
+            .edits
+            .nodes
+            .iter()
+            .filter_map(|n| n.id.raw())
             .collect();
         let mut projected = Vec::new();
         for way in &self.source.ways.ways {
@@ -260,7 +270,11 @@ impl EditSession {
     pub fn origin(&self, raw: i64) -> Origin {
         if raw >= USER_ID_BASE {
             Origin::Drawn
-        } else if self.edited.contains(&raw) {
+        } else if self.edited.contains(&raw)
+            || self
+                .way(raw)
+                .is_some_and(|w| w.nodes.iter().any(|n| self.moved.contains(n)))
+        {
             Origin::EditedOsm
         } else {
             Origin::Osm

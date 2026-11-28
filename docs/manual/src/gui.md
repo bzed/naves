@@ -136,7 +136,7 @@ On the Roads level the roads as read from OpenStreetMap are drawn over the built
 the build moved a line:
 
 - a thin grey line is a road as OpenStreetMap has it;
-- a blue line is a road you changed or drew; a short tick across each end marks it, so that it is still told
+- a blue line is a road you changed (its tags, its shape, or a node of it that you moved) or drew; a short tick across each end marks it, so that it is still told
   apart from the grey ones where the colours are hard to see;
 - the selected road is a heavier blue line with a small square handle on each of its nodes;
 - a dashed light line, with its handles, is the road you are drawing.
@@ -215,7 +215,7 @@ is one saved edit, taken back with **Ctrl+Z**.
 | Let road planning route it | `naves:plan=yes`; unticked, the tag is removed. |
 
 The last line says where the road comes from: *OSM way 8421, unchanged*, *OSM way 8421, edited by you* or *Drawn by
-you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and the road is as OpenStreetMap has it;
+you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and puts the nodes of the road you moved back, so the road is as OpenStreetMap has it (a node that another road you edited lists stays where it is);
 **Ctrl+Z** brings the edit back.
 
 ## Edits, undo and redo

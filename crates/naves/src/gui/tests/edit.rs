@@ -72,6 +72,31 @@ fn the_projected_ways_are_built_once_per_change_of_the_edits() {
 }
 
 #[test]
+fn a_moved_node_marks_its_way_as_changed() {
+    use crate::gui::edit::fixture::session as fixture_session;
+    use crate::gui::edit::overlay::{OverlayShape, overlay};
+    let mut s = fixture_session(&[
+        (7, &[(500.0, 500.0), (550.0, 500.0), (600.0, 500.0)]),
+        (8, &[(500.0, 600.0), (600.0, 600.0)]),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(s.origin(7), Origin::Osm);
+    let before = s.source.extract.ways[0].points[1];
+    let (lat, lon) = s.source.frame.to_geo(550.0, 520.0).unwrap();
+    s.apply(dir.path(), |edits, _| {
+        edits.move_node(ElementId::Osm(701), lat, lon, Some(before), By::User)
+    })
+    .unwrap();
+    assert_eq!(s.origin(7), Origin::EditedOsm, "the road is changed");
+    assert_eq!(s.origin(8), Origin::Osm);
+    let ticks = overlay(&s, None, &[])
+        .iter()
+        .filter(|shape| matches!(shape, OverlayShape::Tick { .. }))
+        .count();
+    assert_eq!(ticks, 2, "ticks at both ends of the moved road");
+}
+
+#[test]
 fn undo_and_redo_restore_the_file() {
     let root = tempfile::tempdir().unwrap();
     let (mut session, dir) = session(root.path());
@@ -1185,6 +1210,29 @@ mod tools {
             origin_line(s.session().origin(7), 7),
             "OSM way 7, unchanged"
         );
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.session().origin(7), Origin::EditedOsm, "one undo step");
+    }
+
+    #[test]
+    fn reset_to_osm_puts_the_moved_nodes_back() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::G);
+        s.send(&[
+            ViewEvent::Press {
+                at: at(550.0, 500.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Release {
+                at: at(552.0, 530.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        assert_eq!(s.session().origin(7), Origin::EditedOsm);
+        s.h.state_mut().change_way(7, &WayChange::Reset).unwrap();
+        assert_eq!(s.saved(), WayEdits::default());
+        assert_eq!(s.session().origin(7), Origin::Osm);
         s.key_with(Modifiers::CTRL, Key::Z);
         assert_eq!(s.session().origin(7), Origin::EditedOsm, "one undo step");
     }

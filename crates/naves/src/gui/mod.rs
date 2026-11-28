@@ -397,8 +397,22 @@ impl NavesApp {
             return Err("The edit cannot be made: the road is not there any more".to_string());
         };
         if *change == edit::properties::WayChange::Reset {
+            let own: Vec<ElementId> = way
+                .nodes
+                .iter()
+                .filter_map(|&n| ElementId::from_raw(n))
+                .collect();
             return self.edit_way(|edits, _| {
                 edits.reset_way(id);
+                // the nodes of the way go back too, unless another edited way lists them
+                let used: std::collections::BTreeSet<ElementId> = edits
+                    .ways
+                    .iter()
+                    .flat_map(|w| w.nodes.iter().copied())
+                    .collect();
+                edits
+                    .nodes
+                    .retain(|n| !own.contains(&n.id) || used.contains(&n.id));
                 Ok(())
             });
         }
