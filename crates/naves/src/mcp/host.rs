@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use naves_core::dem::Dem;
+use naves_core::edits::WayEdits;
 use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::imagery::catalog::{catalog, find_source, user_catalog_path};
 use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::{ImageryFile, Project};
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::BuildOutput;
-use naves_export::generate::{Generated, generate};
+use naves_export::generate::{Generated, Source, generate, read_source};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
 use naves_export::tools::Tools;
 
@@ -91,6 +92,17 @@ impl Host {
         }
     }
 
+    /// The OpenStreetMap extract of the saved project with the current road edits applied.
+    ///
+    /// # Errors
+    ///
+    /// The project, the extract or `edits/ways.toml` cannot be read; the message names the file.
+    pub async fn source(&self) -> Result<Arc<Source>, String> {
+        match self {
+            Self::Standalone(host) => host.source().await,
+        }
+    }
+
     /// Fetches imagery from a catalogue source; returns the files and the warning lines.
     ///
     /// # Errors
@@ -139,6 +151,8 @@ pub struct StandaloneHost {
     dir: PathBuf,
     locate_tools: ToolLocator,
     heightmap: tokio::sync::Mutex<CachedHeightmap>,
+    /// The source layer and the project it was read for.
+    source: tokio::sync::Mutex<Option<(Project, Arc<Source>)>>,
     /// Held by what changes the project or its build folder, so that these run one at a time.
     writes: tokio::sync::Mutex<()>,
 }
@@ -169,6 +183,7 @@ impl StandaloneHost {
             dir: dir.to_path_buf(),
             locate_tools,
             heightmap: tokio::sync::Mutex::new(None),
+            source: tokio::sync::Mutex::new(None),
             writes: tokio::sync::Mutex::new(()),
         }
     }
@@ -258,6 +273,35 @@ impl StandaloneHost {
             imagery: cached.imagery.clone(),
             roads: cached.roads.clone(),
         })
+    }
+
+    /// The source layer. The extract is read again only when the project file has changed; the edits are
+    /// applied again only when `edits/ways.toml` differs from what the cached source was made with.
+    async fn source(&self) -> Result<Arc<Source>, String> {
+        let mut cache = self.source.lock().await;
+        let dir = self.dir.clone();
+        let cached = cache.clone();
+        let (project, source) = blocking(move || -> Result<(Project, Arc<Source>), String> {
+            let project = Project::load(&dir).map_err(|e| e.to_string())?;
+            if let Some((cached_project, source)) = cached
+                && cached_project == project
+            {
+                let edits = WayEdits::load(&dir)
+                    .map_err(|e| format!("{}: {e}", dir.join("edits/ways.toml").display()))?;
+                if edits == source.edits {
+                    return Ok((project, source));
+                }
+                let mut next = (*source).clone();
+                next.edits = edits;
+                next.reapply();
+                return Ok((project, Arc::new(next)));
+            }
+            let source = read_source(&dir, &project).map_err(|e| e.to_string())?;
+            Ok((project, Arc::new(source)))
+        })
+        .await??;
+        *cache = Some((project, Arc::clone(&source)));
+        Ok(source)
     }
 
     async fn fetch_imagery(

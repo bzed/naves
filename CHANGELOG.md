@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `naves mcp` lists the roads of a part of the map (`roads_list`).
 - The Roads level lists the road classes and the game's road pieces (one group for each road family), junctions and
   bridges; in the Everything scope the road classes stay on top. The tools in the rail are readable on the dark chrome.
 - The item list can show what fits the level or everything; an item of another level can be used without leaving the

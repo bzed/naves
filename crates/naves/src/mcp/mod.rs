@@ -8,6 +8,7 @@
 //! validated by `naves-core`, nothing panics, and failures are tool errors with a message, never a dead
 //! server. Blocking work (DEM reading, rendering, building) runs on the blocking thread pool.
 
+use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use naves_core::render::{
     LayerData, MapLayer, Overlay, RenderRequest, composite, render_layer, render_topdown,
 };
 
+use naves_core::edits::MAX_LISTED_WAYS;
 use naves_core::validate::Rule;
 use naves_export::build::BuildOutput;
 use naves_export::imagery_fetch::FetchRequest;
@@ -33,6 +35,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub mod host;
+pub mod roads;
 use host::{Host, MapData, MapNeeds, StandaloneHost, ToolLocator, blocking};
 
 /// Widest picture `render_topdown` returns.
@@ -298,6 +301,75 @@ impl NavesMcp {
                 base64::engine::general_purpose::STANDARD.encode(bytes),
                 "image/png",
             )]),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "The roads and paths (OpenStreetMap ways with a highway tag, edits applied) that touch a rectangle of the map in map metres: id, origin (osm, edited, new), tags and points. At most 1000 ways (limit), `more` is true when there are more."
+    )]
+    async fn roads_list(
+        &self,
+        Parameters(params): Parameters<roads::RectParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let rect = (params.x0, params.y0, params.x1, params.y1);
+        let finite = [params.x0, params.y0, params.x1, params.y1]
+            .iter()
+            .all(|v| v.is_finite());
+        if !finite || params.x1 <= params.x0 || params.y1 <= params.y0 {
+            return Ok(failure(
+                "the bounds must be finite with x0 < x1 and y0 < y1",
+            ));
+        }
+        if params.limit == Some(0) {
+            return Ok(failure("the limit must be at least 1"));
+        }
+        let limit = params
+            .limit
+            .and_then(|l| usize::try_from(l).ok())
+            .map_or(MAX_LISTED_WAYS, |l| l.min(MAX_LISTED_WAYS));
+        let source = match self.host.source().await {
+            Ok(source) => source,
+            Err(e) => return Ok(failure(e)),
+        };
+        let listed = blocking(move || {
+            let edited: BTreeSet<i64> = source
+                .edits
+                .ways
+                .iter()
+                .filter_map(|w| w.id.raw())
+                .collect();
+            let moved: BTreeSet<i64> = source
+                .edits
+                .nodes
+                .iter()
+                .filter_map(|n| n.id.raw())
+                .collect();
+            let mut ways = Vec::new();
+            let mut more = false;
+            for way in &source.ways.ways {
+                if !way.tags.contains_key("highway") {
+                    continue;
+                }
+                let points: Vec<(f64, f64)> = way
+                    .points
+                    .iter()
+                    .filter_map(|&(lat, lon)| source.frame.to_map(lat, lon).ok())
+                    .collect();
+                if !roads::touches(&points, rect) {
+                    continue;
+                }
+                if ways.len() == limit {
+                    more = true;
+                    break;
+                }
+                ways.push(roads::way_json(&source, way, &edited, &moved));
+            }
+            json!({"ways": ways, "more": more})
+        })
+        .await;
+        Ok(match listed {
+            Ok(value) => json_text(&value),
             Err(e) => failure(e),
         })
     }

@@ -184,6 +184,7 @@ async fn lists_tools() {
             "project_get",
             "project_set",
             "render_topdown",
+            "roads_list",
             "roads_stats",
             "validation_list"
         ]
@@ -749,4 +750,77 @@ async fn roads_without_the_tools_say_which_are_missing() {
         "{}",
         text(&result)
     );
+}
+
+async fn list_roads(f: &Fixture, args: Value) -> (CallToolResult, Value) {
+    let result = call(f, "roads_list", args).await;
+    let value = serde_json::from_str(&text(&result)).unwrap_or(Value::Null);
+    (result, value)
+}
+
+#[tokio::test]
+async fn roads_list_lists_the_highways_of_a_rectangle() {
+    let f = start_roads(false).await;
+    let (result, all) = list_roads(&f, json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500})).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let ways = all["ways"].as_array().unwrap();
+    assert!(!ways.is_empty(), "{all}");
+    for way in ways {
+        assert!(way["id"].is_string(), "{way}");
+        assert_eq!(way["origin"], "osm", "{way}");
+        assert!(way["tags"]["highway"].is_string(), "{way}");
+        assert!(way["points"].as_array().unwrap().len() >= 2, "{way}");
+    }
+    let (_, quarter) = list_roads(&f, json!({"x0": 0, "y0": 0, "x1": 750, "y1": 750})).await;
+    let n = quarter["ways"].as_array().unwrap().len();
+    assert!(n > 0 && n < ways.len(), "{n} of {}", ways.len());
+}
+
+#[tokio::test]
+async fn roads_list_cuts_at_the_limit() {
+    let f = start_roads(false).await;
+    let rect = json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500, "limit": 1});
+    let (result, cut) = list_roads(&f, rect).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    assert_eq!(cut["ways"].as_array().unwrap().len(), 1);
+    assert_eq!(cut["more"], true);
+    let zero = json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500, "limit": 0});
+    let (result, _) = list_roads(&f, zero).await;
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn roads_list_without_osm_is_empty() {
+    let f = start().await;
+    let (result, none) = list_roads(&f, json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500})).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    assert_eq!(none, json!({"ways": [], "more": false}));
+}
+
+#[tokio::test]
+async fn roads_list_rejects_a_bad_rectangle() {
+    let f = start_roads(false).await;
+    let (result, _) = list_roads(&f, json!({"x0": 100, "y0": 0, "x1": 50, "y1": 10})).await;
+    assert_eq!(result.is_error, Some(true));
+}
+
+#[tokio::test]
+async fn a_damaged_edit_file_is_reported() {
+    let f = start_roads(false).await;
+    std::fs::create_dir_all(f.proj.join("edits")).unwrap();
+    std::fs::write(f.proj.join("edits/ways.toml"), "not toml").unwrap();
+    let (result, _) = list_roads(&f, json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("edits/ways.toml"),
+        "{}",
+        text(&result)
+    );
+    let png = call(
+        &f,
+        "render_topdown",
+        json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500, "px": 64, "overlay": "hillshade"}),
+    )
+    .await;
+    assert_ne!(png.is_error, Some(true), "{}", text(&png));
 }

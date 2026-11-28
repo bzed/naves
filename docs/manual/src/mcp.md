@@ -42,6 +42,7 @@ Give the full path of the project folder. The environment variables from [Instal
 | `imagery_options` | none | `{area, options}`: the imagery sources for the area of the project with `id`, `name`, `kind`, `covers`, `pixel_m`, `licence`, `attribution`, `non_commercial` and `note` |
 | `imagery_fetch` | `id`, `from`?, `to`? | fetches imagery from a catalogue source into the project and lists it in `naves.toml`; returns `{files, warnings}`. Takes catalogue ids only, never an address |
 | `render_topdown` | `x0, y0, x1, y1, px, overlay`, `layers`? | a PNG of that part of the map, north up, with the layers drawn over it |
+| `roads_list` | `x0, y0, x1, y1`, `limit`? | `{ways, more}`: the roads and paths (OpenStreetMap ways with a `highway` tag, your edits applied) that touch the rectangle, each with `id`, `origin` (`osm`, `edited`, `new`), `tags` and `points`; at most 1000 ways, `more` is true when there are more |
 | `roads_stats` | none | the numbers of the generated roads: `km_by_family`, `pieces`, `stretches`, `open`, `median_deviation_m`, `max_grade`, `max_cut_m`, `max_fill_m`, `not_drivable_m`, `largest_miss_m`, `paths_too_steep_m` |
 | `validation_list` | `rule`? | `{violations}`: what is wrong with the roads, each with `rule`, `x`, `y` (map metres) and `message` |
 | `build` | none | `{mod_dir, mission_dir, warnings, bridges, progress}` after the build; `bridges` has one line per OpenStreetMap bridge: what it was built from |
@@ -64,6 +65,14 @@ does not matter): `terrain_changes`, `too_steep_to_walk`, `roads`, `paths` and `
 error that lists the known ones. The layers that show the roads generate them (the first time; the result is cached
 until the project changes), which needs `dayzmake` and the DayZ Server install; a render without those layers never
 does.
+
+**`roads_list`** takes the rectangle like `render_topdown` (an inverted, empty or non-finite one is an error) and
+an optional `limit` (1 to 1000, the default; 0 is an error). Points are `[x, y]` in map metres from the
+south-west corner, rounded to 0.01 m. Ids are strings as in `edits/ways.toml`: `"812"` for an OpenStreetMap way,
+`"u3"` for a way that was drawn. `origin` is `new` for a drawn way, `edited` for an OpenStreetMap way with an edit
+or a moved node, and `osm` otherwise. The tool reads the OpenStreetMap files and `edits/ways.toml` but does not
+generate the roads, so it needs no tools; a damaged `edits/ways.toml` is an error that names the file. A project
+without OpenStreetMap files gives `{"ways": [], "more": false}`.
 
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,
