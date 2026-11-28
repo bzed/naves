@@ -1,0 +1,303 @@
+// SPDX-FileCopyrightText: 2026 Bernd Zeimetz <bernd@bzed.de>
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+//! What the MCP tools ask for: the project, the map data, imagery and the build. [`Host`] is the seam between
+//! the tools and where the data lives; [`StandaloneHost`] reads and writes the project folder of `naves mcp`.
+//! All errors are the message text that the tools hand to the client.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use naves_core::dem::Dem;
+use naves_core::heightmap::{Heightmap, build_heightmap};
+use naves_core::imagery::catalog::{catalog, find_source, user_catalog_path};
+use naves_core::imagery::{LoadedImagery, load_imagery};
+use naves_core::project::{ImageryFile, Project};
+use naves_core::surface::{SurfaceGrid, project_surfaces};
+use naves_export::build::BuildOutput;
+use naves_export::generate::{Generated, generate};
+use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
+use naves_export::tools::Tools;
+
+/// Finds the build tools when they are needed.
+pub type ToolLocator = Arc<dyn Fn() -> Result<Tools, String> + Send + Sync>;
+
+/// What a caller of [`Host::map`] needs besides the heightmap.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MapNeeds {
+    /// The ground surfaces.
+    pub surfaces: bool,
+    /// The merged imagery.
+    pub imagery: bool,
+    /// The generated roads.
+    pub roads: bool,
+}
+
+/// What [`Host::map`] hands out.
+pub struct MapData {
+    /// The project the data was made from.
+    pub project: Project,
+    /// The heightmap.
+    pub heightmap: Arc<Heightmap>,
+    /// The ground surfaces, when asked for.
+    pub surfaces: Option<Arc<SurfaceGrid>>,
+    /// The imagery, when asked for and the project lists some.
+    pub imagery: Option<Arc<LoadedImagery>>,
+    /// The generated roads, when asked for and the project lists an OpenStreetMap file.
+    pub roads: Option<Arc<Generated>>,
+}
+
+/// Where the tools get the project and its data from.
+pub enum Host {
+    /// The project folder given to `naves mcp`.
+    Standalone(StandaloneHost),
+}
+
+impl Host {
+    /// The saved project.
+    ///
+    /// # Errors
+    ///
+    /// The project cannot be loaded.
+    pub async fn project(&self) -> Result<Project, String> {
+        match self {
+            Self::Standalone(host) => host.project().await,
+        }
+    }
+
+    /// Sets one field of the project, saves it and returns the new project.
+    ///
+    /// # Errors
+    ///
+    /// The path or value is invalid, or the project cannot be loaded or saved.
+    pub async fn set_project_value(
+        &self,
+        path: String,
+        value: serde_json::Value,
+    ) -> Result<Project, String> {
+        match self {
+            Self::Standalone(host) => host.set_project_value(path, value).await,
+        }
+    }
+
+    /// The heightmap and what `needs` asks for, of the saved project.
+    ///
+    /// # Errors
+    ///
+    /// The data cannot be made.
+    pub async fn map(&self, needs: MapNeeds) -> Result<MapData, String> {
+        match self {
+            Self::Standalone(host) => host.map(needs).await,
+        }
+    }
+
+    /// Fetches imagery from a catalogue source; returns the files and the warning lines.
+    ///
+    /// # Errors
+    ///
+    /// The source is unknown or the fetch fails.
+    pub async fn fetch_imagery(
+        &self,
+        id: String,
+        request: FetchRequest,
+    ) -> Result<(Vec<ImageryFile>, Vec<String>), String> {
+        match self {
+            Self::Standalone(host) => host.fetch_imagery(id, request).await,
+        }
+    }
+
+    /// Builds the mod and the mission; returns the output and the progress lines.
+    ///
+    /// # Errors
+    ///
+    /// The tools are missing or the build fails.
+    pub async fn build(&self) -> Result<(BuildOutput, Vec<String>), String> {
+        match self {
+            Self::Standalone(host) => host.build().await,
+        }
+    }
+}
+
+/// A heightmap, the ground surfaces and the imagery once they were asked for, and the project they were made
+/// from.
+struct Cached {
+    project: Project,
+    heightmap: Arc<Heightmap>,
+    surfaces: Option<Arc<SurfaceGrid>>,
+    /// Whether the imagery was looked for; `imagery` stays empty when the project lists none.
+    imagery_loaded: bool,
+    imagery: Option<Arc<LoadedImagery>>,
+    /// Whether the roads were generated; `roads` stays empty when the project lists no OpenStreetMap file.
+    roads_loaded: bool,
+    roads: Option<Arc<Generated>>,
+}
+
+type CachedHeightmap = Option<Cached>;
+
+/// The project folder of `naves mcp <dir>`, with the cache of what was computed from it.
+pub struct StandaloneHost {
+    dir: PathBuf,
+    locate_tools: ToolLocator,
+    heightmap: tokio::sync::Mutex<CachedHeightmap>,
+    /// Held by what changes the project or its build folder, so that these run one at a time.
+    writes: tokio::sync::Mutex<()>,
+}
+
+/// Runs blocking work off the async threads; a panic or a cancelled task becomes an error message.
+pub(super) async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| format!("internal error: {e}"))
+}
+
+fn compute_heightmap(dir: &Path, project: &Project) -> Result<Heightmap, String> {
+    if project.sources.dem.is_empty() {
+        return Err("the project has no elevation data: add DEM files to sources.dem".to_string());
+    }
+    let files: Vec<PathBuf> = project.sources.dem.iter().map(|p| dir.join(p)).collect();
+    let dem = Dem::open(&files).map_err(|e| e.to_string())?;
+    build_heightmap(project, &dem).map_err(|e| e.to_string())
+}
+
+impl StandaloneHost {
+    /// A host for the project in `dir`; `locate_tools` runs when a build starts.
+    #[must_use]
+    pub fn new(dir: &Path, locate_tools: ToolLocator) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            locate_tools,
+            heightmap: tokio::sync::Mutex::new(None),
+            writes: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    async fn project(&self) -> Result<Project, String> {
+        let dir = self.dir.clone();
+        blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await?
+    }
+
+    async fn set_project_value(
+        &self,
+        path: String,
+        value: serde_json::Value,
+    ) -> Result<Project, String> {
+        let _writing = self.writes.lock().await;
+        let dir = self.dir.clone();
+        blocking(move || -> Result<Project, String> {
+            let project = Project::load(&dir).map_err(|e| e.to_string())?;
+            let updated = project
+                .with_value(&path, value)
+                .map_err(|e| e.to_string())?;
+            updated.save(&dir).map_err(|e| e.to_string())?;
+            Ok(updated)
+        })
+        .await?
+    }
+
+    /// The heightmap and, when asked for, the ground surfaces, the imagery and the roads of the saved project.
+    /// All are computed again only when the project file has changed; the rest is only made when asked for.
+    async fn map(&self, needs: MapNeeds) -> Result<MapData, String> {
+        let mut cache = self.heightmap.lock().await;
+        let dir = self.dir.clone();
+        let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
+        if cache.as_ref().is_none_or(|c| c.project != project) {
+            let dir = self.dir.clone();
+            let input = project.clone();
+            let hm = Arc::new(blocking(move || compute_heightmap(&dir, &input)).await??);
+            *cache = Some(Cached {
+                project: project.clone(),
+                heightmap: hm,
+                surfaces: None,
+                imagery_loaded: false,
+                imagery: None,
+                roads_loaded: false,
+                roads: None,
+            });
+        }
+        let Some(cached) = cache.as_mut() else {
+            return Err("internal error: no cached map".to_string());
+        };
+        if needs.surfaces && cached.surfaces.is_none() {
+            let dir = self.dir.clone();
+            let hm = Arc::clone(&cached.heightmap);
+            let input = project.clone();
+            let grid =
+                blocking(move || project_surfaces(&input, &dir, &hm).map_err(|e| e.to_string()))
+                    .await??;
+            cached.surfaces = Some(Arc::new(grid));
+        }
+        if needs.imagery && !cached.imagery_loaded {
+            let dir = self.dir.clone();
+            let input = project.clone();
+            let loaded =
+                blocking(move || load_imagery(&input, &dir, &|_| {}).map_err(|e| e.to_string()))
+                    .await??;
+            cached.imagery = loaded.map(Arc::new);
+            cached.imagery_loaded = true;
+        }
+        if needs.roads && !cached.roads_loaded {
+            if !project.sources.osm.is_empty() {
+                let tools =
+                    (self.locate_tools)().map_err(|e| format!("Roads need dayzmake: {e}"))?;
+                let dir = self.dir.clone();
+                let input = project.clone();
+                let generated = blocking(move || {
+                    generate(&dir, &input, &tools, &|_| {}).map_err(|e| e.to_string())
+                })
+                .await??;
+                cached.roads = Some(Arc::new(generated));
+            }
+            cached.roads_loaded = true;
+        }
+        Ok(MapData {
+            project,
+            heightmap: Arc::clone(&cached.heightmap),
+            surfaces: cached.surfaces.clone(),
+            imagery: cached.imagery.clone(),
+            roads: cached.roads.clone(),
+        })
+    }
+
+    async fn fetch_imagery(
+        &self,
+        id: String,
+        request: FetchRequest,
+    ) -> Result<(Vec<ImageryFile>, Vec<String>), String> {
+        let _writing = self.writes.lock().await;
+        let dir = self.dir.clone();
+        blocking(move || {
+            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
+            let source = find_source(&sources, &id).map_err(|e| e.to_string())?;
+            let warnings = Mutex::new(Vec::new());
+            let files = fetch(&dir, source, &request, &RealHttp::new(), &|line| {
+                if let (true, Ok(mut warnings)) = (line.starts_with("warning"), warnings.lock()) {
+                    warnings.push(line.to_string());
+                }
+            })
+            .map_err(|e| e.to_string())?;
+            Ok::<_, String>((files, warnings.into_inner().unwrap_or_default()))
+        })
+        .await?
+    }
+
+    async fn build(&self) -> Result<(BuildOutput, Vec<String>), String> {
+        let _writing = self.writes.lock().await;
+        let dir = self.dir.clone();
+        let locate = Arc::clone(&self.locate_tools);
+        blocking(move || {
+            let tools = locate()?;
+            let lines = Mutex::new(Vec::new());
+            let out = crate::cli::build_world(&dir, &tools, &|line| {
+                if let Ok(mut lines) = lines.lock() {
+                    lines.push(line.to_string());
+                }
+            })
+            .map_err(|e| e.to_string())?;
+            let progress = lines.into_inner().unwrap_or_default();
+            Ok::<_, String>((out, progress))
+        })
+        .await?
+    }
+}

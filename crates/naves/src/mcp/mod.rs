@@ -9,26 +9,20 @@
 //! server. Blocking work (DEM reading, rendering, building) runs on the blocking thread pool.
 
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::path::Path;
+use std::sync::Arc;
 
 use base64::Engine as _;
-use naves_core::dem::Dem;
-use naves_core::heightmap::{Heightmap, MapGeo, build_heightmap};
-use naves_core::imagery::catalog::{
-    SourceKind, catalog, find_source, options_for, user_catalog_path,
-};
-use naves_core::imagery::{LoadedImagery, TileImagery, load_imagery};
-use naves_core::project::Project;
+use naves_core::heightmap::{Heightmap, MapGeo};
+use naves_core::imagery::TileImagery;
+use naves_core::imagery::catalog::{SourceKind, catalog, options_for, user_catalog_path};
 use naves_core::render::{
     LayerData, MapLayer, Overlay, RenderRequest, composite, render_layer, render_topdown,
 };
-use naves_core::surface::{SurfaceGrid, project_surfaces};
+
 use naves_core::validate::Rule;
 use naves_export::build::BuildOutput;
-use naves_export::generate::{Generated, generate};
-use naves_export::imagery_fetch::{FetchRequest, RealHttp, fetch};
-use naves_export::tools::Tools;
+use naves_export::imagery_fetch::FetchRequest;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
@@ -38,10 +32,11 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::json;
 
+pub mod host;
+use host::{Host, MapData, MapNeeds, StandaloneHost, ToolLocator, blocking};
+
 /// Widest picture `render_topdown` returns.
 const MAX_RENDER_WIDTH: u32 = 2048;
-
-type ToolLocator = Arc<dyn Fn() -> Result<Tools, String> + Send + Sync>;
 
 /// Arguments of `project_set`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -118,39 +113,10 @@ pub struct FetchParams {
     to: Option<String>,
 }
 
-/// A heightmap, the ground surfaces and the imagery once they were asked for, and the project they were made
-/// from.
-struct Cached {
-    project: Project,
-    heightmap: Arc<Heightmap>,
-    surfaces: Option<Arc<SurfaceGrid>>,
-    /// Whether the imagery was looked for; `imagery` stays empty when the project lists none.
-    imagery_loaded: bool,
-    imagery: Option<Arc<LoadedImagery>>,
-    /// Whether the roads were generated; `roads` stays empty when the project lists no OpenStreetMap file.
-    roads_loaded: bool,
-    roads: Option<Arc<Generated>>,
-}
-
-/// What `NavesMcp::map` hands out.
-struct MapData {
-    project: Project,
-    heightmap: Arc<Heightmap>,
-    surfaces: Option<Arc<SurfaceGrid>>,
-    imagery: Option<Arc<LoadedImagery>>,
-    roads: Option<Arc<Generated>>,
-}
-
-type CachedHeightmap = Option<Cached>;
-
 /// The server state.
 #[derive(Clone)]
 pub struct NavesMcp {
-    dir: PathBuf,
-    locate_tools: ToolLocator,
-    heightmap: Arc<tokio::sync::Mutex<CachedHeightmap>>,
-    /// Held by what changes the project or its build folder, so that these run one at a time.
-    writes: Arc<tokio::sync::Mutex<()>>,
+    host: Arc<Host>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -164,15 +130,6 @@ fn failure(text: impl Into<String>) -> CallToolResult {
 
 fn json_text(value: &serde_json::Value) -> CallToolResult {
     success(value.to_string())
-}
-
-/// Runs blocking work off the async threads; a panic or a cancelled task becomes an error message.
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|e| format!("internal error: {e}"))
 }
 
 /// The layers named in a request, in the order they are drawn.
@@ -204,110 +161,26 @@ fn needs_roads(layer: MapLayer) -> bool {
     )
 }
 
-fn compute_heightmap(dir: &Path, project: &Project) -> Result<Heightmap, String> {
-    if project.sources.dem.is_empty() {
-        return Err("the project has no elevation data: add DEM files to sources.dem".to_string());
-    }
-    let files: Vec<PathBuf> = project.sources.dem.iter().map(|p| dir.join(p)).collect();
-    let dem = Dem::open(&files).map_err(|e| e.to_string())?;
-    build_heightmap(project, &dem).map_err(|e| e.to_string())
-}
-
 #[tool_router]
 impl NavesMcp {
-    /// A server for the project in `dir`; `locate_tools` runs when a build starts.
-    pub fn new(dir: &Path, locate_tools: ToolLocator) -> Self {
+    /// A server for the data of `host`.
+    pub fn new(host: Host) -> Self {
         Self {
-            dir: dir.to_path_buf(),
-            locate_tools,
-            heightmap: Arc::new(tokio::sync::Mutex::new(None)),
-            writes: Arc::new(tokio::sync::Mutex::new(())),
+            host: Arc::new(host),
             tool_router: Self::tool_router(),
         }
     }
 
     /// The heightmap of the saved project, computed again only when the project file has changed.
     async fn heightmap(&self) -> Result<Arc<Heightmap>, String> {
-        Ok(self.map(false, false, false).await?.heightmap)
-    }
-
-    /// The heightmap and, when asked for, the ground surfaces and the imagery of the saved project. All are
-    /// computed again only when the project file has changed; surfaces and imagery are only made when asked
-    /// for.
-    async fn map(
-        &self,
-        with_surfaces: bool,
-        with_imagery: bool,
-        with_roads: bool,
-    ) -> Result<MapData, String> {
-        let mut cache = self.heightmap.lock().await;
-        let dir = self.dir.clone();
-        let project = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await??;
-        if cache.as_ref().is_none_or(|c| c.project != project) {
-            let dir = self.dir.clone();
-            let input = project.clone();
-            let hm = Arc::new(blocking(move || compute_heightmap(&dir, &input)).await??);
-            *cache = Some(Cached {
-                project: project.clone(),
-                heightmap: hm,
-                surfaces: None,
-                imagery_loaded: false,
-                imagery: None,
-                roads_loaded: false,
-                roads: None,
-            });
-        }
-        let Some(cached) = cache.as_mut() else {
-            return Err("internal error: no cached map".to_string());
-        };
-        if with_surfaces && cached.surfaces.is_none() {
-            let dir = self.dir.clone();
-            let hm = Arc::clone(&cached.heightmap);
-            let input = project.clone();
-            let grid =
-                blocking(move || project_surfaces(&input, &dir, &hm).map_err(|e| e.to_string()))
-                    .await??;
-            cached.surfaces = Some(Arc::new(grid));
-        }
-        if with_imagery && !cached.imagery_loaded {
-            let dir = self.dir.clone();
-            let input = project.clone();
-            let loaded =
-                blocking(move || load_imagery(&input, &dir, &|_| {}).map_err(|e| e.to_string()))
-                    .await??;
-            cached.imagery = loaded.map(Arc::new);
-            cached.imagery_loaded = true;
-        }
-        if with_roads && !cached.roads_loaded {
-            if !project.sources.osm.is_empty() {
-                let tools =
-                    (self.locate_tools)().map_err(|e| format!("Roads need dayzmake: {e}"))?;
-                let dir = self.dir.clone();
-                let input = project.clone();
-                let generated = blocking(move || {
-                    generate(&dir, &input, &tools, &|_| {}).map_err(|e| e.to_string())
-                })
-                .await??;
-                cached.roads = Some(Arc::new(generated));
-            }
-            cached.roads_loaded = true;
-        }
-        Ok(MapData {
-            project,
-            heightmap: Arc::clone(&cached.heightmap),
-            surfaces: cached.surfaces.clone(),
-            imagery: cached.imagery.clone(),
-            roads: cached.roads.clone(),
-        })
+        Ok(self.host.map(MapNeeds::default()).await?.heightmap)
     }
 
     #[tool(
         description = "The project (naves.toml) as JSON: name, area, scales, grid sizes and sources."
     )]
     async fn project_get(&self) -> Result<CallToolResult, McpError> {
-        let dir = self.dir.clone();
-        let loaded = blocking(move || Project::load(&dir).map_err(|e| e.to_string())).await;
-        Ok(match loaded.and_then(|r| r) {
+        Ok(match self.host.project().await {
             Ok(project) => match serde_json::to_value(&project) {
                 Ok(value) => json_text(&value),
                 Err(e) => failure(e.to_string()),
@@ -323,18 +196,8 @@ impl NavesMcp {
         &self,
         Parameters(params): Parameters<SetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _writing = self.writes.lock().await;
-        let dir = self.dir.clone();
-        let result = blocking(move || -> Result<Project, String> {
-            let project = Project::load(&dir).map_err(|e| e.to_string())?;
-            let updated = project
-                .with_value(&params.path, params.value)
-                .map_err(|e| e.to_string())?;
-            updated.save(&dir).map_err(|e| e.to_string())?;
-            Ok(updated)
-        })
-        .await;
-        Ok(match result.and_then(|r| r) {
+        let result = self.host.set_project_value(params.path, params.value).await;
+        Ok(match result {
             Ok(project) => match serde_json::to_value(&project) {
                 Ok(value) => json_text(&value),
                 Err(e) => failure(e.to_string()),
@@ -382,7 +245,15 @@ impl NavesMcp {
             surfaces,
             imagery,
             roads,
-        } = match self.map(wants_surfaces, wants_imagery, wants_roads).await {
+        } = match self
+            .host
+            .map(MapNeeds {
+                surfaces: wants_surfaces,
+                imagery: wants_imagery,
+                roads: wants_roads,
+            })
+            .await
+        {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -435,7 +306,14 @@ impl NavesMcp {
         description = "The numbers of the generated road network: kilometres per surface, pieces, stretches and how many are not closed, the median distance of the pieces from the OpenStreetMap line, the steepest grade, the deepest cut and highest fill, the length that vehicles cannot drive, the largest distance of a piece from the ground and the length of paths that are too steep to walk. Generates the roads (dayzmake and the DayZ Server install are needed). A project without OpenStreetMap files has empty numbers."
     )]
     async fn roads_stats(&self) -> Result<CallToolResult, McpError> {
-        let map = match self.map(false, false, true).await {
+        let map = match self
+            .host
+            .map(MapNeeds {
+                roads: true,
+                ..MapNeeds::default()
+            })
+            .await
+        {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -466,7 +344,14 @@ impl NavesMcp {
                 known.join(", ")
             )));
         }
-        let map = match self.map(false, false, true).await {
+        let map = match self
+            .host
+            .map(MapNeeds {
+                roads: true,
+                ..MapNeeds::default()
+            })
+            .await
+        {
             Ok(map) => map,
             Err(e) => return Ok(failure(e)),
         };
@@ -491,9 +376,11 @@ impl NavesMcp {
         description = "Which imagery sources exist for the area of the project, best first: id, name, how much of the map it covers (0..1), pixel size in metres, licence, credit, whether it is non-commercial and a note. Whole-map sources that allow commercial use come first."
     )]
     async fn imagery_options(&self) -> Result<CallToolResult, McpError> {
-        let dir = self.dir.clone();
+        let project = match self.host.project().await {
+            Ok(project) => project,
+            Err(e) => return Ok(failure(e)),
+        };
         let result = blocking(move || -> Result<serde_json::Value, String> {
-            let project = Project::load(&dir).map_err(|e| e.to_string())?;
             let window = MapGeo::new(&project)
                 .and_then(|geo| geo.window(0.0))
                 .map_err(|e| e.to_string())?;
@@ -541,41 +428,26 @@ impl NavesMcp {
         &self,
         Parameters(params): Parameters<FetchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let _writing = self.writes.lock().await;
-        let dir = self.dir.clone();
-        let result = blocking(move || -> Result<serde_json::Value, String> {
-            let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
-            let source = find_source(&sources, &params.id).map_err(|e| e.to_string())?;
-            let warnings = Mutex::new(Vec::new());
-            let files = fetch(
-                &dir,
-                source,
-                &FetchRequest {
+        let result = self
+            .host
+            .fetch_imagery(
+                params.id,
+                FetchRequest {
                     from: params.from,
                     to: params.to,
                 },
-                &RealHttp::new(),
-                &|line| {
-                    if let (true, Ok(mut warnings)) = (line.starts_with("warning"), warnings.lock())
-                    {
-                        warnings.push(line.to_string());
-                    }
-                },
             )
-            .map_err(|e| e.to_string())?;
-            Ok(json!({
+            .await;
+        Ok(match result {
+            Ok((files, warnings)) => json_text(&json!({
                 "files": files.iter().map(|f| json!({
                     "path": f.path,
                     "attribution": f.attribution,
                     "licence": f.licence,
                     "non_commercial": f.non_commercial,
                 })).collect::<Vec<_>>(),
-                "warnings": warnings.into_inner().unwrap_or_default(),
-            }))
-        })
-        .await;
-        Ok(match result.and_then(|r| r) {
-            Ok(value) => json_text(&value),
+                "warnings": warnings,
+            })),
             Err(e) => failure(e),
         })
     }
@@ -584,23 +456,7 @@ impl NavesMcp {
         description = "Build the mod and the server mission of the project (takes a while). Returns the mod and mission folders, warnings and the progress lines. Needs dayzmake, DayZ Tools and Proton, see the manual."
     )]
     async fn build(&self) -> Result<CallToolResult, McpError> {
-        let _writing = self.writes.lock().await;
-        let dir = self.dir.clone();
-        let locate = Arc::clone(&self.locate_tools);
-        let result = blocking(move || {
-            let tools = locate()?;
-            let lines = Mutex::new(Vec::new());
-            let out = crate::cli::build_world(&dir, &tools, &|line| {
-                if let Ok(mut lines) = lines.lock() {
-                    lines.push(line.to_string());
-                }
-            })
-            .map_err(|e| e.to_string())?;
-            let progress = lines.into_inner().unwrap_or_default();
-            Ok::<_, String>((out, progress))
-        })
-        .await;
-        Ok(match result.and_then(|r| r) {
+        Ok(match self.host.build().await {
             Ok((out, progress)) => json_text(&build_json(&out, &progress)),
             Err(e) => failure(e),
         })
@@ -643,7 +499,7 @@ impl ServerHandler for NavesMcp {}
 pub async fn serve(dir: &Path) -> anyhow::Result<()> {
     let locate: ToolLocator =
         Arc::new(|| crate::user_prefs::locate_tools().map_err(|e| e.to_string()));
-    let service = NavesMcp::new(dir, locate)
+    let service = NavesMcp::new(Host::Standalone(StandaloneHost::new(dir, locate)))
         .serve(rmcp::transport::stdio())
         .await
         .map_err(|e| anyhow::anyhow!("cannot start the MCP server: {e}"))?;
@@ -654,6 +510,7 @@ pub async fn serve(dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn output(lots: Option<&str>) -> BuildOutput {
         BuildOutput {
