@@ -8,6 +8,8 @@ use naves_core::render::MapLayer;
 
 use super::*;
 use crate::gui::levels::{BUILT, Level, roads};
+use crate::gui::palette::{ItemKind, ItemSource, Thumbnail};
+use crate::gui::shortcuts::ToolId;
 use crate::gui::viewport::WorldPoint;
 use crate::gui::worker::RoadsState;
 
@@ -27,15 +29,17 @@ fn the_level_is_built_and_has_three_layers() {
 }
 
 #[test]
-fn without_osm_the_row_says_what_to_add() {
+fn without_osm_the_list_says_what_to_add() {
     let root = tempfile::tempdir().unwrap();
     let dir = project(root.path());
     let mut h = state_harness(app(root.path(), &dir));
     h.run_steps(3);
     go_to_roads(&mut h);
     assert!(
-        h.query_by_label("Add an .osm.pbf file to sources.osm to see roads.")
-            .is_some()
+        h.query_by_label(
+            "No OpenStreetMap file: draw the roads yourself, or add one to sources.osm."
+        )
+        .is_some()
     );
 }
 
@@ -186,4 +190,153 @@ fn the_roads_are_generated_again_when_the_sources_change() {
     assert!(matches!(app.roads, RoadsState::Generating));
     wait_for_the_roads(&mut app);
     assert!(matches!(app.roads, RoadsState::Ready(_)));
+}
+
+/// Steps the app without a window until the road pieces are read (or could not be).
+fn wait_for_the_catalog(app: &mut NavesApp) {
+    let deadline = Instant::now() + crate::gui::testing::HANG_GUARD;
+    while app.catalog_job.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the catalog"
+        );
+        app.poll_background();
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn the_roads_level_lists_the_road_classes() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let app = app(root.path(), &dir);
+    let items = roads::items(&app);
+    let names: Vec<&str> = items
+        .iter()
+        .filter(|i| i.group == "Roads")
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(names[..3], ["Primary", "Secondary", "Tertiary"]);
+    for class in roads::ROAD_CLASSES {
+        let tags: std::collections::BTreeMap<String, String> = class
+            .tags
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        let width = match naves_core::features::classify(&tags).unwrap() {
+            naves_core::features::FeatureKind::Road { family, .. } => family.width_m(),
+            naves_core::features::FeatureKind::Path { width_m, .. } => width_m,
+        };
+        let item = items
+            .iter()
+            .find(|i| i.id == format!("roads.class.{}", class.id))
+            .unwrap();
+        assert_eq!(item.size_m, Some(width), "{}", class.name);
+        assert_eq!(item.group, class.group);
+        assert_eq!(item.default_tool, ToolId::LINE);
+        assert_eq!(item.fits, [Level::Roads]);
+    }
+    assert!(items.iter().any(|i| i.group == "Paths"));
+}
+
+#[test]
+fn picking_a_class_switches_to_draw() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut h = state_harness(app(root.path(), &dir));
+    h.run_steps(3);
+    go_to_roads(&mut h);
+    h.get_by_label("Secondary").click();
+    h.run_steps(3);
+    assert_eq!(h.state().tool, ToolId::LINE);
+    assert_eq!(h.state().item.as_deref(), Some("roads.class.secondary"));
+    assert!(
+        h.query_by_label(
+            "Draw: click to add points, click a node to join, Space to finish, Ctrl+Z to take one back."
+        )
+        .is_some()
+    );
+}
+
+#[test]
+fn catalog_models_are_listed_once_the_catalog_is_read() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let mut app = app(root.path(), &dir);
+    assert!(
+        roads::items(&app).iter().all(|i| i.group != "Pieces"),
+        "nothing before the catalog is read"
+    );
+    wait_for_the_catalog(&mut app);
+    let items = roads::items(&app);
+    let models: Vec<_> = items.iter().filter(|i| i.kind == ItemKind::Model).collect();
+    for group in ["Pieces", "Bridges"] {
+        assert!(models.iter().any(|i| i.group == group), "{group}");
+    }
+    for item in &models {
+        assert!(matches!(item.thumbnail, Thumbnail::Footprint { .. }));
+        assert!(item.id.starts_with("model."));
+        assert_eq!(item.source, ItemSource::Game);
+        assert_eq!(item.fits, [Level::Roads]);
+        assert_eq!(item.default_tool, ToolId::SELECT);
+    }
+    // the same ids reach the Everything list once
+    let all = app.all_items();
+    for item in &models {
+        assert_eq!(all.iter().filter(|a| a.id == item.id).count(), 1);
+    }
+}
+
+#[test]
+fn picking_a_model_shows_its_card() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_catalog(&mut app);
+    let item = roads::items(&app)
+        .into_iter()
+        .find(|i| i.group == "Bridges")
+        .unwrap();
+    let mut h = state_harness(app);
+    h.run_steps(3);
+    go_to_roads(&mut h);
+    // the list has hundreds of rows: narrow it so that the row is in view
+    h.state_mut().palette.search = item.name.clone();
+    h.run_steps(3);
+    h.get_by_label(&item.name).click();
+    h.run_steps(3);
+    assert_eq!(h.state().tool, ToolId::SELECT);
+    assert_eq!(h.state().item.as_deref(), Some(item.id.as_str()));
+    assert!(
+        h.query_by_role_and_label(egui::accesskit::Role::Label, "Roads and paths")
+            .is_some(),
+        "fits"
+    );
+    // the size is in the row and in the card
+    let size = format!("{:.0} m", item.size_m.unwrap());
+    assert_eq!(h.query_all_by_label(&size).count(), 2);
+    assert!(
+        h.query_by_label("Placing models comes in a later version.")
+            .is_some()
+    );
+}
+
+#[test]
+fn drawing_works_without_osm() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut h = state_harness(app(root.path(), &dir));
+    h.run_steps(3);
+    go_to_roads(&mut h);
+    assert!(h.query_by_label("Primary").is_some(), "the selector shows");
+    assert!(
+        h.query_by_label("Add an .osm.pbf file to sources.osm to see roads.")
+            .is_none()
+    );
+    assert!(
+        h.query_by_label(
+            "No OpenStreetMap file: draw the roads yourself, or add one to sources.osm."
+        )
+        .is_some()
+    );
 }

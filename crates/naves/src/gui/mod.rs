@@ -48,7 +48,8 @@ use settings::SettingsForm;
 use stack::LayerPanel;
 use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
 use worker::{
-    BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState, SourceJob,
+    BuildMsg, BuildWorker, CatalogJob, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState,
+    SourceJob,
 };
 
 use theme::{active, on_active, problem};
@@ -125,6 +126,11 @@ pub struct NavesApp {
     /// The roads behind the road layers.
     roads: RoadsState,
     roads_job: Option<RoadJob>,
+    /// The game's road pieces, junctions and bridges, once they are read.
+    catalog: Option<Arc<naves_core::catalog::PieceCatalog>>,
+    catalog_job: Option<CatalogJob>,
+    /// The tool paths the catalogue was asked for, to read it again when they change.
+    catalog_tools: naves_core::prefs::ToolPaths,
     /// The edit session: the ways with the hand-made edits.
     edit: edit::EditState,
     source_job: Option<SourceJob>,
@@ -209,6 +215,9 @@ impl NavesApp {
             heightmap: HeightmapState::NoDem,
             roads: RoadsState::NoOsm,
             roads_job: None,
+            catalog: None,
+            catalog_job: None,
+            catalog_tools: naves_core::prefs::ToolPaths::default(),
             edit: edit::EditState::None,
             source_job: None,
             edit_problems: Vec::new(),
@@ -237,6 +246,7 @@ impl NavesApp {
             own_imagery_error: None,
         };
         app.refresh_imagery_options();
+        app.reload_catalog();
         app.reload_heightmap();
         Ok(app)
     }
@@ -279,6 +289,9 @@ impl NavesApp {
         self.prefs.shortcuts.extend(self.bindings.overrides());
         if let Err(error) = self.prefs.save(path) {
             self.prefs_save_error = Some(format!("Not saved: {error}"));
+        }
+        if self.prefs.tools != self.catalog_tools {
+            self.reload_catalog();
         }
     }
 
@@ -439,6 +452,30 @@ impl NavesApp {
         }
     }
 
+    /// Reads the game's road pieces in the background.
+    fn reload_catalog(&mut self) {
+        self.catalog_tools = self.prefs.tools.clone();
+        self.catalog = None;
+        self.catalog_job = Some(CatalogJob::start((self.locate_tools)()));
+    }
+
+    fn poll_catalog(&mut self) {
+        let Some(result) = self.catalog_job.as_ref().and_then(CatalogJob::poll) else {
+            return;
+        };
+        self.catalog_job = None;
+        // A catalogue that cannot be read leaves the models out; the Roads panel already says which tool is missing.
+        self.catalog = result.ok().map(Arc::new);
+    }
+
+    /// The items of the game's catalogue: pieces, junctions and bridges. None until it is read.
+    fn models(&self) -> Vec<palette::PaletteItem> {
+        self.catalog
+            .as_deref()
+            .map(levels::roads::catalog_items)
+            .unwrap_or_default()
+    }
+
     fn poll_roads(&mut self) {
         let Some(msg) = self.roads_job.as_ref().and_then(RoadJob::poll) else {
             return;
@@ -474,6 +511,7 @@ impl NavesApp {
     fn poll_background(&mut self) {
         self.poll_fetch();
         self.poll_roads();
+        self.poll_catalog();
         self.poll_source();
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
@@ -847,7 +885,11 @@ impl NavesApp {
         if (def.items)(self).is_empty() {
             (def.panel)(self, ui);
         } else {
+            let (level, panel) = (def.level, def.panel);
             palette::palette_ui(self, ui);
+            if level == levels::Level::Roads {
+                panel(self, ui); // the state of the roads under the list
+            }
         }
     }
 
@@ -1122,10 +1164,14 @@ impl NavesApp {
         let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
             return "";
         };
-        def.tools
-            .iter()
-            .find(|t| t.tool == self.tool)
-            .map_or(def.status, |t| t.status)
+        let tool = def.tools.iter().find(|t| t.tool == self.tool);
+        if tool.is_none()
+            && def.level == levels::Level::Roads
+            && self.tool == shortcuts::ToolId::LINE
+        {
+            return levels::roads::DRAW_STATUS; // until Draw is a tool of the rail
+        }
+        tool.map_or(def.status, |t| t.status)
     }
 
     /// The shapes of the editing overlay: on the Roads level, once the session is there.
@@ -1254,6 +1300,14 @@ impl NavesApp {
     /// What the selection is, under the stack.
     fn properties_ui(&self, ui: &mut egui::Ui) {
         let Some(selection) = &self.selection else {
+            let model = self.item.as_deref().and_then(|id| {
+                self.all_items()
+                    .into_iter()
+                    .find(|i| i.id == id && i.kind == palette::ItemKind::Model)
+            });
+            if let Some(model) = model {
+                edit::properties::model_card(ui, &model);
+            }
             return;
         };
         ui.add_space(14.0);

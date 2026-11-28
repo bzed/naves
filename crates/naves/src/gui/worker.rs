@@ -7,12 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread::JoinHandle;
 
+use naves_core::catalog::PieceCatalog;
 use naves_core::dem::Dem;
 use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::BuildOutput;
+use naves_export::catalog_read::road_catalog;
 use naves_export::generate::{Generated, Source, generate, read_source};
 use naves_export::tools::Tools;
 
@@ -223,6 +225,31 @@ impl RoadJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<RoadsMsg> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// The reading of the game's road pieces, junctions and bridges on its own thread.
+pub struct CatalogJob {
+    rx: Receiver<Result<PieceCatalog, String>>,
+}
+
+impl CatalogJob {
+    /// Reads the catalogue with `tools`. A missing tool is an error, which the list answers by leaving the models
+    /// out.
+    pub fn start(tools: Result<Tools, String>) -> Self {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let result = tools.and_then(|tools| {
+                road_catalog(&tools, &tools.cache_dir).map_err(|e| e.to_string())
+            });
+            tx.send(result).ok(); // the window may be gone already
+        });
+        Self { rx }
+    }
+
+    /// The result, once it is there.
+    pub fn poll(&self) -> Option<Result<PieceCatalog, String>> {
         self.rx.try_recv().ok()
     }
 }

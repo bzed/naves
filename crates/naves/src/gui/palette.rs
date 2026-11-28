@@ -42,10 +42,6 @@ pub enum Thumbnail {
     )]
     Swatch([u8; 3]),
     /// The line itself, at its width on the shared scale: a road class.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the items of milestone 2 construct these")
-    )]
     Line {
         /// The width in metres.
         width_m: f64,
@@ -53,10 +49,6 @@ pub enum Thumbnail {
         rgb: [u8; 3],
     },
     /// The plan view of a piece or a deck, in metres and centred: its outline at the shared scale.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the items of milestone 2 construct these")
-    )]
     Footprint {
         /// The corners in metres, centred on the middle of the item.
         outline: Vec<(f32, f32)>,
@@ -76,19 +68,11 @@ pub enum ItemKind {
     )]
     Preset,
     /// A placed object that generators never touch.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the items of milestone 2 construct these")
-    )]
     Model,
     /// A ground surface.
     #[expect(dead_code, reason = "the items of milestone 2 construct these")]
     Surface,
     /// A class of line: a road, a fence.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the items of milestone 2 construct these")
-    )]
     LineClass,
     /// A group of things.
     #[expect(dead_code, reason = "the items of milestone 2 construct these")]
@@ -111,10 +95,6 @@ impl ItemKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemSource {
     /// The game's own.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the items of milestone 2 construct these")
-    )]
     Game,
     /// A mod's.
     #[expect(dead_code, reason = "the items of milestone 2 construct these")]
@@ -206,6 +186,12 @@ pub fn in_scope(items: &[PaletteItem], level: Level, scope: Scope) -> Vec<&Palet
     }
 }
 
+/// What the list sorts by in the level's scope: the classes of line first, then the group.
+fn list_order(item: &PaletteItem) -> (bool, &str) {
+    let class = item.kind == ItemKind::LineClass;
+    (!class, if class { "" } else { item.group.as_str() })
+}
+
 /// The size a thumbnail is drawn at, in pixels, on the one shared scale: at most the column wide and the row high.
 #[must_use]
 pub(super) fn thumbnail_size(thumbnail: &Thumbnail) -> egui::Vec2 {
@@ -255,8 +241,9 @@ pub fn palette_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
     let all = app.all_items();
     let mut scoped = in_scope(&all, level, scope);
     if scope == Scope::Level {
-        // a stable sort: the groups in alphabetical order, the items as the level gave them
-        scoped.sort_by(|a, b| a.group.cmp(&b.group));
+        // a stable sort: the classes of line first, as the level gave them (the Roads level wants its classes above
+        // hundreds of models); then the groups in alphabetical order, the items as the level gave them
+        scoped.sort_by(|a, b| list_order(a).cmp(&list_order(b)));
     }
     let found = filter(scoped.iter().copied(), &app.palette.search);
     if found.is_empty() {
@@ -515,7 +502,7 @@ impl NavesApp {
         self.save_prefs();
     }
 
-    /// The items of every built level, each id once. (Catalogue models join them with the models task.)
+    /// The items of every built level, each id once. (Catalogue models are in the Roads level's own items too.)
     pub(super) fn all_items(&self) -> Vec<PaletteItem> {
         let mut seen = BTreeSet::new();
         let mut all = Vec::new();
@@ -524,6 +511,11 @@ impl NavesApp {
                 if seen.insert(item.id.clone()) {
                     all.push(item);
                 }
+            }
+        }
+        for item in self.models() {
+            if seen.insert(item.id.clone()) {
+                all.push(item);
             }
         }
         all
@@ -543,5 +535,8 @@ impl NavesApp {
             item.fits.first().copied()
         };
         self.tool = item.default_tool;
+        if item.kind == ItemKind::Model {
+            self.selection = None; // the card of the model takes the properties
+        }
     }
 }

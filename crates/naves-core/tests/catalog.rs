@@ -430,3 +430,12 @@ fn a_geometry_lod_with_nothing_near_the_deck_is_not_called_unreadable() {
             .any(|w| w.contains("bridge_stone_25") && w.contains("cannot be read"))
     );
 }
+
+#[test]
+fn junctions_lists_the_t_and_the_x_junctions() {
+    let c = synthetic_catalog();
+    let listed = c.junctions().count();
+    assert!(listed > 0);
+    let t = c.t_junction(Family::Asf2, Family::Asf2).unwrap();
+    assert!(c.junctions().any(|j| j.model == t.model));
+}

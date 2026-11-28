@@ -61,7 +61,8 @@ fn everything_shows_all_with_the_band_chip() {
     assert!(h.query_by_label("Small house").is_some());
     assert!(h.query_by_label("Fake road").is_some());
     assert!(
-        h.query_by_role_and_label(egui::accesskit::Role::Label, "4 Roads and paths")
+        h.query_all_by_role_and_label(egui::accesskit::Role::Label, "4 Roads and paths")
+            .next()
             .is_some(),
         "the Roads item carries the chip of level 4"
     );
@@ -77,6 +78,9 @@ fn an_item_of_another_level_keeps_the_active_level() {
     let root = tempfile::tempdir().unwrap();
     let (mut h, _) = started(root.path());
     everything(&mut h);
+    // the Roads level has many items of its own now: narrow the list so that the row is in view
+    h.state_mut().palette.search = "fake road".to_string();
+    h.run_steps(3);
     h.get_by_label("Fake road").click();
     h.run_steps(3);
     assert_eq!(h.state().panel.active, Level::Buildings);

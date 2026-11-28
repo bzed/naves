@@ -4,17 +4,22 @@
 //! Level 4: roads and paths.
 
 use eframe::egui::{self, Color32, RichText};
-use naves_core::catalog::Family;
+use std::collections::BTreeMap;
+
+use naves_core::catalog::{Family, PieceCatalog};
 use naves_core::checks::{DriveState, PieceCheck};
+use naves_core::features::{FeatureKind, classify};
 use naves_core::render::MapLayer;
 use naves_export::generate::Generated;
 
-use super::{Level, LevelDef, no_items, number_row};
+use super::{Level, LevelDef, number_row};
 use crate::gui::NavesApp;
 use crate::gui::layers::LayerDef;
+use crate::gui::palette::{ItemKind, ItemSource, PaletteItem, Thumbnail};
 use crate::gui::prefs_window::{PrefsTab, PrefsWindow};
 use crate::gui::problems::Problem;
 use crate::gui::selection::Selection;
+use crate::gui::shortcuts::ToolId;
 use crate::gui::theme::problem;
 use crate::gui::viewport::WorldPoint;
 use crate::gui::worker::RoadsState;
@@ -46,8 +51,219 @@ pub const DEF: LevelDef = LevelDef {
     ],
     pick: Some(pick),
     tools: &[],
-    items: no_items,
+    items,
 };
+
+/// What the status line says while Draw is the tool. Draw is a tool of this level; its rail entry uses the same text.
+pub const DRAW_STATUS: &str =
+    "Draw: click to add points, click a node to join, Space to finish, Ctrl+Z to take one back.";
+
+/// A class of line: what a way becomes when it is drawn with it.
+#[derive(Debug, Clone, Copy)]
+pub struct RoadClass {
+    /// The id; the item is `roads.class.<id>`.
+    pub id: &'static str,
+    /// The name in the list.
+    pub name: &'static str,
+    /// The group in the list.
+    pub group: &'static str,
+    /// The OpenStreetMap tags that make a way of this class.
+    pub tags: &'static [(&'static str, &'static str)],
+}
+
+const fn class(
+    id: &'static str,
+    name: &'static str,
+    group: &'static str,
+    tags: &'static [(&'static str, &'static str)],
+) -> RoadClass {
+    RoadClass {
+        id,
+        name,
+        group,
+        tags,
+    }
+}
+
+/// The classes of line, widest first. A road's width is its surface family's, a path's its trace's.
+pub const ROAD_CLASSES: &[RoadClass] = &[
+    class("primary", "Primary", "Roads", &[("highway", "primary")]),
+    class(
+        "secondary",
+        "Secondary",
+        "Roads",
+        &[("highway", "secondary")],
+    ),
+    class("tertiary", "Tertiary", "Roads", &[("highway", "tertiary")]),
+    class(
+        "residential",
+        "Residential street",
+        "Roads",
+        &[("highway", "residential")],
+    ),
+    class(
+        "service",
+        "Service road",
+        "Roads",
+        &[("highway", "service")],
+    ),
+    class(
+        "track1",
+        "Track, grade 1",
+        "Roads",
+        &[("highway", "track"), ("tracktype", "grade1")],
+    ),
+    class(
+        "track2",
+        "Track, grade 2",
+        "Roads",
+        &[("highway", "track"), ("tracktype", "grade2")],
+    ),
+    class(
+        "track3",
+        "Track, grade 3",
+        "Roads",
+        &[("highway", "track"), ("tracktype", "grade3")],
+    ),
+    class(
+        "track4",
+        "Track, grade 4",
+        "Roads",
+        &[("highway", "track"), ("tracktype", "grade4")],
+    ),
+    class(
+        "track5",
+        "Track, grade 5",
+        "Roads",
+        &[("highway", "track"), ("tracktype", "grade5")],
+    ),
+    class("footway", "Footpath", "Paths", &[("highway", "footway")]),
+    class("path", "Path", "Paths", &[("highway", "path")]),
+];
+
+/// The width in metres of what `tags` make, or 2 m when they make nothing the generator knows.
+fn class_width(tags: &[(&str, &str)]) -> f64 {
+    let tags: BTreeMap<String, String> = tags
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    match classify(&tags) {
+        Some(FeatureKind::Road { family, .. }) => family.width_m(),
+        Some(FeatureKind::Path { width_m, .. }) => width_m,
+        None => 2.0,
+    }
+}
+
+/// The ink of a road's line in the list; paths are quieter.
+const ROAD_INK: [u8; 3] = [0xe4, 0xe8, 0xec];
+const PATH_INK: [u8; 3] = [0x9a, 0xa4, 0xae];
+
+/// The items of the level: the classes of line, then the game's pieces, junctions and bridges once they are read.
+#[must_use]
+pub fn items(app: &NavesApp) -> Vec<PaletteItem> {
+    let mut items: Vec<PaletteItem> = ROAD_CLASSES
+        .iter()
+        .map(|c| {
+            let width_m = class_width(c.tags);
+            PaletteItem {
+                id: format!("roads.class.{}", c.id),
+                name: c.name.to_string(),
+                group: c.group.to_string(),
+                thumbnail: Thumbnail::Line {
+                    width_m,
+                    rgb: if c.group == "Paths" {
+                        PATH_INK
+                    } else {
+                        ROAD_INK
+                    },
+                },
+                kind: ItemKind::LineClass,
+                default_tool: ToolId::LINE,
+                source: ItemSource::Game,
+                fits: vec![Level::Roads],
+                size_m: Some(width_m),
+            }
+        })
+        .collect();
+    items.extend(app.models());
+    items
+}
+
+/// The plan view of a model: the rectangle of its width between its ports, lying along the row.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "metres of a model, far inside f32"
+)]
+fn footprint(length_m: f64, width_m: f64) -> Thumbnail {
+    let (x, y) = ((length_m / 2.0) as f32, (width_m / 2.0) as f32);
+    Thumbnail::Footprint {
+        outline: vec![(-x, -y), (x, -y), (x, y), (-x, y)],
+    }
+}
+
+/// The last part of a model path, without the extension: the name in the list.
+fn model_name(model: &str) -> String {
+    let file = model.rsplit(['\\', '/']).next().unwrap_or(model);
+    file.strip_suffix(".p3d").unwrap_or(file).to_string()
+}
+
+fn model_item(model: &str, group: &str, length_m: f64, width_m: f64) -> PaletteItem {
+    PaletteItem {
+        id: format!("model.{model}"),
+        name: model_name(model),
+        group: group.to_string(),
+        thumbnail: footprint(length_m, width_m),
+        kind: ItemKind::Model,
+        default_tool: ToolId::SELECT, // placing comes in a later version
+        source: ItemSource::Game,
+        fits: vec![Level::Roads],
+        size_m: Some(length_m),
+    }
+}
+
+/// One item for every road piece, junction and bridge of the game's catalogue.
+#[must_use]
+pub fn catalog_items(catalog: &PieceCatalog) -> Vec<PaletteItem> {
+    let mut items: Vec<PaletteItem> = Vec::new();
+    for family in [
+        Family::Asf1,
+        Family::Asf2,
+        Family::Asf3,
+        Family::City,
+        Family::Grav,
+        Family::Mud,
+    ] {
+        for piece in catalog.pieces(family) {
+            items.push(model_item(
+                &piece.model,
+                "Pieces",
+                piece.chord(),
+                piece.width,
+            ));
+        }
+    }
+    for junction in catalog.junctions() {
+        let length = (junction.end.x - junction.start.x).hypot(junction.end.z - junction.start.z);
+        items.push(model_item(
+            &junction.model,
+            "Junctions",
+            length,
+            junction.through.width_m(),
+        ));
+    }
+    for bridge in catalog.bridges() {
+        items.push(model_item(
+            &bridge.model,
+            "Bridges",
+            bridge.length,
+            bridge.width,
+        ));
+    }
+    // a model that is both a T and an X junction is listed once
+    let mut seen = std::collections::BTreeSet::new();
+    items.retain(|i| seen.insert(i.id.clone()));
+    items
+}
 
 const BROWN: Color32 = Color32::from_rgb(0x8c, 0x6a, 0x45);
 const FINE: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
@@ -137,11 +353,11 @@ fn open_external_tools(app: &mut NavesApp) {
 }
 
 fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
-    ui.heading("Roads and paths");
-    ui.add_space(6.0);
+    // under the list of classes and models
+    ui.add_space(8.0);
     match &app.roads {
         RoadsState::NoOsm => {
-            ui.label("Add an .osm.pbf file to sources.osm to see roads.");
+            ui.label("No OpenStreetMap file: draw the roads yourself, or add one to sources.osm.");
         }
         RoadsState::Generating => {
             ui.horizontal(|ui| {

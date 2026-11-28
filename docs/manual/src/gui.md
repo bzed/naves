@@ -164,6 +164,22 @@ of its settings. Every level uses the same list:
 Picking an item of another level does not change the level you are working on: you keep the level and use the
 item's tool. **Esc** ends it and goes back to Select.
 
+### The Roads list
+
+The Roads level always shows the list, also in a project without OpenStreetMap files; under it come the state of the
+roads (placing, missing tools, errors, the numbers of the last build) or, without an OpenStreetMap file, the hint
+*No OpenStreetMap file: draw the roads yourself, or add one to sources.osm.*
+
+- **Road classes** come first: *Roads* (Primary, Secondary, Tertiary, Residential street, Service road, Track grade 1
+  to 5) and *Paths* (Footpath, Path). The metres at the right are the width the generator gives the class. Picking a
+  class switches to **Draw**.
+- When the game's road pieces have been read (this needs dayzmake and DayZ Tools, see
+  [External tools](settings.md)), the list also has the groups *Pieces*, *Junctions* and *Bridges* with one row per
+  model of the game; the thumbnail is the model's plan view at the shared scale. Without the tools these groups are
+  left out and the panel says which tool is missing.
+- Picking a model shows its card in the properties: name, size, the levels it fits, and *Placing models comes in a
+  later version.* Models cannot be placed yet.
+
 ## Edits, undo and redo
 
 Edits to the road lines are written to `edits/ways.toml` at once; there is no Save button. If the file cannot be

@@ -804,6 +804,11 @@ impl PieceCatalog {
             .find(|j| j.through == through && j.side == cross)
     }
 
+    /// Every junction model: the T junctions, then the X junctions.
+    pub fn junctions(&self) -> impl Iterator<Item = &Junction> {
+        self.t_junctions.iter().chain(&self.x_junctions)
+    }
+
     /// The bridge models that have ports.
     #[must_use]
     pub fn bridges(&self) -> &[BridgeModel] {

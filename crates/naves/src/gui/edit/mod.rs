@@ -15,6 +15,7 @@
 pub mod fixture;
 pub mod hit;
 pub mod overlay;
+pub mod properties;
 
 use std::path::Path;
 
