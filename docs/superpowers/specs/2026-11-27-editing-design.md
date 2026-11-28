@@ -306,7 +306,7 @@ Each phase has its own plan and ends with a working, tested state.
    and earthwork on every level.
 4. **Placed models and replacements**: `edits/objects.toml`, migration of `overrides.toml`, bridge replacement with
    scaled models (game check first), placing road pieces and any catalog model with the same selector.
-5. **MCP edit tools**.
+5. **MCP edit tools**. Replaced by `2026-11-28-agent-chat-design.md`: each phase brings its MCP tools.
 
 Phases 1 and 2 are written so that they can start now on `main`; the integration tasks of phase 1 wait for #25 and
 #26 to land (see the plan).

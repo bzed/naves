@@ -54,7 +54,22 @@ pub enum Host {
     Standalone(StandaloneHost),
 }
 
+/// What the server tells its clients about coordinates, ids and edits.
+const STANDALONE_INSTRUCTIONS: &str = "Coordinates are map metres from the south-west corner of the map: x \
+east, y north. The tools that take a rectangle (render_topdown, roads_list) and the road tools use them. \
+Look at the map with render_topdown, and find roads with roads_list. Road ids are strings: \"812\" for a way \
+from OpenStreetMap, \"u3\" for a way drawn here. Road edits are written at once to edits/ways.toml in the \
+project; there is no undo in this server. A build is needed to see the edits in the game.";
+
 impl Host {
+    /// The text the server sends to its clients on initialize.
+    #[must_use]
+    pub fn instructions(&self) -> &'static str {
+        match self {
+            Self::Standalone(_) => STANDALONE_INSTRUCTIONS,
+        }
+    }
+
     /// The saved project.
     ///
     /// # Errors

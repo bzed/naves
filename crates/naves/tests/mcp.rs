@@ -1174,3 +1174,20 @@ async fn roads_follow_an_edit() {
         total_km(&before)
     );
 }
+
+#[tokio::test]
+async fn the_server_explains_itself() {
+    let f = start().await;
+    let info = f.client.peer_info().unwrap();
+    let text = info.instructions.clone().unwrap();
+    for word in [
+        "map metres",
+        "south-west",
+        "render_topdown",
+        "roads_list",
+        "build",
+    ] {
+        assert!(text.contains(word), "{word}: {text}");
+    }
+    assert!(info.capabilities.tools.is_some());
+}

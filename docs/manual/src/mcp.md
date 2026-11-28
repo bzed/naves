@@ -14,6 +14,9 @@ starts a [Model Context Protocol](https://modelcontextprotocol.io/) server for o
 standard input and output, so it is local only: there is no network port. An AI client uses it to read the
 project, look at the map and run a build.
 
+The server sends its instructions to every client when the client connects: how the coordinates work (map metres
+from the south-west corner), how road ids look and that edits are written at once, without undo.
+
 ## Registering it with a client
 
 Most clients take a command and its arguments. For a client that reads a JSON configuration:

@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `naves mcp` tells its clients how its coordinates, ids and edits work.
 - `naves mcp` lists the roads of a part of the map (`roads_list`).
 - `naves mcp` can add, change, delete and reset roads (`road_add`, `road_modify`, `road_delete`, `road_reset`).
 - The Roads level lists the road classes and the game's road pieces (one group for each road family), junctions and
