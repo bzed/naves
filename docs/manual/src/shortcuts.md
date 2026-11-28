@@ -29,8 +29,8 @@ in. Hold **Shift** with one of them to move three times faster, **Ctrl** for thr
 while you type in a field. **Esc** is Select: it cancels what is in progress and goes back to Select, so Select has
 no letter. The rail shows `Esc` over "Select".
 
-**Tab** and **Shift+Tab** always move through the panels. **Space + drag** and the **middle mouse button** pan
-the map, the **wheel** zooms.
+**Tab** and **Shift+Tab** always move through the panels. The **middle mouse button** (drag) and **W A S D** pan
+the map, the **wheel** zooms. **Space** finishes a line, so it does not pan.
 
 | Key | Action | Where |
 |---|---|---|

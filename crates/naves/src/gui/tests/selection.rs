@@ -343,14 +343,14 @@ fn the_marker_uses_project_of_the_view() {
 }
 
 #[test]
-fn space_drag_pans_and_a_left_drag_does_not() {
+fn space_with_a_left_drag_does_not_pan() {
     let root = tempfile::tempdir().unwrap();
     let mut h = started(root.path(), false);
     let before = focus(&h).center;
     drag_centre(&mut h, egui::vec2(60.0, 0.0), PointerButton::Primary);
-    let plain = focus(&h).center;
     assert_eq!(
-        plain, before,
+        focus(&h).center,
+        before,
         "a plain left drag leaves the map where it is"
     );
     h.key_down(egui::Key::Space);
@@ -358,9 +358,10 @@ fn space_drag_pans_and_a_left_drag_does_not() {
     drag_centre(&mut h, egui::vec2(60.0, 0.0), PointerButton::Primary);
     h.key_up(egui::Key::Space);
     h.run_steps(2);
-    assert!(
-        focus(&h).center.x < before.x - 1.0,
-        "the map follows the pointer east"
+    assert_eq!(
+        focus(&h).center,
+        before,
+        "Space finishes a line; it does not pan"
     );
 }
 

@@ -396,3 +396,619 @@ fn a_click_in_select_picks_the_source_way() {
     h.run_steps(3);
     assert!(h.state().selection.is_none());
 }
+
+// ---- the tools: Move, Draw, Cut, Join, Bridge and Delete ----
+
+mod tools {
+    use egui::{Key, Modifiers};
+    use naves_core::edits::{USER_ID_BASE, WayAction};
+
+    use super::*;
+    use crate::gui::edit::fixture::session as fixture_session;
+    use crate::gui::levels::Level;
+    use crate::gui::shortcuts::ToolId;
+    use crate::gui::testing::{FAKE_LEVEL, FakeHandle, FakeViewport};
+    use crate::gui::viewport::{ViewEvent, ViewFocus, Viewport, WorldPoint};
+
+    /// Seven nodes apart, so that a click lands on one node only.
+    const A: &[(f64, f64)] = &[
+        (500.0, 500.0),
+        (550.0, 500.0),
+        (600.0, 500.0),
+        (650.0, 500.0),
+        (700.0, 500.0),
+    ];
+    const B: &[(f64, f64)] = &[(710.0, 500.0), (760.0, 500.0), (810.0, 500.0)];
+    const C: &[(f64, f64)] = &[(500.0, 600.0), (600.0, 600.0)];
+
+    fn at(x: f64, y: f64) -> WorldPoint {
+        WorldPoint { x, y }
+    }
+
+    struct Setup {
+        h: Harness<'static, NavesApp>,
+        fake: FakeHandle,
+        dir: PathBuf,
+        _root: tempfile::TempDir,
+    }
+
+    fn setup(extra: bool) -> Setup {
+        let root = tempfile::tempdir().unwrap();
+        let dir = project(root.path());
+        let mut app = app(root.path(), &dir);
+        if extra {
+            app = app.with_extra_level(&FAKE_LEVEL);
+        }
+        wait_for_the_session(&mut app);
+        app.edit = EditState::Ready(Box::new(fixture_session(&[(7, A), (8, B), (9, C)])));
+        let (fake, handle) = FakeViewport::new();
+        let views: Vec<Box<dyn Viewport>> = vec![Box::new(fake)];
+        let mut h = state_harness(app.with_views(views));
+        step_until(&mut h, |h| {
+            matches!(h.state().heightmap, HeightmapState::Ready(_))
+        });
+        handle.borrow_mut().focus = Some(ViewFocus {
+            center: at(650.0, 550.0),
+            span_m: 100.0,
+        });
+        h.run_steps(3);
+        Setup {
+            h,
+            fake: handle,
+            dir,
+            _root: root,
+        }
+    }
+
+    impl Setup {
+        fn roads(&mut self) {
+            self.h.key_press(Key::Num4);
+            self.h.run_steps(3);
+            assert_eq!(self.h.state().panel.active, Level::Roads);
+        }
+
+        fn key(&mut self, key: Key) {
+            self.h.key_press(key);
+            self.h.run_steps(3);
+        }
+
+        fn key_with(&mut self, modifiers: Modifiers, key: Key) {
+            self.h.key_press_modifiers(modifiers, key);
+            self.h.run_steps(3);
+        }
+
+        fn send(&mut self, events: &[ViewEvent]) {
+            self.fake.borrow_mut().queued.extend_from_slice(events);
+            self.h.run_steps(3);
+        }
+
+        fn click(&mut self, x: f64, y: f64) {
+            self.send(&[ViewEvent::Click {
+                at: at(x, y),
+                modifiers: Modifiers::NONE,
+            }]);
+        }
+
+        fn clicks(&mut self, points: &[(f64, f64)]) {
+            for &(x, y) in points {
+                self.click(x, y);
+            }
+        }
+
+        fn saved(&self) -> WayEdits {
+            WayEdits::load(&self.dir).unwrap()
+        }
+
+        fn file(&self) -> PathBuf {
+            self.dir.join("edits/ways.toml")
+        }
+
+        fn session(&self) -> &EditSession {
+            self.h.state().edit.session().unwrap()
+        }
+
+        fn pick_class(&mut self, name: &str) {
+            self.h.get_by_label(name).click();
+            self.h.run_steps(3);
+        }
+
+        fn geo(&self, x: f64, y: f64) -> (f64, f64) {
+            self.session().source.frame.to_geo(x, y).unwrap()
+        }
+    }
+
+    fn tag<'a>(edit: &'a naves_core::edits::WayEdit, key: &str) -> Option<&'a str> {
+        edit.tags.get(key).map(String::as_str)
+    }
+
+    fn osm(ids: &[i64]) -> Vec<ElementId> {
+        ids.iter()
+            .map(|&i| ElementId::from_raw(i).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn move_drags_a_node() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::G);
+        assert_eq!(s.h.state().tool, ToolId::MOVE);
+        s.send(&[
+            ViewEvent::Press {
+                at: at(550.0, 500.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Drag {
+                at: at(551.0, 510.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Drag {
+                at: at(552.0, 530.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Release {
+                at: at(552.0, 530.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let saved = s.saved();
+        assert_eq!(saved.nodes.len(), 1);
+        let node = &saved.nodes[0];
+        assert_eq!(node.id, ElementId::Osm(701));
+        let (lat, lon) = s.geo(552.0, 530.0);
+        assert!((node.lat - lat).abs() < 1e-9 && (node.lon - lon).abs() < 1e-9);
+        let (base_lat, base_lon) = s.geo(550.0, 500.0);
+        let base = node.base.expect("the OSM position is kept");
+        assert!((base.0 - base_lat).abs() < 1e-9 && (base.1 - base_lon).abs() < 1e-9);
+        assert!(s.session().can_undo());
+        assert_eq!(saved.ways.len(), 0);
+    }
+
+    #[test]
+    fn esc_during_a_drag_moves_nothing() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::G);
+        s.send(&[
+            ViewEvent::Press {
+                at: at(550.0, 500.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Drag {
+                at: at(552.0, 530.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        s.key(Key::Escape);
+        s.send(&[ViewEvent::Release {
+            at: at(552.0, 530.0),
+            modifiers: Modifiers::NONE,
+        }]);
+        assert!(!s.file().exists());
+        assert!(!s.session().can_undo());
+        assert_eq!(
+            s.h.state().tool,
+            ToolId::MOVE,
+            "Esc cancelled the drag only"
+        );
+    }
+
+    #[test]
+    fn draw_adds_a_way_with_the_class_tags() {
+        let mut s = setup(false);
+        s.roads();
+        s.pick_class("Secondary");
+        assert_eq!(s.h.state().tool, ToolId::LINE);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0), (600.0, 540.0)]);
+        assert_eq!(s.h.state().drawing.points.len(), 3);
+        assert!(!s.file().exists(), "nothing is saved before the line ends");
+        s.key(Key::Space);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 1);
+        let way = &saved.ways[0];
+        assert_eq!(way.action, WayAction::Add);
+        assert_eq!(tag(way, "highway"), Some("secondary"));
+        assert_eq!(tag(way, "naves:keep"), Some("yes"));
+        assert_eq!(way.nodes.len(), 3);
+        assert!(way.nodes.iter().all(|n| n.is_user()));
+        assert_eq!(saved.nodes.len(), 3);
+        assert_eq!(s.h.state().drawing.points.len(), 0);
+        assert!(s.session().can_undo());
+    }
+
+    #[test]
+    fn draw_without_a_class_is_a_residential_street() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0)]);
+        s.key(Key::Enter);
+        let saved = s.saved();
+        assert_eq!(tag(&saved.ways[0], "highway"), Some("residential"));
+    }
+
+    #[test]
+    fn draw_joins_an_existing_node() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(500.0, 500.0), (500.0, 550.0), (480.0, 580.0)]);
+        s.key(Key::Space);
+        let saved = s.saved();
+        let way = &saved.ways[0];
+        assert_eq!(way.nodes[0], ElementId::Osm(700));
+        assert!(way.nodes[1].is_user());
+        assert_eq!(saved.nodes.len(), 2, "no node edit for the node it joins");
+        assert!(saved.nodes.iter().all(|n| n.id != ElementId::Osm(700)));
+    }
+
+    #[test]
+    fn ctrl_z_takes_a_point_back() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0), (600.0, 540.0)]);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.h.state().drawing.points.len(), 2);
+        s.key(Key::Backspace);
+        assert_eq!(s.h.state().drawing.points.len(), 1);
+        assert!(!s.file().exists(), "taking a point back saves nothing");
+        assert!(!s.session().can_undo());
+    }
+
+    #[test]
+    fn ctrl_z_while_drawing_leaves_a_saved_edit_alone() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::R);
+        s.click(550.0, 500.0);
+        let after_cut = std::fs::read(s.file()).unwrap();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0)]);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.h.state().drawing.points.len(), 1);
+        assert_eq!(std::fs::read(s.file()).unwrap(), after_cut);
+        // with nothing being drawn Ctrl+Z undoes the edit again
+        s.key(Key::Escape);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.saved(), WayEdits::default());
+    }
+
+    #[test]
+    fn space_with_one_point_draws_nothing() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.click(520.0, 540.0);
+        s.key(Key::Space);
+        assert!(!s.file().exists());
+        assert_eq!(s.h.state().drawing.points.len(), 1, "the point stays");
+    }
+
+    #[test]
+    fn esc_discards_the_line() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0)]);
+        s.key(Key::Escape);
+        assert_eq!(s.h.state().drawing.points.len(), 0);
+        assert!(!s.file().exists());
+    }
+
+    #[test]
+    fn right_click_and_double_click_finish() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0)]);
+        s.send(&[ViewEvent::SecondaryClick {
+            at: at(560.0, 560.0),
+            modifiers: Modifiers::NONE,
+        }]);
+        assert_eq!(s.saved().ways.len(), 1);
+        // a double click comes as two clicks and the double click; the doubled point is one point
+        s.send(&[
+            ViewEvent::Click {
+                at: at(520.0, 570.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Click {
+                at: at(580.0, 590.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::Click {
+                at: at(580.0, 590.0),
+                modifiers: Modifiers::NONE,
+            },
+            ViewEvent::DoubleClick {
+                at: at(580.0, 590.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 2);
+        assert_eq!(saved.ways[1].nodes.len(), 2);
+    }
+
+    #[test]
+    fn cut_splits_a_way_in_one_undo_step() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::R);
+        assert_eq!(s.h.state().tool, ToolId::CUT);
+        s.click(600.0, 500.0);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 2);
+        let first = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .unwrap();
+        assert_eq!(first.action, WayAction::Modify);
+        assert_eq!(first.nodes, osm(&[700, 701, 702]));
+        let second = saved.ways.iter().find(|w| w.id.is_user()).unwrap();
+        assert_eq!(second.action, WayAction::Add);
+        assert_eq!(second.nodes, osm(&[702, 703, 704]));
+        assert_eq!(tag(second, "highway"), Some("residential"));
+        assert_eq!(s.session().source.ways.ways.len(), 4);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.saved(), WayEdits::default());
+        assert_eq!(s.session().source.ways.ways.len(), 3);
+    }
+
+    #[test]
+    fn cut_at_an_end_node_does_nothing() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::R);
+        s.click(500.0, 500.0);
+        assert!(!s.file().exists());
+    }
+
+    #[test]
+    fn join_with_the_same_tags_makes_one_way() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::T);
+        assert_eq!(s.h.state().tool, ToolId::JOIN);
+        s.clicks(&[(700.0, 500.0), (710.0, 500.0)]);
+        let saved = s.saved();
+        let joined = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .unwrap();
+        assert_eq!(joined.action, WayAction::Modify);
+        assert_eq!(joined.nodes, osm(&[700, 701, 702, 703, 704, 801, 802]));
+        let gone = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(8))
+            .unwrap();
+        assert_eq!(gone.action, WayAction::Delete);
+        assert_eq!(s.session().source.ways.ways.len(), 2);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.saved(), WayEdits::default(), "one undo step");
+    }
+
+    #[test]
+    fn join_with_other_tags_connects_the_ends() {
+        let mut s = setup(false);
+        let b = s.session().original(8).unwrap().clone();
+        let tags = [("highway".to_string(), "track".to_string())].into();
+        s.h.state_mut()
+            .edit_way(|edits, _| edits.modify_way(&b, tags, osm(&[800, 801, 802]), By::User))
+            .unwrap();
+        s.roads();
+        s.key(Key::T);
+        s.clicks(&[(700.0, 500.0), (710.0, 500.0)]);
+        let saved = s.saved();
+        assert_eq!(
+            saved.ways.len(),
+            1,
+            "both ways are kept, A is not even edited"
+        );
+        let second = &saved.ways[0];
+        assert_eq!(second.id, ElementId::Osm(8));
+        assert_eq!(second.action, WayAction::Modify);
+        assert_eq!(second.nodes, osm(&[704, 801, 802]));
+        assert_eq!(tag(second, "highway"), Some("track"));
+        assert_eq!(s.session().source.ways.ways.len(), 3);
+    }
+
+    #[test]
+    fn join_ignores_an_inner_node() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::T);
+        s.clicks(&[(600.0, 500.0), (710.0, 500.0)]);
+        assert!(!s.file().exists());
+    }
+
+    #[test]
+    fn bridge_splits_out_the_part_and_tags_it() {
+        let mut s = setup(false);
+        s.roads();
+        s.key_with(Modifiers::SHIFT, Key::T);
+        assert_eq!(s.h.state().tool, ToolId::BRIDGE);
+        s.clicks(&[(550.0, 500.0), (650.0, 500.0)]);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 3);
+        let before = saved
+            .ways
+            .iter()
+            .find(|w| w.id == ElementId::Osm(7))
+            .unwrap();
+        assert_eq!(before.nodes, osm(&[700, 701]));
+        assert_eq!(tag(before, "bridge"), None);
+        let added: Vec<_> = saved.ways.iter().filter(|w| w.id.is_user()).collect();
+        assert_eq!(added.len(), 2);
+        let bridge = added.iter().find(|w| tag(w, "bridge").is_some()).unwrap();
+        assert_eq!(bridge.nodes, osm(&[701, 702, 703]));
+        assert_eq!(tag(bridge, "bridge"), Some("yes"));
+        assert_eq!(tag(bridge, "layer"), Some("1"));
+        let after = added.iter().find(|w| tag(w, "bridge").is_none()).unwrap();
+        assert_eq!(after.nodes, osm(&[703, 704]));
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.saved(), WayEdits::default(), "one undo step");
+    }
+
+    #[test]
+    fn bridge_on_a_bridge_untags_it() {
+        let mut s = setup(false);
+        s.roads();
+        s.key_with(Modifiers::SHIFT, Key::T);
+        s.clicks(&[(550.0, 500.0), (650.0, 500.0)]);
+        // a node inside the bridge: one click
+        s.click(600.0, 500.0);
+        let saved = s.saved();
+        let bridge = saved
+            .ways
+            .iter()
+            .find(|w| w.nodes == osm(&[701, 702, 703]))
+            .unwrap();
+        assert_eq!(tag(bridge, "bridge"), None);
+        assert_eq!(tag(bridge, "layer"), None);
+        assert_eq!(tag(bridge, "highway"), Some("residential"));
+    }
+
+    #[test]
+    fn delete_removes_the_selected_way() {
+        let mut s = setup(false);
+        s.roads();
+        s.click(525.0, 500.0); // Select: a way
+        assert!(s.h.state().selection.is_some());
+        s.key(Key::X);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 1);
+        assert_eq!(saved.ways[0].id, ElementId::Osm(7));
+        assert_eq!(saved.ways[0].action, WayAction::Delete);
+        assert!(s.session().way(7).is_none());
+        assert!(s.h.state().selection.is_none());
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert!(s.session().way(7).is_some());
+    }
+
+    #[test]
+    fn the_delete_key_deletes_too() {
+        let mut s = setup(false);
+        s.roads();
+        s.click(525.0, 600.0);
+        s.key(Key::Delete);
+        assert_eq!(s.saved().ways[0].id, ElementId::Osm(9));
+    }
+
+    #[test]
+    fn delete_takes_a_drawn_node_out() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::C);
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0), (600.0, 540.0)]);
+        s.key(Key::Space);
+        s.key(Key::Escape); // back to Select
+        assert_eq!(s.h.state().tool, ToolId::SELECT);
+        s.click(560.0, 560.0);
+        s.key(Key::X);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 1);
+        assert_eq!(saved.ways[0].nodes.len(), 2);
+        // a way left with one node is deleted
+        s.click(520.0, 540.0);
+        s.key(Key::X);
+        let saved = s.saved();
+        assert!(saved.ways.is_empty(), "{saved:?}");
+        assert_eq!(saved.nodes.len(), 0);
+    }
+
+    #[test]
+    fn an_osm_node_is_not_deleted() {
+        let mut s = setup(false);
+        s.roads();
+        s.click(550.0, 500.0);
+        s.key(Key::X);
+        assert!(!s.file().exists());
+        assert!(s.session().way(7).is_some());
+    }
+
+    #[test]
+    fn delete_does_nothing_without_a_selection() {
+        let mut s = setup(false);
+        s.roads();
+        s.key(Key::X);
+        assert!(!s.file().exists());
+    }
+
+    #[test]
+    fn a_click_on_nothing_changes_nothing() {
+        let mut s = setup(false);
+        s.roads();
+        // an edit first, so that there is a file, a stamp and an undo step
+        s.key(Key::R);
+        s.click(550.0, 500.0);
+        let bytes = std::fs::read(s.file()).unwrap();
+        let stamp = std::fs::metadata(s.file()).unwrap().modified().unwrap();
+        let ways = s.session().source.ways.ways.len();
+        let status = s.h.state().status_text();
+        for (modifiers, key) in [
+            (Modifiers::NONE, Key::R),
+            (Modifiers::NONE, Key::T),
+            (Modifiers::SHIFT, Key::T),
+            (Modifiers::NONE, Key::G),
+        ] {
+            s.key_with(modifiers, key);
+            let tool_status = s.h.state().status_text();
+            s.send(&[
+                ViewEvent::Press {
+                    at: at(1.0e5, 1.0e5),
+                    modifiers: Modifiers::NONE,
+                },
+                ViewEvent::Release {
+                    at: at(1.0e5, 1.0e5),
+                    modifiers: Modifiers::NONE,
+                },
+            ]);
+            s.click(1.0e5, 1.0e5);
+            s.click(1.0e5, 1.0e5);
+            assert_eq!(std::fs::read(s.file()).unwrap(), bytes);
+            assert_eq!(
+                std::fs::metadata(s.file()).unwrap().modified().unwrap(),
+                stamp
+            );
+            assert_eq!(s.session().source.ways.ways.len(), ways);
+            assert_eq!(s.h.state().status_text(), tool_status);
+        }
+        assert_eq!(status, "Edited: press Ctrl+R to rebuild.");
+        // one undo step is all there is
+        s.key(Key::Escape);
+        s.key_with(Modifiers::CTRL, Key::Z);
+        assert_eq!(s.saved(), WayEdits::default());
+        assert!(!s.session().can_undo());
+    }
+
+    #[test]
+    fn the_roads_tools_work_from_another_level() {
+        let mut s = setup(true);
+        s.h.key_press(Key::Num6);
+        s.h.run_steps(3);
+        assert_eq!(s.h.state().panel.active, Level::Buildings);
+        s.h.get_by_label("Everything").click();
+        s.h.run_steps(3);
+        s.h.state_mut().palette.search = "secondary".to_string();
+        s.h.run_steps(3);
+        s.pick_class("Secondary");
+        assert_eq!(s.h.state().panel.active, Level::Buildings);
+        assert_eq!(s.h.state().item_level, Some(Level::Roads));
+        assert_eq!(s.h.state().tool, ToolId::LINE);
+        assert!(
+            s.h.query_by_label("C Draw").is_some(),
+            "the rail lists Draw"
+        );
+        s.clicks(&[(520.0, 540.0), (560.0, 560.0), (600.0, 540.0)]);
+        s.key(Key::Space);
+        let saved = s.saved();
+        assert_eq!(saved.ways.len(), 1);
+        assert_eq!(tag(&saved.ways[0], "highway"), Some("secondary"));
+        assert!(saved.ways[0].id.raw().unwrap() >= USER_ID_BASE);
+    }
+}

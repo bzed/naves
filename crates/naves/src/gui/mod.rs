@@ -133,6 +133,10 @@ pub struct NavesApp {
     catalog_tools: naves_core::prefs::ToolPaths,
     /// The edit session: the ways with the hand-made edits.
     edit: edit::EditState,
+    /// The line Draw is drawing.
+    drawing: edit::tools::Drawing,
+    /// What Move, Join and Bridge hold between two events.
+    pending: edit::tools::Pending,
     source_job: Option<SourceJob>,
     /// The last edit error, or why the map data for editing could not be read.
     edit_problems: Vec<problems::Problem>,
@@ -219,6 +223,8 @@ impl NavesApp {
             catalog_job: None,
             catalog_tools: naves_core::prefs::ToolPaths::default(),
             edit: edit::EditState::None,
+            drawing: edit::tools::Drawing::default(),
+            pending: edit::tools::Pending::default(),
             source_job: None,
             edit_problems: Vec::new(),
             road_problems: Vec::new(),
@@ -354,13 +360,6 @@ impl NavesApp {
     }
 
     /// Makes an edit and saves it; a failure is written to the log.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the editing tools of the next tasks make the edits"
-        )
-    )]
     fn edit_way(
         &mut self,
         op: impl FnOnce(
@@ -735,6 +734,9 @@ impl NavesApp {
         {
             self.run_action(action);
         }
+        if !typing && ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
+            edit::tools::take_point_back(self);
+        }
         self.move_view(ctx, typing, level);
     }
 
@@ -773,13 +775,18 @@ impl NavesApp {
             Action::ShowOthersInFull => {
                 self.panel.show_others_in_full = !self.panel.show_others_in_full;
             }
-            Action::Tool(tool) => self.tool = tool,
+            Action::Tool(tool) => {
+                self.tool = tool;
+                edit::tools::sync(self);
+            }
             Action::SearchItems => self.palette.focus_search = true,
             Action::Settings => self.open_settings(),
             Action::CommandPalette => self.command_palette.toggle(),
             Action::Cancel => {
                 if self.help_open {
                     self.help_open = false;
+                } else if edit::tools::cancel(self) {
+                    // the line or the drag is dropped; the tool stays
                 } else {
                     let had_item_level = self.item_level.take().is_some();
                     if self.tool != shortcuts::ToolId::SELECT {
@@ -807,7 +814,14 @@ impl NavesApp {
                 }
             }
             Action::Build => self.start_build(),
-            Action::Undo => self.undo(),
+            Action::Undo => {
+                // while a line is being drawn Ctrl+Z takes its last point back and saves nothing
+                if !edit::tools::take_point_back(self) {
+                    self.undo();
+                }
+            }
+            Action::Finish => edit::tools::finish_drawing(self),
+            Action::Delete => self.delete_selection(),
             Action::Redo => self.redo(),
             Action::Regenerate => self.regenerate(),
             Action::Help => self.help_open = !self.help_open,
@@ -1110,6 +1124,7 @@ impl NavesApp {
         let rect = ui.available_rect_before_wrap();
         let roads = self.generated_roads();
         let layers = self.drawn_layers();
+        edit::tools::sync(self);
         let overlay = self.overlay_shapes();
         self.map_rect = rect;
         let frame = ViewFrame {
@@ -1164,26 +1179,36 @@ impl NavesApp {
         let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
             return "";
         };
-        let tool = def.tools.iter().find(|t| t.tool == self.tool);
-        if tool.is_none()
-            && def.level == levels::Level::Roads
-            && self.tool == shortcuts::ToolId::LINE
-        {
-            return levels::roads::DRAW_STATUS; // until Draw is a tool of the rail
-        }
+        let item_def = self
+            .item_level
+            .and_then(|l| self.levels.iter().find(|d| d.level == l));
+        let tool = [Some(def), item_def]
+            .into_iter()
+            .flatten()
+            .flat_map(|d| d.tools.iter())
+            .find(|t| t.tool == self.tool);
         tool.map_or(def.status, |t| t.status)
     }
 
     /// The shapes of the editing overlay: on the Roads level, once the session is there.
     fn overlay_shapes(&self) -> Vec<edit::overlay::OverlayShape> {
-        if self.panel.active != levels::Level::Roads {
+        // the line being drawn shows on every level its tool is used from
+        let drawing: Vec<viewport::WorldPoint> = self.drawing.points.iter().map(|p| p.0).collect();
+        if self.panel.active != levels::Level::Roads && drawing.is_empty() {
             return Vec::new();
         }
         let Some(session) = self.edit.session() else {
             return Vec::new();
         };
         let target = self.selection.as_ref().and_then(|s| s.target.as_ref());
-        edit::overlay::overlay(session, target, &[])
+        let mut shapes = edit::overlay::overlay(session, target, &drawing);
+        shapes.extend(
+            self.pending
+                .marks()
+                .into_iter()
+                .map(edit::overlay::OverlayShape::Handle),
+        );
+        shapes
     }
 
     /// How many metres a click may be off the line it means, from the zoom of the view.

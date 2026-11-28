@@ -208,16 +208,12 @@ fn the_wheel_zoom_is_one_rule_for_every_view() {
 }
 
 #[test]
-fn space_with_the_left_button_or_the_middle_button_pans() {
+fn only_the_middle_button_pans() {
     use crate::gui::viewport::pans;
     use egui::PointerButton::{Middle, Primary, Secondary};
-    assert!(pans(Middle, false) && pans(Middle, true));
-    assert!(pans(Primary, true));
-    assert!(
-        !pans(Primary, false),
-        "a plain left drag belongs to the tools"
-    );
-    assert!(!pans(Secondary, true));
+    assert!(pans(Middle));
+    assert!(!pans(Primary), "a left drag belongs to the tools");
+    assert!(!pans(Secondary));
 }
 
 // ---- the keys that move the view ----

@@ -3,19 +3,12 @@
 
 //! The edit session: the ways of the project with the hand-made edits, saved at once and undone step by step.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the editing tools of the next tasks use the session"
-    )
-)]
-
 #[cfg(test)]
 pub mod fixture;
 pub mod hit;
 pub mod overlay;
 pub mod properties;
+pub mod tools;
 
 use std::path::Path;
 

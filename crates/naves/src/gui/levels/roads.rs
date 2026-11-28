@@ -12,8 +12,9 @@ use naves_core::features::{FeatureKind, classify};
 use naves_core::render::MapLayer;
 use naves_export::generate::Generated;
 
-use super::{Level, LevelDef, number_row};
+use super::{Level, LevelDef, ToolDef, number_row};
 use crate::gui::NavesApp;
+use crate::gui::edit::tools;
 use crate::gui::layers::LayerDef;
 use crate::gui::palette::{ItemKind, ItemSource, PaletteItem, Thumbnail};
 use crate::gui::prefs_window::{PrefsTab, PrefsWindow};
@@ -50,7 +51,38 @@ pub const DEF: LevelDef = LevelDef {
         },
     ],
     pick: Some(pick),
-    tools: &[],
+    tools: &[
+        ToolDef {
+            tool: ToolId::MOVE,
+            word: "Move",
+            status: "Move: drag a node.",
+            on_event: Some(tools::move_event),
+        },
+        ToolDef {
+            tool: ToolId::LINE,
+            word: "Draw",
+            status: DRAW_STATUS,
+            on_event: Some(tools::draw_event),
+        },
+        ToolDef {
+            tool: ToolId::CUT,
+            word: "Cut",
+            status: "Cut: click a node inside a road.",
+            on_event: Some(tools::cut_event),
+        },
+        ToolDef {
+            tool: ToolId::JOIN,
+            word: "Join",
+            status: "Join: click the end of a road, then the end of another.",
+            on_event: Some(tools::join_event),
+        },
+        ToolDef {
+            tool: ToolId::BRIDGE,
+            word: "Bridge",
+            status: "Bridge: click two nodes of a road to make the part between them a bridge.",
+            on_event: Some(tools::bridge_event),
+        },
+    ],
     items,
 };
 

@@ -878,14 +878,17 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         Action::EarthworkShape
         | Action::WorldAxes
         | Action::FollowGround
-        | Action::Delete
         | Action::Duplicate
         | Action::BrushSmaller
         | Action::BrushLarger
         | Action::BrushWeaker
-        | Action::BrushStronger
-        | Action::Finish => false,
-        Action::Undo => app.edit.session().is_some_and(EditSession::can_undo),
+        | Action::BrushStronger => false,
+        Action::Finish => !app.drawing.points.is_empty(),
+        Action::Delete => app.selection.as_ref().is_some_and(|s| s.target.is_some()),
+        // while a line is being drawn Ctrl+Z takes back its last point
+        Action::Undo => {
+            !app.drawing.points.is_empty() || app.edit.session().is_some_and(EditSession::can_undo)
+        }
         Action::Redo => app.edit.session().is_some_and(EditSession::can_redo),
         Action::Regenerate => app.edit.session().is_some(),
     }
@@ -1218,16 +1221,16 @@ pub fn action_built(action: Action, app: &NavesApp) -> bool {
         | Action::CommandPalette
         | Action::Undo
         | Action::Redo
-        | Action::Regenerate => true,
+        | Action::Regenerate
+        | Action::Delete
+        | Action::Finish => true,
         Action::EarthworkShape
         | Action::WorldAxes
         | Action::FollowGround
-        | Action::Delete
         | Action::Duplicate
         | Action::BrushSmaller
         | Action::BrushLarger
         | Action::BrushWeaker
-        | Action::BrushStronger
-        | Action::Finish => false,
+        | Action::BrushStronger => false,
     }
 }

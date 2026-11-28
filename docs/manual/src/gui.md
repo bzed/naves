@@ -91,8 +91,8 @@ see [the project file](project-file.md#sources). Changing a list reloads the map
 
 A top-down view of the heightmap, north up.
 
-- **Space + drag** or the **middle mouse button + drag** moves the map (before this version the left button did;
-  it is kept for the tools of the editor). **Scroll** zooms in and out around the pointer.
+- The **middle mouse button + drag** and **W A S D** move the map (a left drag belongs to the tools of the editor, and
+  **Space** finishes a line). **Scroll** zooms in and out around the pointer.
 - **Click** reads a point in the active level: in Terrain its position, latitude and longitude, height and
   slope, in Ground the ground class. The result is under the stack, and a ring marks the point. **Alt+click** picks in
   the highest level that has something there and switches to it. Levels you hid (H) pick nothing. **Esc** clears it.
@@ -179,6 +179,24 @@ roads (placing, missing tools, errors, the numbers of the last build) or, withou
   left out and the panel says which tool is missing.
 - Picking a model shows its card in the properties: name, size, the levels it fits, and *Placing models comes in a
   later version.* Models cannot be placed yet.
+
+## Editing road lines
+
+The Roads level has five tools in the rail, and **X** (or **Delete**) for the selection. Every gesture is one
+saved edit that **Ctrl+Z** takes back in one step. A click that finds nothing to work on changes nothing. **Esc**
+drops what a tool holds (a line, a drag, a first click) and, with nothing held, goes back to Select.
+
+| Tool | Key | What it does |
+|---|---|---|
+| Move | **G** | Press on a node, drag, release: the node moves. **Esc** during the drag leaves it where it was. |
+| Draw | **C** | Each click adds a point; a click on a node of a road joins that node. **Space**, **Enter**, a right click or a double click ends the line (it needs two points). **Ctrl+Z** or **Backspace** takes the last point back and saves nothing. **Esc** discards the line. The line gets the class you picked in the list, *Residential street* if you picked none. |
+| Cut | **R** | Click a node inside a road: the road ends there and a new road with the same tags starts there. |
+| Join | **T** | Click the end of one road, then the end of another. With the same tags they become one road; with other tags the end of the second road moves to the end of the first, and both stay. |
+| Bridge | **Shift+T** | Click two nodes of a road: the part between them becomes a bridge (`bridge=yes`, `layer=1`). A click on a road that is a bridge makes it a plain road again. |
+| Delete | **X**, **Delete** | Deletes the selected road, or takes the selected node out of a road you drew. A node from OpenStreetMap is only moved, never deleted. |
+
+The status line names the tool and the key it needs. When you picked a road class while another level is active, the
+Roads tools join the rail until **Esc**, and a line you draw shows on that level too.
 
 ## Edits, undo and redo
 

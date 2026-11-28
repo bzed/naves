@@ -69,6 +69,20 @@ pub enum ViewEvent {
         /// The modifier keys.
         modifiers: Modifiers,
     },
+    /// A click with the secondary (right) button.
+    SecondaryClick {
+        /// Where.
+        at: WorldPoint,
+        /// The modifier keys.
+        modifiers: Modifiers,
+    },
+    /// A double click (it comes after the two clicks).
+    DoubleClick {
+        /// Where.
+        at: WorldPoint,
+        /// The modifier keys.
+        modifiers: Modifiers,
+    },
 }
 
 /// A layer to draw over the base map, and how strongly.
@@ -88,11 +102,11 @@ pub fn zoom_factor(scroll: f64, invert: bool) -> f64 {
     (-scroll * 0.002).exp()
 }
 
-/// Whether a drag with `button` moves the camera: the middle button, or the left button with Space held. A plain
-/// left drag belongs to the tools. Every view uses this rule.
+/// Whether a drag with `button` moves the camera: only the middle button does (the keys WASD move it too). A left
+/// drag belongs to the tools, and Space finishes a line. Every view uses this rule.
 #[must_use]
-pub fn pans(button: egui::PointerButton, space_down: bool) -> bool {
-    button == egui::PointerButton::Middle || (space_down && button == egui::PointerButton::Primary)
+pub fn pans(button: egui::PointerButton) -> bool {
+    button == egui::PointerButton::Middle
 }
 
 /// What the shell hands to a view each frame.
