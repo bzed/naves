@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use naves_core::dem::Dem;
-use naves_core::edits::WayEdits;
+use naves_core::edits::{EditsError, WayEdits};
 use naves_core::heightmap::{Heightmap, build_heightmap};
 use naves_core::imagery::catalog::{catalog, find_source, user_catalog_path};
 use naves_core::imagery::{LoadedImagery, load_imagery};
@@ -286,8 +286,11 @@ impl StandaloneHost {
             if let Some((cached_project, source)) = cached
                 && cached_project == project
             {
-                let edits = WayEdits::load(&dir)
-                    .map_err(|e| format!("{}: {e}", dir.join("edits/ways.toml").display()))?;
+                let edits = WayEdits::load(&dir).map_err(|e| match e {
+                    // an I/O error already names the file; the others do not
+                    EditsError::Io { .. } => e.to_string(),
+                    _ => format!("{}: {e}", dir.join("edits/ways.toml").display()),
+                })?;
                 if edits == source.edits {
                     return Ok((project, source));
                 }

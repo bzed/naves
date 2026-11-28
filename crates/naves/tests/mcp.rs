@@ -824,3 +824,62 @@ async fn a_damaged_edit_file_is_reported() {
     .await;
     assert_ne!(png.is_error, Some(true), "{}", text(&png));
 }
+
+#[tokio::test]
+async fn roads_list_follows_edits_made_outside_the_server() {
+    use naves_core::edits::{By, ElementId, WayEdits};
+
+    let f = start_roads(false).await;
+    let whole = json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500});
+    // fills the cache
+    let (_, before) = list_roads(&f, whole.clone()).await;
+    assert!(
+        before["ways"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["origin"] == "osm")
+    );
+
+    let project = naves_core::project::Project::load(&f.proj).unwrap();
+    let source = naves_export::generate::read_source(&f.proj, &project).unwrap();
+    let way = source
+        .extract
+        .ways
+        .iter()
+        .find(|w| w.tags.contains_key("highway") && w.nodes.len() >= 2)
+        .unwrap();
+    let (node, (lat, lon)) = (way.nodes[0], way.points[0]);
+    let mut edits = WayEdits::default();
+    edits
+        .move_node(
+            ElementId::Osm(node),
+            lat + 0.0001,
+            lon,
+            Some((lat, lon)),
+            By::Ai,
+        )
+        .unwrap();
+    let a = edits.new_node(47.55, 12.975, By::Ai).unwrap();
+    let b = edits.new_node(47.551, 12.976, By::Ai).unwrap();
+    let tags = [("highway".to_string(), "track".to_string())].into();
+    let drawn = edits.add_way(tags, vec![a, b], By::Ai).unwrap();
+    edits.save(&f.proj).unwrap();
+
+    let (result, after) = list_roads(&f, whole.clone()).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    let ways = after["ways"].as_array().unwrap();
+    let way_id = way.id.to_string();
+    let edited = ways.iter().find(|w| w["id"] == way_id.as_str()).unwrap();
+    assert_eq!(edited["origin"], "edited", "{edited}");
+    let drawn_id = drawn.to_string();
+    let new = ways.iter().find(|w| w["id"] == drawn_id.as_str()).unwrap();
+    assert!(new["id"].as_str().unwrap().starts_with('u'), "{new}");
+    assert_eq!(new["origin"], "new", "{new}");
+
+    std::fs::write(f.proj.join("edits/ways.toml"), "not toml").unwrap();
+    let (result, _) = list_roads(&f, whole).await;
+    assert_eq!(result.is_error, Some(true));
+    let message = text(&result);
+    assert_eq!(message.matches("edits/ways.toml").count(), 1, "{message}");
+}
