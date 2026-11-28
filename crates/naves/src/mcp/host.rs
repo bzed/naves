@@ -188,7 +188,10 @@ pub struct StandaloneHost {
     /// The source layer and the project it was read for.
     source: tokio::sync::Mutex<Option<(Project, Arc<Source>)>>,
     /// Held by what changes the project or its build folder, so that these run one at a time.
-    writes: tokio::sync::Mutex<()>,
+    ///
+    /// An `Arc`, and taken with `lock_owned`, so that the guard moves into the blocking closure: a request that
+    /// is dropped while its blocking work still runs does not release the lock early.
+    writes: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Runs blocking work off the async threads; a panic or a cancelled task becomes an error message.
@@ -227,7 +230,7 @@ impl StandaloneHost {
             locate_tools,
             heightmap: tokio::sync::Mutex::new(None),
             source: tokio::sync::Mutex::new(None),
-            writes: tokio::sync::Mutex::new(()),
+            writes: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -241,9 +244,10 @@ impl StandaloneHost {
         path: String,
         value: serde_json::Value,
     ) -> Result<Project, String> {
-        let _writing = self.writes.lock().await;
+        let writing = Arc::clone(&self.writes).lock_owned().await;
         let dir = self.dir.clone();
         blocking(move || -> Result<Project, String> {
+            let _writing = writing;
             let project = Project::load(&dir).map_err(|e| e.to_string())?;
             let updated = project
                 .with_value(&path, value)
@@ -362,10 +366,11 @@ impl StandaloneHost {
         op: impl FnOnce(&mut WayEdits, &Source) -> Result<T, EditsError> + Send + 'static,
     ) -> Result<(T, Arc<Source>), String> {
         // held from the read to the write, so that parallel edits do not lose each other
-        let _writing = self.writes.lock().await;
+        let writing = Arc::clone(&self.writes).lock_owned().await;
         let (project, source) = self.source_of_project().await?;
         let dir = self.dir.clone();
         let (value, next) = blocking(move || -> Result<(T, Arc<Source>), String> {
+            let _writing = writing;
             let mut edits = source.edits.clone();
             let value =
                 op(&mut edits, &source).map_err(|e| format!("The edit cannot be made: {e}"))?;
@@ -387,9 +392,10 @@ impl StandaloneHost {
         id: String,
         request: FetchRequest,
     ) -> Result<(Vec<ImageryFile>, Vec<String>), String> {
-        let _writing = self.writes.lock().await;
+        let writing = Arc::clone(&self.writes).lock_owned().await;
         let dir = self.dir.clone();
         blocking(move || {
+            let _writing = writing;
             let sources = catalog(user_catalog_path().as_deref()).map_err(|e| e.to_string())?;
             let source = find_source(&sources, &id).map_err(|e| e.to_string())?;
             let warnings = Mutex::new(Vec::new());
@@ -405,10 +411,11 @@ impl StandaloneHost {
     }
 
     async fn build(&self) -> Result<(BuildOutput, Vec<String>), String> {
-        let _writing = self.writes.lock().await;
+        let writing = Arc::clone(&self.writes).lock_owned().await;
         let dir = self.dir.clone();
         let locate = Arc::clone(&self.locate_tools);
         blocking(move || {
+            let _writing = writing;
             let tools = locate()?;
             let lines = Mutex::new(Vec::new());
             let out = crate::cli::build_world(&dir, &tools, &|line| {
