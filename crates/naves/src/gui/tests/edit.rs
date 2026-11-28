@@ -1327,3 +1327,50 @@ mod tools {
         assert_eq!(class_label(&tags), "Track, grade 3");
     }
 }
+
+#[test]
+fn one_drag_of_the_layer_is_one_change() {
+    use crate::gui::edit::fixture::session as fixture_session;
+    use crate::gui::edit::properties::{WayChange, way_properties};
+    use egui::accesskit::Role;
+
+    let way: &[(f64, f64)] = &[(500.0, 500.0), (600.0, 500.0)];
+    let state = (fixture_session(&[(7, way)]), Vec::<WayChange>::new());
+    let mut h = Harness::builder()
+        .with_size((300.0, 400.0))
+        .with_accessibility_check(false)
+        .build_ui_state(
+            |ui, (session, changes): &mut (EditSession, Vec<WayChange>)| {
+                if let Some(change) = way_properties(ui, session, 7, None) {
+                    changes.push(change);
+                }
+            },
+            state,
+        );
+    h.run_steps(3);
+    let rect = h.get_by_role(Role::SpinButton).rect();
+    let start = rect.center();
+    h.hover_at(start);
+    h.run_steps(1);
+    h.event(egui::Event::PointerButton {
+        pos: start,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(1);
+    // three steps of the value, moved a few pixels at a time
+    for dx in [10.0, 20.0, 40.0, 60.0] {
+        h.hover_at(start + egui::vec2(dx, 0.0));
+        h.run_steps(1);
+    }
+    h.event(egui::Event::PointerButton {
+        pos: start + egui::vec2(60.0, 0.0),
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    let changes = &h.state().1;
+    assert_eq!(changes, &[WayChange::Layer(3)], "{changes:?}");
+}

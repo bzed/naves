@@ -204,16 +204,27 @@ pub fn way_properties(
             ui.end_row();
 
             ui.label("Layer");
-            let mut layer: i32 = tags
-                .get("layer")
-                .and_then(|l| l.parse().ok())
-                .unwrap_or(0)
-                .clamp(-5, 5);
-            if ui
-                .add(egui::DragValue::new(&mut layer).range(-5..=5).speed(0.05))
-                .changed()
-            {
-                change = Some(WayChange::Layer(layer));
+            // the value being dragged or typed is kept until the drag ends or the field is left, so that
+            // one gesture is one edit
+            let memory = ui.make_persistent_id(("way-layer", raw));
+            let held: Option<i32> = ui.data(|d| d.get_temp(memory));
+            let mut layer: i32 = held.unwrap_or_else(|| {
+                tags.get("layer")
+                    .and_then(|l| l.parse().ok())
+                    .unwrap_or(0)
+                    .clamp(-5, 5)
+            });
+            let response = ui.add(egui::DragValue::new(&mut layer).range(-5..=5).speed(0.05));
+            if response.changed() {
+                ui.data_mut(|d| d.insert_temp(memory, layer));
+            }
+            if response.drag_stopped() || response.lost_focus() {
+                ui.data_mut(|d| d.remove_temp::<i32>(memory));
+                if held.is_some() || response.changed() {
+                    change = Some(WayChange::Layer(layer));
+                }
+            } else if held.is_some() && !response.dragged() && !response.has_focus() {
+                ui.data_mut(|d| d.remove_temp::<i32>(memory)); // the gesture was abandoned
             }
             ui.end_row();
         });

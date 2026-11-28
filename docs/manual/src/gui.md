@@ -214,7 +214,7 @@ is one saved edit, taken back with **Ctrl+Z**.
 | Class | The kind of road. Changing it replaces the `highway` and `tracktype` tags and keeps the others (surface, name, ...). A road of another kind shows *Other: highway=...*. |
 | Surface | asphalt, paved, gravel, compacted, dirt, grass, or *—* to remove the tag. |
 | Bridge | Sets `bridge=yes` (and `layer=1` when the road has no layer); unticking removes `bridge`. |
-| Layer | -5 to 5, the `layer` tag; 0 removes it. |
+| Layer | -5 to 5, the `layer` tag; 0 removes it. Dragging the value is one edit, made when you let go. |
 | Keep as drawn | `naves:keep`. Unticked, it is written as `naves:keep=no`. |
 | Let road planning route it | `naves:plan=yes`; unticked, the tag is removed. |
 
