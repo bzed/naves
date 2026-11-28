@@ -278,7 +278,9 @@ still applied and the build reports `edit_original_changed` (see [Troubleshootin
 The network clean-up does not remove it or move its nodes, the smoothing and the junction merge leave it alone, and
 no lot removes or cuts it. It still gets pieces, heights, junction pieces and earthwork like any road, and a bend that
 is too tight for the pieces is reported, not rebuilt. `naves:keep=no` hands the way back to the generator, and
-`naves:plan=yes` is for the road planning that is still to come: it will let it improve the line anyway (draw it roughly and let Náves route it); today it does nothing.
+road planning keeps it too: a tight-curve zone that touches the way is kept with reason `held`, detail `drawn`. `naves:plan=yes`
+lets road planning re-route the way anyway (draw it roughly and let Náves route it); the clean-up, the smoothing and
+the lots still keep it. Road planning is switched off in this release, so today `naves:plan` changes nothing.
 
 **Lots.** A closed way whose tags make a lot (`amenity=parking`, `amenity=tourist_bus_parking`, `highway=rest_area`,
 `tourism=camp_site`, `tourism=caravan_site`) is a lot, not a road: `add` draws a car park or camp site, `modify`

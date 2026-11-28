@@ -6752,3 +6752,46 @@ fn assert_no_route_touches_the_deck(
         }
     }
 }
+
+// ---- drawn lines (naves:keep, naves:plan) ----
+
+/// The town corner with its corner way marked as drawn by hand (`held`), and with `plan` as given.
+fn town_corner_drawn(plan: bool) -> RoadGraph {
+    let mut g = town_corner();
+    for s in g.stretches.iter_mut().filter(|s| s.id.starts_with("1:")) {
+        s.held = true;
+        s.plan = plan;
+    }
+    g
+}
+
+#[test]
+fn plan_a_drawn_tight_corner_is_kept_as_drawn() {
+    let g = town_corner_drawn(false);
+    let (out, report) = plan_graph(&g, &flat_map());
+    assert_eq!(out, g, "a drawn line moved");
+    let zone = only_zone(&report);
+    let (reason, detail) = kept(zone);
+    assert_eq!(reason, KeptReason::Held);
+    assert_eq!(detail, "drawn");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|(id, r)| *id == zone.id && r == "drawn"),
+        "{:?}",
+        report.skipped
+    );
+}
+
+#[test]
+fn plan_a_drawn_corner_with_naves_plan_is_planned() {
+    let g = town_corner_drawn(true);
+    let (out, report) = plan_graph(&g, &flat_map());
+    let zone = only_zone(&report);
+    assert!(is_planned(zone), "{zone:?}");
+    assert_ne!(
+        out, g,
+        "naves:plan=yes lets road planning move the drawn line"
+    );
+}

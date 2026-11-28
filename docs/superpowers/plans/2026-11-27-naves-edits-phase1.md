@@ -381,10 +381,10 @@ result does not depend on file order. `skipped` is carried over.
 - Consumes: `Stretch::held`, `Stretch::plan`.
 - Produces: a held stretch is rerouted only when `plan` is true; skipped ones are counted in the planning report.
 
-- [ ] **Step 1: Write the failing tests:** `held_tight_bend_is_not_rerouted` (reported `road_curve_too_tight`
+- [x] **Step 1: Write the failing tests:** `held_tight_bend_is_not_rerouted` (reported `road_curve_too_tight`
   instead), `held_with_plan_is_rerouted`.
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Docs + CHANGELOG.** **Step 5: Run** `make check` — PASS.
-- [ ] **Step 6: Commit** `feat: road planning keeps drawn lines unless naves:plan=yes`.
+- [x] **Step 2: Run** — FAIL. **Step 3: Implement.** **Step 4: Docs + CHANGELOG.** **Step 5: Run** `make check` — PASS.
+- [x] **Step 6: Commit** `feat: road planning keeps drawn lines unless naves:plan=yes`.
 
 ---
 

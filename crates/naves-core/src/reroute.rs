@@ -700,6 +700,8 @@ struct ChainLine {
     half: Vec<f64>,
     /// Whether the sample lies on a roundabout.
     roundabout: Vec<bool>,
+    /// Whether the sample lies on a line drawn by hand that is kept as drawn (`held` without `plan`).
+    drawn: Vec<bool>,
     /// The parts of the chain the road may not move in.
     held: Vec<HeldPart>,
     /// What fixes the two ends of the chain.
@@ -842,6 +844,7 @@ fn build_chain_line(
     let mut minr = vec![f64::INFINITY; count];
     let mut half = vec![0.0_f64; count];
     let mut roundabout = vec![false; count];
+    let mut drawn = vec![false; count];
     let mut held: Vec<HeldPart> = Vec::new();
     let mut bridge_links: Vec<usize> = Vec::new();
     let mut first_sample = 0_usize;
@@ -865,6 +868,9 @@ fn build_chain_line(
             }
             if let Some(v) = roundabout.get_mut(k) {
                 *v = s.roundabout;
+            }
+            if let Some(v) = drawn.get_mut(k) {
+                *v = s.held && !s.plan;
             }
         }
         if s.bridge {
@@ -926,6 +932,7 @@ fn build_chain_line(
         minr,
         half,
         roundabout,
+        drawn,
         held,
         start_kind,
         end_kind,
@@ -1082,6 +1089,10 @@ fn make_zone_work(
             .any(|&k| chain.roundabout.get(k).copied().unwrap_or(false))
     {
         fixed = Some((KeptReason::Held, "roundabout".to_string()));
+    }
+    if fixed.is_none() && (s..=e).any(|k| chain.drawn.get(k).copied().unwrap_or(false)) {
+        // a line drawn by hand is kept as drawn unless it asks to be planned (`naves:plan=yes`)
+        fixed = Some((KeptReason::Held, "drawn".to_string()));
     }
     let length =
         chain.arc.get(e).copied().unwrap_or(0.0) - chain.arc.get(s).copied().unwrap_or(0.0);
@@ -2905,6 +2916,7 @@ mod tests {
             minr: vec![10.0; n],
             half: vec![3.5; n],
             roundabout: vec![false; n],
+            drawn: vec![false; n],
             held: Vec::new(),
             start_kind: EndKind::DeadEnd(1),
             end_kind: EndKind::DeadEnd(2),

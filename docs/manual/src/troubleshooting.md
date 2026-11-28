@@ -248,7 +248,8 @@ longer than the drawn line can ride at the type's aim while its rise stays near 
 `road_curve_not_planned` the zone either kept the line OpenStreetMap draws (the message gives the reason and the
 radius the curve has, the drawn one) or is **partly planned** — part of it moved and the message says so, with
 the tighter of the drawn and the planned radius, so a kept bend cannot hide behind the planned legs' radius. The reason is `no_route` (no route was found), `held` (a junction, a dead end, the end of a deck or the cut
-of a closed loop left no room), `blocked_by_water` (a route exists only through water) or `blocked_by_road` (a route
+of a closed loop left no room, or the zone touches a line drawn by hand with `naves:keep=yes`: detail `drawn`, see
+[the project file](project-file.md)), `blocked_by_water` (a route exists only through water) or `blocked_by_road` (a route
 exists only into another road's earthwork, or the route came too near an earlier planned one and was reverted). The
 report gives the candidate the bend is for: `plate` (a concrete plate can build it) for `held` and `no_route`,
 `curved_bridge` for `blocked_by_water`, and none for `blocked_by_road` or a planned zone. A route planned with a raised

@@ -31,7 +31,7 @@ All notable changes to this project are documented here. The format follows
   the stage with `STAGES=plan` (and `plan+smooth` together with the smoothing).
 - Hand-made road edits in `edits/ways.toml`: nodes and ways in latitude and longitude, OpenStreetMap style (add, modify,
   delete; ids `u<n>` for what you drew). The build applies them to the OpenStreetMap roads, or builds a map without
-  OpenStreetMap files from them alone; edits always win and a drawn way is kept as drawn (`naves:keep`, `naves:plan`).
+  OpenStreetMap files from them alone; edits always win and a drawn way is kept as drawn (`naves:keep`; road planning re-routes it only with `naves:plan=yes`).
   New findings `edit_broken`, `edit_original_changed` and `edit_outside_map`, an `edits` section in
   `build/report.json`, and a line in the build summary and the MCP `build` result.
 - Lots take hand-made edits: a closed way in `edits/ways.toml` with lot tags (`amenity=parking`, `tourism=camp_site`,
