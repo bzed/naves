@@ -249,6 +249,20 @@ Roads are drawn as their line at true width (UI spec section 3), bridges with th
 class switches to Draw (N); picking a bridge model with a bridge selected replaces it (phase 4). The list comes from
 the tags `classify` understands and from the install's catalog; it is the same for a map without OSM.
 
+**One selector for every level, with two scopes (maintainer, 2026-11-28).** The selector is one widget that every
+level and every later phase uses. Above the list a two-part switch picks its scope:
+
+- **the level's own** (labelled with the level's name, "Roads"; the default): only what fits the active level, the
+  road classes and the road pieces, junctions and bridges in the Roads level;
+- **Everything**: every item of every level and every model of the catalog, so that a road piece can be placed while
+  you work on houses, or used for something else. Each item from another level carries that level's band chip (its
+  digit and colour), and picking it leaves the active level as it is: the tool works with the item, a road class
+  still draws a road.
+
+An item says which levels it fits (`fits`), so the scope is a filter, not a second list. The scope is per level and
+kept in the settings. Phase 2 lists the catalog models with their footprint and shows them in the properties;
+placing a model is phase 4, through the same selector.
+
 **Tools.** The keys of the UI spec section 4 stay. Roads level: Q select (a way, or a node when near one), W move a
 node (drag), N draw (click points, click an existing node to join, Enter to finish), K cut at a node, J join two
 ends, G mark or unmark a bridge between two nodes, Delete. Terrain level: B raise/lower, S smooth, T flatten, M ramp,
