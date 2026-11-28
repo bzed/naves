@@ -43,6 +43,10 @@ Give the full path of the project folder. The environment variables from [Instal
 | `imagery_fetch` | `id`, `from`?, `to`? | fetches imagery from a catalogue source into the project and lists it in `naves.toml`; returns `{files, warnings}`. Takes catalogue ids only, never an address |
 | `render_topdown` | `x0, y0, x1, y1, px, overlay`, `layers`? | a PNG of that part of the map, north up, with the layers drawn over it |
 | `roads_list` | `x0, y0, x1, y1`, `limit`? | `{ways, more}`: the roads and paths (OpenStreetMap ways with a `highway` tag, your edits applied) that touch the rectangle, each with `id`, `origin` (`osm`, `edited`, `new`), `tags` and `points`; at most 1000 ways, `more` is true when there are more |
+| `road_add` | `points`, `tags` | the new way, as `roads_list` shows it. `points` are `[x, y]` in map metres (two to 2000), `tags` are OpenStreetMap tags and need `highway` |
+| `road_modify` | `id`, `points`?, `tags`? | the way after the change; what is left out stays. At least one of `points` and `tags` is needed |
+| `road_delete` | `id` | `{"deleted": id}` |
+| `road_reset` | `id` | the way as OpenStreetMap has it, or `{"removed": id}` for a way that was added; the edit is dropped, nodes that were moved stay moved |
 | `roads_stats` | none | the numbers of the generated roads: `km_by_family`, `pieces`, `stretches`, `open`, `median_deviation_m`, `max_grade`, `max_cut_m`, `max_fill_m`, `not_drivable_m`, `largest_miss_m`, `paths_too_steep_m` |
 | `validation_list` | `rule`? | `{violations}`: what is wrong with the roads, each with `rule`, `x`, `y` (map metres) and `message` |
 | `build` | none | `{mod_dir, mission_dir, warnings, bridges, progress}` after the build; `bridges` has one line per OpenStreetMap bridge: what it was built from |
@@ -63,7 +67,7 @@ errors. The map's size is in `heightmap_stats` as `map_size_m`.
 `render_topdown` also takes `layers`, a list of ids drawn over the overlay in a fixed order (the order of the list
 does not matter): `terrain_changes`, `too_steep_to_walk`, `roads`, `paths` and `drivable`. An unknown id is an
 error that lists the known ones. The layers that show the roads generate them (the first time; the result is cached
-until the project changes), which needs `dayzmake` and the DayZ Server install; a render without those layers never
+until the project or `edits/ways.toml` changes), which needs `dayzmake` and the DayZ Server install; a render without those layers never
 does.
 
 **`roads_list`** takes the rectangle like `render_topdown` (an inverted, empty or non-finite one is an error) and
@@ -73,6 +77,17 @@ south-west corner, rounded to 0.01 m. Ids are strings as in `edits/ways.toml`: `
 or a moved node, and `osm` otherwise. The tool reads the OpenStreetMap files and `edits/ways.toml` but does not
 generate the roads, so it needs no tools; a damaged `edits/ways.toml` is an error that names the file. A project
 without OpenStreetMap files gives `{"ways": [], "more": false}`.
+
+**`road_add`, `road_modify`, `road_delete` and `road_reset`** change the roads. A point that lies within 5 cm of
+an existing node is that node, so a road that starts where another one ends is joined to it (the 0.01 m rounding of
+`roads_list` does not matter); any other point becomes a new node, and no OpenStreetMap node is moved. The limits are
+2000 points per way, 64 tags of at most 255 characters per key and value, and every point finite and inside the map
+(`0` to `map_size_m`). A way that is not `highway`-tagged is refused. An id that is not an id, an unknown way, a way that
+is already deleted (`road_reset` brings it back) and a `road_reset` of a way without an edit are errors. Every edit is
+written at once to `edits/ways.toml`, marked `by = "ai"`; when a tool reports an error nothing was written, and a damaged
+`edits/ways.toml` is never overwritten. There is no undo in `naves mcp <dir>` (the editor has one). The edits are
+in the generated roads of `roads_stats`, `validation_list` and the road layers of `render_topdown` at once, but the
+game changes only with the next `build`.
 
 **`roads_stats`** and **`validation_list`** generate the roads too. A project without OpenStreetMap files has
 empty numbers and no violations, not an error. `validation_list` takes an optional `rule` (`road_not_drivable`,

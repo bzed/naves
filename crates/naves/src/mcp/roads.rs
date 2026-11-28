@@ -4,10 +4,11 @@
 //! The road tools: the JSON of a way, the rectangle test and the arguments of the tools. Coordinates are map
 //! metres from the south-west corner; ids are strings in the edit-file notation (`"812"`, `"u3"`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
-use naves_core::edits::{ElementId, USER_ID_BASE};
-use naves_core::osm::OsmWay;
+use naves_core::edits::{EditsError, ElementId, USER_ID_BASE};
+use naves_core::osm::{OsmWay, OsmWays};
 use naves_export::generate::Source;
 use rmcp::schemars;
 use serde::Deserialize;
@@ -26,6 +27,96 @@ pub struct RectParams {
     pub y1: f64,
     /// At most this many ways (default and maximum 1000).
     pub limit: Option<u32>,
+}
+
+/// Arguments of `road_add`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddParams {
+    /// The line as `[x, y]` points in map metres, at least two, at most 2000.
+    pub points: Vec<[f64; 2]>,
+    /// The OpenStreetMap tags of the way; `highway` is required.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// Arguments of `road_modify`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ModifyParams {
+    /// The way, as `roads_list` names it (`"812"` or `"u3"`).
+    pub id: String,
+    /// The new line; the way keeps its line when left out.
+    pub points: Option<Vec<[f64; 2]>>,
+    /// The new tags, replacing all of them; the way keeps its tags when left out.
+    pub tags: Option<BTreeMap<String, String>>,
+}
+
+/// Arguments of `road_delete` and `road_reset`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IdParams {
+    /// The way, as `roads_list` names it (`"812"` or `"u3"`).
+    pub id: String,
+}
+
+/// Parses the id of a way in the edit-file notation.
+///
+/// # Errors
+/// The text is not an id; the message says so.
+pub fn parse_id(text: &str) -> Result<ElementId, String> {
+    ElementId::from_str(text).map_err(|_| format!("not a way id: {text}"))
+}
+
+/// Map points as the edit API takes them.
+#[must_use]
+pub fn tuples(points: &[[f64; 2]]) -> Vec<(f64, f64)> {
+    points.iter().map(|&[x, y]| (x, y)).collect()
+}
+
+/// The way with the raw id `raw`, from ways in id order.
+#[must_use]
+pub fn way_by_raw(ways: &OsmWays, raw: i64) -> Option<&OsmWay> {
+    ways.ways
+        .binary_search_by_key(&raw, |w| w.id)
+        .ok()
+        .and_then(|i| ways.ways.get(i))
+}
+
+/// The raw ids of the ways with an edit and of the nodes that were moved, for [`way_json`].
+#[must_use]
+pub fn edit_sets(source: &Source) -> (BTreeSet<i64>, BTreeSet<i64>) {
+    let edited = source
+        .edits
+        .ways
+        .iter()
+        .filter_map(|w| w.id.raw())
+        .collect();
+    let moved = source
+        .edits
+        .nodes
+        .iter()
+        .filter_map(|n| n.id.raw())
+        .collect();
+    (edited, moved)
+}
+
+/// The refusal of an edit on a way, worded as the edit API words its own.
+#[must_use]
+pub fn refused(id: ElementId, problem: &'static str) -> EditsError {
+    EditsError::Invalid {
+        what: format!("way {id}"),
+        problem,
+    }
+}
+
+/// The JSON of the way `id` as it is in `source`.
+///
+/// # Errors
+/// The way is not there.
+pub fn way_json_of(source: &Source, id: ElementId) -> Result<Value, String> {
+    let way = id
+        .raw()
+        .and_then(|raw| way_by_raw(&source.ways, raw))
+        .ok_or_else(|| format!("internal error: way {id} is missing after the edit"))?;
+    let (edited, moved) = edit_sets(source);
+    Ok(way_json(source, way, &edited, &moved))
 }
 
 /// Rounds to 0.01 m.

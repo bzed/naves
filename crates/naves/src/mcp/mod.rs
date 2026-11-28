@@ -8,7 +8,6 @@
 //! validated by `naves-core`, nothing panics, and failures are tool errors with a message, never a dead
 //! server. Blocking work (DEM reading, rendering, building) runs on the blocking thread pool.
 
-use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
@@ -21,9 +20,13 @@ use naves_core::render::{
     LayerData, MapLayer, Overlay, RenderRequest, composite, render_layer, render_topdown,
 };
 
-use naves_core::edits::MAX_LISTED_WAYS;
+use naves_core::edits::{
+    By, EditsError, ElementId, MAX_LISTED_WAYS, NodeIndex, WayAction, WayEdits,
+};
+use naves_core::osm::OsmWay;
 use naves_core::validate::Rule;
 use naves_export::build::BuildOutput;
+use naves_export::generate::Source;
 use naves_export::imagery_fetch::FetchRequest;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -129,6 +132,42 @@ fn success(text: String) -> CallToolResult {
 
 fn failure(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text)])
+}
+
+/// The way `id` as it is now (second) and as it was before any edit (first): the extract's way for an OSM id,
+/// the way as drawn for a user id. Refuses an unknown way, and one whose edit deletes it with `deleted`.
+fn find_way<'a>(
+    edits: &WayEdits,
+    source: &'a Source,
+    id: ElementId,
+    deleted: &'static str,
+) -> Result<(&'a OsmWay, &'a OsmWay), EditsError> {
+    if edits
+        .ways
+        .iter()
+        .any(|w| w.id == id && w.action == WayAction::Delete)
+    {
+        return Err(roads::refused(id, deleted));
+    }
+    let current = id
+        .raw()
+        .and_then(|raw| roads::way_by_raw(&source.ways, raw))
+        .ok_or_else(|| roads::refused(id, "is unknown"))?;
+    let original = if id.is_user() {
+        current
+    } else {
+        roads::way_by_raw(&source.extract, current.id)
+            .ok_or_else(|| roads::refused(id, "is unknown"))?
+    };
+    Ok((original, current))
+}
+
+/// The answer of an edit that returns a way: the way as it is after it.
+fn road_result(result: Result<(ElementId, Arc<Source>), String>) -> CallToolResult {
+    match result.and_then(|(id, source)| roads::way_json_of(&source, id)) {
+        Ok(value) => json_text(&value),
+        Err(e) => failure(e),
+    }
 }
 
 fn json_text(value: &serde_json::Value) -> CallToolResult {
@@ -333,18 +372,7 @@ impl NavesMcp {
             Err(e) => return Ok(failure(e)),
         };
         let listed = blocking(move || {
-            let edited: BTreeSet<i64> = source
-                .edits
-                .ways
-                .iter()
-                .filter_map(|w| w.id.raw())
-                .collect();
-            let moved: BTreeSet<i64> = source
-                .edits
-                .nodes
-                .iter()
-                .filter_map(|n| n.id.raw())
-                .collect();
+            let (edited, moved) = roads::edit_sets(&source);
             let mut ways = Vec::new();
             let mut more = false;
             for way in &source.ways.ways {
@@ -371,6 +399,119 @@ impl NavesMcp {
         Ok(match listed {
             Ok(value) => json_text(&value),
             Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Adds a road or path: `points` are [x, y] in map metres (at least two, at most 2000, inside the map), `tags` the OpenStreetMap tags (a highway tag is required). A point within 5 cm of an existing node is that node, so the road joins what it touches. The edit is written to edits/ways.toml at once; there is no undo here. Returns the new way as roads_list shows it. A build is needed before the roads in the game change."
+    )]
+    async fn road_add(
+        &self,
+        Parameters(params): Parameters<roads::AddParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let points = roads::tuples(&params.points);
+        let tags = params.tags;
+        let result = self
+            .host
+            .edit_ways(move |edits, source| {
+                let index = NodeIndex::new(&source.ways, &source.frame);
+                edits.add_line(&index, &source.frame, tags, &points, By::Ai)
+            })
+            .await;
+        Ok(road_result(result))
+    }
+
+    #[tool(
+        description = "Changes the tags and/or the line of a road, by the id roads_list gives. What is left out stays as it is; `tags` replace all tags (a highway tag is required), `points` are [x, y] in map metres. A point within 5 cm of an existing node is that node. Written to edits/ways.toml at once; no undo here. Returns the way as roads_list shows it."
+    )]
+    async fn road_modify(
+        &self,
+        Parameters(params): Parameters<roads::ModifyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match roads::parse_id(&params.id) {
+            Ok(id) => id,
+            Err(e) => return Ok(failure(e)),
+        };
+        let points = params.points.as_deref().map(roads::tuples);
+        let tags = params.tags;
+        let result = self
+            .host
+            .edit_ways(move |edits, source| {
+                let (original, current) =
+                    find_way(edits, source, id, "is deleted; road_reset brings it back")?;
+                let index = NodeIndex::new(&source.ways, &source.frame);
+                edits.modify_line(
+                    &index,
+                    &source.frame,
+                    original,
+                    current,
+                    tags,
+                    points.as_deref(),
+                    By::Ai,
+                )?;
+                Ok(id)
+            })
+            .await;
+        Ok(road_result(result))
+    }
+
+    #[tool(
+        description = "Deletes a road, by the id roads_list gives. A way of OpenStreetMap stays deleted until road_reset; a way that was added is gone for good. Written to edits/ways.toml at once; no undo here. Returns {\"deleted\": id}."
+    )]
+    async fn road_delete(
+        &self,
+        Parameters(params): Parameters<roads::IdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match roads::parse_id(&params.id) {
+            Ok(id) => id,
+            Err(e) => return Ok(failure(e)),
+        };
+        let result = self
+            .host
+            .edit_ways(move |edits, source| {
+                let (original, _) = find_way(edits, source, id, "is already deleted")?;
+                edits.delete_way(original, By::Ai)?;
+                Ok(id)
+            })
+            .await;
+        Ok(match result {
+            Ok((id, _)) => json_text(&json!({"deleted": id.to_string()})),
+            Err(e) => failure(e),
+        })
+    }
+
+    #[tool(
+        description = "Takes back the edit of a road, by the id roads_list gives: a way of OpenStreetMap is as OpenStreetMap has it again (moved nodes stay moved, they may belong to other roads), a way that was added is removed. Written to edits/ways.toml at once. Returns the way, or {\"removed\": id} for an added way."
+    )]
+    async fn road_reset(
+        &self,
+        Parameters(params): Parameters<roads::IdParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let id = match roads::parse_id(&params.id) {
+            Ok(id) => id,
+            Err(e) => return Ok(failure(e)),
+        };
+        let result = self
+            .host
+            .edit_ways(move |edits, source| {
+                if !edits.ways.iter().any(|w| w.id == id) {
+                    let in_extract = id
+                        .raw()
+                        .is_some_and(|raw| roads::way_by_raw(&source.extract, raw).is_some());
+                    let problem = if in_extract {
+                        "has no edit"
+                    } else {
+                        "is unknown"
+                    };
+                    return Err(roads::refused(id, problem));
+                }
+                edits.reset_way(id);
+                Ok(id)
+            })
+            .await;
+        Ok(match result {
+            Ok((id, _)) if id.is_user() => json_text(&json!({"removed": id.to_string()})),
+            other => road_result(other),
         })
     }
 

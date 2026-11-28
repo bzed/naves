@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - `naves mcp` lists the roads of a part of the map (`roads_list`).
+- `naves mcp` can add, change, delete and reset roads (`road_add`, `road_modify`, `road_delete`, `road_reset`).
 - The Roads level lists the road classes and the game's road pieces (one group for each road family), junctions and
   bridges; in the Everything scope the road classes stay on top. The tools in the rail are readable on the dark chrome.
 - The item list can show what fits the level or everything; an item of another level can be used without leaving the
@@ -132,6 +133,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `roads_stats`, `validation_list` and the road layers of `render_topdown` in `naves mcp` follow changes of
+  `edits/ways.toml`.
 - A lot entry holds the access road's end and only those joints inward that lie over the lot and within the entry's
   reach (its patch plus 1.5 terrain cells), to the lot's height there. A joint outside the lot, or farther in than
   that, is not held to the lot: the solve places it as it places any road joint, its target the ground there (or the

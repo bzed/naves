@@ -184,6 +184,10 @@ async fn lists_tools() {
             "project_get",
             "project_set",
             "render_topdown",
+            "road_add",
+            "road_delete",
+            "road_modify",
+            "road_reset",
             "roads_list",
             "roads_stats",
             "validation_list"
@@ -882,4 +886,291 @@ async fn roads_list_follows_edits_made_outside_the_server() {
     assert_eq!(result.is_error, Some(true));
     let message = text(&result);
     assert_eq!(message.matches("edits/ways.toml").count(), 1, "{message}");
+}
+
+// --- road edits ----------------------------------------------------------------------------------------------------
+
+async fn all_roads(f: &Fixture) -> Vec<Value> {
+    let whole = json!({"x0": 0, "y0": 0, "x1": 1500, "y1": 1500});
+    let (result, all) = list_roads(f, whole).await;
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    all.get("ways").unwrap().as_array().unwrap().clone()
+}
+
+fn way_edits(f: &Fixture) -> naves_core::edits::WayEdits {
+    naves_core::edits::WayEdits::load(&f.proj).unwrap()
+}
+
+fn track() -> Value {
+    json!({"highway": "track"})
+}
+
+fn json_of(result: &CallToolResult) -> Value {
+    assert_ne!(result.is_error, Some(true), "{}", text(result));
+    serde_json::from_str(&text(result)).unwrap()
+}
+
+#[tokio::test]
+async fn road_add_adds_a_way_and_writes_the_edit() {
+    use naves_core::edits::{By, WayAction};
+
+    let f = start_roads(false).await;
+    let args = json!({"points": [[100, 100], [200, 150], [300, 120]], "tags": track()});
+    let added = json_of(&call(&f, "road_add", args).await);
+    let id = added["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with('u'), "{added}");
+    assert_eq!(added["origin"], "new");
+    assert_eq!(added["points"].as_array().unwrap().len(), 3);
+
+    let edits = way_edits(&f);
+    assert_eq!(edits.ways.len(), 1);
+    let edit = &edits.ways[0];
+    assert_eq!(edit.action, WayAction::Add);
+    assert_eq!(edit.by, By::Ai);
+    assert_eq!(edit.id.to_string(), id);
+    assert_eq!(edit.tags.get("highway").map(String::as_str), Some("track"));
+    assert_eq!(edit.tags.get("naves:keep").map(String::as_str), Some("yes"));
+
+    let (_, listed) = list_roads(&f, json!({"x0": 50, "y0": 50, "x1": 350, "y1": 200})).await;
+    assert!(
+        listed["ways"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["id"] == id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn road_add_joins_an_existing_node() {
+    use naves_core::edits::ElementId;
+
+    let f = start_roads(false).await;
+    let ways = all_roads(&f).await;
+    let points = ways[0]["points"].as_array().unwrap();
+    let (x, y) = (
+        points[0][0].as_f64().unwrap(),
+        points[0][1].as_f64().unwrap(),
+    );
+    let (x2, y2) = (
+        points[1][0].as_f64().unwrap(),
+        points[1][1].as_f64().unwrap(),
+    );
+    let args = json!({"points": [[x + 0.004, y], [x2, y2 + 0.003]], "tags": track()});
+    json_of(&call(&f, "road_add", args).await);
+    let edits = way_edits(&f);
+    let nodes = &edits.ways[0].nodes;
+    assert!(matches!(nodes[0], ElementId::Osm(_)), "{nodes:?}");
+    assert!(matches!(nodes[1], ElementId::Osm(_)), "{nodes:?}");
+    assert!(edits.nodes.is_empty(), "{:?}", edits.nodes);
+}
+
+#[tokio::test]
+async fn road_modify_changes_the_tags_and_keeps_the_line() {
+    use naves_core::edits::WayAction;
+
+    let f = start_roads(false).await;
+    let before = all_roads(&f).await.remove(0);
+    let id = before["id"].as_str().unwrap();
+    let args = json!({"id": id, "tags": track()});
+    let after = json_of(&call(&f, "road_modify", args).await);
+    assert_eq!(after["points"], before["points"]);
+    assert_eq!(after["origin"], "edited");
+    assert_eq!(after["tags"]["highway"], "track");
+    let edits = way_edits(&f);
+    assert_eq!(edits.ways.len(), 1);
+    assert_eq!(edits.ways[0].action, WayAction::Modify);
+    assert!(edits.ways[0].base.is_some());
+}
+
+#[tokio::test]
+async fn road_modify_without_changes_is_an_error() {
+    let f = start_roads(false).await;
+    let id = all_roads(&f).await[0]["id"].as_str().unwrap().to_string();
+    let result = call(&f, "road_modify", json!({"id": id})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("nothing to change"),
+        "{}",
+        text(&result)
+    );
+    assert!(!f.proj.join("edits/ways.toml").exists());
+}
+
+#[tokio::test]
+async fn road_delete_and_reset_bring_the_way_back() {
+    let f = start_roads(false).await;
+    let id = all_roads(&f).await[0]["id"].as_str().unwrap().to_string();
+    let deleted = json_of(&call(&f, "road_delete", json!({"id": id})).await);
+    assert_eq!(deleted, json!({"deleted": id}));
+    assert!(all_roads(&f).await.iter().all(|w| w["id"] != id.as_str()));
+
+    let back = json_of(&call(&f, "road_reset", json!({"id": id})).await);
+    assert_eq!(back["id"], id.as_str());
+    assert_eq!(back["origin"], "osm");
+    assert!(all_roads(&f).await.iter().any(|w| w["id"] == id.as_str()));
+    assert_eq!(way_edits(&f).ways.len(), 0);
+}
+
+#[tokio::test]
+async fn road_reset_of_a_drawn_way_removes_it() {
+    let f = start_roads(false).await;
+    let args = json!({"points": [[100, 100], [200, 150]], "tags": track()});
+    let id = json_of(&call(&f, "road_add", args).await)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let removed = json_of(&call(&f, "road_reset", json!({"id": id})).await);
+    assert_eq!(removed, json!({"removed": id}));
+    assert_eq!(way_edits(&f).ways.len(), 0);
+}
+
+#[tokio::test]
+async fn road_tools_refuse_bad_ids_and_leave_the_file() {
+    let f = start_roads(false).await;
+    let args = json!({"points": [[100, 100], [200, 150]], "tags": track()});
+    json_of(&call(&f, "road_add", args).await);
+    let ways = all_roads(&f).await;
+    let deleted = ways[0]["id"].as_str().unwrap().to_string();
+    let untouched = ways[1]["id"].as_str().unwrap().to_string();
+    json_of(&call(&f, "road_delete", json!({"id": deleted})).await);
+    let file = f.proj.join("edits/ways.toml");
+    let bytes = std::fs::read(&file).unwrap();
+
+    for id in ["u999", "0", "abc", "999999999999"] {
+        for tool in ["road_modify", "road_delete", "road_reset"] {
+            let args = if tool == "road_modify" {
+                json!({"id": id, "tags": track()})
+            } else {
+                json!({"id": id})
+            };
+            let result = call(&f, tool, args).await;
+            assert_eq!(result.is_error, Some(true), "{tool} {id}");
+        }
+    }
+    let result = call(&f, "road_modify", json!({"id": deleted, "tags": track()})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(text(&result).contains("is deleted"), "{}", text(&result));
+    let result = call(&f, "road_delete", json!({"id": deleted})).await;
+    assert_eq!(result.is_error, Some(true));
+    let result = call(&f, "road_reset", json!({"id": untouched})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(text(&result).contains("has no edit"), "{}", text(&result));
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn road_tools_name_the_limit() {
+    let f = start_roads(false).await;
+    let many: Vec<[f64; 2]> = (0..2001)
+        .map(|i| [10.0 + f64::from(i) * 0.5, 100.0])
+        .collect();
+    let long = "x".repeat(256);
+    let cases = [
+        (json!({"points": many, "tags": track()}), "too many nodes"),
+        (
+            json!({"points": [[-1, 10], [20, 20]], "tags": track()}),
+            "outside the map",
+        ),
+        (
+            json!({"points": [[10, 10], [20, 20]], "tags": {"highway": long}}),
+            "too long",
+        ),
+        (
+            json!({"points": [[10, 10], [20, 20]], "tags": {"surface": "dirt"}}),
+            "highway tag",
+        ),
+    ];
+    for (args, expected) in cases {
+        let result = call(&f, "road_add", args).await;
+        assert_eq!(result.is_error, Some(true), "{expected}");
+        assert!(
+            text(&result).contains(expected),
+            "{expected}: {}",
+            text(&result)
+        );
+        assert!(!f.proj.join("edits/ways.toml").exists(), "{expected}");
+    }
+}
+
+#[tokio::test]
+async fn a_damaged_edit_file_stays_after_a_refused_add() {
+    let f = start_roads(false).await;
+    std::fs::create_dir_all(f.proj.join("edits")).unwrap();
+    std::fs::write(f.proj.join("edits/ways.toml"), "not toml").unwrap();
+    let args = json!({"points": [[100, 100], [200, 150]], "tags": track()});
+    let result = call(&f, "road_add", args).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("edits/ways.toml"),
+        "{}",
+        text(&result)
+    );
+    assert_eq!(
+        std::fs::read(f.proj.join("edits/ways.toml")).unwrap(),
+        b"not toml"
+    );
+}
+
+#[tokio::test]
+async fn parallel_road_adds_all_arrive() {
+    let f = start_roads(false).await;
+    let add = |i: u32| {
+        let y = 100.0 + f64::from(i) * 50.0;
+        call(
+            &f,
+            "road_add",
+            json!({"points": [[100, y], [300, y + 10.0]], "tags": track()}),
+        )
+    };
+    let r = tokio::join!(
+        add(0),
+        add(1),
+        add(2),
+        add(3),
+        add(4),
+        add(5),
+        add(6),
+        add(7)
+    );
+    let results = [r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7];
+    let mut ids: Vec<String> = results
+        .iter()
+        .map(|r| json_of(r)["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 8);
+    assert_eq!(way_edits(&f).ways.len(), 8);
+}
+
+fn total_km(stats: &Value) -> f64 {
+    stats["km_by_family"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|v| v.as_f64().unwrap())
+        .sum()
+}
+
+#[tokio::test]
+async fn roads_follow_an_edit() {
+    let f = start_roads(true).await;
+    let before = json_of(&call(&f, "roads_stats", json!({})).await);
+    // only tracks make kilometres of road here; the longest of them
+    let ways = all_roads(&f).await;
+    let longest = ways
+        .iter()
+        .filter(|w| w["tags"]["highway"] == "track")
+        .max_by_key(|w| w["points"].as_array().unwrap().len())
+        .unwrap();
+    let id = longest["id"].as_str().unwrap();
+    json_of(&call(&f, "road_delete", json!({"id": id})).await);
+    let after = json_of(&call(&f, "roads_stats", json!({})).await);
+    assert!(
+        total_km(&after) < total_km(&before),
+        "{} vs {}",
+        total_km(&after),
+        total_km(&before)
+    );
 }

@@ -103,6 +103,23 @@ impl Host {
         }
     }
 
+    /// Changes the road edits: runs `op` on a copy of the edits of the saved project and, when it succeeds,
+    /// saves them and returns what `op` returned with the source layer that has them applied. Nothing is
+    /// written when `op` or the saving fails. Calls are made one at a time, so none is lost to another.
+    ///
+    /// # Errors
+    ///
+    /// The source cannot be read, `op` refuses the edit (the message starts with "The edit cannot be made: ")
+    /// or the edits cannot be saved.
+    pub async fn edit_ways<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&mut WayEdits, &Source) -> Result<T, EditsError> + Send + 'static,
+    ) -> Result<(T, Arc<Source>), String> {
+        match self {
+            Self::Standalone(host) => host.edit_ways(op).await,
+        }
+    }
+
     /// Fetches imagery from a catalogue source; returns the files and the warning lines.
     ///
     /// # Errors
@@ -142,6 +159,8 @@ struct Cached {
     /// Whether the roads were generated; `roads` stays empty when the project lists no OpenStreetMap file.
     roads_loaded: bool,
     roads: Option<Arc<Generated>>,
+    /// The road edits the `roads` were generated with; they are generated again when the file differs.
+    roads_edits: Option<WayEdits>,
 }
 
 type CachedHeightmap = Option<Cached>;
@@ -164,6 +183,15 @@ pub(super) async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|e| format!("internal error: {e}"))
+}
+
+/// The road edits of the project folder; an error names `edits/ways.toml`.
+fn load_edits(dir: &Path) -> Result<WayEdits, String> {
+    WayEdits::load(dir).map_err(|e| match e {
+        // an I/O error already names the file; the others do not
+        EditsError::Io { .. } => e.to_string(),
+        _ => format!("{}: {e}", dir.join("edits/ways.toml").display()),
+    })
 }
 
 fn compute_heightmap(dir: &Path, project: &Project) -> Result<Heightmap, String> {
@@ -229,6 +257,7 @@ impl StandaloneHost {
                 imagery: None,
                 roads_loaded: false,
                 roads: None,
+                roads_edits: None,
             });
         }
         let Some(cached) = cache.as_mut() else {
@@ -252,8 +281,10 @@ impl StandaloneHost {
             cached.imagery = loaded.map(Arc::new);
             cached.imagery_loaded = true;
         }
-        if needs.roads && !cached.roads_loaded {
-            if !project.sources.osm.is_empty() {
+        if needs.roads && !project.sources.osm.is_empty() {
+            let dir = self.dir.clone();
+            let edits = blocking(move || load_edits(&dir)).await??;
+            if !cached.roads_loaded || cached.roads_edits.as_ref() != Some(&edits) {
                 let tools =
                     (self.locate_tools)().map_err(|e| format!("Roads need dayzmake: {e}"))?;
                 let dir = self.dir.clone();
@@ -263,7 +294,11 @@ impl StandaloneHost {
                 })
                 .await??;
                 cached.roads = Some(Arc::new(generated));
+                // the edits read before generating: a change made meanwhile is noticed by the next call
+                cached.roads_edits = Some(edits);
             }
+        }
+        if needs.roads {
             cached.roads_loaded = true;
         }
         Ok(MapData {
@@ -278,6 +313,10 @@ impl StandaloneHost {
     /// The source layer. The extract is read again only when the project file has changed; the edits are
     /// applied again only when `edits/ways.toml` differs from what the cached source was made with.
     async fn source(&self) -> Result<Arc<Source>, String> {
+        Ok(self.source_of_project().await?.1)
+    }
+
+    async fn source_of_project(&self) -> Result<(Project, Arc<Source>), String> {
         let mut cache = self.source.lock().await;
         let dir = self.dir.clone();
         let cached = cache.clone();
@@ -286,11 +325,7 @@ impl StandaloneHost {
             if let Some((cached_project, source)) = cached
                 && cached_project == project
             {
-                let edits = WayEdits::load(&dir).map_err(|e| match e {
-                    // an I/O error already names the file; the others do not
-                    EditsError::Io { .. } => e.to_string(),
-                    _ => format!("{}: {e}", dir.join("edits/ways.toml").display()),
-                })?;
+                let edits = load_edits(&dir)?;
                 if edits == source.edits {
                     return Ok((project, source));
                 }
@@ -303,8 +338,33 @@ impl StandaloneHost {
             Ok((project, Arc::new(source)))
         })
         .await??;
-        *cache = Some((project, Arc::clone(&source)));
-        Ok(source)
+        *cache = Some((project.clone(), Arc::clone(&source)));
+        Ok((project, source))
+    }
+
+    async fn edit_ways<T: Send + 'static>(
+        &self,
+        op: impl FnOnce(&mut WayEdits, &Source) -> Result<T, EditsError> + Send + 'static,
+    ) -> Result<(T, Arc<Source>), String> {
+        // held from the read to the write, so that parallel edits do not lose each other
+        let _writing = self.writes.lock().await;
+        let (project, source) = self.source_of_project().await?;
+        let dir = self.dir.clone();
+        let (value, next) = blocking(move || -> Result<(T, Arc<Source>), String> {
+            let mut edits = source.edits.clone();
+            let value =
+                op(&mut edits, &source).map_err(|e| format!("The edit cannot be made: {e}"))?;
+            edits
+                .save(&dir)
+                .map_err(|e| format!("Could not save the edit: {e}"))?;
+            let mut next = (*source).clone();
+            next.edits = edits;
+            next.reapply();
+            Ok((value, Arc::new(next)))
+        })
+        .await??;
+        *self.source.lock().await = Some((project, Arc::clone(&next)));
+        Ok((value, next))
     }
 
     async fn fetch_imagery(
