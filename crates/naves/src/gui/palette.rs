@@ -166,7 +166,7 @@ pub fn filter<'a>(
 }
 
 /// The items of `scope` seen from `level`. `Level` keeps what fits the level, in the given order. `Everything` keeps
-/// all: what fits the level first, then by the first level an item fits (in stack order), the group and the name.
+/// all: what fits the level first (its classes of line before its models), then by the first level an item fits (in stack order), the group and the name.
 #[must_use]
 pub fn in_scope(items: &[PaletteItem], level: Level, scope: Scope) -> Vec<&PaletteItem> {
     let fits = |i: &PaletteItem| i.fits.contains(&level);
@@ -175,7 +175,14 @@ pub fn in_scope(items: &[PaletteItem], level: Level, scope: Scope) -> Vec<&Palet
         Scope::Everything => {
             let mut all: Vec<&PaletteItem> = items.iter().collect();
             all.sort_by(|a, b| {
-                let key = |i: &PaletteItem| (!fits(i), i.fits.iter().min().copied());
+                // the classes of line stay above the models of their level
+                let key = |i: &PaletteItem| {
+                    (
+                        !fits(i),
+                        i.kind != ItemKind::LineClass,
+                        i.fits.iter().min().copied(),
+                    )
+                };
                 key(a)
                     .cmp(&key(b))
                     .then_with(|| a.group.cmp(&b.group))

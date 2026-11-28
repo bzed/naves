@@ -324,3 +324,21 @@ fn the_level_is_the_fake_one() {
     let h = started(root.path());
     assert_eq!(h.state().panel.active, Level::Buildings);
 }
+
+#[test]
+fn an_idle_tool_is_readable_on_the_panel() {
+    // the letter and the word of a tool that is not active were black: unreadable on the dark panel
+    for choice in [ThemeChoice::Dark, ThemeChoice::Light] {
+        let ctx = egui::Context::default();
+        crate::gui::theme::apply_theme(&ctx, choice);
+        let visuals = ctx.global_style().visuals.clone();
+        let (letter, word) = crate::gui::rail::tool_ink(false, Level::Roads, &visuals);
+        for ink in [letter, word] {
+            assert!(
+                crate::gui::theme::contrast(ink, visuals.panel_fill) >= 7.0,
+                "{choice:?}: {ink:?} on {:?}",
+                visuals.panel_fill
+            );
+        }
+    }
+}

@@ -174,7 +174,7 @@ roads (placing, missing tools, errors, the numbers of the last build) or, withou
   to 5) and *Paths* (Footpath, Path). The metres at the right are the width the generator gives the class. Picking a
   class switches to **Draw**.
 - When the game's road pieces have been read (this needs dayzmake and DayZ Tools, see
-  [External tools](settings.md)), the list also has the groups *Pieces*, *Junctions* and *Bridges* with one row per
+  [External tools](settings.md)), the list also has the groups *Pieces* (one group for each road family, for example *Pieces, asphalt*), *Junctions* and *Bridges* with one row per
   model of the game; the thumbnail is the model's plan view at the shared scale. Without the tools these groups are
   left out and the panel says which tool is missing.
 - Picking a model shows its card in the properties: name, size, the levels it fits, and *Placing models comes in a
@@ -194,6 +194,8 @@ drops what a tool holds (a line, a drag, a first click) and, with nothing held, 
 | Join | **T** | Click the end of one road, then the end of another. With the same tags they become one road; with other tags the end of the second road moves to the end of the first, and both stay. |
 | Bridge | **Shift+T** | Click two nodes of a road: the part between them becomes a bridge (`bridge=yes`, `layer=1`). A click on a road that is a bridge makes it a plain road again. |
 | Delete | **X**, **Delete** | Deletes the selected road, or takes the selected node out of a road you drew. A node from OpenStreetMap is only moved, never deleted. |
+
+![The Roads level: the item list in Everything scope, the rail, a road drawn by you selected, and its properties](images/roads-editing.png)
 
 The status line names the tool and the key it needs. When you picked a road class while another level is active, the
 Roads tools join the rail until **Esc**, and a line you draw shows on that level too.

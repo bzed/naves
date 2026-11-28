@@ -264,15 +264,24 @@ fn catalog_models_are_listed_once_the_catalog_is_read() {
     let dir = with_roads(root.path());
     let mut app = app(root.path(), &dir);
     assert!(
-        roads::items(&app).iter().all(|i| i.group != "Pieces"),
+        roads::items(&app)
+            .iter()
+            .all(|i| !i.group.starts_with("Pieces")),
         "nothing before the catalog is read"
     );
     wait_for_the_catalog(&mut app);
     let items = roads::items(&app);
     let models: Vec<_> = items.iter().filter(|i| i.kind == ItemKind::Model).collect();
-    for group in ["Pieces", "Bridges"] {
-        assert!(models.iter().any(|i| i.group == group), "{group}");
-    }
+    assert!(models.iter().any(|i| i.group == "Bridges"));
+    // hundreds of pieces are listed by family, not as one group
+    assert!(models.iter().all(|i| i.group != "Pieces"));
+    let families: std::collections::BTreeSet<_> = models
+        .iter()
+        .filter(|i| i.group.starts_with("Pieces, "))
+        .map(|i| i.group.as_str())
+        .collect();
+    assert!(families.len() > 1, "{families:?}");
+    assert!(families.contains("Pieces, asphalt"), "{families:?}");
     for item in &models {
         assert!(matches!(item.thumbnail, Thumbnail::Footprint { .. }));
         assert!(item.id.starts_with("model."));
@@ -280,8 +289,21 @@ fn catalog_models_are_listed_once_the_catalog_is_read() {
         assert_eq!(item.fits, [Level::Roads]);
         assert_eq!(item.default_tool, ToolId::SELECT);
     }
-    // the same ids reach the Everything list once
+    // the same ids reach the Everything list once, with the classes of line first (not after the models)
     let all = app.all_items();
+    let listed =
+        crate::gui::palette::in_scope(&all, Level::Roads, crate::gui::palette::Scope::Everything);
+    let first_model = listed
+        .iter()
+        .position(|i| i.kind == ItemKind::Model)
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.kind == ItemKind::LineClass)
+            .all(|(n, _)| n < first_model)
+    );
     for item in &models {
         assert_eq!(all.iter().filter(|a| a.id == item.id).count(), 1);
     }

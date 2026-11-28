@@ -265,13 +265,10 @@ pub fn catalog_items(catalog: &PieceCatalog) -> Vec<PaletteItem> {
         Family::Grav,
         Family::Mud,
     ] {
+        // by family: one group of hundreds of pieces is hard to scan
+        let group = format!("Pieces, {}", family_name(family).to_lowercase());
         for piece in catalog.pieces(family) {
-            items.push(model_item(
-                &piece.model,
-                "Pieces",
-                piece.chord(),
-                piece.width,
-            ));
+            items.push(model_item(&piece.model, &group, piece.chord(), piece.width));
         }
     }
     for junction in catalog.junctions() {
