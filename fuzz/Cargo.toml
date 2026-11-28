@@ -138,3 +138,10 @@ path = "fuzz_targets/reroute_search.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dem_terrarium"
+path = "fuzz_targets/dem_terrarium.rs"
+test = false
+doc = false
+bench = false

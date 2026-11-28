@@ -70,6 +70,37 @@ control and do not share it**. The tools the build needs, and the variables that
 |---|---|
 | `DAYZ_SERVER` | the DayZ Server install that provides `dayzOffline.enoch` (default: `<Steam>/steamapps/common/DayZServer`) |
 
+## `naves dem fetch`
+
+```sh
+naves dem fetch [DIR] [--zoom Z] [--pixel-m M] [--force]
+```
+
+Fetches a bare-earth height model from [Mapterhorn](https://mapterhorn.com) for the area of the project in `DIR`
+(default: the current folder) plus a margin of 1 km, and puts it first in `sources.dem` of `naves.toml`. It first
+prints the credit, the zoom it found, the number of tiles and the expected download (about 340 MB for the
+Berchtesgaden example), then downloads with four requests at a time.
+
+| Option | Meaning |
+|---|---|
+| `DIR` | the project folder |
+| `--zoom Z` | fetch at this zoom level (12 to 18) instead of the finest zoom that the pixel needs (twice the resolution of `--pixel-m`) and Mapterhorn has for the area; skips the check for the 30 m fallback |
+| `--pixel-m M` | the pixel size of the raster in real metres (default 2.5; it grows until the raster fits the limits of the build) |
+| `--force` | write the 30 m fallback where Mapterhorn has nothing finer |
+
+It writes, inside the project:
+
+- `dem/mapterhorn/`, the cache of the tiles (a tile that does not exist is remembered, too; a second run does not ask
+  the server again);
+- `dem/mapterhorn_dtm.tif`, the height model as a GeoTIFF;
+- `dem/mapterhorn_dtm.attribution.txt`, the credit and the tiles that only have the fallback inside a covered region;
+- the entry `dem/mapterhorn_dtm.tif` at the front of `sources.dem` (an existing entry moves to the front; nothing else
+  is changed).
+
+Where Mapterhorn has nothing finer than Copernicus GLO-30 (most of the world outside Europe and the US) the command
+refuses, says so and leaves `naves.toml` as it is; `--force` fetches the 30 m fallback anyway. Any other error also
+leaves `naves.toml` unchanged. See [Getting started](getting-started.md#2-add-elevation-data).
+
 ## `naves imagery fetch`
 
 ```sh

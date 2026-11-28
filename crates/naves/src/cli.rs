@@ -14,6 +14,9 @@ use naves_core::imagery::catalog::{
 use naves_core::landcover::GeoWindow;
 use naves_core::project::{PROJECT_FILE, Project};
 use naves_export::build::{BuildOutput, build};
+use naves_export::dem_fetch::{
+    DemFetchRequest, MAPTERHORN, RealTiles, describe_dem_fetch, fetch_dem,
+};
 use naves_export::imagery_fetch::{FetchRequest, RealHttp, describe_fetch, fetch};
 use naves_export::tools::Tools;
 
@@ -66,9 +69,32 @@ enum Command {
         #[command(subcommand)]
         action: ImageryAction,
     },
+    /// Fetch elevation data for the area of a project.
+    Dem {
+        #[command(subcommand)]
+        action: DemAction,
+    },
     /// Print the man page (roff) to standard output; used by the packaging.
     #[command(hide = true)]
     Man,
+}
+
+#[derive(Subcommand)]
+enum DemAction {
+    /// Fetch a bare-earth height model (Mapterhorn) for the area of a project into its `dem` folder and list it first in `sources.dem`.
+    Fetch {
+        /// The project folder (default: the current folder).
+        dir: Option<PathBuf>,
+        /// The zoom level to fetch at (default: the finest zoom that the pixel needs and Mapterhorn has for the area).
+        #[arg(long)]
+        zoom: Option<u8>,
+        /// The pixel size in real metres (default: 2.5; it grows until the raster fits the limits).
+        #[arg(long)]
+        pixel_m: Option<f64>,
+        /// Fetch the 30 m Copernicus GLO-30 fallback where Mapterhorn has nothing finer.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -129,6 +155,21 @@ pub fn run(cli: Cli) -> Result<()> {
                 &FetchRequest { from, to },
             ),
         },
+        Command::Dem { action } => match action {
+            DemAction::Fetch {
+                dir,
+                zoom,
+                pixel_m,
+                force,
+            } => dem_fetch(
+                &dir.unwrap_or_else(|| PathBuf::from(".")),
+                &DemFetchRequest {
+                    zoom,
+                    pixel_m,
+                    force,
+                },
+            ),
+        },
         Command::Gui { dir } => crate::gui::run(&dir.unwrap_or_else(|| PathBuf::from("."))),
         Command::Man => {
             let mut buf = Vec::new();
@@ -154,7 +195,7 @@ fn new_project(dir: &Path, name: &str, center: (f64, f64), extent: f64) -> Resul
     }
     output::result(&format!("Created {}", file.display()));
     output::result(
-        "Next: add elevation files to sources.dem in naves.toml, then run `naves build`.",
+        "Next: `naves dem fetch` writes a bare-earth height model into the project, or add your own files to `sources.dem` in `naves.toml`. Then run `naves build`.",
     );
     Ok(())
 }
@@ -276,6 +317,26 @@ fn format_options(project: &Project, window: GeoWindow, options: &[ImageryOption
          Or use your own files: see the manual, \"Imagery\".",
     );
     text
+}
+
+/// `naves dem fetch`: downloads a height model for the project and lists it first in `sources.dem`.
+fn dem_fetch(dir: &Path, request: &DemFetchRequest) -> Result<()> {
+    let tiles = RealTiles::new(&MAPTERHORN);
+    output::note(
+        "Elevation from Mapterhorn (https://mapterhorn.com); source list and licences: https://mapterhorn.com/attribution",
+    );
+    output::note(&describe_dem_fetch(dir, &MAPTERHORN, request, &tiles)?);
+    output::note(
+        "Other elevation sources exist (national portals, Sonny's 20 m, FABDEM if non-commercial); none is implemented. Terrarium XYZ sources slot into dem_fetch.rs, other formats need their own fetcher.",
+    );
+    let files = fetch_dem(dir, &MAPTERHORN, request, &tiles, &|line| {
+        output::note(line);
+    })?;
+    for file in &files {
+        output::result(&format!("Added {}", file.display()));
+    }
+    output::result("naves.toml lists the files; `naves build` uses them.");
+    Ok(())
 }
 
 /// `naves imagery fetch`: downloads imagery for the project and lists it in `naves.toml`.

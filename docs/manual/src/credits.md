@@ -16,6 +16,17 @@ Náves reads the Copernicus DEM GLO-30 (30 m) elevation model, and its test file
 The Copernicus DEM is free to use under the Copernicus data licence. If you publish a map made from it,
 keep this attribution with the map.
 
+## Elevation data: Mapterhorn
+
+`naves dem fetch` downloads the Mapterhorn elevation tiles for the area of the project. Mapterhorn combines
+national and regional sources (and Copernicus DEM GLO-30 where nothing finer exists); the sources and their licences
+are listed at <https://mapterhorn.com/attribution>.
+
+> Elevation from Mapterhorn (https://mapterhorn.com); source list and licences: https://mapterhorn.com/attribution
+
+If you publish a map made from it, keep this attribution with the map. The fetch writes it next to the file, in
+`dem/mapterhorn_dtm.attribution.txt`.
+
 ## Land cover: ESA WorldCover
 
 Náves can read ESA WorldCover (10 m land cover classes) to decide the ground surfaces, and its test files contain a

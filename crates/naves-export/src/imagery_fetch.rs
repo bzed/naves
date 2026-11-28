@@ -151,7 +151,7 @@ impl Default for RealHttp {
     }
 }
 
-fn http_error(url: &str, why: impl std::fmt::Display) -> FetchError {
+pub(crate) fn http_error(url: &str, why: impl std::fmt::Display) -> FetchError {
     FetchError::Http {
         url: url.to_string(),
         why: why.to_string(),
@@ -159,7 +159,7 @@ fn http_error(url: &str, why: impl std::fmt::Display) -> FetchError {
 }
 
 /// Whether a failure is worth another try: the network, a timeout or a server error.
-fn transient(error: &ureq::Error) -> bool {
+pub(crate) fn transient(error: &ureq::Error) -> bool {
     match error {
         ureq::Error::StatusCode(code) => *code >= 500 || *code == 429,
         ureq::Error::Io(_) | ureq::Error::Timeout(_) | ureq::Error::ConnectionFailed => true,
@@ -168,7 +168,7 @@ fn transient(error: &ureq::Error) -> bool {
 }
 
 /// Runs `request` up to [`TRIES`] times, with one second more of pause each time.
-fn with_tries<T>(
+pub(crate) fn with_tries<T>(
     url: &str,
     mut request: impl FnMut() -> Result<T, ureq::Error>,
 ) -> Result<T, FetchError> {
@@ -233,19 +233,19 @@ impl Http for RealHttp {
     }
 }
 
-fn too_large(url: &str, max_bytes: u64) -> FetchError {
+pub(crate) fn too_large(url: &str, max_bytes: u64) -> FetchError {
     http_error(url, format!("the answer is larger than {max_bytes} bytes"))
 }
 
 /// A writer that fails after `left` bytes.
-struct Limited<'a> {
+pub(crate) struct Limited<'a> {
     inner: &'a mut dyn Write,
     left: u64,
-    exceeded: bool,
+    pub(crate) exceeded: bool,
 }
 
 impl<'a> Limited<'a> {
-    fn new(inner: &'a mut dyn Write, limit: u64) -> Limited<'a> {
+    pub(crate) fn new(inner: &'a mut dyn Write, limit: u64) -> Limited<'a> {
         Limited {
             inner,
             left: limit,
@@ -308,7 +308,7 @@ pub fn default_range(lat: f64, today: (i32, u32, u32)) -> Vec<(String, String)> 
 }
 
 /// Today's date as (year, month, day), in UTC.
-fn today() -> (i32, u32, u32) {
+pub(crate) fn today() -> (i32, u32, u32) {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

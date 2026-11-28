@@ -14,7 +14,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 naves-core = { version = "0.1.0", path = "../naves-core" }
 naves-formats = { version = "0.1.0", path = "../naves-formats" }
 quick-xml = "0.42.0"

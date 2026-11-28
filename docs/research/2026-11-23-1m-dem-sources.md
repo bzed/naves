@@ -19,12 +19,13 @@ osm-route-details notes, **[i]** inference to confirm.
 ## Short answer
 
 Yes. Mapterhorn already serves the Bavarian DGM1 (1 m, CC BY 4.0) over Berchtesgaden as
-lossless-WebP Terrarium tiles at zoom 16 (0.8 m/px), and a whole 12.8 km example map is about 100 MB
-of tiles [m]. The smaller ingest path needs no new reader at all: a pre-fetch step turns the tiles
-into the Float32/EPSG:4326 GeoTIFFs that `sources.dem` accepts today, keeping `naves build` offline.
-Whether anything of it is built is decided after a spike that measures what the 1 m DTM changes
-against the GLO-30 baseline of the FABDEM note. Nothing about the road planning changes: it already
-samples the heightmap, and the heightmap simply becomes better ground.
+lossless-WebP Terrarium tiles at zoom 16 (0.8 m/px), and the example's window is 2116 tiles ≈
+340 MB at that zoom [m, spike of 2026-11-24]. The smaller ingest path needs no new reader at all:
+a pre-fetch step turns the tiles into the Float32/EPSG:4326 GeoTIFFs that `sources.dem` accepts
+today, keeping `naves build` offline. Whether anything of it is built is decided after a spike
+measures what the 1 m DTM changes against the GLO-30 baseline of the FABDEM note (it has: see the
+update section at the end). Nothing about the road planning changes: it already samples the
+heightmap, and the heightmap simply becomes better ground.
 
 ## 1. What the build samples today, and what "1 m" buys
 
@@ -32,8 +33,8 @@ samples the heightmap, and the heightmap simply becomes better ground.
   over single-band Float32 GeoTIFF tiles in EPSG:4326 — today only Copernicus GLO-30 (a **DSM**:
   roofs and canopy included) [r].
 - `build_heightmap` ([heightmap.rs](../crates/naves-core/src/heightmap.rs)) samples the DEM once per
-  heightmap vertex. On the example (extent 12 800 m, `scale.horizontal = 0.5`, `terrain_size 2048`)
-  the vertex pitch is 6.25 real m [m]. **The map can never use a source finer than about half that
+  heightmap vertex. On the example (extent 16 384 m, `scale.horizontal = 0.5`, `terrain_size 2048`)
+  the vertex pitch is 8.0 real m [m]. **The map can never use a source finer than about half that
   pitch; "1 m resolution" is not for the extra pixels.** What it buys:
   1. **bare earth instead of canopy**: the diameter of the problem the FABDEM note measured
      (bare-earth GLO-30 variants cut `road_misses_terrain` by 6 to 9 %, `road_grade` by 6 to 13 %,
@@ -44,8 +45,8 @@ samples the heightmap, and the heightmap simply becomes better ground.
      window) and the feasibility band then measure the ground, not a 30 m DSM smear — the cleaner
      the terrain, the less the planner works against fiction.
 - The zoom that matches the sampling is low: at lat 47.6, Mapterhorn's 512 px tiles give z14 ≈ 3.2 m,
-  z15 ≈ 1.6 m, z16 ≈ 0.80 m per pixel [m, from tile geometry]; z16 is already 8× oversampled for a
-  6.25 m pitch. The native zoom of the source is still the right one to read: below it Mapterhorn
+  z15 ≈ 1.6 m, z16 ≈ 0.80 m per pixel [m, from tile geometry]; z16 is far finer than the 4 m the
+  8 m pitch needs. The native zoom of the source is still the right one to read: below it Mapterhorn
   throws height precision away (see §2) and the aggregation overviews average.
 
 ## 2. Mapterhorn, verified
@@ -82,8 +83,8 @@ Measured at Berchtesgaden (47.585 N, 12.965 E) [m]:
 - z12 … z16 return `200 image/webp`, 129 to 165 kB per tile; z17 and above `404`. So Bavaria's DGM1
   is served at its native zoom 16 (0.80 m/px, 412 m per tile), right where the maxzoom rule puts a
   1 m source.
-- A row of 17 z16 tiles along the map's western edge averaged 90 kB, so the ~33×33 z16 tiles of
-  the map's 12.8×12.8 km window are on the order of **100 MB** (plus a few MB for z13–z15).
+- A row of 17 z16 tiles along the map's western edge averaged 90 kB; the map's own window
+  (16.4 km + margin) is 2116 z16 tiles ≈ 340 MB [m, spike].
 - The z13+ archive covering the area is `6-34-22.pmtiles`, 166 GB (z13–z17), named by its z6 cell;
   the z0–z12 world base `planet.pmtiles` is 356 GB (z0-12) [m, from `download_urls.json`]. The
   archives are therefore only usable through `pmtiles extract --bbox`, through HTTP range requests
@@ -118,11 +119,11 @@ Two shapes fit the current architecture, both keeping `naves build` offline, det
 `unsafe_code = forbid`:
 
 1. **Repack offline, read as today (smaller step).** A helper (or a documented one-off with
-   `pmtiles extract` + `gdal_translate`) fetches the z13–z16 tiles of the project's window —
-   ~100 MB, one request per tile, about twenty minutes even at one request per second — decodes
+   `pmtiles extract` + `gdal_translate`) fetches the native-zoom tiles of the project's window —
+   2116 tiles ≈ 340 MB for the example [m, spike], one request per tile — decodes
    Terrarium, and writes standard single-band Float32 **EPSG:4326** GeoTIFFs that `sources.dem`
-   accepts unchanged. At the example's 6.25 m sampling pitch, packing the z16 level at ~2 m/px
-   (≈6400² px ≈ 41 Mpx per 12.8 km map) stays under `dem.rs`'s `MAX_PIXELS` (2^26)
+   accepts unchanged. At the example's 8 m sampling pitch, packing the z16 level at 2.5 m/px
+   (≈7354² px ≈ 54 Mpx for the window plus margin) stays under `dem.rs`'s `MAX_PIXELS` (2^26)
    with room to spare. The decode runs in whatever tooling the helper likes (GDAL, ImageMagick);
    the workspace gains nothing.
 2. **A tile reader in `naves-core` (larger step, no GDAL).** A `Dem` variant over PMTiles/XYZ
@@ -181,3 +182,18 @@ Recommended next step, in the order of the FABDEM note: pull the z16 window for
 compare `report.json` (road findings, tight lengths, planning outcomes) against both GLO-30 and the
 FABDEM figures already on file. The decision that follows — reader in `naves-core`, or repack
 helper only, or nothing if the gains are small — is taken on those numbers, not on this note.
+
+## 8. Update: the spike ran (2026-11-23)
+
+The verdict's step was executed in the worktree `naves-spike-dem` (branch `spike/dem-mapterhorn`,
+binary of `4dccd7c`; answers under `.superpowers/sdd/2026-11-24-naves-dem-mapterhorn-fetch/spike/answers.md`).
+The example's extent is 16 384 m (it grew on `fbcc981`; the FABDEM note's 12.8 km is outdated), so
+the vertex pitch is 8.0 real m and figures above were corrected. The fetch (window + ~1 km margin)
+is 2116 z16 tiles ≈ 340 MB; the repack (gdal, 2.5 m/px bilinear, 54.7 Mpx Float32/EPSG:4326
+deflate, 114 MB) passed `Dem::open` unchanged. The build comparison, GLO-30 → Mapterhorn DGM1:
+`road_misses_terrain` 3752 → 3597, `road_not_drivable` 141 → 125 (3140 m → 2749 m), `road_grade`
+14 → 9, `road_conflict` 797 → 735, `largest_miss_m` 7.48 → 6.62, `max_grade` 0.767 → 0.694; and
+`earthworks_capped` 83 → 129 with max cut/fill 48/31 m → 78/64 m — the LiDAR ground has gorge and
+bluff walls the DSM smeared away, and the height solve refuses (correctly) to plane over them.
+Verdict: **build the fetch feature**; the plan is
+`docs/superpowers/plans/2026-11-24-naves-dem-mapterhorn-fetch.md`.

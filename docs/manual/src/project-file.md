@@ -110,7 +110,9 @@ material cell; a larger `terrain_size` therefore means a sharper surface and a l
 | `land_cover` | empty | list of paths relative to the project folder |
 | `osm` | empty | list of paths relative to the project folder |
 
-`dem` lists the elevation files, `land_cover` the [ESA WorldCover](https://esa-worldcover.org/) GeoTIFF
+`dem` lists the elevation files; where files overlap the first one that covers a point wins. `naves dem fetch`
+adds `dem/mapterhorn_dtm.tif` at the front, so it is used ahead of 1° Copernicus tiles listed after it.
+`land_cover` the [ESA WorldCover](https://esa-worldcover.org/) GeoTIFF
 tiles and `osm` the OpenStreetMap extracts (`.osm.pbf`) that decide the ground surfaces. Both are optional;
 Náves does not download anything. Fetch for example:
 

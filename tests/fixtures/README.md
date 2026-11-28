@@ -161,9 +161,21 @@ osmium cat -F opl lots.opl -o lots.osm.pbf --overwrite
 
 They test `OsmLand::lots`, `OsmLand::skipped_lot_rings` and the `lot` module.
 
+## `dem/mapterhorn_z16_35130_22901.webp`: a Mapterhorn Terrarium tile
+
+One 512 × 512 lossless WebP tile (zoom 16, x 35130, y 22901) from [Mapterhorn](https://mapterhorn.com), over the
+Königssee lake surface. Mapterhorn serves it from the Bavarian DGM1 (1 m bare-earth model), about 9 KB.
+
+> Mapterhorn (https://mapterhorn.com), from data of the Bayerische Vermessungsverwaltung
+> (www.geodaten.bayern.de), CC BY 4.0
+
+Heights (Terrarium: `R·256 + G + B/256 − 32768`) lie within 603.031 to 603.407 m; pixel (0, 0) is 603.15625 m.
+Fetched once with `curl https://tiles.mapterhorn.com/16/35130/22901.webp` (the tests have no network access).
+
 ## The fuzz corpus carries these licences
 
 Some seeds in `fuzz/corpus/` are copies, truncated copies or damaged copies of the fixtures above, so they carry the
-fixture's licence and attribution, not the project's (`REUSE.toml`): `dem_tile/` (Copernicus DEM), `imagery_tile/`
+fixture's licence and attribution, not the project's (`REUSE.toml`): `dem_tile/` (Copernicus DEM), `dem_terrarium/valid` and `dem_terrarium/truncated` (Mapterhorn / Bayerische
+Vermessungsverwaltung, CC-BY-4.0), `imagery_tile/`
 (Copernicus Sentinel), `landcover_tile/` (ESA WorldCover, CC-BY-4.0), `osm_read/` and `osm_ways/` except
 `osm_ways/valid_waterways` and `osm_read/valid_lots` (OpenStreetMap, ODbL-1.0; the two exceptions are the synthetic `waterways.osm.pbf` and `lots.osm.pbf`).

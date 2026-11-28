@@ -97,6 +97,37 @@ fn new_writes_project() {
     let ignore = std::fs::read_to_string(proj.join(".gitignore")).unwrap();
     assert!(ignore.lines().any(|l| l == "secrets/") && ignore.lines().any(|l| l == "build/"));
     assert!(stdout(&out).contains("naves.toml"), "the new file is named");
+    assert!(
+        stdout(&out)
+            .contains("Next: `naves dem fetch` writes a bare-earth height model into the project"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn dem_fetch_help_names_its_options() {
+    let home = tempfile::tempdir().unwrap();
+    let out = naves(home.path())
+        .args(["dem", "fetch", "--help"])
+        .assert()
+        .success();
+    for option in ["--zoom", "--pixel-m", "--force"] {
+        assert!(stdout(&out).contains(option), "{option} missing");
+    }
+}
+
+#[test]
+fn dem_fetch_without_a_project_names_the_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let empty = home.path().join("nothing-here");
+    std::fs::create_dir(&empty).unwrap();
+    let out = naves(home.path())
+        .args(["dem", "fetch"])
+        .arg(&empty)
+        .assert()
+        .failure();
+    assert!(stderr(&out).contains("nothing-here"), "{}", stderr(&out));
 }
 
 #[test]
