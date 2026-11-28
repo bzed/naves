@@ -309,3 +309,90 @@ fn a_damaged_edits_file_is_reported_and_blocks_edits() {
             .starts_with("The map data for editing could not be read: ")
     }));
 }
+
+#[test]
+fn a_click_in_select_picks_the_source_way() {
+    use crate::gui::edit::hit::{Target, hit, tolerance_m};
+    use crate::gui::levels::Level;
+    use crate::gui::testing::FakeViewport;
+    use crate::gui::viewport::{ViewEvent, ViewFocus, Viewport, WorldPoint};
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = with_roads(root.path());
+    let mut app = app(root.path(), &dir);
+    wait_for_the_session(&mut app);
+    wait_for_the_roads(&mut app);
+    let (fake, handle) = FakeViewport::new();
+    let views: Vec<Box<dyn Viewport>> = vec![Box::new(fake)];
+    let mut h = state_harness(app.with_views(views));
+    h.key_press(egui::Key::Num4);
+    h.run_steps(3);
+    assert_eq!(h.state().panel.active, Level::Roads);
+    let map = h.state().form.project.map_size_m();
+    let focus = ViewFocus {
+        center: WorldPoint {
+            x: map / 2.0,
+            y: map / 2.0,
+        },
+        span_m: 100.0,
+    };
+    handle.borrow_mut().focus = Some(focus);
+    h.run_steps(1);
+    let rect = h.state().seen_rect;
+    let tol = tolerance_m(focus.span_m, f64::from(rect.width().min(rect.height())));
+    // a place on a way where a built piece is under the click too
+    let state = h.state();
+    let session = state.edit.session().unwrap();
+    let (way, at) = session
+        .source
+        .ways
+        .ways
+        .iter()
+        .flat_map(|w| {
+            let points: Vec<WorldPoint> = w
+                .points
+                .iter()
+                .filter_map(|&(lat, lon)| session.source.frame.to_map(lat, lon).ok())
+                .map(|(x, y)| WorldPoint { x, y })
+                .collect();
+            points
+                .windows(2)
+                .map(|p| {
+                    (
+                        w.clone(),
+                        WorldPoint {
+                            x: f64::midpoint(p[0].x, p[1].x),
+                            y: f64::midpoint(p[0].y, p[1].y),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .find(|(w, at)| {
+            hit(session, *at, tol) == Some(Target::Way(w.id))
+                && crate::gui::selection::pick_at(state, *at, egui::Modifiers::NONE).is_some()
+        })
+        .expect("a way with a built piece under its middle");
+    handle.borrow_mut().queued.push(ViewEvent::Click {
+        at,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    let selection = h.state().selection.clone().expect("something is picked");
+    assert_eq!(selection.target, Some(Target::Way(way.id)));
+    let class = way.tags["highway"].replace('_', " ");
+    let class = class[..1].to_uppercase() + &class[1..];
+    assert!(selection.title.starts_with(&class), "{}", selection.title);
+    assert_ne!(selection.title, "Road piece");
+    let names: Vec<&str> = selection.rows.iter().map(|r| r.0.as_str()).collect();
+    let built = names.iter().position(|n| *n == "Built here").unwrap();
+    assert!(names[built..].contains(&"Surface"), "{names:?}");
+    assert!(h.query_by_label("Built here").is_some());
+    // nothing near: nothing is picked
+    handle.borrow_mut().queued.push(ViewEvent::Click {
+        at: WorldPoint { x: 1.0e6, y: 1.0e6 },
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert!(h.state().selection.is_none());
+}

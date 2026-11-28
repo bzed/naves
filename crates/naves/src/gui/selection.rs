@@ -6,6 +6,7 @@
 use eframe::egui::Modifiers;
 
 use super::NavesApp;
+use super::edit::hit::Target;
 use super::levels::Level;
 use super::viewport::WorldPoint;
 
@@ -26,6 +27,8 @@ pub struct Selection {
     pub at: WorldPoint,
     /// How many metres to show when framing it; `None` keeps the zoom.
     pub span_m: Option<f64>,
+    /// The source way or node it is, when it is one (for the editing overlay and the tools).
+    pub target: Option<Target>,
 }
 
 /// What a click at `at` picks. In the active level only, or with Alt in every built level, the highest first;

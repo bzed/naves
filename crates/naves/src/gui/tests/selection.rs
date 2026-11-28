@@ -302,6 +302,7 @@ fn framing_without_data_does_nothing() {
         origin: None,
         at: WorldPoint { x: 1.0, y: 1.0 },
         span_m: None,
+        target: None,
     });
     go(&mut h, egui::Key::F);
     h.key_press_modifiers(Modifiers::SHIFT, egui::Key::F);

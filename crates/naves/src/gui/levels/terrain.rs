@@ -135,5 +135,6 @@ fn pick(app: &NavesApp, at: WorldPoint) -> Option<Selection> {
         origin: None,
         at,
         span_m: None,
+        target: None,
     })
 }

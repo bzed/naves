@@ -13,6 +13,7 @@ use eframe::egui::{self, Modifiers};
 use naves_core::project::Project;
 use naves_core::render::{MapLayer, Overlay};
 
+use super::edit::overlay::OverlayShape;
 use super::worker::MapData;
 
 /// A point on the map: metres east and north of the south-west corner.
@@ -108,6 +109,8 @@ pub struct ViewFrame<'a> {
     pub roads: Option<&'a naves_export::generate::Generated>,
     /// The wheel zooms the other way.
     pub invert_zoom: bool,
+    /// The editing overlay, over the layers, in map metres.
+    pub overlay: &'a [OverlayShape],
     /// Counts up with every new `MapData` (and every change of what the pictures show).
     pub generation: u64,
 }

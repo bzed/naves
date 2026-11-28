@@ -186,6 +186,7 @@ fn fake_pick(
         origin: None,
         at,
         span_m: Some(100.0),
+        target: None,
     })
 }
 

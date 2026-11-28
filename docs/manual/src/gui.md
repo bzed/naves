@@ -130,6 +130,21 @@ Notes of the merge (a file that overlaps no other image, so its colours are not 
 
 If the project has no elevation files, or the files do not cover the area, the map says so instead of drawing.
 
+## The road lines on the map
+
+On the Roads level the roads as read from OpenStreetMap are drawn over the built roads, so that you can see where
+the build moved a line:
+
+- a thin grey line is a road as OpenStreetMap has it;
+- a blue line is a road you changed or drew; a short tick across each end marks it, so that it is still told
+  apart from the grey ones where the colours are hard to see;
+- the selected road is a heavier blue line with a small square handle on each of its nodes;
+- a dashed light line, with its handles, is the road you are drawing.
+
+A click with the Select tool picks the node under the pointer, or else the road line, within 8 screen pixels (so it
+is easier to hit when you zoom in). The properties name the road class and say where it comes from, and list the
+built piece under the click below *Built here*. A click on nothing picks nothing.
+
 ## Edits, undo and redo
 
 Edits to the road lines are written to `edits/ways.toml` at once; there is no Save button. If the file cannot be

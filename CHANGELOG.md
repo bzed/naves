@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- On the Roads level the roads as read from OpenStreetMap and your edits are drawn over the map; a click selects a
+  road or a node of it.
 - Edits made in the GUI are saved at once to `edits/ways.toml`; Ctrl+Z and Ctrl+Shift+Z undo and redo them, Ctrl+R
   rebuilds. A project without OpenStreetMap files shows the roads of its edits.
 - The GUI is dark by default, with a colour-blind safe palette; light and the system theme are in Settings, Map.

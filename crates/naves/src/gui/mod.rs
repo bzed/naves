@@ -137,6 +137,8 @@ pub struct NavesApp {
     /// What the views reported in the last frames (for tests).
     #[cfg(test)]
     seen_events: Vec<ViewEvent>,
+    /// The rectangle the active view was given in the last frame.
+    map_rect: egui::Rect,
     /// The rectangle the active view was given (for tests).
     #[cfg(test)]
     seen_rect: egui::Rect,
@@ -211,6 +213,7 @@ impl NavesApp {
             job: None,
             reload_wanted: false,
             heightmap_inputs: inputs,
+            map_rect: egui::Rect::NOTHING,
             #[cfg(test)]
             seen_events: Vec::new(),
             #[cfg(test)]
@@ -1059,6 +1062,8 @@ impl NavesApp {
         let rect = ui.available_rect_before_wrap();
         let roads = self.generated_roads();
         let layers = self.drawn_layers();
+        let overlay = self.overlay_shapes();
+        self.map_rect = rect;
         let frame = ViewFrame {
             data: &data,
             project: &self.form.project,
@@ -1066,6 +1071,7 @@ impl NavesApp {
             layers: &layers,
             roads: roads.as_deref(),
             invert_zoom: self.prefs.map.invert_zoom,
+            overlay: &overlay,
             generation: self.generation,
         };
         let events = self.views.active_mut().show(ui, rect, &frame);
@@ -1114,9 +1120,48 @@ impl NavesApp {
             .map_or(def.status, |t| t.status)
     }
 
-    /// A click: picks in the active level, or with Alt in the highest level that has something there.
+    /// The shapes of the editing overlay: on the Roads level, once the session is there.
+    fn overlay_shapes(&self) -> Vec<edit::overlay::OverlayShape> {
+        if self.panel.active != levels::Level::Roads {
+            return Vec::new();
+        }
+        let Some(session) = self.edit.session() else {
+            return Vec::new();
+        };
+        let target = self.selection.as_ref().and_then(|s| s.target.as_ref());
+        edit::overlay::overlay(session, target, &[])
+    }
+
+    /// How many metres a click may be off the line it means, from the zoom of the view.
+    fn hit_tolerance_m(&self) -> f64 {
+        let span = self
+            .views
+            .active()
+            .focus()
+            .map_or_else(|| self.form.project.map_size_m(), |f| f.span_m);
+        let shorter = f64::from(self.map_rect.width().min(self.map_rect.height()));
+        edit::hit::tolerance_m(span, shorter)
+    }
+
+    /// A click: picks in the active level, or with Alt in the highest level that has something there. On the
+    /// Roads level a source way or node comes first, with the built piece under the click listed after it.
     fn select(&mut self, at: viewport::WorldPoint, modifiers: egui::Modifiers) {
-        self.selection = selection::pick_at(self, at, modifiers);
+        let piece = selection::pick_at(self, at, modifiers);
+        let source = (self.panel.active == levels::Level::Roads && !modifiers.alt)
+            .then(|| {
+                let session = self.edit.session()?;
+                edit::hit::pick_source(session, at, self.hit_tolerance_m())
+            })
+            .flatten();
+        self.selection = match (source, piece) {
+            (Some(mut source), Some(piece)) => {
+                source.rows.push(("Built here".to_string(), String::new()));
+                source.rows.extend(piece.rows);
+                Some(source)
+            }
+            (Some(source), None) => Some(source),
+            (None, piece) => piece,
+        };
         if modifiers.alt
             && let Some(selection) = &self.selection
         {

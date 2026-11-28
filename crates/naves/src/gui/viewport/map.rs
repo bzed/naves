@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 use naves_core::render::{LayerData, MapLayer, RenderRequest, render_layer, render_topdown};
 
 use super::{ViewEvent, ViewFocus, ViewFrame, Viewport, VisibleLayer, WorldPoint};
+use crate::gui::edit::overlay::{LineStyle, OverlayShape};
 use crate::gui::map_view::MapView;
+use crate::gui::theme;
 
 /// Widest picture the map renders; larger windows scale it up.
 const MAX_RENDER_WIDTH: f32 = 1024.0;
@@ -235,6 +237,7 @@ impl MapViewport {
         for visible in frame.layers {
             self.draw_layer(ui, rect, frame, &request, *visible);
         }
+        paint_overlay(ui, rect, frame.overlay, view);
     }
 
     /// One layer over the base map. Its picture is made once per rectangle and generation; the opacity is
@@ -285,5 +288,69 @@ fn layer_data<'a>(frame: &'a ViewFrame<'_>) -> LayerData<'a> {
             pieces: &roads.pieces,
         },
         None => LayerData::new(&frame.data.heightmap),
+    }
+}
+
+/// Paints the editing overlay: lines first, then ticks and handles. Source ways are thin and quiet, edited ones
+/// carry the accent, the selected one is heavier, the line being drawn is dashed ink.
+fn paint_overlay(ui: &egui::Ui, rect: egui::Rect, shapes: &[OverlayShape], view: &MapView) {
+    if shapes.is_empty() {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let accent = theme::active(ui.visuals());
+    let (w, h) = (f64::from(rect.width()), f64::from(rect.height()));
+    let screen = |p: WorldPoint| {
+        let (sx, sy) = view.map_to_screen(p.x, p.y, w, h);
+        #[expect(clippy::cast_possible_truncation, reason = "screen pixels fit an f32")]
+        let pos = egui::pos2(rect.left() + sx as f32, rect.top() + sy as f32);
+        pos
+    };
+    for shape in shapes {
+        match shape {
+            OverlayShape::Line { points, style } => {
+                let points: Vec<egui::Pos2> = points.iter().map(|p| screen(*p)).collect();
+                match style {
+                    LineStyle::Source => {
+                        painter.add(egui::Shape::line(
+                            points,
+                            egui::Stroke::new(2.0, theme::tokens::INK_QUIET),
+                        ));
+                    }
+                    LineStyle::Edited => {
+                        painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, accent)));
+                    }
+                    LineStyle::Selected => {
+                        painter.add(egui::Shape::line(points, egui::Stroke::new(3.0, accent)));
+                    }
+                    LineStyle::Drawing => {
+                        painter.extend(egui::Shape::dashed_line(
+                            &points,
+                            egui::Stroke::new(2.0, theme::tokens::INK),
+                            6.0,
+                            4.0,
+                        ));
+                    }
+                }
+            }
+            OverlayShape::Tick { at, heading } => {
+                #[expect(clippy::cast_possible_truncation, reason = "an angle fits an f32")]
+                let (sin, cos) = (heading.sin() as f32, heading.cos() as f32);
+                // across the line, in screen space where north is up
+                let across = egui::vec2(sin, cos) * 3.0;
+                let pos = screen(*at);
+                painter.line_segment([pos - across, pos + across], egui::Stroke::new(2.0, accent));
+            }
+            OverlayShape::Handle(at) => {
+                let square = egui::Rect::from_center_size(screen(*at), egui::vec2(7.0, 7.0));
+                painter.rect_filled(square, 0.0, theme::tokens::GROUND);
+                painter.rect_stroke(
+                    square,
+                    0.0,
+                    egui::Stroke::new(1.5, accent),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
     }
 }

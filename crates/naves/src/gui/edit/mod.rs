@@ -11,6 +11,11 @@
     )
 )]
 
+#[cfg(test)]
+pub mod fixture;
+pub mod hit;
+pub mod overlay;
+
 use std::path::Path;
 
 use naves_core::edits::{EditsError, ElementId, USER_ID_BASE, WayEdits};

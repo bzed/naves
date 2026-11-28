@@ -339,5 +339,6 @@ fn pick(app: &NavesApp, at: WorldPoint) -> Option<Selection> {
             y: f64::midpoint(piece.start.1, piece.end.1),
         },
         span_m: Some(120.0),
+        target: None,
     })
 }
