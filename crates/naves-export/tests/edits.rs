@@ -15,12 +15,12 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use naves_core::edits::{By, ElementId, WayEdits};
+use naves_core::edits::{By, ElementId, USER_ID_BASE, WayEdits};
 use naves_core::osm::OsmWay;
 use naves_core::project::Project;
 use naves_core::validate::Rule;
 use naves_export::build::{BuildError, build_with};
-use naves_export::generate::{Stages, generate_with};
+use naves_export::generate::{Stages, generate_with, read_source};
 use naves_export::testing::FakeEnv;
 use tiff::encoder::{TiffEncoder, colortype};
 use tiff::tags::Tag;
@@ -371,4 +371,47 @@ fn the_report_counts_the_edits() {
     assert_eq!(report["edits"]["outside"], 0);
     let line = out.edits.as_deref().expect("an edits line");
     assert!(line.contains("1 applied"), "{line}");
+}
+
+#[test]
+fn read_source_applies_the_edits() {
+    let (_dir, _env, proj) = setup();
+    let p = project(&proj, true);
+    let mut edits = WayEdits::default();
+    edits.delete_way(&original(), By::User).unwrap();
+    let way = add_track(&mut edits, (100.0, 500.0), (400.0, 500.0));
+    edits.save(&proj).unwrap();
+    let source = read_source(&proj, &p).unwrap();
+    assert!(source.extract.ways.iter().any(|w| w.id == 10));
+    assert!(source.ways.ways.iter().all(|w| w.id != 10));
+    let ElementId::User(n) = way else {
+        panic!("{way:?}")
+    };
+    let user_id = USER_ID_BASE + i64::try_from(n).unwrap();
+    assert!(source.ways.ways.iter().any(|w| w.id == user_id));
+    assert_eq!(source.report.applied, 2);
+}
+
+#[test]
+fn read_source_without_osm_is_the_edits_alone() {
+    let (_dir, _env, proj) = setup();
+    let p = project(&proj, false);
+    let mut edits = WayEdits::default();
+    add_track(&mut edits, (100.0, 500.0), (400.0, 500.0));
+    edits.save(&proj).unwrap();
+    let source = read_source(&proj, &p).unwrap();
+    assert_eq!(source.extract.ways.len(), 0);
+    assert_eq!(source.ways.ways.len(), 1);
+}
+
+#[test]
+fn reapply_follows_the_edit_set() {
+    let (_dir, _env, proj) = setup();
+    let p = project(&proj, true);
+    let mut source = read_source(&proj, &p).unwrap();
+    assert!(source.ways.ways.iter().any(|w| w.id == 10));
+    source.edits.delete_way(&original(), By::User).unwrap();
+    source.reapply();
+    assert!(source.ways.ways.iter().all(|w| w.id != 10));
+    assert!(source.extract.ways.iter().any(|w| w.id == 10));
 }

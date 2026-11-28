@@ -28,7 +28,7 @@ impl From<proj4rs::errors::Error> for ProjectionError {
 }
 
 /// UTM on WGS84, in the zone that contains the area centre.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalProjection {
     geo: Proj,
     utm: Proj,

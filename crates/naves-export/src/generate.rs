@@ -167,16 +167,45 @@ struct Read {
     way_edits: WayEdits,
 }
 
-fn read_features(
-    project: &Project,
-    project_dir: &Path,
-    frame: &MapGeo,
-    progress: &dyn Fn(&str),
-) -> Result<Read, BuildError> {
+/// The source layer of a project: the OpenStreetMap ways as read, the hand-made edits of `edits/ways.toml` and
+/// the ways with the edits applied. The build and the editor read it through [`read_source`], so both see the
+/// same roads.
+#[derive(Debug, Clone)]
+pub struct Source {
+    /// The conversion between map metres and latitude and longitude of the project.
+    pub frame: MapGeo,
+    /// The side of the map in metres.
+    pub map_size_m: f64,
+    /// The ways of the OpenStreetMap extract as read, before any edit.
+    pub extract: OsmWays,
+    /// The hand-made edits of `edits/ways.toml`.
+    pub edits: WayEdits,
+    /// The ways with `edits` applied to `extract`.
+    pub ways: OsmWays,
+    /// What applying the edits did.
+    pub report: EditReport,
+}
+
+impl Source {
+    /// Recomputes `ways` and `report` from `extract` and `edits`, after `edits` has changed.
+    pub fn reapply(&mut self) {
+        let (ways, report) = apply_way_edits(&self.extract, &self.edits);
+        self.ways = ways;
+        self.report = report;
+    }
+}
+
+/// Reads the source layer of `project_dir`: the OpenStreetMap extract of the project, the edits of
+/// `edits/ways.toml` and the ways with the edits applied.
+///
+/// # Errors
+///
+/// [`BuildError`] when the projection cannot be made, the extract cannot be read, or the edits file is damaged.
+pub fn read_source(project_dir: &Path, project: &Project) -> Result<Source, BuildError> {
+    let frame = MapGeo::new(project).map_err(HeightmapError::from)?;
     let extract = if project.sources.osm.is_empty() {
         OsmWays::default()
     } else {
-        progress("Reading the roads");
         let window = frame.window(WAY_MARGIN_M).map_err(HeightmapError::from)?;
         let files: Vec<PathBuf> = project
             .sources
@@ -191,14 +220,34 @@ fn read_features(
         source,
     })?;
     let (ways, report) = apply_way_edits(&extract, &edits);
+    Ok(Source {
+        frame,
+        map_size_m: project.map_size_m(),
+        extract,
+        edits,
+        ways,
+        report,
+    })
+}
+
+fn read_features(
+    project: &Project,
+    project_dir: &Path,
+    frame: &MapGeo,
+    progress: &dyn Fn(&str),
+) -> Result<Read, BuildError> {
+    if !project.sources.osm.is_empty() {
+        progress("Reading the roads");
+    }
+    let source = read_source(project_dir, project)?;
     let map_size = project.map_size_m();
     Ok(Read {
-        features: road_features(&ways, frame, map_size),
-        water: water_lines(&ways, frame, map_size),
-        outside: ways_outside(&ways, &edits, frame, map_size),
-        edits: report,
-        extract,
-        way_edits: edits,
+        features: road_features(&source.ways, frame, map_size),
+        water: water_lines(&source.ways, frame, map_size),
+        outside: ways_outside(&source.ways, &source.edits, frame, map_size),
+        edits: source.report,
+        extract: source.extract,
+        way_edits: source.edits,
     })
 }
 

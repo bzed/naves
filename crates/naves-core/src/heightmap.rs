@@ -76,6 +76,7 @@ fn narrow(v: f64) -> f32 {
 /// Converts between positions on the map (metres east and north of the south-west corner) and latitude and
 /// longitude, with the formula the heightmap is built with. It holds a projection, which is cheap to make and
 /// not shared between threads: make one per thread or per row.
+#[derive(Debug, Clone)]
 pub struct MapGeo {
     proj: LocalProjection,
     center_e: f64,
