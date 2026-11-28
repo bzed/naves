@@ -120,8 +120,8 @@ impl WayEdits {
     /// this call within [`SNAP_M`] (so a closed line reuses its first node), else a new user node by `by`.
     ///
     /// # Errors
-    /// [`EditsError::Invalid`] if the line has too many points, or a point is not finite or outside the map (as [`check_line`]), a point cannot be projected, or a node cannot be
-    /// added. The set is unchanged then.
+    /// [`EditsError::Invalid`] if the line has too many points, a point is not finite or outside the map (as in
+    /// [`check_line`]) or cannot be projected, or a node cannot be added. The set is unchanged then.
     pub fn line_nodes(
         &mut self,
         index: &NodeIndex,

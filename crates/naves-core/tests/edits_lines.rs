@@ -12,7 +12,9 @@
 use std::collections::BTreeMap;
 
 use naves_core::edits::lines::{NodeIndex, check_line};
-use naves_core::edits::{By, EditsError, ElementId, MAX_WAY_NODES, WayEdits};
+use naves_core::edits::{
+    By, EditsError, ElementId, MAX_NODE_EDITS, MAX_WAY_NODES, NodeEdit, WayEdits,
+};
 use naves_core::heightmap::MapGeo;
 use naves_core::osm::{OsmWay, OsmWays};
 use naves_core::project::Project;
@@ -299,5 +301,107 @@ fn a_refused_line_changes_nothing() {
         By::Ai,
     );
     assert!(result.is_err());
+    assert_eq!(edits, before);
+}
+
+#[test]
+fn a_failing_step_after_new_nodes_rolls_them_back() {
+    let f = fixture();
+    // One node edit is free: the first new point succeeds, the second hits the limit.
+    let nodes = (0..MAX_NODE_EDITS - 1)
+        .map(|i| NodeEdit {
+            id: ElementId::Osm(i64::try_from(i).unwrap() + 1),
+            lat: 47.0,
+            lon: 12.0,
+            base: None,
+            by: By::User,
+        })
+        .collect();
+    let mut edits = WayEdits {
+        nodes,
+        ..WayEdits::default()
+    };
+    let before = edits.clone();
+    let result = edits.line_nodes(
+        &f.index,
+        &f.frame,
+        &[(100.0, 100.0), (200.0, 200.0)],
+        By::Ai,
+    );
+    assert_eq!(invalid_problem(result), "too many node edits");
+    assert_eq!(edits, before);
+}
+
+fn index_of(nodes: &[(i64, f64, f64)], frame: &MapGeo) -> NodeIndex {
+    let ways = OsmWays {
+        ways: nodes
+            .iter()
+            .map(|&(id, x, y)| OsmWay {
+                id: 1000 + id,
+                tags: tags(&[("highway", "residential")]),
+                nodes: vec![id],
+                points: vec![frame.to_geo(x, y).unwrap()],
+            })
+            .collect(),
+        skipped: 0,
+    };
+    NodeIndex::new(&ways, frame)
+}
+
+#[test]
+fn near_picks_the_nearer_node_and_the_smaller_id_on_a_tie() {
+    let f = fixture();
+    let index = index_of(
+        &[
+            (7, 300.0, 300.0),
+            (8, 300.03, 300.0),
+            (9, 600.0, 600.0),
+            (6, 600.0, 600.0),
+        ],
+        &f.frame,
+    );
+    assert_eq!(index.near(300.01, 300.0), Some(7));
+    assert_eq!(index.near(300.025, 300.0), Some(8));
+    assert_eq!(index.near(600.0, 600.0), Some(6));
+    assert_eq!(index.near(300.5, 300.0), None);
+}
+
+#[test]
+fn a_shared_node_is_found_and_a_rounded_point_snaps() {
+    let f = fixture();
+    // Node 2 is on both ways of the fixture.
+    assert_eq!(f.index.near(500.0, 500.0), Some(2));
+    // A 0.01 m rounding in both axes is 0.017 m off.
+    assert_eq!(f.index.near(500.012, 499.988), Some(2));
+    assert_eq!(f.index.near(500.04, 500.04), None);
+}
+
+#[test]
+fn modify_line_refuses_bad_input_and_changes_nothing() {
+    let f = fixture();
+    let original = f.ways.ways.first().unwrap();
+    let mut edits = WayEdits::default();
+    let before = edits.clone();
+    let result = edits.modify_line(
+        &f.index,
+        &f.frame,
+        original,
+        original,
+        Some(tags(&[("name", "x")])),
+        None,
+        By::Ai,
+    );
+    assert_eq!(invalid_problem(result), "a road needs a highway tag");
+    assert_eq!(edits, before);
+    let result = edits.modify_line(
+        &f.index,
+        &f.frame,
+        original,
+        original,
+        None,
+        Some(&[(100.0, 100.0), (5000.0, 100.0)]),
+        By::Ai,
+    );
+    assert_eq!(invalid_problem(result), "a point is outside the map");
     assert_eq!(edits, before);
 }
