@@ -59,6 +59,8 @@ const BAND_HEIGHT: f32 = 3.0;
 /// How many metres Frame selection shows when neither the selection nor the view says.
 const FRAME_SPAN_M: f64 = 300.0;
 const STATUS_HEIGHT: f32 = 26.0;
+/// The second part of the status line while there are edits the roads were not built from.
+const EDITED_NOTICE: &str = "● Edited: press Ctrl+R to rebuild.";
 
 type ToolLocator = Box<dyn Fn() -> Result<Tools, String>>;
 
@@ -984,11 +986,17 @@ impl NavesApp {
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(map), |ui| self.map_ui(ui));
         let text = self.status_text();
+        let edited = self.edit.session().is_some_and(|s| s.dirty);
         ui.scope_builder(egui::UiBuilder::new().max_rect(status), |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 ui.label(text);
+                if edited {
+                    ui.add_space(12.0);
+                    let notice = ui.visuals().warn_fg_color;
+                    ui.label(RichText::new(EDITED_NOTICE).color(notice));
+                }
             });
         });
     }
@@ -1219,11 +1227,9 @@ impl NavesApp {
         }
     }
 
-    /// What the status line says: the tool in use, or the level.
+    /// What the status line says first: the tool in use, or the level. After an edit the line adds
+    /// [`EDITED_NOTICE`].
     fn status_text(&self) -> &'static str {
-        if self.edit.session().is_some_and(|s| s.dirty) {
-            return "Edited: press Ctrl+R to rebuild.";
-        }
         let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
             return "";
         };

@@ -288,7 +288,7 @@ fn ctrl_r_rebuilds_after_an_edit() {
     let mut h = state_harness(app);
     h.run_steps(3);
     assert!(
-        h.query_by_label("Edited: press Ctrl+R to rebuild.")
+        h.query_by_label("● Edited: press Ctrl+R to rebuild.")
             .is_some()
     );
     h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::R);
@@ -1109,14 +1109,15 @@ mod tools {
         let stamp = std::fs::metadata(s.file()).unwrap().modified().unwrap();
         let ways = s.session().source.ways.ways.len();
         let status = s.h.state().status_text();
-        for (modifiers, key) in [
-            (Modifiers::NONE, Key::R),
-            (Modifiers::NONE, Key::T),
-            (Modifiers::SHIFT, Key::T),
-            (Modifiers::NONE, Key::G),
+        for (modifiers, key, name) in [
+            (Modifiers::NONE, Key::R, "Cut"),
+            (Modifiers::NONE, Key::T, "Join"),
+            (Modifiers::SHIFT, Key::T, "Bridge"),
+            (Modifiers::NONE, Key::G, "Move"),
         ] {
             s.key_with(modifiers, key);
             let tool_status = s.h.state().status_text();
+            assert!(tool_status.starts_with(name), "{tool_status}");
             s.send(&[
                 ViewEvent::Press {
                     at: at(1.0e5, 1.0e5),
@@ -1137,7 +1138,14 @@ mod tools {
             assert_eq!(s.session().source.ways.ways.len(), ways);
             assert_eq!(s.h.state().status_text(), tool_status);
         }
-        assert_eq!(status, "Edited: press Ctrl+R to rebuild.");
+        assert!(
+            status.starts_with("Cut"),
+            "the status line still names the tool: {status}"
+        );
+        assert!(
+            s.h.query_by_label("● Edited: press Ctrl+R to rebuild.")
+                .is_some()
+        );
         // one undo step is all there is
         s.key(Key::Escape);
         s.key_with(Modifiers::CTRL, Key::Z);

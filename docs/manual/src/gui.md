@@ -226,7 +226,7 @@ you*. For an edited OpenStreetMap road, **Reset to OSM** removes the edit and pu
 
 Edits to the road lines are written to `edits/ways.toml` at once; there is no Save button. If the file cannot be
 written, the edit is not made and the log says why. **Ctrl+Z** takes back the last edit and **Ctrl+Shift+Z** does it
-again; the last 100 edits can be undone while the project is open. After an edit the status line reads *Edited: press
+again; the last 100 edits can be undone while the project is open. After an edit the status line adds, after the name of the tool, *● Edited: press
 Ctrl+R to rebuild.* **Ctrl+R** (or **F5**) builds the roads again from the saved edits. A project without
 OpenStreetMap files shows the roads of its edits.
 
