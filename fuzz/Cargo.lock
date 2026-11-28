@@ -344,15 +344,15 @@ dependencies = [
 
 [[package]]
 name = "geotiff-core"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9bca5bbfd27f913fbd1331d75a07386395d6aa474baba4dc613328e1968c336"
+checksum = "7bddf1f3cee6f1a3ec78eabba1288418c33cdf30829642dd91c10e7f3f98ac12"
 
 [[package]]
 name = "geotiff-reader"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91ec8f6bce5b1690db3e7e8b073570c6755b54d4ff483f6598230803e387e259"
+checksum = "9b3e65addcf8c1c4d1f35256706afb71f6b9cbb9da3183dcca6f353512673b53"
 dependencies = [
  "geotiff-core",
  "ndarray",
@@ -1320,18 +1320,18 @@ dependencies = [
 
 [[package]]
 name = "tiff-core"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca4ba59dcb3ecd7dd2e6c33f58e59619f1adb404d5cf2d4033ce265458122584"
+checksum = "1e31583daf7ed4f02bb4266142e5b8cf64b6ff3518739130706dfef7a220e4b2"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "tiff-reader"
-version = "0.11.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d16a27282e0e97063f996ddd2bf4b50109f45cafb007d94d41534fe25416c824"
+checksum = "ffd1e5c429933529ac05102f1105f02c45350dd8be1cc5ec5195c4eda229784a"
 dependencies = [
  "flate2",
  "image-webp",
