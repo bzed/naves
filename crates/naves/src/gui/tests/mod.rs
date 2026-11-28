@@ -19,6 +19,7 @@ use naves_core::prefs::ThemeChoice;
 
 mod command_palette;
 mod dock;
+mod edit;
 mod layers;
 mod levels;
 mod prefs_window;

@@ -13,6 +13,7 @@ use std::fmt;
 use eframe::egui::{self, InputState, Key, Modifiers};
 
 use super::NavesApp;
+use super::edit::EditSession;
 use super::levels::Level;
 
 /// A tool of the rail, by a stable name.
@@ -879,14 +880,14 @@ pub fn action_exists(action: Action, app: &NavesApp) -> bool {
         | Action::FollowGround
         | Action::Delete
         | Action::Duplicate
-        | Action::Undo
-        | Action::Redo
         | Action::BrushSmaller
         | Action::BrushLarger
         | Action::BrushWeaker
         | Action::BrushStronger
-        | Action::Finish
-        | Action::Regenerate => false,
+        | Action::Finish => false,
+        Action::Undo => app.edit.session().is_some_and(EditSession::can_undo),
+        Action::Redo => app.edit.session().is_some_and(EditSession::can_redo),
+        Action::Regenerate => app.edit.session().is_some(),
     }
 }
 

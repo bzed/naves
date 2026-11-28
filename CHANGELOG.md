@@ -13,6 +13,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Edits made in the GUI are saved at once to `edits/ways.toml`; Ctrl+Z and Ctrl+Shift+Z undo and redo them, Ctrl+R
+  rebuilds. A project without OpenStreetMap files shows the roads of its edits.
 - The GUI is dark by default, with a colour-blind safe palette; light and the system theme are in Settings, Map.
 - `naves dem fetch` downloads a bare-earth height model from Mapterhorn for the area of the project (2.5 m pixels by
   default, `--zoom`, `--pixel-m`), caches the tiles in `dem/mapterhorn/`, writes `dem/mapterhorn_dtm.tif` with an

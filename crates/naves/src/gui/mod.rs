@@ -9,6 +9,7 @@
 
 mod command_palette;
 mod dock;
+mod edit;
 mod imagery;
 mod layers;
 mod layout;
@@ -46,7 +47,9 @@ use levels::LevelDef;
 use settings::SettingsForm;
 use stack::LayerPanel;
 use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
-use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState};
+use worker::{
+    BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState, SourceJob,
+};
 
 use theme::{active, on_active, problem};
 const SETTINGS_WIDTH: f32 = 300.0;
@@ -120,6 +123,9 @@ pub struct NavesApp {
     /// The roads behind the road layers.
     roads: RoadsState,
     roads_job: Option<RoadJob>,
+    /// The edit session: the ways with the hand-made edits.
+    edit: edit::EditState,
+    source_job: Option<SourceJob>,
     /// What is wrong with the roads, with positions.
     road_problems: Vec<problems::Problem>,
     /// The settings changed while `job` was running, so its result is out of date.
@@ -196,6 +202,8 @@ impl NavesApp {
             heightmap: HeightmapState::NoDem,
             roads: RoadsState::NoOsm,
             roads_job: None,
+            edit: edit::EditState::None,
+            source_job: None,
             road_problems: Vec::new(),
             job: None,
             reload_wanted: false,
@@ -277,12 +285,14 @@ impl NavesApp {
         format!("Náves – {}", self.form.project.name)
     }
 
-    /// Generates the roads again, if the project lists OpenStreetMap files.
+    /// Generates the roads again, if the project lists OpenStreetMap files or has drawn ways.
     fn reload_roads(&mut self) {
         self.roads_job = None;
         self.road_problems.clear();
         let project = &self.form.project;
-        if project.sources.osm.is_empty() || project.sources.dem.is_empty() {
+        if project.sources.dem.is_empty()
+            || (project.sources.osm.is_empty() && !self.has_way_edits())
+        {
             self.roads = RoadsState::NoOsm;
             return;
         }
@@ -290,9 +300,91 @@ impl NavesApp {
         self.roads_job = Some(RoadJob::start(self.form.dir(), (self.locate_tools)()));
     }
 
+    /// Whether `edits/ways.toml` has way edits (a file that cannot be read counts, so that the build says why).
+    fn has_way_edits(&self) -> bool {
+        match &self.edit {
+            edit::EditState::Ready(session) => !session.source.edits.ways.is_empty(),
+            _ => !matches!(
+                naves_core::edits::WayEdits::load(self.form.dir()),
+                Ok(edits) if edits.ways.is_empty()
+            ),
+        }
+    }
+
+    /// Reads the source layer again; the session of the editor starts anew.
+    fn reload_source(&mut self) {
+        self.source_job = None;
+        if self.form.project.sources.dem.is_empty() {
+            self.edit = edit::EditState::None;
+            return;
+        }
+        self.edit = edit::EditState::Loading;
+        self.source_job = Some(SourceJob::start(self.form.dir()));
+    }
+
+    /// Builds the roads again from the saved edits (Ctrl+R, F5).
+    fn regenerate(&mut self) {
+        if let Some(session) = self.edit.session_mut() {
+            session.dirty = false;
+        }
+        self.reload_roads();
+    }
+
+    /// Makes an edit and saves it; a failure is written to the log.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the editing tools of the next tasks make the edits"
+        )
+    )]
+    fn edit_way(
+        &mut self,
+        op: impl FnOnce(
+            &mut naves_core::edits::WayEdits,
+            &naves_export::generate::Source,
+        ) -> Result<(), naves_core::edits::EditsError>,
+    ) -> Result<(), String> {
+        let dir = self.form.dir().to_path_buf();
+        let result = match self.edit.session_mut() {
+            Some(session) => session.apply(&dir, op),
+            None => Err(match &self.edit {
+                edit::EditState::Failed(error) => {
+                    format!("The edit cannot be made: the map data could not be read: {error}")
+                }
+                _ => "The edit cannot be made: the map is not ready".to_string(),
+            }),
+        };
+        self.edit_result(result)
+    }
+
+    fn undo(&mut self) {
+        let dir = self.form.dir().to_path_buf();
+        if let Some(session) = self.edit.session_mut() {
+            let result = session.undo(&dir).map(|_| ());
+            self.edit_result(result).ok(); // reported in the log
+        }
+    }
+
+    fn redo(&mut self) {
+        let dir = self.form.dir().to_path_buf();
+        if let Some(session) = self.edit.session_mut() {
+            let result = session.redo(&dir).map(|_| ());
+            self.edit_result(result).ok(); // reported in the log
+        }
+    }
+
+    fn edit_result(&mut self, result: Result<(), String>) -> Result<(), String> {
+        if let Err(text) = &result {
+            self.log.push(Line::Warning(text.clone()));
+        }
+        result
+    }
+
     fn reload_heightmap(&mut self) {
         self.views.reset_all();
         self.selection = None;
+        self.reload_source();
         self.reload_roads();
         if self.form.project.sources.dem.is_empty() {
             self.heightmap = HeightmapState::NoDem;
@@ -339,9 +431,26 @@ impl NavesApp {
         self.generation += 1;
     }
 
+    fn poll_source(&mut self) {
+        let Some(result) = self.source_job.as_ref().and_then(SourceJob::poll) else {
+            return;
+        };
+        self.source_job = None;
+        self.edit = match result {
+            Ok(source) => edit::EditState::Ready(Box::new(edit::EditSession::new(source))),
+            Err(error) => {
+                self.log.push(Line::Warning(format!(
+                    "The map data for editing could not be read: {error}"
+                )));
+                edit::EditState::Failed(error)
+            }
+        };
+    }
+
     fn poll_background(&mut self) {
         self.poll_fetch();
         self.poll_roads();
+        self.poll_source();
         if let Some(result) = self.job.as_ref().and_then(HeightmapJob::poll) {
             self.job = None;
             if std::mem::take(&mut self.reload_wanted) {
@@ -632,6 +741,9 @@ impl NavesApp {
                 }
             }
             Action::Build => self.start_build(),
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
+            Action::Regenerate => self.regenerate(),
             Action::Help => self.help_open = !self.help_open,
             Action::SwitchView => self.views.switch(),
             // the other actions do not exist yet, see `shortcuts::action_exists`
@@ -971,6 +1083,9 @@ impl NavesApp {
 
     /// What the status line says: the tool in use, or the level.
     fn status_text(&self) -> &'static str {
+        if self.edit.session().is_some_and(|s| s.dirty) {
+            return "Edited: press Ctrl+R to rebuild.";
+        }
         let Some(def) = self.levels.iter().find(|d| d.level == self.panel.active) else {
             return "";
         };

@@ -20,6 +20,10 @@ visibility (`H`), the brush size (`,` and `.`), help and the settings. A second 
 row: the digits `7`, `8`, `9` and `0` go to the same levels as `Alt+1` to `Alt+4`, `Delete` is a second key for
 Delete, `Enter` for Finish, `F5` for Regenerate.
 
+**Undo, redo and rebuild:** `Ctrl+Z` and `Ctrl+Shift+Z` undo and redo the edits of road lines (see
+[the GUI](gui.md#edits-undo-and-redo)); `Ctrl+R` and `F5` build the roads again. The keys do nothing while there is
+nothing to undo or redo.
+
 **Moving the view:** hold `W`, `A`, `S` or `D` to pan the map north, west, south or east, `Q` or `E` to zoom out or
 in. Hold **Shift** with one of them to move three times faster, **Ctrl** for three times slower. They do nothing
 while you type in a field. **Esc** is Select: it cancels what is in progress and goes back to Select, so Select has

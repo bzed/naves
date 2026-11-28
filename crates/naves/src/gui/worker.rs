@@ -13,7 +13,7 @@ use naves_core::imagery::{LoadedImagery, load_imagery};
 use naves_core::project::Project;
 use naves_core::surface::{SurfaceGrid, project_surfaces};
 use naves_export::build::BuildOutput;
-use naves_export::generate::{Generated, generate};
+use naves_export::generate::{Generated, Source, generate, read_source};
 use naves_export::tools::Tools;
 
 /// What a build reports back.
@@ -223,6 +223,31 @@ impl RoadJob {
 
     /// The result, once it is there.
     pub fn poll(&self) -> Option<RoadsMsg> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// The reading of the source layer (the OpenStreetMap ways and the edits) on its own thread.
+pub struct SourceJob {
+    rx: Receiver<Result<Source, String>>,
+}
+
+impl SourceJob {
+    /// Reads the source layer of the project in `dir` as saved on disk.
+    pub fn start(dir: &Path) -> Self {
+        let (tx, rx) = channel();
+        let dir = dir.to_path_buf();
+        std::thread::spawn(move || {
+            let result = Project::load(&dir)
+                .map_err(|e| e.to_string())
+                .and_then(|project| read_source(&dir, &project).map_err(|e| e.to_string()));
+            tx.send(result).ok(); // the window may be gone already
+        });
+        Self { rx }
+    }
+
+    /// The result, once it is there.
+    pub fn poll(&self) -> Option<Result<Source, String>> {
         self.rx.try_recv().ok()
     }
 }
