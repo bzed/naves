@@ -4,7 +4,7 @@
 //! The MCP server (`naves mcp <dir>`): the project, the heightmap, top-down renders and the build for AI
 //! clients, over standard input and output (local only).
 //!
-//! Requests are untrusted input: paths and values go through [`Project::with_value`], the render request is
+//! Requests are untrusted input: paths and values go through [`naves_core::project::Project::with_value`], the render request is
 //! validated by `naves-core`, nothing panics, and failures are tool errors with a message, never a dead
 //! server. Blocking work (DEM reading, rendering, building) runs on the blocking thread pool.
 
