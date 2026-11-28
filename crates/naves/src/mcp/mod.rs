@@ -135,7 +135,8 @@ fn failure(text: impl Into<String>) -> CallToolResult {
 }
 
 /// The way `id` as it is now (second) and as it was before any edit (first): the extract's way for an OSM id,
-/// the way as drawn for a user id. Refuses an unknown way, and one whose edit deletes it with `deleted`.
+/// the way as drawn for a user id. Refuses an unknown way, one that is not a road (the source also holds
+/// streams and rivers) and one whose edit deletes it with `deleted`.
 fn find_way<'a>(
     edits: &WayEdits,
     source: &'a Source,
@@ -153,6 +154,9 @@ fn find_way<'a>(
         .raw()
         .and_then(|raw| roads::way_by_raw(&source.ways, raw))
         .ok_or_else(|| roads::refused(id, "is unknown"))?;
+    if !current.tags.contains_key("highway") {
+        return Err(roads::refused(id, "is not a road"));
+    }
     let original = if id.is_user() {
         current
     } else {
@@ -491,26 +495,47 @@ impl NavesMcp {
             Ok(id) => id,
             Err(e) => return Ok(failure(e)),
         };
-        let result = self
-            .host
-            .edit_ways(move |edits, source| {
-                if !edits.ways.iter().any(|w| w.id == id) {
-                    let in_extract = id
-                        .raw()
-                        .is_some_and(|raw| roads::way_by_raw(&source.extract, raw).is_some());
-                    let problem = if in_extract {
-                        "has no edit"
-                    } else {
-                        "is unknown"
-                    };
-                    return Err(roads::refused(id, problem));
-                }
-                edits.reset_way(id);
-                Ok(id)
-            })
-            .await;
+        let result =
+            self.host
+                .edit_ways(move |edits, source| {
+                    let raw = id.raw();
+                    let now = raw.and_then(|raw| roads::way_by_raw(&source.ways, raw));
+                    let in_extract = raw.and_then(|raw| roads::way_by_raw(&source.extract, raw));
+                    if now
+                        .or(in_extract)
+                        .is_some_and(|w| !w.tags.contains_key("highway"))
+                    {
+                        return Err(roads::refused(id, "is not a road"));
+                    }
+                    if !edits.ways.iter().any(|w| w.id == id) {
+                        let problem = match (now, in_extract) {
+                            (Some(way), _)
+                                if way.nodes.iter().any(|&n| {
+                                    edits.nodes.iter().any(|e| e.id.raw() == Some(n))
+                                }) =>
+                            {
+                                "has no edit of its own; moved nodes stay moved"
+                            }
+                            (_, Some(_)) => "has no edit",
+                            _ => "is unknown",
+                        };
+                        return Err(roads::refused(id, problem));
+                    }
+                    edits.reset_way(id);
+                    Ok(id)
+                })
+                .await;
         Ok(match result {
-            Ok((id, _)) if id.is_user() => json_text(&json!({"removed": id.to_string()})),
+            // a drawn way, or an edit of an OpenStreetMap way that is not in the extract (any more)
+            Ok((id, source))
+                if id.is_user()
+                    || id
+                        .raw()
+                        .and_then(|raw| roads::way_by_raw(&source.ways, raw))
+                        .is_none() =>
+            {
+                json_text(&json!({"removed": id.to_string()}))
+            }
             other => road_result(other),
         })
     }

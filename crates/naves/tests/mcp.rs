@@ -1026,6 +1026,125 @@ async fn road_reset_of_a_drawn_way_removes_it() {
 }
 
 #[tokio::test]
+async fn road_reset_of_an_orphaned_edit_reports_what_it_removed() {
+    use naves_core::edits::{By, ElementId, WayAction, WayEdit, WayEdits};
+
+    let f = start_roads(false).await;
+    // an edit of an OpenStreetMap way that is not in the extract (the extract changed since)
+    let mut edits = WayEdits::default();
+    edits.ways.push(WayEdit {
+        id: ElementId::Osm(987_654_321),
+        action: WayAction::Modify,
+        tags: [("highway".to_string(), "track".to_string())].into(),
+        nodes: vec![ElementId::Osm(987_654_322), ElementId::Osm(987_654_323)],
+        base: Some("0123456789abcdef".to_string()),
+        by: By::Ai,
+    });
+    edits.save(&f.proj).unwrap();
+
+    let removed = json_of(&call(&f, "road_reset", json!({"id": "987654321"})).await);
+    assert_eq!(removed, json!({"removed": "987654321"}));
+    assert_eq!(way_edits(&f).ways.len(), 0);
+}
+
+#[tokio::test]
+async fn road_reset_of_a_way_with_only_moved_nodes_says_so() {
+    use naves_core::edits::{By, ElementId, WayEdits};
+
+    let f = start_roads(false).await;
+    let project = naves_core::project::Project::load(&f.proj).unwrap();
+    let source = naves_export::generate::read_source(&f.proj, &project).unwrap();
+    let way = source
+        .extract
+        .ways
+        .iter()
+        .find(|w| w.tags.contains_key("highway") && w.nodes.len() >= 2)
+        .unwrap();
+    let (lat, lon) = way.points[0];
+    let mut edits = WayEdits::default();
+    let base = Some((lat, lon));
+    edits
+        .move_node(
+            ElementId::Osm(way.nodes[0]),
+            lat + 0.0001,
+            lon,
+            base,
+            By::Ai,
+        )
+        .unwrap();
+    edits.save(&f.proj).unwrap();
+    let bytes = std::fs::read(f.proj.join("edits/ways.toml")).unwrap();
+
+    let result = call(&f, "road_reset", json!({"id": way.id.to_string()})).await;
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        text(&result).contains("no edit of its own; moved nodes stay moved"),
+        "{}",
+        text(&result)
+    );
+    assert_eq!(
+        std::fs::read(f.proj.join("edits/ways.toml")).unwrap(),
+        bytes
+    );
+}
+
+/// A way drawn with only a `waterway` tag, which the road tools must not touch.
+fn stream_in(f: &Fixture) -> String {
+    use naves_core::edits::{By, WayEdits};
+
+    let mut edits = WayEdits::default();
+    let a = edits.new_node(47.55, 12.975, By::Ai).unwrap();
+    let b = edits.new_node(47.551, 12.976, By::Ai).unwrap();
+    let tags = [("waterway".to_string(), "stream".to_string())].into();
+    let id = edits.add_way(tags, vec![a, b], By::Ai).unwrap();
+    edits.save(&f.proj).unwrap();
+    id.to_string()
+}
+
+#[tokio::test]
+async fn the_road_tools_refuse_ways_that_are_not_roads() {
+    let f = start_roads(false).await;
+    let id = stream_in(&f);
+    let file = f.proj.join("edits/ways.toml");
+    let bytes = std::fs::read(&file).unwrap();
+    for (tool, args) in [
+        ("road_modify", json!({"id": id, "tags": track()})),
+        ("road_delete", json!({"id": id})),
+        ("road_reset", json!({"id": id})),
+    ] {
+        let result = call(&f, tool, args).await;
+        assert_eq!(result.is_error, Some(true), "{tool}");
+        assert!(
+            text(&result).contains("is not a road"),
+            "{tool}: {}",
+            text(&result)
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "{tool}");
+    }
+}
+
+#[tokio::test]
+async fn road_modify_changes_the_points_of_a_drawn_way() {
+    let f = start_roads(false).await;
+    let args = json!({"points": [[100, 100], [200, 150], [300, 120]], "tags": track()});
+    let id = json_of(&call(&f, "road_add", args).await)["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(way_edits(&f).nodes.len(), 3);
+
+    let args = json!({"id": id, "points": [[400, 400], [500, 450]]});
+    let after = json_of(&call(&f, "road_modify", args).await);
+    assert_eq!(after["points"], json!([[400.0, 400.0], [500.0, 450.0]]));
+    assert_eq!(after["origin"], "new");
+    let edits = way_edits(&f);
+    assert_eq!(edits.ways.len(), 1);
+    assert_eq!(edits.ways[0].nodes.len(), 2);
+    // the three nodes of the old line are gone, only the two of the new one are left
+    assert_eq!(edits.nodes.len(), 2, "{:?}", edits.nodes);
+}
+
+#[tokio::test]
 async fn road_tools_refuse_bad_ids_and_leave_the_file() {
     let f = start_roads(false).await;
     let args = json!({"points": [[100, 100], [200, 150]], "tags": track()});
@@ -1157,7 +1276,7 @@ fn total_km(stats: &Value) -> f64 {
 async fn roads_follow_an_edit() {
     let f = start_roads(true).await;
     let before = json_of(&call(&f, "roads_stats", json!({})).await);
-    // only tracks make kilometres of road here; the longest of them
+    // only tracks make kilometres of road here; the one with the most points
     let ways = all_roads(&f).await;
     let longest = ways
         .iter()
