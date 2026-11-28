@@ -45,6 +45,33 @@ fn an_edit_is_saved_at_once() {
 }
 
 #[test]
+fn the_projected_ways_are_built_once_per_change_of_the_edits() {
+    use crate::gui::edit::hit::{hit, tolerance_m};
+    use crate::gui::edit::overlay::overlay;
+    let root = tempfile::tempdir().unwrap();
+    let (mut session, dir) = session(root.path());
+    assert_eq!(
+        session.projection_builds(),
+        1,
+        "built when the session starts"
+    );
+    let way = first_way(&session);
+    let at = session.projected()[0].points[0].1;
+    // frames and clicks read the cache
+    for _ in 0..5 {
+        let _ = overlay(&session, None, &[]);
+        let _ = hit(&session, at, tolerance_m(100.0, 1000.0));
+    }
+    assert_eq!(session.projection_builds(), 1);
+    delete(&mut session, &dir, &way);
+    assert_eq!(session.projection_builds(), 2, "refreshed after an edit");
+    assert!(session.projected().iter().all(|p| p.id != way.id));
+    assert_eq!(session.undo(&dir), Ok(true));
+    assert_eq!(session.projection_builds(), 3, "and after an undo");
+    assert!(session.projected().iter().any(|p| p.id == way.id));
+}
+
+#[test]
 fn undo_and_redo_restore_the_file() {
     let root = tempfile::tempdir().unwrap();
     let (mut session, dir) = session(root.path());

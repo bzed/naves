@@ -10,11 +10,14 @@ pub mod overlay;
 pub mod properties;
 pub mod tools;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use naves_core::edits::{EditsError, ElementId, USER_ID_BASE, WayEdits};
+use naves_core::edits::{EditsError, USER_ID_BASE, WayEdits};
 use naves_core::osm::OsmWay;
 use naves_export::generate::Source;
+
+use crate::gui::viewport::WorldPoint;
 
 /// What the editor holds.
 #[derive(Debug, Default)]
@@ -60,6 +63,17 @@ pub enum Origin {
     Drawn,
 }
 
+/// A road way of the session projected to map metres, for hit-testing and the overlay.
+#[derive(Debug, Clone)]
+pub struct ProjectedWay {
+    /// The raw id of the way.
+    pub id: i64,
+    /// Its nodes with their raw ids; a node that cannot be projected is left out.
+    pub points: Vec<(i64, WorldPoint)>,
+    /// Where the way comes from.
+    pub origin: Origin,
+}
+
 /// The source layer with its edits, and the steps to undo and redo.
 #[derive(Debug)]
 pub struct EditSession {
@@ -69,6 +83,12 @@ pub struct EditSession {
     redo: Vec<WayEdits>,
     /// Edits were made since the roads were built.
     pub dirty: bool,
+    /// The road ways in map metres, rebuilt only when the edits change.
+    projected: Vec<ProjectedWay>,
+    /// The raw ids of the OpenStreetMap ways that have an edit.
+    edited: BTreeSet<i64>,
+    /// How often `projected` was built (for the tests).
+    builds: usize,
 }
 
 impl EditSession {
@@ -78,12 +98,62 @@ impl EditSession {
     /// A session on `source`, with nothing to undo.
     #[must_use]
     pub fn new(source: Source) -> Self {
-        Self {
+        let mut session = Self {
             source,
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
+            projected: Vec::new(),
+            edited: BTreeSet::new(),
+            builds: 0,
+        };
+        session.project();
+        session
+    }
+
+    /// The road ways in map metres, in id order.
+    #[must_use]
+    pub fn projected(&self) -> &[ProjectedWay] {
+        &self.projected
+    }
+
+    /// How often the road ways were projected: once when the session starts and once per change of the edits.
+    #[cfg(test)]
+    #[must_use]
+    pub fn projection_builds(&self) -> usize {
+        self.builds
+    }
+
+    fn project(&mut self) {
+        self.edited = self
+            .source
+            .edits
+            .ways
+            .iter()
+            .filter_map(|w| w.id.raw())
+            .collect();
+        let mut projected = Vec::new();
+        for way in &self.source.ways.ways {
+            if !way.tags.contains_key("highway") {
+                continue;
+            }
+            let points = way
+                .nodes
+                .iter()
+                .zip(&way.points)
+                .filter_map(|(node, &(lat, lon))| {
+                    let (x, y) = self.source.frame.to_map(lat, lon).ok()?;
+                    Some((*node, WorldPoint { x, y }))
+                })
+                .collect();
+            projected.push(ProjectedWay {
+                id: way.id,
+                points,
+                origin: self.origin(way.id),
+            });
         }
+        self.projected = projected;
+        self.builds += 1;
     }
 
     /// Whether there is a step to undo.
@@ -159,6 +229,7 @@ impl EditSession {
 
     fn changed(&mut self) {
         self.source.reapply();
+        self.project();
         self.dirty = true;
     }
 
@@ -189,9 +260,7 @@ impl EditSession {
     pub fn origin(&self, raw: i64) -> Origin {
         if raw >= USER_ID_BASE {
             Origin::Drawn
-        } else if ElementId::from_raw(raw)
-            .is_some_and(|id| self.source.edits.ways.iter().any(|w| w.id == id))
-        {
+        } else if self.edited.contains(&raw) {
             Origin::EditedOsm
         } else {
             Origin::Osm

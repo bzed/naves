@@ -3,8 +3,6 @@
 
 //! Hit-testing the source ways in map metres.
 
-use naves_core::osm::OsmWay;
-
 use super::EditSession;
 use super::properties::{origin_line, way_title};
 use crate::gui::levels::Level;
@@ -36,22 +34,6 @@ pub fn tolerance_m(view_span_m: f64, view_width_px: f64) -> f64 {
     (HIT_PX * per_px).max(0.5)
 }
 
-/// The nodes of a road way in map metres, with their raw ids; a point that cannot be projected is left out.
-/// Ways without a `highway` tag (the streams and rivers of the extract) have none.
-pub(super) fn road_points(session: &EditSession, way: &OsmWay) -> Vec<(i64, WorldPoint)> {
-    if !way.tags.contains_key("highway") {
-        return Vec::new();
-    }
-    way.nodes
-        .iter()
-        .zip(&way.points)
-        .filter_map(|(node, &(lat, lon))| {
-            let (x, y) = session.source.frame.to_map(lat, lon).ok()?;
-            Some((*node, WorldPoint { x, y }))
-        })
-        .collect()
-}
-
 /// The distance from `at` to the segment `a`-`b`.
 fn segment_distance(at: WorldPoint, a: WorldPoint, b: WorldPoint) -> f64 {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
@@ -70,9 +52,9 @@ fn segment_distance(at: WorldPoint, a: WorldPoint, b: WorldPoint) -> f64 {
 pub fn hit(session: &EditSession, at: WorldPoint, tol_m: f64) -> Option<Target> {
     let mut node: Option<(f64, Target)> = None;
     let mut way: Option<(f64, Target)> = None;
-    for w in &session.source.ways.ways {
-        let points = road_points(session, w);
-        for &(id, p) in &points {
+    for w in session.projected() {
+        let points = &w.points;
+        for &(id, p) in points {
             let d = (p.x - at.x).hypot(p.y - at.y);
             if d <= tol_m && node.is_none_or(|(best, _)| d <= best) {
                 node = Some((

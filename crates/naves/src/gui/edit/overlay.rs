@@ -3,7 +3,7 @@
 
 //! The shapes of the editing overlay, in map metres.
 
-use super::hit::{Target, road_points};
+use super::hit::Target;
 use super::{EditSession, Origin};
 use crate::gui::viewport::WorldPoint;
 
@@ -55,13 +55,13 @@ pub fn overlay(
     });
     let (mut source, mut edited, mut chosen) = (Vec::new(), Vec::new(), Vec::new());
     let (mut ticks, mut handles) = (Vec::new(), Vec::new());
-    for way in &session.source.ways.ways {
-        let points: Vec<WorldPoint> = road_points(session, way).into_iter().map(|p| p.1).collect();
+    for way in session.projected() {
+        let points: Vec<WorldPoint> = way.points.iter().map(|p| p.1).collect();
         if points.len() < 2 {
             continue;
         }
         let is_selected = selected == Some(way.id);
-        let is_edited = session.origin(way.id) != Origin::Osm;
+        let is_edited = way.origin != Origin::Osm;
         if is_edited {
             ticks.extend(end_ticks(&points));
         }
