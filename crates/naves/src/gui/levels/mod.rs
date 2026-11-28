@@ -108,19 +108,20 @@ impl Level {
         }
     }
 
-    /// The band colour.
+    /// The band colour: the four fixed bands (terrain, ground, water, roads) are the colour-blind safe set, the
+    /// others keep their hue and have 3:1 on the dark ground.
     #[must_use]
     pub fn colour(self) -> Color32 {
         let rgb = match self {
-            Level::Project => [0x5a, 0x66, 0x60],
-            Level::Terrain => [0x8c, 0x6a, 0x45],
-            Level::Ground => [0xa3, 0x9a, 0x5c],
-            Level::Water => [0x3f, 0x6f, 0x9e],
-            Level::Roads => [0x1d, 0x29, 0x24],
-            Level::Vegetation => [0x2e, 0x6a, 0x4c],
-            Level::Buildings => [0x9a, 0x4f, 0x3c],
-            Level::Objects => [0x6b, 0x6f, 0x76],
-            Level::Life => [0x7a, 0x4a, 0x7f],
+            Level::Project => [0x6b, 0x79, 0x72],
+            Level::Terrain => [0xcc, 0x79, 0xa7],
+            Level::Ground => [0x00, 0x9e, 0x73],
+            Level::Water => [0x00, 0x72, 0xb2],
+            Level::Roads => [0xe4, 0xe8, 0xec],
+            Level::Vegetation => [0x3a, 0x85, 0x5f],
+            Level::Buildings => [0xb6, 0x5d, 0x47],
+            Level::Objects => [0x72, 0x77, 0x7e],
+            Level::Life => [0x9d, 0x61, 0xa3],
             Level::Economy => [0xb5, 0x8a, 0x1e],
         };
         Color32::from_rgb(rgb[0], rgb[1], rgb[2])
@@ -213,7 +214,7 @@ pub(super) fn waiting(
         }
         HeightmapState::Failed(error) => {
             ui.colored_label(
-                super::theme::ERROR,
+                super::theme::problem(ui.visuals()),
                 format!("The map cannot be read: {error}"),
             );
         }

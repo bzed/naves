@@ -8,7 +8,7 @@ use eframe::egui::{self, Align2, FontId, Sense, WidgetInfo};
 
 use super::NavesApp;
 use super::shortcuts::{Action, ToolId};
-use super::theme::GREEN;
+use super::theme::active as accent;
 
 /// Width of the rail.
 pub const RAIL_WIDTH: f32 = 56.0;
@@ -60,7 +60,14 @@ pub fn rail_ui(app: &mut NavesApp, ui: &mut egui::Ui) {
             painter.rect_stroke(
                 rect.shrink(1.0),
                 0.0,
-                egui::Stroke::new(2.0, if active { level.band_text() } else { GREEN }),
+                egui::Stroke::new(
+                    2.0,
+                    if active {
+                        level.band_text()
+                    } else {
+                        accent(ui.visuals())
+                    },
+                ),
                 egui::StrokeKind::Inside,
             );
         }

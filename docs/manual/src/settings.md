@@ -35,6 +35,8 @@ built is listed. The box at the top searches the names.
 
 - **Invert the zoom direction of the wheel.**
 - **Other levels are drawn at** (40 % by default): how strongly the levels you are not working on fade.
+- **Theme**: Dark (the default), Light, or Same as the system. The dark theme uses a colour-blind safe palette: problems are
+  orange and always carry a ▲ and a word, notices are yellow with a ●, and what is on or selected is sky blue.
 - **Interface scale**, from 0.5 to 3.
 - **Unfold without animation**: the stack's layers unfold in a tenth of a second; this switches the animation off.
 - **A project opens with**: the base map and the layers that are switched on.
@@ -60,6 +62,7 @@ build = "F9"
 invert_zoom = true
 fade_percent = 30
 interface_scale = 1.25
+theme = "light"   # "dark" (default), "light" or "system"
 start_base = "slope"
 start_layers = ["too_steep_to_walk"]
 

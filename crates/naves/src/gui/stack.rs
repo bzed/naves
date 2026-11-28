@@ -14,7 +14,7 @@ use naves_core::render::{MapLayer, Overlay};
 use naves_core::surface::{SurfaceClass, SurfaceGrid};
 
 use super::levels::Level;
-use super::theme::GREEN;
+use super::theme::active as accent;
 use super::{NavesApp, shortcuts};
 
 /// The base maps, in the order they are listed.
@@ -202,7 +202,14 @@ fn row(ui: &mut egui::Ui, level: Level, active: bool, bindings: &shortcuts::Bind
         painter.rect_stroke(
             rect.shrink(1.0),
             0.0,
-            egui::Stroke::new(2.0, if active { level.band_text() } else { GREEN }),
+            egui::Stroke::new(
+                2.0,
+                if active {
+                    level.band_text()
+                } else {
+                    accent(ui.visuals())
+                },
+            ),
             egui::StrokeKind::Inside,
         );
     }

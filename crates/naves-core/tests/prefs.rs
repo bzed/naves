@@ -224,3 +224,28 @@ fn the_new_key_wins_over_the_old_one() {
     assert_eq!(prefs.tools.dayzmake.as_deref(), Some("/new".as_ref()));
     assert!(!prefs.tools.other.contains_key("armake2"));
 }
+
+#[test]
+fn theme_round_trips() {
+    use naves_core::prefs::ThemeChoice;
+    for (choice, word) in [
+        (ThemeChoice::Dark, "dark"),
+        (ThemeChoice::Light, "light"),
+        (ThemeChoice::System, "system"),
+    ] {
+        let parsed = Preferences::parse(&format!("[map]\ntheme = \"{word}\"\n")).unwrap();
+        assert_eq!(parsed.map.theme, choice);
+        let d = dir();
+        let path = default_path(d.path());
+        parsed.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // the default is not written, the others are
+        assert_eq!(
+            text.contains("theme"),
+            choice != ThemeChoice::Dark,
+            "{text}"
+        );
+        assert_eq!(Preferences::load(&path).unwrap().map.theme, choice);
+    }
+    assert_eq!(Preferences::default().map.theme, ThemeChoice::Dark);
+}

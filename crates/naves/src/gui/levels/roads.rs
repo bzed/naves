@@ -15,7 +15,7 @@ use crate::gui::layers::LayerDef;
 use crate::gui::prefs_window::{PrefsTab, PrefsWindow};
 use crate::gui::problems::Problem;
 use crate::gui::selection::Selection;
-use crate::gui::theme::ERROR;
+use crate::gui::theme::problem;
 use crate::gui::viewport::WorldPoint;
 use crate::gui::worker::RoadsState;
 
@@ -150,13 +150,19 @@ fn panel(app: &mut NavesApp, ui: &mut egui::Ui) {
             });
         }
         RoadsState::ToolsMissing(error) => {
-            ui.colored_label(ERROR, format!("Roads need dayzmake: {error}"));
+            ui.colored_label(
+                problem(ui.visuals()),
+                format!("▲ Roads need dayzmake: {error}"),
+            );
             if ui.button("Open settings").clicked() {
                 open_external_tools(app);
             }
         }
         RoadsState::Failed(error) => {
-            ui.colored_label(ERROR, format!("The roads cannot be built: {error}"));
+            ui.colored_label(
+                problem(ui.visuals()),
+                format!("▲ The roads cannot be built: {error}"),
+            );
         }
         RoadsState::Ready(generated) => {
             let generated = std::sync::Arc::clone(generated);

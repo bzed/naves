@@ -13,6 +13,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The GUI is dark by default, with a colour-blind safe palette; light and the system theme are in Settings, Map.
 - `naves dem fetch` downloads a bare-earth height model from Mapterhorn for the area of the project (2.5 m pixels by
   default, `--zoom`, `--pixel-m`), caches the tiles in `dem/mapterhorn/`, writes `dem/mapterhorn_dtm.tif` with an
   attribution sidecar and lists the file first in `sources.dem`. Where Mapterhorn has nothing finer than Copernicus

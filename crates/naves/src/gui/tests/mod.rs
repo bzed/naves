@@ -15,6 +15,7 @@ use naves_core::render::MapLayer;
 use naves_export::testing::FakeEnv;
 
 use super::*;
+use naves_core::prefs::ThemeChoice;
 
 mod command_palette;
 mod dock;
@@ -49,7 +50,7 @@ fn project(root: &Path) -> PathBuf {
 /// The window of a normal session: wide and tall enough that nothing folds.
 fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
     Harness::builder()
-        .with_context_setup(crate::gui::theme::apply_theme)
+        .with_context_setup(|ctx| crate::gui::theme::apply_theme(ctx, ThemeChoice::Dark))
         .with_size((1180.0, 760.0))
         .build_ui(|ui| app.show(ui))
 }
@@ -57,7 +58,7 @@ fn gui_harness(app: &mut NavesApp) -> Harness<'_> {
 /// The same, with the app inside the harness so that tests can look at it between steps.
 fn state_harness(app: NavesApp) -> Harness<'static, NavesApp> {
     Harness::builder()
-        .with_context_setup(crate::gui::theme::apply_theme)
+        .with_context_setup(|ctx| crate::gui::theme::apply_theme(ctx, ThemeChoice::Dark))
         .with_size((1180.0, 760.0))
         .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app)
 }
@@ -369,7 +370,7 @@ fn the_map_draws_no_picture_in_a_tiny_window() {
         "the map was waited for"
     );
     let mut harness = Harness::builder()
-        .with_context_setup(crate::gui::theme::apply_theme)
+        .with_context_setup(|ctx| crate::gui::theme::apply_theme(ctx, ThemeChoice::Dark))
         .with_size((100.0, 80.0))
         .build_ui_state(|ui, app: &mut NavesApp| app.show(ui), app);
     harness.run_steps(4);

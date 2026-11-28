@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::thread::JoinHandle;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use naves_core::heightmap::MapGeo;
 use naves_core::imagery::MergeReport;
 use naves_core::imagery::catalog::{
@@ -23,7 +23,8 @@ use naves_core::imagery::catalog::{
 use naves_core::project::{ImageryFile, Project};
 use naves_export::imagery_fetch::{FetchError, FetchRequest, Http, RealHttp, fetch};
 
-use super::{ERROR, GREEN, HeightmapState, Line, NavesApp};
+use super::theme::{active, on_active, problem};
+use super::{HeightmapState, Line, NavesApp};
 
 /// A file of your own that is about to be added: all four fields are needed before it is accepted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -504,7 +505,10 @@ impl NavesApp {
     fn imagery_fetch_ui(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Available for this area").strong());
         if let Some(error) = &self.imagery_options_error {
-            ui.colored_label(ERROR, format!("The sources cannot be listed: {error}"));
+            ui.colored_label(
+                problem(ui.visuals()),
+                format!("▲ The sources cannot be listed: {error}"),
+            );
             return;
         }
         let busy = self.fetch_running();
@@ -514,7 +518,8 @@ impl NavesApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&option.source.name).strong());
                 let button =
-                    egui::Button::new(RichText::new("Fetch").color(Color32::WHITE)).fill(GREEN);
+                    egui::Button::new(RichText::new("Fetch").color(on_active(ui.visuals())))
+                        .fill(active(ui.visuals()));
                 if ui.add_enabled(!busy, button).clicked() {
                     wanted = Some(option.source.id.clone());
                 }
@@ -578,7 +583,7 @@ impl NavesApp {
                 }
             }
             if let Some(error) = &self.own_imagery_error {
-                ui.colored_label(ERROR, format!("Not added: {error}"));
+                ui.colored_label(problem(ui.visuals()), format!("▲ Not added: {error}"));
             }
         });
     }

@@ -84,6 +84,19 @@ pub struct Preferences {
     pub other: BTreeMap<String, toml::Value>,
 }
 
+/// Which theme the GUI shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    /// The dark theme (the default).
+    #[default]
+    Dark,
+    /// The light theme.
+    Light,
+    /// Whatever the system uses.
+    System,
+}
+
 /// The Map tab.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -100,6 +113,9 @@ pub struct MapPrefs {
     /// The stack unfolds without animation.
     #[serde(skip_serializing_if = "is_false")]
     pub no_unfold_animation: bool,
+    /// The theme of the GUI.
+    #[serde(skip_serializing_if = "is_default_theme")]
+    pub theme: ThemeChoice,
     /// The base map a project opens with: `hillshade`, `slope`, `height`, `surface` or `imagery`.
     #[serde(skip_serializing_if = "is_default_base")]
     pub start_base: String,
@@ -118,6 +134,7 @@ impl Default for MapPrefs {
             fade_percent: 40,
             interface_scale: 1.0,
             no_unfold_animation: false,
+            theme: ThemeChoice::Dark,
             start_base: "hillshade".to_string(),
             start_layers: Vec::new(),
             other: BTreeMap::new(),
@@ -187,6 +204,14 @@ fn is_default_fade(v: &u8) -> bool {
 )]
 fn is_default_scale(v: &f32) -> bool {
     (*v - 1.0).abs() < f32::EPSILON
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_default_theme(v: &ThemeChoice) -> bool {
+    *v == ThemeChoice::Dark
 }
 
 fn is_default_base(v: &String) -> bool {

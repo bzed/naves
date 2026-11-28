@@ -13,7 +13,8 @@ use super::NavesApp;
 use super::levels::Level;
 use super::shortcuts::{self, Action, Binding, SHORTCUTS, Scope, Shortcut};
 use super::stack::{BASE_MAPS, overlay_id};
-use super::theme::ERROR;
+use super::theme::problem;
+use naves_core::prefs::ThemeChoice;
 use naves_core::render::MapLayer;
 
 /// The tabs, in the order of the spec.
@@ -187,13 +188,14 @@ fn content(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
                         egui::pos2(r.rect.left() - 8.0, r.rect.top()),
                         egui::vec2(3.0, r.rect.height()),
                     );
-                    ui.painter().rect_filled(bar, 0.0, super::theme::GREEN);
+                    ui.painter()
+                        .rect_filled(bar, 0.0, super::theme::active(ui.visuals()));
                 }
                 if r.has_focus() {
                     ui.painter().rect_stroke(
                         r.rect.expand(2.0),
                         2.0,
-                        egui::Stroke::new(2.0, super::theme::GREEN),
+                        egui::Stroke::new(2.0, super::theme::active(ui.visuals())),
                         egui::StrokeKind::Outside,
                     );
                 }
@@ -219,12 +221,12 @@ fn content(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
 fn problems_ui(app: &NavesApp, ui: &mut egui::Ui) {
     if let Some(error) = &app.prefs_error {
         ui.colored_label(
-            ERROR,
+            problem(ui.visuals()),
             format!("The settings file is damaged: {error}. It is left as it is. Changes hold until you close Náves and are not saved."),
         );
     }
     if let Some(error) = &app.prefs_save_error {
-        ui.colored_label(ERROR, error);
+        ui.colored_label(problem(ui.visuals()), error);
     }
 }
 
@@ -258,10 +260,10 @@ fn keyboard_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui)
         .iter()
         .chain(app.bindings.duplicates().iter())
     {
-        ui.colored_label(ERROR, note);
+        ui.colored_label(problem(ui.visuals()), note);
     }
     if let Some(message) = &window.message {
-        ui.colored_label(ERROR, message);
+        ui.colored_label(problem(ui.visuals()), message);
     }
     if let Some(pending) = window.pending {
         ui.horizontal(|ui| {
@@ -405,6 +407,16 @@ fn map_tab(app: &mut NavesApp, ui: &mut egui::Ui) {
     changed |= ui
         .checkbox(&mut map.no_unfold_animation, "Unfold without animation")
         .changed();
+    ui.horizontal(|ui| {
+        ui.label("Theme");
+        for (choice, name) in [
+            (ThemeChoice::Dark, "Dark"),
+            (ThemeChoice::Light, "Light"),
+            (ThemeChoice::System, "Same as the system"),
+        ] {
+            changed |= ui.radio_value(&mut map.theme, choice, name).changed();
+        }
+    });
     ui.add_space(8.0);
     ui.label(RichText::new("A project opens with").strong());
     ui.horizontal(|ui| {
@@ -505,7 +517,7 @@ fn tools_tab(app: &mut NavesApp, window: &mut PrefsWindow, ui: &mut egui::Ui) {
         app.save_prefs();
     }
     if let Some(error) = &app.prefs_save_error {
-        ui.colored_label(ERROR, error);
+        ui.colored_label(problem(ui.visuals()), error);
     }
 }
 

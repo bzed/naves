@@ -54,7 +54,7 @@ fn missing_tools_are_named_in_the_row() {
     h.run_steps(3);
     go_to_roads(&mut h);
     assert!(
-        h.query_by_label("Roads need dayzmake: dayzmake not found; set DAYZMAKE")
+        h.query_by_label("▲ Roads need dayzmake: dayzmake not found; set DAYZMAKE")
             .is_some()
     );
     h.get_by_label("Open settings").click();

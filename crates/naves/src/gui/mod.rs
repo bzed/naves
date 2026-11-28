@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use naves_core::imagery::catalog::ImageryOption;
 use naves_core::prefs::{Preferences, ToolPaths};
 use naves_core::project::{Area, Grid, ImageryFile, LAND_RATIO, Project, Scale};
@@ -48,7 +48,7 @@ use stack::LayerPanel;
 use viewport::{ViewEvent, ViewFrame, ViewportSet, default_views};
 use worker::{BuildMsg, BuildWorker, HeightmapJob, HeightmapState, RoadJob, RoadsMsg, RoadsState};
 
-use theme::{ERROR, GREEN};
+use theme::{active, on_active, problem};
 const SETTINGS_WIDTH: f32 = 300.0;
 const RIGHT_WIDTH: f32 = 230.0;
 const BAND_HEIGHT: f32 = 3.0;
@@ -495,6 +495,9 @@ impl NavesApp {
 
     /// The interface scale and the animation time of the settings.
     fn apply_look(&self, ctx: &egui::Context) {
+        if ctx.options(|o| o.theme_preference) != theme::preference(self.prefs.map.theme) {
+            theme::set_choice(ctx, self.prefs.map.theme);
+        }
         let scale = self.prefs.map.interface_scale;
         if (ctx.zoom_factor() - scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(scale);
@@ -825,15 +828,19 @@ impl NavesApp {
         self.imagery_section(ui);
         if let Some(error) = &self.form.error {
             ui.add_space(8.0);
-            ui.colored_label(ERROR, format!("Not saved: {error}"));
+            ui.colored_label(problem(ui.visuals()), format!("▲ Not saved: {error}"));
         }
     }
 
     fn build_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let can_build = !self.building() && self.form.error.is_none();
-            let button = egui::Button::new(RichText::new("Build").color(Color32::WHITE).strong())
-                .fill(GREEN);
+            let button = egui::Button::new(
+                RichText::new("Build")
+                    .color(on_active(ui.visuals()))
+                    .strong(),
+            )
+            .fill(active(ui.visuals()));
             if ui.add_enabled(can_build, button).clicked() {
                 self.start_build();
             }
@@ -854,11 +861,11 @@ impl NavesApp {
                             RichText::new(format!("Warning: {text}")).monospace(),
                         ),
                         Line::Error(text) => ui.colored_label(
-                            ERROR,
+                            problem(ui.visuals()),
                             RichText::new(format!("Failed: {text}")).monospace(),
                         ),
                         Line::Result(text) => {
-                            ui.colored_label(GREEN, RichText::new(text).monospace())
+                            ui.colored_label(active(ui.visuals()), RichText::new(text).monospace())
                         }
                     };
                 }
@@ -903,7 +910,10 @@ impl NavesApp {
                 return;
             }
             HeightmapState::Failed(error) => {
-                ui.colored_label(ERROR, format!("The map cannot be drawn: {error}"));
+                ui.colored_label(
+                    problem(ui.visuals()),
+                    format!("▲ The map cannot be drawn: {error}"),
+                );
                 return;
             }
         };
@@ -1001,7 +1011,7 @@ impl NavesApp {
                 };
                 painter.add(egui::Shape::convex_polygon(
                     diamond(9.0),
-                    ERROR,
+                    theme::problem(ui.visuals()),
                     egui::Stroke::new(2.5, egui::Color32::WHITE),
                 ));
             }
@@ -1219,11 +1229,12 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
             .with_title(app.title()),
         ..Default::default()
     };
+    let theme_choice = app.prefs.map.theme;
     eframe::run_native(
         "naves",
         options,
         Box::new(move |cc| {
-            theme::apply_theme(&cc.egui_ctx);
+            theme::apply_theme(&cc.egui_ctx, theme_choice);
             Ok(Box::new(Shell(app)))
         }),
     )

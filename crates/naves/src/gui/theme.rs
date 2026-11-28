@@ -2,20 +2,99 @@
 
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The look of the editor: the Náves design system's theme, with the manual's green accents.
+//! The look of the editor: the Náves design system's theme with the dark chrome palette on top.
 
 use eframe::egui::{self, Color32};
+pub use naves_core::prefs::ThemeChoice;
 
-/// Village green: accents, the Build button, keyboard focus.
-pub const GREEN: Color32 = Color32::from_rgb(0x2e, 0x6a, 0x4c);
-/// Errors.
-pub const ERROR: Color32 = Color32::from_rgb(0xb0, 0x3a, 0x2e);
+/// The chrome palette of the dark theme. Colour is never the only cue: a problem carries `▲` and a word, a
+/// notice `●`. Every colour here is tested against [`tokens::GROUND`].
+pub mod tokens {
+    use eframe::egui::Color32;
 
-/// Sets the theme: the design system installs its tokens (fills, text, selection, spacing, the
-/// Inter font); light and dark both work, and egui follows the system theme. What is Náves' own
-/// on top of it are the accents: [`GREEN`] and [`ERROR`], which are tested to read on both themes.
-pub fn apply_theme(ctx: &egui::Context) {
+    /// The map's surround and the text fields.
+    pub const GROUND: Color32 = Color32::from_rgb(0x1e, 0x23, 0x29);
+    /// Panels and windows.
+    pub const PANEL: Color32 = Color32::from_rgb(0x27, 0x2d, 0x35);
+    /// Raised surfaces: stripes, hovered rows.
+    pub const RAISED: Color32 = Color32::from_rgb(0x32, 0x3a, 0x44);
+    /// Text.
+    pub const INK: Color32 = Color32::from_rgb(0xe4, 0xe8, 0xec);
+    /// Secondary text.
+    pub const INK_QUIET: Color32 = Color32::from_rgb(0x9a, 0xa4, 0xae);
+    /// What is on, selected or focused.
+    pub const ACTIVE: Color32 = Color32::from_rgb(0x56, 0xb4, 0xe9);
+    /// What is wrong; always with `▲` and a word.
+    pub const PROBLEM: Color32 = Color32::from_rgb(0xd5, 0x5e, 0x00);
+    /// What needs a look; always with `●`.
+    pub const NOTICE: Color32 = Color32::from_rgb(0xf0, 0xe4, 0x42);
+    /// [`ACTIVE`] on the light theme, where the sky blue would be under 3:1 on white.
+    pub const ACTIVE_LIGHT: Color32 = Color32::from_rgb(0x00, 0x72, 0xb2);
+}
+
+/// The accent for what is on, selected or focused, for the theme the visuals belong to.
+#[must_use]
+pub fn active(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        tokens::ACTIVE
+    } else {
+        tokens::ACTIVE_LIGHT
+    }
+}
+
+/// The colour for what is wrong. It reads on both themes (3:1 or more), and is always shown with `▲` and a word.
+#[must_use]
+pub fn problem(_visuals: &egui::Visuals) -> Color32 {
+    tokens::PROBLEM
+}
+
+/// The text colour on a fill of [`active`].
+#[must_use]
+pub fn on_active(visuals: &egui::Visuals) -> Color32 {
+    if visuals.dark_mode {
+        tokens::GROUND
+    } else {
+        Color32::WHITE
+    }
+}
+
+/// Sets the theme: the design system installs its tokens (fills, text, spacing, the Inter font) for both
+/// themes, then the dark one gets the chrome palette and `choice` picks the one in use. Call it once; to
+/// change the choice later call [`set_choice`].
+pub fn apply_theme(ctx: &egui::Context, choice: ThemeChoice) {
     naves_ui::apply_style_and_install_loaders(ctx);
+    let mut dark = std::sync::Arc::unwrap_or_clone(ctx.style_of(egui::Theme::Dark));
+    let v = &mut dark.visuals;
+    v.panel_fill = tokens::PANEL;
+    v.window_fill = tokens::PANEL;
+    v.extreme_bg_color = tokens::GROUND;
+    v.faint_bg_color = tokens::RAISED;
+    v.selection.bg_fill = tokens::ACTIVE.gamma_multiply(0.35);
+    v.selection.stroke = egui::Stroke::new(1.0, tokens::ACTIVE);
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, tokens::ACTIVE);
+    v.widgets.noninteractive.fg_stroke.color = tokens::INK;
+    v.weak_text_color = Some(tokens::INK_QUIET);
+    v.warn_fg_color = tokens::NOTICE;
+    ctx.set_style_of(egui::Theme::Dark, dark);
+    let mut light = std::sync::Arc::unwrap_or_clone(ctx.style_of(egui::Theme::Light));
+    light.visuals.selection.stroke = egui::Stroke::new(1.0, tokens::ACTIVE_LIGHT);
+    ctx.set_style_of(egui::Theme::Light, light);
+    set_choice(ctx, choice);
+}
+
+/// Dark, light, or the system's.
+pub fn set_choice(ctx: &egui::Context, choice: ThemeChoice) {
+    ctx.set_theme(preference(choice));
+}
+
+/// The egui preference of a choice.
+#[must_use]
+pub fn preference(choice: ThemeChoice) -> egui::ThemePreference {
+    match choice {
+        ThemeChoice::Dark => egui::ThemePreference::Dark,
+        ThemeChoice::Light => egui::ThemePreference::Light,
+        ThemeChoice::System => egui::ThemePreference::System,
+    }
 }
 
 fn linear(c: u8) -> f32 {

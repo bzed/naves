@@ -2,18 +2,21 @@
 
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! The look: the design system's theme, with Náves' green accents on top of it.
+//! The look: the design system's theme, with the dark chrome palette on top of it.
 
 use egui_kittest::Harness;
-use naves_ui::egui;
+use naves_ui::egui::{self, Color32};
 
-use crate::gui::theme::{ERROR, GREEN, contrast};
+use naves_core::prefs::ThemeChoice;
+
+use crate::gui::levels::Level;
+use crate::gui::theme::{active, contrast, problem, tokens};
 
 /// The theme installs the design system's Inter font.
 #[test]
 fn apply_theme_installs_inter() {
     let mut harness = Harness::builder()
-        .with_context_setup(crate::gui::theme::apply_theme)
+        .with_context_setup(|ctx| crate::gui::theme::apply_theme(ctx, ThemeChoice::Dark))
         .build_ui(|ui| {
             ui.label("probe");
         });
@@ -32,39 +35,86 @@ fn apply_theme_installs_inter() {
     );
 }
 
-/// Náves' green and red accents must still read when egui runs the dark theme
-/// (a dark system theme is followed automatically).
+/// The chrome reads on the ground: text 7:1 (4.5:1 for the quiet text), accents 3:1.
 #[test]
-fn the_accents_read_on_the_dark_panel() {
-    let dark = naves_ui::design_tokens_of(egui::Theme::Dark);
-    for (name, colour) in [("green", GREEN), ("error", ERROR)] {
-        let ratio = contrast(colour, dark.panel_bg_color);
-        assert!(
-            ratio >= 3.0,
-            "{name}: {ratio:.2} on {:?}",
-            dark.panel_bg_color
-        );
-    }
+fn chrome_tokens_read() {
+    assert!(contrast(tokens::INK, tokens::GROUND) >= 7.0);
+    assert!(contrast(tokens::INK_QUIET, tokens::GROUND) >= 4.5);
+    assert!(contrast(tokens::ACTIVE, tokens::GROUND) >= 3.0);
+    assert!(contrast(tokens::PROBLEM, tokens::GROUND) >= 3.0);
+    assert!(contrast(tokens::NOTICE, tokens::GROUND) >= 3.0);
+    assert!(contrast(tokens::INK, tokens::PANEL) >= 7.0);
+    assert!(contrast(tokens::INK_QUIET, tokens::PANEL) >= 4.5);
 }
 
-/// The same accents on the light panel.
+/// On the light theme the accents are the ones for white.
 #[test]
-fn the_accents_read_on_the_light_panel() {
-    let light = naves_ui::design_tokens_of(egui::Theme::Light);
-    for (name, colour) in [("green", GREEN), ("error", ERROR)] {
-        let ratio = contrast(colour, light.panel_bg_color);
-        assert!(
-            ratio >= 3.0,
-            "{name}: {ratio:.2} on {:?}",
-            light.panel_bg_color
-        );
-    }
+fn the_accents_read_on_white() {
+    let light = egui::Visuals::light();
+    assert!(contrast(active(&light), Color32::WHITE) >= 3.0);
+    assert!(contrast(problem(&light), Color32::WHITE) >= 3.0);
+    let dark = egui::Visuals::dark();
+    assert_eq!(active(&dark), tokens::ACTIVE);
+    assert!(
+        contrast(Color32::WHITE, active(&light)) >= 4.5,
+        "white text on the light fill"
+    );
+    assert!(
+        contrast(tokens::GROUND, active(&dark)) >= 4.5,
+        "text on the dark fill"
+    );
 }
 
-/// Error text is text: it needs the text contrast on the light panel it is drawn on.
+/// The level bands read on the ground; the four fixed ones are the colour-blind safe set.
 #[test]
-fn error_text_still_reads_on_the_light_panel() {
-    let light = naves_ui::design_tokens_of(egui::Theme::Light);
-    let ratio = contrast(ERROR, light.panel_bg_color);
-    assert!(ratio >= 4.5, "{ratio:.2}");
+fn bands_read_on_ground() {
+    for level in Level::ALL {
+        let ratio = contrast(level.colour(), tokens::GROUND);
+        assert!(ratio >= 3.0, "{level:?}: {ratio:.2}");
+        assert!(
+            contrast(level.colour(), level.band_text()) >= 4.5,
+            "{level:?}"
+        );
+    }
+    let rgb = |l: Level| {
+        let c = l.colour();
+        [c.r(), c.g(), c.b()]
+    };
+    assert_eq!(rgb(Level::Terrain), [0xcc, 0x79, 0xa7]);
+    assert_eq!(rgb(Level::Ground), [0x00, 0x9e, 0x73]);
+    assert_eq!(rgb(Level::Water), [0x00, 0x72, 0xb2]);
+    assert_eq!(rgb(Level::Roads), [0xe4, 0xe8, 0xec]);
+}
+
+#[test]
+fn the_default_theme_is_dark() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = super::project(root.path());
+    let app = super::app(root.path(), &dir);
+    let mut h = super::state_harness(app);
+    h.run_steps(3);
+    let style = h.ctx.global_style();
+    assert!(style.visuals.dark_mode);
+    assert_eq!(style.visuals.panel_fill, tokens::PANEL);
+}
+
+#[test]
+fn light_can_be_chosen_in_the_map_tab() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    let root = tempfile::tempdir().unwrap();
+    let dir = super::project(root.path());
+    let path = naves_core::prefs::default_path(&root.path().join("config/naves"));
+    let app = super::app(root.path(), &dir).with_preferences(path.clone());
+    let mut h = super::state_harness(app);
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Settings").click();
+    h.run_steps(8);
+    h.get_by_role_and_label(Role::Tab, "Map").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::RadioButton, "Light").click();
+    h.run_steps(3);
+    assert!(!h.ctx.global_style().visuals.dark_mode);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("theme = \"light\""), "{text}");
 }

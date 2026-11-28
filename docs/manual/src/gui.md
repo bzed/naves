@@ -15,7 +15,7 @@ There is no object editing yet; the window shows the project, reads the terrain 
 
 ![The editor: the Terrain level with the map, the project panel and the dock](images/editor.png)
 
-*Level 1, Terrain. The chrome is Rerun's design system (`naves-ui`): light and dark both follow the system theme, the font is Inter. The data is the Königssee crop of the test fixtures (`tests/fixtures`: Copernicus GLO-30); the map is the heightmap render.*
+*Level 1, Terrain. The chrome is Rerun's design system (`naves-ui`): the GUI is dark by default (light and the system theme are in Settings, Map), the font is Inter. The data is the Königssee crop of the test fixtures (`tests/fixtures`: Copernicus GLO-30); the map is the heightmap render.*
 
 ## The stack (right)
 

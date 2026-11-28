@@ -6,7 +6,7 @@
 use eframe::egui::{self, RichText, WidgetInfo};
 
 use super::NavesApp;
-use super::theme::{ERROR, GREEN};
+use super::theme::active;
 
 /// A tab of the dock.
 pub struct DockTabDef {
@@ -70,7 +70,7 @@ fn problems_tab(app: &mut NavesApp, ui: &mut egui::Ui) {
                 let text = RichText::new(&problem.message).color(if selected {
                     ui.visuals().text_color()
                 } else {
-                    ERROR
+                    super::theme::problem(ui.visuals())
                 });
                 if ui.selectable_label(selected, text).clicked() {
                     go_to = Some(index);
@@ -101,13 +101,13 @@ pub fn tab_row(ui: &mut egui::Ui, tabs: &[DockTabDef], app: &mut NavesApp) {
                     egui::pos2(response.rect.left(), response.rect.bottom() + 1.0),
                     egui::vec2(response.rect.width(), 3.0),
                 );
-                ui.painter().rect_filled(bar, 0.0, GREEN);
+                ui.painter().rect_filled(bar, 0.0, active(ui.visuals()));
             }
             if response.has_focus() {
                 ui.painter().rect_stroke(
                     response.rect.expand(2.0),
                     2.0,
-                    egui::Stroke::new(2.0, GREEN),
+                    egui::Stroke::new(2.0, active(ui.visuals())),
                     egui::StrokeKind::Outside,
                 );
             }
