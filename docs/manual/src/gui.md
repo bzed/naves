@@ -188,7 +188,7 @@ drops what a tool holds (a line, a drag, a first click) and, with nothing held, 
 
 | Tool | Key | What it does |
 |---|---|---|
-| Move | **G** | Press on a node, drag, release: the node moves. **Esc** during the drag leaves it where it was. |
+| Move | **G** | Press the left button on a node, drag, release: the node moves (a right drag does nothing). **Esc** during the drag leaves it where it was. |
 | Draw | **C** | Each click adds a point; a click on a node of a road joins that node. **Space**, **Enter**, a right click or a double click ends the line (it needs two points). **Ctrl+Z** or **Backspace** takes the last point back and saves nothing. **Esc** discards the line. The line gets the class you picked in the list, *Residential street* if you picked none. |
 | Cut | **R** | Click a node inside a road: the road ends there and a new road with the same tags starts there. |
 | Join | **T** | Click the end of one road, then the end of another. With the same tags they become one road; with other tags the end of the second road moves to the end of the first, and both stay. |

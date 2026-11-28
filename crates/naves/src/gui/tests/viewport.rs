@@ -82,6 +82,86 @@ fn the_map_reports_clicks_in_metres() {
     );
 }
 
+/// Presses `button` at `from`, moves the pointer to `to` in one jump and releases it.
+fn drag(
+    h: &mut Harness<'_, NavesApp>,
+    button: egui::PointerButton,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) {
+    let press = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    h.hover_at(from);
+    h.run_steps(1);
+    h.event(press(from, true));
+    h.run_steps(1);
+    h.hover_at(to);
+    h.run_steps(2);
+    h.event(press(to, false));
+    h.run_steps(2);
+}
+
+#[test]
+fn a_drag_starts_where_the_button_went_down() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut harness = harness(app(root.path(), &dir));
+    run_until(&mut harness, ready);
+    harness.run_steps(2);
+    let rect = harness.state().seen_rect;
+    let from = rect.center() + egui::vec2(-60.0, 20.0);
+    let to = from + egui::vec2(60.0, 0.0);
+    harness.state_mut().seen_events.clear();
+    drag(&mut harness, egui::PointerButton::Primary, from, to);
+    let app = harness.state();
+    let focus = app.views.active().focus().unwrap();
+    let mpp = focus.span_m / f64::from(rect.width().min(rect.height()));
+    let want_x = focus.center.x + f64::from(from.x - rect.center().x) * mpp;
+    let press = app
+        .seen_events
+        .iter()
+        .find_map(|e| match e {
+            ViewEvent::Press { at, .. } => Some(*at),
+            _ => None,
+        })
+        .expect("a press was reported");
+    assert!(
+        (press.x - want_x).abs() < 0.01,
+        "the press is at {} m, the button went down at {want_x} m",
+        press.x
+    );
+}
+
+#[test]
+fn only_the_left_button_drags_for_the_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = project(root.path());
+    let mut harness = harness(app(root.path(), &dir));
+    run_until(&mut harness, ready);
+    harness.run_steps(2);
+    let rect = harness.state().seen_rect;
+    let from = rect.center() + egui::vec2(-60.0, 20.0);
+    harness.state_mut().seen_events.clear();
+    drag(
+        &mut harness,
+        egui::PointerButton::Secondary,
+        from,
+        from + egui::vec2(60.0, 0.0),
+    );
+    let events = &harness.state().seen_events;
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            ViewEvent::Press { .. } | ViewEvent::Drag { .. } | ViewEvent::Release { .. }
+        )),
+        "{events:?}"
+    );
+}
+
 #[test]
 fn the_wheel_over_the_map_zooms_it() {
     let root = tempfile::tempdir().unwrap();

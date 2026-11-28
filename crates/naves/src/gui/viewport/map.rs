@@ -106,19 +106,23 @@ impl Viewport for MapViewport {
             events.push(ViewEvent::Hover(at(pos)));
         }
         if let Some(pos) = response.interact_pointer_pos() {
-            if !panning && response.drag_started() {
+            // only the left button drags for the tools; egui reports a drag after the pointer has moved
+            // some way, so the press is where the button went down
+            let primary = egui::PointerButton::Primary;
+            if !panning && response.drag_started_by(primary) {
+                let down = ui.input(|i| i.pointer.press_origin()).unwrap_or(pos);
                 events.push(ViewEvent::Press {
-                    at: at(pos),
+                    at: at(down),
                     modifiers,
                 });
             }
-            if !panning && response.dragged() {
+            if !panning && response.dragged_by(primary) {
                 events.push(ViewEvent::Drag {
                     at: at(pos),
                     modifiers,
                 });
             }
-            if !panning && response.drag_stopped() {
+            if !panning && response.drag_stopped_by(primary) {
                 events.push(ViewEvent::Release {
                     at: at(pos),
                     modifiers,
