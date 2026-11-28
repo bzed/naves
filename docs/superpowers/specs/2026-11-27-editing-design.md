@@ -178,6 +178,15 @@ Stored in `edits/terrain.toml` (phase 3). Earthwork is one kind of edit, availab
     road; the checks on the final terrain report that.
   - Defaults **[my call]**: brushes and unattached shapes `ground`, fit shapes of placed models and bridge
     replacements `finish`. The GUI shows the choice as a switch in the tool's status line and in the properties.
+- **Shapes are items, drawn with Area and Line (maintainer, 2026-11-28).** There is no key per shape. The selector
+  has an "Earthwork" group on every level (the shapes `fit` all levels): area shapes (pad, cut or fill to a height,
+  mound, pit) and line shapes (ditch, embankment, ramp, terrace step), each with a plan-view thumbnail at the shared
+  scale. Picking a shape switches to the tool that draws it: an area shape to Area (V; clicks make a ring, a drag a
+  rectangle, Alt+drag a circle), a line shape to Line (C; Space finishes). **Shift+V** picks the last used shape again
+  on any level, Ctrl+F finds any shape. Height, slope, width, `blend_m` and `stage` are in the properties. "Shape the
+  ground to fit" stays a switch in the properties of a way, a placed model or a bridge replacement. The Terrain level
+  keeps its brushes (B raise or lower, R smooth, T flatten); its Shift+R picks the ramp shape, Shift+C stays the hole
+  tool. A new shape later is a new item, not a new key.
 - **Terrain stack**, in order: base heightmap (DEM) → `ground` strokes and shapes, in file order → the road solve and
   `conform` (holding the `ground` shapes) → `finish` strokes and shapes, in file order → fit shapes of placed models.
 
@@ -268,8 +277,8 @@ Q/E move the view). Roads level: Esc select (a way, or a node when near one), G 
 points, click an existing node to join, Space, Enter, a right click or a double click to finish), R cut at a node,
 T join two ends, Shift+T mark or unmark a bridge between two nodes, X delete. Terrain level: B raise/lower, R smooth,
 T flatten, Shift+R ramp, and the shape tools (pad, cut/fill, ditch). **Earthwork on every level**: a tool that draws an unattached shape, and
-in the properties of a selected feature or model an "Shape the ground to fit" switch. Its key is chosen in plan 3
-against the shortcut table (left half first, no `Y`/`Z`, nothing needing AltGr on QWERTZ).
+in the properties of a selected feature or model an "Shape the ground to fit" switch. It is not a key of its own:
+the shapes are items drawn with Area (V) and Line (C), and Shift+V repeats the last shape (5.4).
 
 **Properties (right, under the stack)** for a selected way: class, surface, bridge, layer, the `naves:` switches,
 where it came from ("OSM way 8421, edited by you" / "drawn by you" / "OSM, unchanged") and **Reset to OSM** for an

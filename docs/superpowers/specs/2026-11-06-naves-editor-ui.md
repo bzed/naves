@@ -102,7 +102,7 @@ Then what a level has of its own, and only there (R and T, then Shift with a let
 
 | Level | Keys |
 |---|---|
-| Terrain | B raise or lower (Shift inverts), R smooth, T flatten, Shift+R ramp, Shift+C hole |
+| Terrain | B raise or lower (Shift inverts), R smooth, T flatten, Shift+R ramp (picks the ramp shape), Shift+C hole |
 | Ground | B paint, R soften an edge |
 | Water | V lake, C river, B shape the bed |
 | Roads and paths | C draw, R cut, T join, Shift+T mark a bridge |
@@ -120,6 +120,7 @@ Everywhere:
 | H, Shift+H (right half, one set) | Hide the active level; other levels faded or in full |
 | Ctrl+Tab | Switch between map and 3D view |
 | F, Shift+F | Frame the selection; frame the whole map |
+| Shift+V | Earthwork: pick the last used shape again (shapes are items: area shapes draw with V, line shapes with C) |
 | Shift+X, Shift+G | World or local axes; follow the ground |
 | Ctrl+G | Duplicate |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo (while drawing a line, Ctrl+Z takes back the last point) |
