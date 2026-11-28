@@ -270,7 +270,7 @@ impl WayEdits {
         self.drop_unused_user_nodes(&removed.nodes);
     }
 
-    fn drop_unused_user_nodes(&mut self, candidates: &[ElementId]) {
+    pub(super) fn drop_unused_user_nodes(&mut self, candidates: &[ElementId]) {
         let used: BTreeSet<ElementId> = self
             .ways
             .iter()

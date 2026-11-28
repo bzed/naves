@@ -18,6 +18,7 @@ use naves_core::prefs::Preferences;
 use naves_core::project::Project;
 
 include!("../../../fuzz/case/reroute_search.rs");
+include!("../../../fuzz/case/road_line.rs");
 
 fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -277,5 +278,16 @@ fn reroute_search_seeds() {
     }
     for name in ["nan", "huge", "radius_zero", "same_anchor", "short"] {
         assert_eq!(found.get(name), Some(&0), "{name}: {found:?}");
+    }
+}
+
+#[test]
+fn road_line_seeds() {
+    for (name, data) in seeds("road_line") {
+        assert_eq!(
+            road_line_case::run(&data),
+            Some(name == "valid"),
+            "seed {name}"
+        );
     }
 }
