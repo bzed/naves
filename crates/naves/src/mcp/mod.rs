@@ -4,9 +4,10 @@
 //! The MCP server (`naves mcp <dir>`): the project, the heightmap, top-down renders and the build for AI
 //! clients, over standard input and output (local only).
 //!
-//! Requests are untrusted input: paths and values go through [`naves_core::project::Project::with_value`], the render request is
-//! validated by `naves-core`, nothing panics, and failures are tool errors with a message, never a dead
-//! server. Blocking work (DEM reading, rendering, building) runs on the blocking thread pool.
+//! Requests are untrusted input: paths and values go through [`naves_core::project::Project::with_value`],
+//! the render request is validated by `naves-core`, nothing panics, and failures are tool errors with a
+//! message, never a dead server. Blocking work (DEM reading, rendering, building) runs on the blocking
+//! thread pool.
 
 use std::io::Cursor;
 use std::path::Path;
@@ -349,7 +350,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "The roads and paths (OpenStreetMap ways with a highway tag, edits applied) that touch a rectangle of the map in map metres: id, origin (osm, edited, new), tags and points. At most 1000 ways (limit), `more` is true when there are more."
+        description = "The roads and paths (OpenStreetMap ways with a highway tag, edits applied) that touch a rectangle of the map in map metres: id, origin (osm, edited, new), tags and points. At most 1000 ways (limit), `more` is true when there are more. A way that crosses the edge of the map can have points outside it (0..map size); cut such points at the edge before road_modify, which refuses points outside the map."
     )]
     async fn roads_list(
         &self,
@@ -387,6 +388,7 @@ impl NavesMcp {
                     .points
                     .iter()
                     .filter_map(|&(lat, lon)| source.frame.to_map(lat, lon).ok())
+                    .filter(|(x, y)| x.is_finite() && y.is_finite())
                     .collect();
                 if !roads::touches(&points, rect) {
                     continue;
@@ -407,7 +409,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "Adds a road or path: `points` are [x, y] in map metres (at least two, at most 2000, inside the map), `tags` the OpenStreetMap tags (a highway tag is required). A point within 5 cm of an existing node is that node, so the road joins what it touches. The edit is written to edits/ways.toml at once; there is no undo here. Returns the new way as roads_list shows it. A build is needed before the roads in the game change."
+        description = "Adds a road or path: `points` are [x, y] in map metres (at least two, at most 2000, inside the map), `tags` the OpenStreetMap tags (a highway tag is required). A point within 5 cm of an existing node is that node, so the road joins what it touches; a junction point that is moved leaves the other roads where they were, so keep junction points unchanged to stay joined. The edit is written to edits/ways.toml at once; there is no undo here. Returns the new way as roads_list shows it. A build is needed before the roads in the game change."
     )]
     async fn road_add(
         &self,
@@ -426,7 +428,7 @@ impl NavesMcp {
     }
 
     #[tool(
-        description = "Changes the tags and/or the line of a road, by the id roads_list gives. What is left out stays as it is; `tags` replace all tags (a highway tag is required), `points` are [x, y] in map metres. A point within 5 cm of an existing node is that node. Written to edits/ways.toml at once; no undo here. Returns the way as roads_list shows it."
+        description = "Changes the tags and/or the line of a road, by the id roads_list gives. What is left out stays as it is; `tags` replace all tags (a highway tag is required), `points` are [x, y] in map metres. A point within 5 cm of an existing node is that node; a junction point that is moved leaves the other roads where they were, so keep junction points unchanged to stay joined. Written to edits/ways.toml at once; no undo here. Returns the way as roads_list shows it."
     )]
     async fn road_modify(
         &self,

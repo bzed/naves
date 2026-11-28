@@ -79,14 +79,22 @@ south-west corner, rounded to 0.01 m. Ids are strings as in `edits/ways.toml`: `
 `"u3"` for a way that was drawn. `origin` is `new` for a drawn way, `edited` for an OpenStreetMap way with an edit
 or a moved node, and `osm` otherwise. The tool reads the OpenStreetMap files and `edits/ways.toml` but does not
 generate the roads, so it needs no tools; a damaged `edits/ways.toml` is an error that names the file. A project
-without OpenStreetMap files gives `{"ways": [], "more": false}`.
+without OpenStreetMap files lists only the ways that were drawn (`{"ways": [], "more": false}` until the first one).
+The OpenStreetMap files are read with a margin, so a way that crosses the edge of the map can have points outside it
+(below `0` or above `map_size_m`); cut such points at the edge before `road_modify`, which refuses points outside the
+map.
 
 **`road_add`, `road_modify`, `road_delete` and `road_reset`** change the roads. A point that lies within 5 cm of
 an existing node is that node, so a road that starts where another one ends is joined to it (the 0.01 m rounding of
-`roads_list` does not matter); any other point becomes a new node, and no OpenStreetMap node is moved. The limits are
+`roads_list` does not matter); any other point becomes a new node, and no OpenStreetMap node is moved. A junction
+point that is moved is therefore a new node and the other roads stay where they were, so the road is split from the
+junction: keep the points of a junction unchanged to stay joined. The limits are
 2000 points per way, 64 tags of at most 255 characters per key and value, and every point finite and inside the map
-(`0` to `map_size_m`). A way that is not `highway`-tagged is refused. An id that is not an id, an unknown way, a way that
-is already deleted (`road_reset` brings it back) and a `road_reset` of a way without an edit are errors. Every edit is
+(`0` to `map_size_m`). A way that is not `highway`-tagged (a stream, a river) is refused by `road_modify`, `road_delete` and `road_reset`
+("is not a road"), and `road_add` needs a `highway` tag. An id that is not an id, an unknown way, a way that
+is already deleted (`road_reset` brings it back) and a `road_reset` of a way without an edit are errors (a way that
+has only moved nodes has no edit of its own: its nodes stay moved). A `road_reset` of an edit whose OpenStreetMap
+way is no longer in the extract removes the edit and answers `{"removed": id}`. Every edit is
 written at once to `edits/ways.toml`, marked `by = "ai"`; when a tool reports an error nothing was written, and a damaged
 `edits/ways.toml` is never overwritten. There is no undo in `naves mcp <dir>` (the editor has one). The edits are
 in the generated roads of `roads_stats`, `validation_list` and the road layers of `render_topdown` at once, but the

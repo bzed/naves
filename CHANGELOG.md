@@ -15,7 +15,8 @@ All notable changes to this project are documented here. The format follows
 
 - `naves mcp` tells its clients how its coordinates, ids and edits work.
 - `naves mcp` lists the roads of a part of the map (`roads_list`).
-- `naves mcp` can add, change, delete and reset roads (`road_add`, `road_modify`, `road_delete`, `road_reset`).
+- `naves mcp` can add, change, delete and reset roads (`road_add`, `road_modify`, `road_delete`, `road_reset`); ways
+  that are not roads (streams, rivers) are refused, and moving a junction point does not move the other roads there.
 - The Roads level lists the road classes and the game's road pieces (one group for each road family), junctions and
   bridges; in the Everything scope the road classes stay on top. The tools in the rail are readable on the dark chrome.
 - The item list can show what fits the level or everything; an item of another level can be used without leaving the
