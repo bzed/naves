@@ -16,6 +16,32 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 **Spec:** `docs/superpowers/specs/2026-11-28-osm-store-design.md` (read it with this plan; section numbers below are the spec's). Related: `docs/superpowers/specs/2026-11-27-editing-design.md` (edits and fingerprints).
 
+## Coordination with the agent chat (`agent-chat` branch, being implemented)
+
+The agent chat (`docs/superpowers/specs/2026-11-28-agent-chat-design.md`, plan
+`docs/superpowers/plans/2026-11-28-naves-agent-chat-phase1.md`, worktree `/var/tmp/naves-agent-chat/wt`) changes code this
+plan touches. Rules so the two do not collide:
+
+- **Start this plan's branch from `main` after `agent-chat` phase 1 is merged.** Phase 1 turns `crates/naves/src/mcp.rs`
+  into `crates/naves/src/mcp/` (`mod.rs` tool table, `host.rs` with the `Host` seam and `StandaloneHost`, `roads.rs`).
+  Tasks 1 to 8 do not touch `crates/naves/`; if phase 1 is not merged when Task 9 starts, Task 9 waits.
+- **Signatures the agent chat calls stay as they are:** `naves_export::generate::read_source(project_dir, project)`
+  (the host's source cache, `host.rs`), `naves_core::surface::project_surfaces(..)` and `LoadedSources::open(..)`
+  (the host's map data and the GUI), `naves_export::generate::Source` and its fields, `naves_core::osm::{OsmWay,
+  OsmWays}` (used by `mcp/roads.rs` and `naves_core::edits::lines`). They load the copy **inside**; the callers do not
+  change. Their errors gain the two copy errors of Task 7, which reach MCP clients as the tool error text.
+- **New MCP tools go through the host**, as the agent-chat design requires ("A later feature adds its tools here …
+  with a `Host` method each"): Task 9 adds `Host` methods, implements them in `StandaloneHost`, and in `EditorHost` if
+  agent-chat phase 2 has landed by then; if phase 2 lands later, its plan must implement them (note this in the
+  agent-chat ledger when Task 9 merges).
+- **Cache invalidation:** `StandaloneHost` re-reads the source only when the project differs. An OSM import changes the
+  copy, not `naves.toml`, so the import tool must clear the host's source and map caches, and the cache key includes
+  `osm/copy.toml`'s content (an import from the CLI while the server runs must be seen too).
+- **The GUI button (Task 9, Step 4) comes last** and is rebased onto whatever agent-chat phases 2 and 4 changed in
+  `crates/naves/src/gui/` (request queue, settings tab).
+- Shared text files (`CHANGELOG.md`, `docs/manual/src/mcp.md`, `fuzz/Cargo.toml`, `crates/naves-core/tests/fuzz_seeds.rs`,
+  `crates/naves/tests/mcp.rs` with its `lists_tools` list) get merge conflicts only in lists; resolve by keeping both.
+
 ## Global Constraints
 
 - `AGENTS.md` applies to every task: tests first (red, then green), coverage ≥ 85 %, `make check` before every commit, `clippy -D warnings` with pedantic, `#[expect(..., reason = "...")]` not `#[allow]`, no `unwrap`/`expect`/`panic!`/indexing on untrusted data in library code, checked arithmetic and `TryFrom` for sizes, no allocation from a length field before checking it, `thiserror` in libraries, `anyhow` only in the binary, `tracing` not `println!` in libraries, atomic writes, `BTreeMap`/sorted output, user docs and the `CHANGELOG.md` line in the same commit, SPDX header on every new file.
@@ -122,8 +148,12 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 ### Task 4: The project's copy: `osm/copy.osm.pbf`, `osm/copy.toml`, import, extend, refresh
 
+The reading side (manifest, `load_copy`, `covers`, `CopyError`) lives in `naves-core::osmcopy`, because
+`naves-core::surface` must load the copy (Task 6); the writing side (`import`) lives in `naves-export`.
+
 **Files:**
-- Create: `crates/naves-export/src/osm_import.rs`
+- Modify: `crates/naves-core/src/osmcopy.rs` (manifest types, `load_copy`, `covers`, `CopyError`)
+- Create: `crates/naves-export/src/osm_import.rs` (`import`, `import_window`, `OsmImportError`)
 - Modify: `crates/naves-export/src/lib.rs`, `crates/naves-export/Cargo.toml` (`sha2` with `cargo add`, review noted in the commit), `docs/manual/src/project-file.md` (the `osm/` folder, `copy.toml` fields)
 - Test: `crates/naves-export/tests/osm_import.rs`; fuzz target `fuzz/fuzz_targets/osm_manifest_parse.rs`
 
@@ -133,10 +163,10 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   - `pub const COPY_PBF: &str = "osm/copy.osm.pbf"`; `pub const COPY_MANIFEST: &str = "osm/copy.toml"`
   - `pub struct Manifest { pub format: u32, pub import: Vec<ImportRecord> }`; `pub struct ImportRecord { pub window: GeoWindow, pub sources: Vec<SourceRecord>, pub added: Added, pub refresh: bool }`; `pub struct SourceRecord { pub path: PathBuf, pub replication_timestamp: Option<String>, pub modified: Option<String>, pub sha256: String }`; `pub struct Added { pub nodes: usize, pub ways: usize, pub relations: usize }` (serde, field names as in spec 5.2; `format = 1`)
   - `pub fn import_window(project: &Project) -> Result<GeoWindow, OsmImportError>` (map window + 1 km real margin: `MapGeo::window(1000.0 * project.scale.horizontal)`)
-  - `pub fn load_copy(project_dir: &Path) -> Result<Option<(OsmData, Manifest)>, OsmImportError>` (`None` when neither file exists)
+  - in `naves_core::osmcopy`: `pub fn load_copy(project_dir: &Path) -> Result<Option<(Arc<OsmData>, Manifest)>, CopyError>` (`None` when neither file exists); `CopyError` (`thiserror`): `Damaged { path, reason }` (manifest without PBF or the reverse, unparsable TOML), `Osm(OsmError)`, `Io { path, source }`; later (Task 7) `Missing` and `NotCovering { missing: GeoWindow }`
   - `pub fn import(project_dir: &Path, project: &Project, refresh: bool) -> Result<ImportOutcome, OsmImportError>`; `pub enum ImportOutcome { Created(Added), Extended(Added), UpToDate, Refreshed { added: Added, changed_edits: Vec<String> } }`
-  - `pub fn covers(manifest: &Manifest, window: GeoWindow) -> bool` (the union of import windows contains `window`; windows are axis-aligned boxes; containment of a box in a union of boxes, checked exactly by splitting on the boxes' edges)
-  - `OsmImportError` (`thiserror`): `NoSources`, `SourceMissing { path }`, `SourceChanged { path }` (sha256 differs from an earlier import, message names `--refresh`), `Damaged { path, reason }` (manifest without PBF or the reverse, unparsable TOML), `Osm(OsmError)`, `Projection(ProjectionError)`, `Io { path, source }`
+  - in `naves_core::osmcopy`: `pub fn covers(manifest: &Manifest, window: GeoWindow) -> bool` (the union of import windows contains `window`; windows are axis-aligned boxes; containment of a box in a union of boxes, checked exactly by splitting on the boxes' edges)
+  - in `naves_export::osm_import`: `OsmImportError` (`thiserror`): `NoSources`, `SourceMissing { path }`, `SourceChanged { path }` (sha256 differs from an earlier import, message names `--refresh`), `Copy(CopyError)`, `Osm(OsmError)`, `Projection(ProjectionError)`, `Io { path, source }`
 
 - [ ] **Step 1: Write the failing tests** (a project in a `TempDir` with synthetic extracts from Task 1; `HOME` etc. not touched):
   - `first_import_writes_both_files` (`Created`, both files exist, manifest has one record with the source's sha256);
@@ -145,7 +175,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
   - `extend_stops_when_a_source_changed` (`SourceChanged` naming the file, copy untouched);
   - `refresh_replaces_and_lists_changed_edits` (an `edits/ways.toml` `modify` of a way whose tags changed: its id is in `changed_edits`; fingerprint via `edits::ways::fingerprint` over the filtered tags, see Task 6);
   - `copy_is_reproducible` (two projects, same inputs → identical `copy.osm.pbf` bytes and identical `copy.toml`);
-  - `manifest_without_pbf_is_an_error`, `pbf_without_manifest_is_an_error` (`Damaged`);
+  - `manifest_without_pbf_is_an_error`, `pbf_without_manifest_is_an_error` (`CopyError::Damaged` from `load_copy`);
   - `replication_timestamp_is_recorded` (header with timestamp → RFC 3339 string; without → `modified` from the file's mtime and `replication_timestamp = None`);
   - `covers_union_of_windows` (two adjacent windows cover a window across their seam; a gap is not covered).
 - [ ] **Step 2: Run** `cargo test -p naves-export --test osm_import`. Expected: FAIL.
@@ -177,7 +207,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ### Task 6: Derive ways and land from `OsmData`; switch the readers
 
 **Files:**
-- Modify: `crates/naves-core/src/osm.rs` (new `ways_from`, `land_from`; the path readers become test-only helpers or are removed), `crates/naves-core/src/surface.rs` (`LoadedSources::open` takes `Option<&OsmData>`), `crates/naves-core/src/edits/ways.rs` (`pub const FINGERPRINT_KEYS: [&str; 14] = osm::WAY_TAGS`, doc says why), `crates/naves-export/src/generate.rs` (`read_source` takes the loaded copy), `crates/naves-export/examples/road-sites.rs`, `road-analysis.rs`, the fuzz targets `osm_read.rs`, `osm_ways.rs` (feed `read_copy_from_bytes` → `land_from`/`ways_from`)
+- Modify: `crates/naves-core/src/osm.rs` (new `ways_from`, `land_from`; the path readers are removed), `crates/naves-core/src/surface.rs` (`LoadedSources::open` loads the copy itself; signature unchanged), `crates/naves-core/src/edits/ways.rs` (`pub const FINGERPRINT_KEYS: [&str; 14] = osm::WAY_TAGS`, doc says why), `crates/naves-export/src/generate.rs` (`read_source` loads the copy itself; signature unchanged), `crates/naves-export/examples/road-sites.rs`, `road-analysis.rs`, the fuzz targets `osm_read.rs`, `osm_ways.rs` (feed `read_copy_from_bytes` → `land_from`/`ways_from`)
 - Test: `crates/naves-core/tests/osm.rs`, `features.rs`, `roadfit.rs`, `fuzz_seeds.rs` (moved onto the new functions)
 
 **Interfaces:**
@@ -191,13 +221,13 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 - [ ] **Step 2: Run** `cargo test -p naves-core --test osm`. Expected: FAIL (functions missing).
 - [ ] **Step 3: Implement `ways_from` and `land_from`** on the in-memory maps (no passes); keep `assemble` and the classification code shared.
 - [ ] **Step 4: Run** the equivalence tests. Expected: PASS.
-- [ ] **Step 5: Switch the callers.** `generate::read_source(project_dir, project, copy: Option<&OsmData>)`; `surface::LoadedSources::open(.., copy: Option<&OsmData>)` instead of reading `project.sources.osm`. Where the build and the GUI call them, the data is `load_copy(dir)`; **only for this commit**, when there is no copy and `[sources] osm` is not empty, it is `select(extracts, import_window, &OsmData::default())` (so the build behaves as before); Task 7 Step 3 removes that fallback. Move the existing tests in `osm.rs`, `features.rs`, `roadfit.rs` and both fuzz targets onto `read_copy` + `ways_from`/`land_from` with their current assertions unchanged; then delete `read_ways`, `read_land`, `read_ways_from_bytes`, `read_land_from_bytes` and the equivalence tests of Step 1 (they compared against the deleted functions; the moved tests keep the behaviour pinned). Run `cargo test --workspace --all-targets --locked`. Expected: PASS.
+- [ ] **Step 5: Switch the readers inside, not the callers.** `generate::read_source(project_dir, project)` and `surface::LoadedSources::open(..)` keep their signatures (the agent chat's host and the GUI call them, see *Coordination*). Inside, they get the data from `osmcopy::project_data(project_dir, project) -> Result<Option<Arc<OsmData>>, CopyError>` (in `naves-core::osmcopy`: `None` when `[sources] osm` is empty, else `load_copy`). **Only for this commit**, when there is no copy and `[sources] osm` is not empty, it returns `select(extracts, window, &OsmData::default())` (so everything behaves as before); Task 7 Step 3 removes that fallback. The build reads the copy once and passes it on internally (a `pub(crate)` variant `read_source_with(project_dir, project, data: &OsmData)`), so a build does not read the file twice. Move the existing tests in `osm.rs`, `features.rs`, `roadfit.rs` and both fuzz targets onto `read_copy` + `ways_from`/`land_from` with their current assertions unchanged; then delete `read_ways`, `read_land`, `read_ways_from_bytes`, `read_land_from_bytes` and the equivalence tests of Step 1 (they compared against the deleted functions; the moved tests keep the behaviour pinned). Run `cargo test --workspace --all-targets --locked`. Expected: PASS.
 - [ ] **Step 6: Commit** `refactor(core): ways and land come from OsmData` (no user-visible change).
 
 ### Task 7: The build reads the copy: coverage check, notices, report, credits
 
 **Files:**
-- Modify: `crates/naves-export/src/build.rs` (`BuildError::OsmCopyMissing`, `BuildError::OsmCopyNotCovering { missing: GeoWindow }`, report, `attribution`), `crates/naves-export/src/generate.rs`, `crates/naves-core/src/validate.rs` (rules `osm_source_changed`, `osm_sources_changed`, severity information), `docs/manual/src/getting-started.md`, `troubleshooting.md` (the two errors and their fix), `CHANGELOG.md`
+- Modify: `crates/naves-core/src/osmcopy.rs` (`CopyError::Missing`, `CopyError::NotCovering { missing: GeoWindow }`), `crates/naves-core/src/surface.rs` (`SurfaceError::Copy`), `crates/naves-export/src/build.rs` (`BuildError::OsmCopy(CopyError)`, report, `attribution`), `crates/naves-export/src/generate.rs`, `crates/naves-core/src/validate.rs` (rules `osm_source_changed`, `osm_sources_changed`, severity information), `docs/manual/src/getting-started.md`, `troubleshooting.md` (the two errors and their fix), `CHANGELOG.md`
 - Test: `crates/naves-export/tests/build_osm_copy.rs`
 
 **Interfaces:**
@@ -205,15 +235,16 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 - Produces: `report.json` key `osm` = `{ "kinds": { "<kind id>": { "count": n, "length_km": x?, "area_km2": y? } }, "imports": [ { "replication_timestamp": … } ] }`; the credits line "Map data: © OpenStreetMap contributors … (data of YYYY-MM-DD)" or "(data of YYYY-MM-DD to YYYY-MM-DD)".
 
 - [ ] **Step 1: Write the failing tests** (fake tools as the existing build tests use, `crates/naves-export/src/testing.rs`):
-  - `old_project_needs_one_import` (extracts listed, no copy → `BuildError::OsmCopyMissing`, message contains `naves osm import`);
-  - `build_stops_when_area_leaves_the_copy` (import, then move the centre 5 km → `OsmCopyNotCovering`);
+  - `old_project_needs_one_import` (extracts listed, no copy → `BuildError::OsmCopy(CopyError::Missing)`, message contains `naves osm import`);
+  - `build_stops_when_area_leaves_the_copy` (import, then move the centre 5 km → `CopyError::NotCovering`);
+  - `read_source_and_surfaces_give_the_same_error` (`read_source` and `project_surfaces` on that project fail with the same message: what the agent chat's MCP host and the GUI show);
   - `map_without_osm_builds_without_copy` (`osm = []`);
   - `build_reads_the_copy_not_the_extracts` (import, then delete the extract files → build succeeds);
   - `changed_extract_is_reported_not_used` (import, then rewrite an extract with an extra road → build succeeds, the road is absent, `osm_source_changed` in the report);
   - `report_counts_kinds` (a synthetic copy with 2 rail ways and 1 meadow → `osm.kinds.railway.count == 2`, `ground.area_km2 > 0`);
   - `credits_name_the_data_date`.
 - [ ] **Step 2: Run** `cargo test -p naves-export --test build_osm_copy`. Expected: FAIL.
-- [ ] **Step 3: Implement**: remove Task 6's temporary fallback to the extracts; load the copy once per build (`load_copy`), check `covers(manifest, map window without margin)`, hand `&OsmData` to `read_source` and `LoadedSources::open`; compare each listed extract's current sha256 with the manifest's (only when the file exists) for `osm_source_changed`; compare the listed paths with the manifest's for `osm_sources_changed`. Kinds counted with `index` over elements that touch the map window; lengths and areas in map km / km².
+- [ ] **Step 3: Implement**: remove Task 6's temporary fallback to the extracts (`osmcopy::project_data` now returns `CopyError::Missing` or `CopyError::NotCovering`, carried by `BuildError` and by the errors of `read_source` and `LoadedSources::open` (`SurfaceError` gains a `Copy(CopyError)` variant), so MCP clients and the GUI get the same message); load the copy once per build, check `covers(manifest, map window without margin)` inside `project_data`, hand `&OsmData` to `read_source_with` and the surfaces; compare each listed extract's current sha256 with the manifest's (only when the file exists) for `osm_source_changed`; compare the listed paths with the manifest's for `osm_sources_changed`. Kinds counted with `index` over elements that touch the map window; lengths and areas in map km / km².
 - [ ] **Step 4: Run** `cargo test --workspace --all-targets --locked`. Expected: PASS.
 - [ ] **Step 5: Docs and changelog**: getting-started (import before the first build), troubleshooting (both errors), `CHANGELOG.md` under `## [Unreleased]`: "Added: `naves osm import` keeps a copy of the OpenStreetMap data of the map's area in the project; builds read only that copy (run it once for existing projects)."
 - [ ] **Step 6: Commit** `feat: builds read the project's own OSM copy`.
@@ -237,13 +268,13 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 ### Task 9: CLI, MCP and GUI entry points
 
 **Files:**
-- Modify: `crates/naves/src/cli.rs` (`Command::Osm { action: OsmAction }`, `OsmAction::Import { dir: Option<PathBuf>, #[arg(long)] refresh: bool }`), `crates/naves/src/mcp.rs` (tools `osm_import { refresh: bool }`, `osm_kinds`, `osm_features { kind: String, x0, y0, x1, y1: f64, page: Option<u32> }`, 200 features per page), `crates/naves/src/gui/` (an "Import OSM data" button next to the OSM sources in the project settings, running in the background with progress like the build, and the build's two copy errors shown as the build's error), `docs/manual/src/cli.md`, `mcp.md`, `gui.md`, `CHANGELOG.md`
+- Modify: `crates/naves/src/cli.rs` (`Command::Osm { action: OsmAction }`, `OsmAction::Import { dir: Option<PathBuf>, #[arg(long)] refresh: bool }`); `crates/naves/src/mcp/host.rs` (`Host::osm_import(&self, refresh: bool) -> Result<ImportOutcome, String>` which also clears the source and map caches; `Host::osm_data(&self) -> Result<Arc<OsmData>, String>` cached like `source`, keyed by the project and `osm/copy.toml`; implemented in `StandaloneHost`, and in `EditorHost` if it exists); `crates/naves/src/mcp/osm.rs` (new: argument structs, the JSON of a feature); `crates/naves/src/mcp/mod.rs` (tools `osm_import { refresh: bool }`, `osm_kinds`, `osm_features { kind: String, x0, y0, x1, y1: f64, page: Option<u32> }`, 200 features per page, rectangle checked like `roads_list`'s, points in map metres rounded to 0.01 m as `roads::way_json` does); `crates/naves/src/gui/` (an "Import OSM data" button next to the OSM sources in the project settings, running in the background with progress like the build, and the build's two copy errors shown as the build's error), `docs/manual/src/cli.md`, `mcp.md`, `gui.md`, `CHANGELOG.md`
 - Test: `crates/naves/tests/cli_osm.rs` (`assert_cmd`, temp `HOME`/XDG dirs), `crates/naves/tests/mcp.rs` (existing harness)
 
 **Interfaces:**
 - Consumes: Task 4 `import`, `ImportOutcome`; Task 5 `index`, `Kind`.
 
-- [ ] **Step 1: Write the failing tests**: `osm_import_creates_the_copy` (exit 0, prints "Imported … nodes, … ways, … relations"); `osm_import_again_is_up_to_date`; `osm_import_refresh_lists_changed_edits`; `osm_import_without_sources_fails` (non-zero, stderr names `sources.osm`); MCP `osm_kinds_lists_counts`, `osm_features_pages`, `osm_import_tool_runs`.
+- [ ] **Step 1: Write the failing tests**: `osm_import_creates_the_copy` (exit 0, prints "Imported … nodes, … ways, … relations"); `osm_import_again_is_up_to_date`; `osm_import_refresh_lists_changed_edits`; `osm_import_without_sources_fails` (non-zero, stderr names `sources.osm`); MCP `osm_kinds_lists_counts`, `osm_features_pages`, `osm_import_tool_runs`, `osm_import_refreshes_roads_list` (after `osm_import` of a copy with one more road, `roads_list` shows it without restarting the server), `cli_import_while_server_runs_is_seen` (the cache key follows `osm/copy.toml`), and `lists_tools` gains the three names.
 - [ ] **Step 2: Run** `cargo test -p naves --test cli_osm --test mcp`. Expected: FAIL.
 - [ ] **Step 3: Implement the CLI and MCP tools** (`spawn_blocking` for the import in MCP; no `std::sync::Mutex` across `.await`). Help texts and `cli.md` agree word for word on the options.
 - [ ] **Step 4: GUI button**: invoke `/frontend-design:frontend-design` first; follow the existing settings panel style (dark default, colourblind-safe). No new GUI test harness; the existing GUI tests (if any cover the settings panel) gain a case that the button exists.
